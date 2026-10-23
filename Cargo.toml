@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/workstation-core",
+    "crates/workstation-audio",
+    "crates/cpr-inspect",
+    "crates/workstation-app",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"

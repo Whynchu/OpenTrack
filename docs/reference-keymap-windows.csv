@@ -1,0 +1,153 @@
+source_page,category,command,windows_bindings
+484,Audio,Adjust Fades to Range,A
+484,Audio,Auto Grid,Shift+Q
+484,Audio,Crossfade,X
+484,Audio,Find Selected in Pool,Ctrl+F
+484,Automation,Toggle Read Enable All Tracks,Alt+R
+484,Automation,Toggle Write Enable All Tracks,Alt+W
+484,Devices,Mixer,F3
+484,Devices,Virtual Keyboard,Alt+K
+484,Devices,Video,F8
+484,Devices,VST Connections,F4
+484,Devices,VST Instruments,F11
+484,Devices,VST Performance,F12
+484,Edit,Autoscroll,F
+484,Edit,Copy,Ctrl+C
+484,Edit,Cut,Ctrl+X
+484,Edit,Cut Time,Ctrl+Shift+X
+484,Edit,Delete,Delete; Backspace
+484,Edit,Delete Time,Shift+Backspace
+484,Edit,Duplicate,Ctrl+D
+484,Edit,Edit In-place,Ctrl+Shift+I
+484,Edit,Group,Ctrl+G
+484,Edit,Insert Silence,Ctrl+Shift+E
+484,Edit,Left Selection Side to Cursor,E
+484,Edit,Lock,Ctrl+Shift+L
+484,Edit,Move to Cursor,Ctrl+L
+484,Edit,Mute,M
+484,Edit,Mute Events,Shift+M
+484,Edit,Mute/Unmute Objects,Alt+M
+484,Edit,Open Default Editor,Ctrl+E
+484,Edit,Open Score Editor,Ctrl+R
+484,Edit,Open/Close Editor,Return
+484,Edit,Paste,Ctrl+V
+484,Edit,Paste at Origin,Alt+V
+484,Edit,Paste Time,Ctrl+Shift+V
+484,Edit,Record Enable,R
+484,Edit,Redo,Ctrl+Shift+Z
+484,Edit,Repeat,Ctrl+K
+484,Edit,Right Selection Side to Cursor,D
+484,Edit,Select All,Ctrl+A
+484,Edit,Select None,Ctrl+Shift+A
+484,Edit,Snap On/Off,J
+484,Edit,Solo,S
+484,Edit,Split At Cursor,Alt+X
+484,Edit,Split Range,Shift+X
+484,Edit,Undo,Ctrl+Z
+484,Edit,Ungroup,Ctrl+U
+484,Edit,Unlock,Ctrl+Shift+U
+484,Edit,Unmute Events,Shift+U
+485,Editors,Show/Hide Info view,Ctrl+I
+485,Editors,Show/Hide Inspector,Alt+I
+485,Editors,Show/Hide Overview,Alt+O
+485,File,Close,Ctrl+W
+485,File,New,Ctrl+N
+485,File,Open,Ctrl+O
+485,File,Quit,Ctrl+Q
+485,File,Save,Ctrl+S
+485,File,Save As,Ctrl+Shift+S
+485,File,Save New Version,Ctrl+Alt+S
+485,Media,Open Loop Browser,F6
+485,Media,Open MediaBay,F5
+485,Media,Open Sound Browser,F7
+485,MIDI,Quantize,Q
+485,Navigate,Add Down,Shift+Down
+485,Navigate,Add Left,Shift+Left
+485,Navigate,Add Right,Shift+Right
+485,Navigate,Add Up,Shift+Up
+485,Navigate,Down,Down
+485,Navigate,Left,Left
+485,Navigate,Right,Right
+485,Navigate,Up,Up
+485,Navigate,Bottom,End
+485,Navigate,Top,Home
+485,Navigate,Toggle Selection,Ctrl+Space
+485,Nudge,End Left,Alt+Shift+Left
+485,Nudge,End Right,Alt+Shift+Right
+485,Nudge,Left,Ctrl+Left
+485,Nudge,Right,Ctrl+Right
+485,Nudge,Start Left,Alt+Left
+485,Nudge,Start Right,Alt+Right
+485,Project,Open Browser,Ctrl+B
+485,Project,Open Markers,Ctrl+M
+485,Project,Open/Close Pool,Ctrl+P
+485,Project,Open Tempo Track Editor,Ctrl+T
+485,Project,Setup,Shift+S
+485,Project,Show/Hide Track Colors,Shift+C
+486,Tool,Delete tool,5
+486,Tool,Draw tool,8
+486,Tool,Drumstick tool,0
+486,Tool,Glue tool,4
+486,Tool,Mute tool,7
+486,Tool,Next Tool,F10
+486,Tool,Play tool,9
+486,Tool,Previous Tool,F9
+486,Tool,Range tool,2
+486,Tool,Select tool,1
+486,Tool,Split tool,3
+486,Tool,Zoom tool,6
+486,Transport,Auto Punch In,I
+486,Transport,Auto Punch Out,O
+486,Transport,Cycle,NumpadSlash
+486,Transport,Exchange time formats,Period
+486,Transport,Fast Forward,Shift+NumpadAdd
+486,Transport,Fast Rewind,Shift+NumpadSubtract
+486,Transport,Forward,NumpadSubtract
+486,Transport,Input Left Locator,Shift+L
+486,Transport,Input Position,Shift+P
+486,Transport,Input Right Locator,Shift+R
+486,Transport,Input Tempo,Shift+T
+486,Transport,Insert Marker,Insert
+486,Transport,Locate Next Event,N
+486,Transport,Locate Next Marker,Shift+N
+486,Transport,Locate Previous Event,B
+486,Transport,Locate Previous Marker,Shift+B
+486,Transport,Locate Selection,L
+486,Transport,Locators to Selection,P
+486,Transport,Loop Selection,Shift+G
+486,Transport,Metronome On,C
+486,Transport,Nudge Cursor right,Ctrl+NumpadSubtract
+486,Transport,Nudge Cursor left,Ctrl+NumpadAdd
+486,Transport,Panel (Transport panel),F2
+486,Transport,Play Selection Range,Alt+Space
+486,Transport,Recall Cycle Marker 1 to 9,Shift+Numpad1..9
+486,Transport,Record,NumpadMultiply
+486,Transport,Retrospective Record,Shift+NumpadMultiply
+486,Transport,Return to Zero,NumpadDecimal; NumpadComma
+486,Transport,Rewind,NumpadSubtract
+486,Transport,Set Left Locator,Ctrl+Numpad1
+486,Transport,Set Marker 1,Ctrl+1
+486,Transport,Set Marker 2,Ctrl+2
+486,Transport,Set Marker 3 to 9,Ctrl+Numpad3..9; Ctrl+3..9
+486,Transport,Set Right Locator,Ctrl+Numpad2
+486,Transport,Play,Enter
+486,Transport,Start/Stop,Space
+486,Transport,Stop,Numpad0
+486,Transport,To Left Locator,Numpad1
+486,Transport,To Marker 1,Shift+1
+486,Transport,To Marker 2,Shift+2
+486,Transport,To Marker 3 to 9,Numpad3..9; Shift+3..9
+486,Transport,To Right Locator,Numpad2
+486,Transport,Use External Sync,T
+486,Workspace,Lock/Unlock Active Workspace,Alt+Numpad0
+486,Workspace,New,Ctrl+Numpad0
+486,Workspace,Organize,W
+486,Workspace,Workspace 1 to 9,Alt+Numpad1..9
+486,Zoom,Zoom Full,Shift+F
+486,Zoom,Zoom In,H
+486,Zoom,Zoom In Tracks,Alt+Down
+486,Zoom,Zoom Out,G
+486,Zoom,Zoom Out Tracks,Alt+Up; Ctrl+Up
+486,Zoom,Zoom to Event,Shift+E
+486,Zoom,Zoom to Selection,Alt+S
+486,Zoom,Zoom Tracks Exclusive,Z; Ctrl+Down

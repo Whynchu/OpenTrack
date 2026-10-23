@@ -1,0 +1,12 @@
+[package]
+name = "cpr-inspect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cpr-inspect"
+path = "src/main.rs"
+
+[dependencies]
+workstation-core = { path = "../workstation-core" }

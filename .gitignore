@@ -1,0 +1,13 @@
+/target/
+**/target/
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+/.build-cache/
+
+/builds/
