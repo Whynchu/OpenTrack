@@ -16,13 +16,14 @@ use egui_dock::DockState;
 use serde::{Deserialize, Serialize};
 use workstation_core::project::Project;
 use workstation_core::workspaces::{
-    ProjectWorkspaceState, WindowBounds, WindowClass, WindowId, WindowSnapshot, Workspace,
+    ProjectWorkspaceState, WindowBounds, WindowClass, WindowCoordinateSpace, WindowHost, WindowId,
+    WindowSnapshot, Workspace,
 };
 
 use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "rust-audio-workstation";
-const FORMAT_VERSION: u32 = 14;
+const FORMAT_VERSION: u32 = 15;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -30,6 +31,7 @@ const ARRANGE_VIEW_STATE_KEY: &str = "arrange_view_state_v1";
 pub(crate) const CHANNEL_SETTINGS_WINDOW_ID: &str = "channel-settings";
 pub(crate) const MIXER_WINDOW_ID: &str = "mixer";
 pub(crate) const MEDIA_WINDOW_ID: &str = "media";
+pub(crate) const PROJECT_WINDOW_ID: &str = "project-window";
 const DOCK_STATE_KEY: &str = "egui_dock_state_v1";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -45,14 +47,40 @@ pub(crate) struct ProjectFile {
     pub(crate) cycle: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ArrangeViewState {
     #[serde(default)]
     pub(crate) track_heights: std::collections::BTreeMap<u64, f32>,
+    #[serde(default = "default_true")]
+    pub(crate) show_inspector: bool,
+    #[serde(default = "default_true")]
+    pub(crate) show_track_colors: bool,
+    #[serde(default)]
+    pub(crate) selected_track_ids: std::collections::BTreeSet<u64>,
+    #[serde(default)]
+    pub(crate) selection_anchor_track_id: Option<u64>,
     #[serde(default)]
     pub(crate) exclusive_track_ids: Vec<u64>,
     #[serde(default)]
     pub(crate) pre_exclusive_track_heights: Option<std::collections::BTreeMap<u64, f32>>,
+}
+
+impl Default for ArrangeViewState {
+    fn default() -> Self {
+        Self {
+            track_heights: Default::default(),
+            show_inspector: true,
+            show_track_colors: true,
+            selected_track_ids: Default::default(),
+            selection_anchor_track_id: None,
+            exclusive_track_ids: Vec::new(),
+            pre_exclusive_track_heights: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl ArrangeViewState {
@@ -61,7 +89,7 @@ impl ArrangeViewState {
             .get(&track_id)
             .copied()
             .filter(|height| height.is_finite())
-            .unwrap_or(62.0)
+            .unwrap_or(42.0)
             .clamp(36.0, 240.0)
     }
 
@@ -193,6 +221,11 @@ impl ProjectFile {
                 legacy
             }
             13 => {
+                let mut legacy: Self = serde_json::from_slice(&bytes)?;
+                legacy.version = FORMAT_VERSION;
+                legacy
+            }
+            14 => {
                 let mut legacy: Self = serde_json::from_slice(&bytes)?;
                 legacy.version = FORMAT_VERSION;
                 legacy
@@ -418,6 +451,47 @@ pub(crate) fn store_active_project_window_state(
         class: WindowClass::ProjectSpecific,
         open,
         bounds,
+        host: WindowHost::NativeTopLevel,
+        coordinate_space: WindowCoordinateSpace::Desktop,
+        parent: None,
+        z_order: 0,
+        minimized: false,
+        maximized: false,
+        restore_bounds: None,
+        view_state: Default::default(),
+    };
+    if store_active_window_snapshot(workspace_state, window) {
+        Ok(())
+    } else {
+        Err(ProjectFileError::InvalidData(
+            "active workspace is missing or locked".to_owned(),
+        ))
+    }
+}
+
+pub(crate) fn store_active_workspace_child_state(
+    workspace_state: &mut ProjectWorkspaceState,
+    id: &str,
+    class: WindowClass,
+    open: bool,
+    bounds: Option<WindowBounds>,
+    restore_bounds: Option<WindowBounds>,
+    z_order: u32,
+    minimized: bool,
+    maximized: bool,
+) -> Result<(), ProjectFileError> {
+    let window = WindowSnapshot {
+        id: WindowId::new(id),
+        class,
+        open,
+        bounds,
+        host: WindowHost::WorkspaceChild,
+        coordinate_space: WindowCoordinateSpace::ParentClient,
+        parent: Some(WindowId::new(MAIN_WINDOW_ID)),
+        z_order,
+        minimized,
+        maximized,
+        restore_bounds,
         view_state: Default::default(),
     };
     if store_active_window_snapshot(workspace_state, window) {
@@ -507,6 +581,13 @@ fn main_window_snapshot(
         class: WindowClass::Main,
         open: true,
         bounds,
+        host: WindowHost::NativeTopLevel,
+        coordinate_space: WindowCoordinateSpace::Desktop,
+        parent: None,
+        z_order: 0,
+        minimized: false,
+        maximized: false,
+        restore_bounds: None,
         view_state,
     })
 }
@@ -865,8 +946,15 @@ mod tests {
                 threshold_db: -18.0,
                 ratio: 3.0,
                 attack_ms: 10.0,
+                hold_ms: 1.0,
                 release_ms: 120.0,
+                analysis: 80.0,
                 makeup_db: 2.0,
+                soft_knee: true,
+                auto_makeup: true,
+                auto_release: false,
+                rms_mode: false,
+                live: true,
             },
         });
         project.add_track(TrackKind::Midi);

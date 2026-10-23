@@ -221,7 +221,21 @@ struct PlaybackTrackRuntime {
 }
 
 impl PlaybackTrackRuntime {
-    fn new(settings: PlaybackTrackSettings, tempo_bpm: f64, sample_rate: u32) -> Self {
+    fn new(mut settings: PlaybackTrackSettings, tempo_bpm: f64, sample_rate: u32) -> Self {
+        // Offset the playback schedule, leaving arrange positions untouched.
+        let offset_beats = f64::from(settings.track_delay_ms) * tempo_bpm / 60_000.0;
+        for clip in &mut settings.clips {
+            clip.start_beats += offset_beats;
+        }
+        settings.midi_notes.retain_mut(|note| {
+            let end = note.start_beats + note.duration_beats + offset_beats;
+            note.start_beats = (note.start_beats + offset_beats).max(0.0);
+            note.duration_beats = end - note.start_beats;
+            note.duration_beats > 0.0
+        });
+        for event in &mut settings.midi_controllers {
+            event.position_beats = (event.position_beats + offset_beats).max(0.0);
+        }
         let processor = ChannelProcessor::new(
             &settings.equalizer,
             &settings.inserts,
@@ -249,6 +263,8 @@ pub struct PlaybackTrackSettings {
     /// Atomic peak accumulator read and cleared by the UI thread.
     pub meter_peak: Arc<AtomicU32>,
     pub gain: f32,
+    pub pan: f32,
+    pub track_delay_ms: f32,
     pub muted: bool,
     pub solo: bool,
     pub solo_defeat: bool,
@@ -1365,8 +1381,10 @@ fn mix_frame(plan: &PlaybackPlan, output_frame: u64, output_rate: u32) -> (f32, 
         track_left += instrument_left;
         track_right += instrument_right;
         processor.process(&mut track_left, &mut track_right);
-        let output_left = track_left * track.settings.gain;
-        let output_right = track_right * track.settings.gain;
+        // Linear stereo balance preserves unity at center, with the opposite
+        // side attenuated toward either edge. Exact reference pan law is unmeasured.
+        let output_left = track_left * track.settings.gain * (1.0 - track.settings.pan.max(0.0));
+        let output_right = track_right * track.settings.gain * (1.0 + track.settings.pan.min(0.0));
         let track_peak = output_left.abs().max(output_right.abs());
         if track_peak.is_finite() {
             // SAFETY: mix_frame only runs in the serialized audio callback.
@@ -2095,8 +2113,15 @@ mod processing_tests {
                 threshold_db: -18.0,
                 ratio: 4.0,
                 attack_ms: 1.0,
+                hold_ms: 1.0,
                 release_ms: 100.0,
+                analysis: 80.0,
                 makeup_db: 0.0,
+                soft_knee: true,
+                auto_makeup: true,
+                auto_release: false,
+                rms_mode: false,
+                live: true,
             },
         };
         let mut compressor = InsertProcessor::new(&effect, 48_000);
@@ -2383,6 +2408,8 @@ mod processing_tests {
                 instrument_factory: Arc::new(TestFactory),
                 meter_peak: Arc::clone(&meter_peak),
                 gain: 1.0,
+                pan: 0.0,
+                track_delay_ms: 0.0,
                 muted: false,
                 solo: false,
                 solo_defeat: false,
@@ -2503,6 +2530,7 @@ impl InsertProcessor {
                 attack_ms,
                 release_ms,
                 makeup_db,
+                ..
             } => {
                 let rate = sample_rate.max(1) as f32;
                 Self::Compressor {

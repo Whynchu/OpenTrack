@@ -720,6 +720,8 @@ mod tests {
                 ),
                 meter_peak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 gain: 1.0,
+                pan: 0.0,
+                track_delay_ms: 0.0,
                 muted: false,
                 solo: false,
                 solo_defeat: false,

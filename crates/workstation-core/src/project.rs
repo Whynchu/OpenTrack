@@ -20,14 +20,41 @@ pub struct Track {
     pub id: u64,
     pub name: String,
     pub kind: TrackKind,
+    /// Configured audio channel width. Non-audio tracks use two channels.
+    #[serde(default = "default_audio_channels")]
+    pub audio_channels: u8,
     pub muted: bool,
     pub solo: bool,
     /// Keeps the channel audible while other channels are soloed.
     #[serde(default)]
     pub solo_defeat: bool,
+    /// Listen-state toggle presented in the mixer and channel strip.
+    #[serde(default)]
+    pub listen: bool,
     pub armed: bool,
+    /// Input monitoring toggle presented by the audio channel strip.
+    #[serde(default)]
+    pub monitor: bool,
+    /// Automation Read control state; processing remains a separate feature.
+    #[serde(default)]
+    pub automation_read: bool,
+    /// Automation Write control state; processing remains a separate feature.
+    #[serde(default)]
+    pub automation_write: bool,
+    /// Input gain in dB, persisted for the channel input control.
+    #[serde(default)]
+    pub input_gain_db: f32,
+    /// Polarity switch for the channel input.
+    #[serde(default)]
+    pub input_phase_inverted: bool,
     /// Linear gain in the range 0.0 to 1.0.
     pub gain: f32,
+    /// Stereo balance: -1 left, 0 center, 1 right.
+    #[serde(default)]
+    pub pan: f32,
+    /// Playback offset in milliseconds; positive values play later.
+    #[serde(default)]
+    pub track_delay_ms: f32,
     /// Audio clips arranged on this track. Non-audio tracks keep this empty.
     #[serde(default)]
     pub clips: Vec<AudioClip>,
@@ -37,12 +64,25 @@ pub struct Track {
     /// Ordered audio insert effects.
     #[serde(default)]
     pub inserts: Vec<InsertEffect>,
+    /// Selected channel input bus. `None` represents No Bus.
+    #[serde(default)]
+    pub input_routing: Option<String>,
+    /// Selected channel output bus. `None` represents No Bus.
+    #[serde(default)]
+    pub output_routing: Option<String>,
+    /// Eight optional send destinations. Empty entries represent No Bus.
+    #[serde(default)]
+    pub send_routing: Vec<Option<String>>,
     /// Selected built-in voice for an Instrument track.
     #[serde(default)]
     pub instrument_waveform: InstrumentWaveform,
     /// Arrangeable MIDI parts on MIDI and instrument tracks.
     #[serde(default)]
     pub midi_parts: Vec<MidiPart>,
+}
+
+fn default_audio_channels() -> u8 {
+    2
 }
 
 /// Built-in channel EQ. The four-band layout follows the Cubase 5 manual;
@@ -59,10 +99,10 @@ impl Default for ChannelEqualizer {
         Self {
             bypassed: false,
             bands: [
-                EqualizerBand::new(FilterType::LowShelf, 80.0),
-                EqualizerBand::new(FilterType::Bell, 500.0),
-                EqualizerBand::new(FilterType::Bell, 2_000.0),
-                EqualizerBand::new(FilterType::HighShelf, 12_000.0),
+                EqualizerBand::with_q(FilterType::LowShelf, 100.0, 7.0),
+                EqualizerBand::with_q(FilterType::Bell, 800.0, 0.2),
+                EqualizerBand::with_q(FilterType::Bell, 2_000.0, 0.2),
+                EqualizerBand::with_q(FilterType::HighShelf, 12_000.0, 7.0),
             ],
         }
     }
@@ -80,12 +120,16 @@ pub struct EqualizerBand {
 
 impl EqualizerBand {
     fn new(filter: FilterType, frequency_hz: f32) -> Self {
+        Self::with_q(filter, frequency_hz, 0.707)
+    }
+
+    fn with_q(filter: FilterType, frequency_hz: f32, q: f32) -> Self {
         Self {
             enabled: false,
             filter,
             frequency_hz,
             gain_db: 0.0,
-            q: 0.707,
+            q,
         }
     }
 }
@@ -157,9 +201,35 @@ pub enum InsertEffectKind {
         threshold_db: f32,
         ratio: f32,
         attack_ms: f32,
+        #[serde(default = "default_compressor_hold_ms")]
+        hold_ms: f32,
         release_ms: f32,
+        #[serde(default = "default_compressor_analysis")]
+        analysis: f32,
         makeup_db: f32,
+        #[serde(default = "default_true")]
+        soft_knee: bool,
+        #[serde(default = "default_true")]
+        auto_makeup: bool,
+        #[serde(default)]
+        auto_release: bool,
+        #[serde(default)]
+        rms_mode: bool,
+        #[serde(default = "default_true")]
+        live: bool,
     },
+}
+
+fn default_compressor_hold_ms() -> f32 {
+    1.0
+}
+
+fn default_compressor_analysis() -> f32 {
+    80.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for InsertEffectKind {
@@ -303,6 +373,12 @@ impl Project {
 
     /// Adds a uniquely identified lane and selects it.
     pub fn add_track(&mut self, kind: TrackKind) {
+        self.add_track_with_audio_channels(kind, 2);
+    }
+
+    /// Adds a uniquely identified lane with an explicit mono/stereo choice
+    /// for audio tracks. Audio routing remains a separate engine concern.
+    pub fn add_track_with_audio_channels(&mut self, kind: TrackKind, audio_channels: u8) {
         self.next_track_number = self.next_track_number.saturating_add(1);
         let id = self.next_track_id;
         self.next_track_id = self.next_track_id.saturating_add(1);
@@ -313,23 +389,67 @@ impl Project {
             TrackKind::Midi => "MIDI",
         };
 
+        let audio_channels = if kind == TrackKind::Audio {
+            audio_channels.clamp(1, 2)
+        } else {
+            2
+        };
         self.tracks.push(Track {
             id,
             name: format!("{prefix} {:02}", self.next_track_number),
             kind,
+            audio_channels,
             muted: false,
             solo: false,
             solo_defeat: false,
+            listen: false,
             armed: false,
-            gain: 0.78,
+            monitor: false,
+            automation_read: false,
+            automation_write: false,
+            input_gain_db: 0.0,
+            input_phase_inverted: false,
+            gain: 1.0,
+            pan: 0.0,
+            track_delay_ms: 0.0,
             clips: Vec::new(),
             equalizer: ChannelEqualizer::default(),
             inserts: Vec::new(),
+            input_routing: if kind == TrackKind::Audio {
+                Some(if audio_channels == 1 {
+                    "Left - Stereo In".to_owned()
+                } else {
+                    "Stereo In".to_owned()
+                })
+            } else {
+                None
+            },
+            output_routing: Some("Stereo Out".to_owned()),
+            send_routing: Vec::new(),
             instrument_waveform: InstrumentWaveform::default(),
             midi_parts: Vec::new(),
         });
         self.selected_track = u32::try_from(self.tracks.len() - 1).ok();
         self.selected_midi_part_id = None;
+    }
+
+    /// Inserts a new track immediately below the selected track, or at the
+    /// end when nothing is selected. Returns the inserted row index.
+    pub fn insert_track_below_selection(&mut self, kind: TrackKind, audio_channels: u8) -> usize {
+        let insertion_index = self
+            .selected_track
+            .map(|index| index as usize + 1)
+            .unwrap_or(self.tracks.len())
+            .min(self.tracks.len());
+        self.add_track_with_audio_channels(kind, audio_channels);
+        let track = self
+            .tracks
+            .pop()
+            .expect("adding a track always appends one track");
+        self.tracks.insert(insertion_index, track);
+        self.selected_track = u32::try_from(insertion_index).ok();
+        self.selected_midi_part_id = None;
+        insertion_index
     }
 
     /// Renames a track after trimming surrounding whitespace.
@@ -670,6 +790,17 @@ impl Project {
             if track.name.trim().is_empty() {
                 return Err("track name is empty");
             }
+            if !matches!(track.audio_channels, 1 | 2) {
+                return Err("track audio channel width must be mono or stereo");
+            }
+            if !track.pan.is_finite() || !(-1.0..=1.0).contains(&track.pan) {
+                return Err("Track pan must be between -1 and 1");
+            }
+            if !track.track_delay_ms.is_finite()
+                || !(-2000.0..=2000.0).contains(&track.track_delay_ms)
+            {
+                return Err("Track delay must be between -2000 and 2000 ms");
+            }
             if !track.gain.is_finite() || !(0.0..=1.0).contains(&track.gain) {
                 return Err("track gain must be between 0.0 and 1.0");
             }
@@ -720,16 +851,23 @@ impl Project {
                         threshold_db,
                         ratio,
                         attack_ms,
+                        hold_ms,
                         release_ms,
+                        analysis,
                         makeup_db,
+                        ..
                     } if !threshold_db.is_finite()
                         || !(-60.0..=0.0).contains(&threshold_db)
                         || !ratio.is_finite()
                         || !(1.0..=20.0).contains(&ratio)
                         || !attack_ms.is_finite()
                         || !(0.1..=200.0).contains(&attack_ms)
+                        || !hold_ms.is_finite()
+                        || !(0.0..=500.0).contains(&hold_ms)
                         || !release_ms.is_finite()
                         || !(5.0..=2_000.0).contains(&release_ms)
+                        || !analysis.is_finite()
+                        || !(0.0..=100.0).contains(&analysis)
                         || !makeup_db.is_finite()
                         || !(0.0..=24.0).contains(&makeup_db) =>
                     {
@@ -1078,8 +1216,15 @@ mod tests {
             threshold_db: -18.0,
             ratio: 21.0,
             attack_ms: 10.0,
+            hold_ms: 1.0,
             release_ms: 120.0,
+            analysis: 80.0,
             makeup_db: 0.0,
+            soft_knee: true,
+            auto_makeup: true,
+            auto_release: false,
+            rms_mode: false,
+            live: true,
         };
         assert_eq!(
             project.validate(),

@@ -44,14 +44,34 @@ pub enum WindowClass {
     ProjectSpecific,
 }
 
-/// Window bounds in logical desktop coordinates.
+/// Native top-level surface or a child hosted inside the main workspace.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowHost {
+    #[default]
+    NativeTopLevel,
+    WorkspaceChild,
+}
+
+/// Coordinate origin for a saved window rectangle.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowCoordinateSpace {
+    #[default]
+    Desktop,
+    ParentClient,
+}
+
+/// Window bounds in the coordinate space recorded by its snapshot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowBounds {
-    /// Position of the decorated OS window.
+    /// Left position in the recorded coordinate space.
     pub left: f64,
+    /// Top position in the recorded coordinate space.
     pub top: f64,
-    /// Size of the decorated OS window.
+    /// Width in the recorded coordinate space.
     pub width: f64,
+    /// Height in the recorded coordinate space.
     pub height: f64,
     /// Client-area size used when restoring a native window. Older project
     /// files omit these values and fall back to `width` and `height`.
@@ -69,6 +89,22 @@ pub struct WindowSnapshot {
     pub class: WindowClass,
     pub open: bool,
     pub bounds: Option<WindowBounds>,
+    /// Host role does not imply whether a preset copies this window.
+    #[serde(default)]
+    pub host: WindowHost,
+    /// Origin used to interpret `bounds`.
+    #[serde(default)]
+    pub coordinate_space: WindowCoordinateSpace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<WindowId>,
+    #[serde(default)]
+    pub z_order: u32,
+    #[serde(default)]
+    pub minimized: bool,
+    #[serde(default)]
+    pub maximized: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_bounds: Option<WindowBounds>,
     /// View settings such as zoom, track height, or editor mode. Keys are
     /// stable application identifiers; values are versioned text payloads.
     pub view_state: BTreeMap<String, String>,

@@ -1,3 +1,6 @@
+#[path = "mixer.rs"]
+mod mixer;
+
 use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
@@ -8,10 +11,8 @@ use std::{
     time::Instant,
 };
 
-use eframe::egui::{
-    self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, Vec2, WidgetText,
-};
-use egui_dock::{DockArea, DockState, TabViewer};
+use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use egui_dock::DockState;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use workstation_audio::{
@@ -28,16 +29,17 @@ use workstation_core::project::{
     Track, TrackKind,
 };
 use workstation_core::workspaces::{
-    ProjectWorkspaceState, WindowBounds, Workspace, WorkspaceId, WorkspacePreferences,
+    ProjectWorkspaceState, WindowBounds, WindowClass, Workspace, WorkspaceId, WorkspacePreferences,
     WorkspacePreset,
 };
 
 use crate::native_keys::NativeKeyCapture;
 use crate::project_file::{
-    ArrangeViewState, CHANNEL_SETTINGS_WINDOW_ID, MEDIA_WINDOW_ID, MIXER_WINDOW_ID, ProjectFile,
-    ProjectFileError, arrange_view_state_from_workspace, dock_state_from_workspace,
-    initial_workspace_state, main_window_window_snapshot, midi_editor_window_snapshot,
-    project_window_snapshot, store_active_dock_state, store_active_project_window_state,
+    ArrangeViewState, CHANNEL_SETTINGS_WINDOW_ID, MEDIA_WINDOW_ID, MIXER_WINDOW_ID,
+    PROJECT_WINDOW_ID, ProjectFile, ProjectFileError, arrange_view_state_from_workspace,
+    dock_state_from_workspace, initial_workspace_state, main_window_window_snapshot,
+    midi_editor_window_snapshot, project_window_snapshot, store_active_dock_state,
+    store_active_project_window_state, store_active_workspace_child_state,
 };
 use crate::theme;
 
@@ -63,6 +65,41 @@ enum EditTool {
     Drumstick,
 }
 
+#[derive(Clone, Copy)]
+enum ToolbarIcon {
+    Power,
+    Constraint,
+    Inspector,
+    InfoLine,
+    Overview,
+    Pool,
+    Mixer,
+    Automation,
+    Previous,
+    Next,
+    Cycle,
+    Stop,
+    Play,
+    Record,
+    Select,
+    Range,
+    Split,
+    Glue,
+    Erase,
+    Zoom,
+    Mute,
+    TimeWarp,
+    Draw,
+    Line,
+    PlayTool,
+    Color,
+    RootKey,
+    Autoscroll,
+    Snap,
+    SnapType,
+    ZeroCrossing,
+}
+
 #[derive(Default)]
 struct TransportState {
     playing: bool,
@@ -80,6 +117,32 @@ struct NativeWindowState {
     epoch: u64,
     viewport_live: bool,
     focus_requested: bool,
+}
+
+#[derive(Default)]
+struct CompressorEditorState {
+    window: NativeWindowState,
+    track_id: Option<u64>,
+    insert_index: usize,
+}
+
+#[derive(Default)]
+struct ProjectWindowState {
+    open: bool,
+    bounds: Option<WindowBounds>,
+    restore_bounds: Option<WindowBounds>,
+    minimized: bool,
+    maximized: bool,
+    z_order: u32,
+    epoch: u64,
+    focus_requested: bool,
+}
+
+struct TrackAddDialog {
+    kind: TrackKind,
+    count: u32,
+    audio_channels: u8,
+    browse_presets: bool,
 }
 
 #[derive(Clone)]
@@ -109,6 +172,32 @@ fn reset_native_window_state(previous_epoch: u64) -> NativeWindowState {
     NativeWindowState {
         epoch: previous_epoch.wrapping_add(1),
         ..Default::default()
+    }
+}
+
+fn restore_project_window_state(
+    workspace: Option<&Workspace>,
+    previous_epoch: u64,
+) -> ProjectWindowState {
+    let snapshot =
+        workspace.and_then(|workspace| project_window_snapshot(workspace, PROJECT_WINDOW_ID));
+    if let Some(snapshot) = snapshot {
+        ProjectWindowState {
+            open: snapshot.open,
+            bounds: snapshot.bounds.clone(),
+            restore_bounds: snapshot.restore_bounds.clone(),
+            minimized: snapshot.minimized,
+            maximized: snapshot.maximized,
+            z_order: snapshot.z_order,
+            epoch: previous_epoch.wrapping_add(1),
+            focus_requested: false,
+        }
+    } else {
+        ProjectWindowState {
+            open: true,
+            epoch: previous_epoch.wrapping_add(1),
+            ..Default::default()
+        }
     }
 }
 
@@ -206,6 +295,7 @@ pub struct WorkstationApp {
     dock_state: DockState<PanelTab>,
     workspace_state: ProjectWorkspaceState,
     arrange_view_state: ArrangeViewState,
+    project_window: ProjectWindowState,
     workspace_preferences: WorkspacePreferences,
     data: AppData,
     main_window_bounds: Option<WindowBounds>,
@@ -236,8 +326,10 @@ pub struct WorkstationApp {
     midi_editor_focus_requested: bool,
     channel_settings_window: NativeWindowState,
     mixer_window: NativeWindowState,
+    compressor_editor: CompressorEditorState,
     media_window: NativeWindowState,
     track_rename_dialog: Option<TrackRenameDialog>,
+    track_add_dialog: Option<TrackAddDialog>,
     pending_track_delete_id: Option<u64>,
     midi_position_quantize_beats: f64,
     midi_length_quantize_beats: f64,
@@ -357,6 +449,430 @@ fn menu_command(ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool) -
         egui::Button::new(label).shortcut_text(shortcut)
     };
     ui.add_enabled(enabled, button)
+}
+
+fn checked_menu_command(
+    ui: &mut egui::Ui,
+    label: &str,
+    shortcut: &str,
+    checked: bool,
+    enabled: bool,
+) -> egui::Response {
+    let response = menu_command(ui, &format!("    {label}"), shortcut, enabled);
+    if checked {
+        let center = Pos2::new(response.rect.min.x + 12.0, response.rect.center().y);
+        let stroke = Stroke::new(1.5, ui.visuals().text_color());
+        ui.painter().line_segment(
+            [center + Vec2::new(-4.0, 0.0), center + Vec2::new(-1.0, 3.0)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [center + Vec2::new(-1.0, 3.0), center + Vec2::new(5.0, -4.0)],
+            stroke,
+        );
+    }
+    response
+}
+
+fn toolbar_icon_button(
+    ui: &mut egui::Ui,
+    icon: ToolbarIcon,
+    tooltip: &str,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    let size = 25.0;
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), sense);
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    if selected || response.hovered() {
+        let fill = if selected {
+            ui.visuals().selection.bg_fill
+        } else {
+            visuals.bg_fill
+        };
+        let stroke = if selected {
+            ui.visuals().selection.stroke
+        } else {
+            visuals.bg_stroke
+        };
+        painter.rect_filled(rect, egui::CornerRadius::same(2), fill);
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::same(2),
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let color = if enabled {
+        ui.visuals().text_color()
+    } else {
+        ui.visuals().text_color().gamma_multiply(0.65)
+    };
+    let accent = ui.visuals().hyperlink_color;
+    let stroke = Stroke::new(1.5, color);
+    let center = rect.center();
+    let point = |x: f32, y: f32| Pos2::new(center.x + x, center.y + y);
+    let outline = |min: Pos2, max: Pos2| Rect::from_two_pos(min, max);
+    let triangle = |points: [Pos2; 3], fill: Color32| {
+        painter.add(egui::Shape::convex_polygon(
+            points.to_vec(),
+            fill,
+            Stroke::NONE,
+        ));
+    };
+
+    match icon {
+        ToolbarIcon::Power => {
+            let points = (0..13)
+                .map(|index| {
+                    let angle = (40.0 + index as f32 * 280.0 / 12.0).to_radians();
+                    point(angle.cos() * 7.0, angle.sin() * 7.0 + 1.0)
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+            painter.line_segment([point(0.0, -9.0), point(0.0, -1.0)], stroke);
+        }
+        ToolbarIcon::Constraint => {
+            for y in [-6.0, 0.0, 6.0] {
+                painter.line_segment([point(-8.0, y), point(8.0, y)], stroke);
+            }
+            painter.circle_filled(point(-3.0, -6.0), 2.4, color);
+            painter.circle_filled(point(4.0, 0.0), 2.4, color);
+            painter.circle_filled(point(0.0, 6.0), 2.4, color);
+        }
+        ToolbarIcon::Inspector => {
+            let bounds = outline(point(-8.0, -8.0), point(8.0, 8.0));
+            painter.rect_stroke(
+                bounds,
+                egui::CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-3.0, -7.0), point(-3.0, 7.0)], stroke);
+            painter.line_segment([point(0.0, -3.0), point(6.0, -3.0)], stroke);
+            painter.line_segment([point(0.0, 1.0), point(6.0, 1.0)], stroke);
+        }
+        ToolbarIcon::InfoLine => {
+            let bounds = outline(point(-8.0, -7.0), point(8.0, 7.0));
+            painter.rect_stroke(
+                bounds,
+                egui::CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.circle_filled(point(-4.0, -2.0), 1.2, color);
+            painter.line_segment([point(-1.0, -2.0), point(5.0, -2.0)], stroke);
+            painter.line_segment([point(-4.0, 2.0), point(5.0, 2.0)], stroke);
+        }
+        ToolbarIcon::Overview => {
+            painter.line_segment([point(-8.0, -6.0), point(8.0, -6.0)], stroke);
+            painter.rect_stroke(
+                outline(point(-7.0, -2.0), point(-2.0, 5.0)),
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                outline(point(0.0, -2.0), point(7.0, 5.0)),
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        ToolbarIcon::Pool => {
+            painter.line_segment([point(-8.0, -5.0), point(-1.0, -5.0)], stroke);
+            painter.line_segment([point(-1.0, -5.0), point(1.0, -2.0)], stroke);
+            painter.line_segment([point(1.0, -2.0), point(8.0, -2.0)], stroke);
+            painter.line_segment([point(-8.0, -5.0), point(-8.0, 7.0)], stroke);
+            painter.line_segment([point(-8.0, 7.0), point(8.0, 7.0)], stroke);
+            painter.line_segment([point(8.0, 7.0), point(8.0, -2.0)], stroke);
+        }
+        ToolbarIcon::Mixer => {
+            for (x, y) in [(-6.0, -2.0), (0.0, 3.0), (6.0, -4.0)] {
+                painter.line_segment([point(x, -8.0), point(x, 8.0)], stroke);
+                painter.circle_filled(point(x, y), 2.3, ui.visuals().panel_fill);
+                painter.circle_stroke(point(x, y), 2.3, stroke);
+            }
+        }
+        ToolbarIcon::Automation => {
+            let nodes = [
+                point(-7.0, 5.0),
+                point(-2.0, -2.0),
+                point(3.0, 2.0),
+                point(7.0, -6.0),
+            ];
+            for pair in nodes.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke);
+            }
+            for node in nodes {
+                painter.circle_filled(node, 1.7, color);
+            }
+        }
+        ToolbarIcon::Previous => {
+            painter.line_segment([point(-7.0, -7.0), point(-7.0, 7.0)], stroke);
+            triangle([point(-2.0, 0.0), point(6.0, -7.0), point(6.0, 7.0)], color);
+        }
+        ToolbarIcon::Next => {
+            painter.line_segment([point(7.0, -7.0), point(7.0, 7.0)], stroke);
+            triangle(
+                [point(2.0, 0.0), point(-6.0, -7.0), point(-6.0, 7.0)],
+                color,
+            );
+        }
+        ToolbarIcon::Cycle => {
+            painter.line_segment([point(-7.0, -4.0), point(4.0, -4.0)], stroke);
+            painter.line_segment([point(4.0, -4.0), point(2.0, -6.0)], stroke);
+            painter.line_segment([point(4.0, -4.0), point(2.0, -2.0)], stroke);
+            painter.line_segment([point(7.0, 4.0), point(-4.0, 4.0)], stroke);
+            painter.line_segment([point(-4.0, 4.0), point(-2.0, 2.0)], stroke);
+            painter.line_segment([point(-4.0, 4.0), point(-2.0, 6.0)], stroke);
+        }
+        ToolbarIcon::Stop => {
+            painter.rect_filled(
+                outline(point(-5.0, -5.0), point(5.0, 5.0)),
+                egui::CornerRadius::ZERO,
+                color,
+            );
+        }
+        ToolbarIcon::Play | ToolbarIcon::PlayTool => {
+            triangle(
+                [point(-4.0, -7.0), point(7.0, 0.0), point(-4.0, 7.0)],
+                color,
+            );
+            if matches!(icon, ToolbarIcon::PlayTool) {
+                painter.line_segment([point(-8.0, -8.0), point(-4.0, -3.0)], stroke);
+            }
+        }
+        ToolbarIcon::Record => {
+            painter.circle_filled(point(0.0, 0.0), 6.0, theme::RECORD);
+            painter.circle_stroke(point(0.0, 0.0), 6.0, Stroke::new(1.0, color));
+        }
+        ToolbarIcon::Select => {
+            triangle(
+                [point(-6.0, -8.0), point(4.0, 0.0), point(-2.0, 2.0)],
+                color,
+            );
+            painter.line_segment([point(-2.0, 2.0), point(1.0, 8.0)], stroke);
+        }
+        ToolbarIcon::Range => {
+            painter.rect_stroke(
+                outline(point(-7.0, -6.0), point(7.0, 6.0)),
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-3.0, -6.0), point(-3.0, 6.0)], stroke);
+        }
+        ToolbarIcon::Split => {
+            painter.line_segment([point(0.0, -8.0), point(0.0, 8.0)], stroke);
+            painter.line_segment([point(-7.0, -3.0), point(-2.0, -3.0)], stroke);
+            painter.line_segment([point(2.0, 3.0), point(7.0, 3.0)], stroke);
+        }
+        ToolbarIcon::Glue => {
+            painter.rect_stroke(
+                outline(point(-8.0, -5.0), point(-1.0, 5.0)),
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                outline(point(1.0, -5.0), point(8.0, 5.0)),
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-1.0, 0.0), point(1.0, 0.0)], stroke);
+        }
+        ToolbarIcon::Erase => {
+            painter.line_segment(
+                [point(-6.0, 5.0), point(5.0, -6.0)],
+                Stroke::new(4.0, color),
+            );
+            painter.line_segment([point(-7.0, 7.0), point(7.0, 7.0)], stroke);
+        }
+        ToolbarIcon::Zoom => {
+            painter.circle_stroke(point(-2.0, -2.0), 5.5, stroke);
+            painter.line_segment([point(2.0, 2.0), point(8.0, 8.0)], stroke);
+        }
+        ToolbarIcon::Mute => {
+            painter.line_segment([point(-8.0, -3.0), point(-4.0, -3.0)], stroke);
+            painter.line_segment([point(-4.0, -3.0), point(1.0, -7.0)], stroke);
+            painter.line_segment([point(1.0, -7.0), point(1.0, 7.0)], stroke);
+            painter.line_segment([point(1.0, 7.0), point(-4.0, 3.0)], stroke);
+            painter.line_segment([point(-4.0, 3.0), point(-8.0, 3.0)], stroke);
+            painter.line_segment([point(4.0, -4.0), point(8.0, 4.0)], stroke);
+            painter.line_segment([point(8.0, -4.0), point(4.0, 4.0)], stroke);
+        }
+        ToolbarIcon::TimeWarp => {
+            let points = [
+                point(-7.0, -6.0),
+                point(-2.0, -2.0),
+                point(2.0, 3.0),
+                point(7.0, 7.0),
+            ];
+            for pair in points.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke);
+            }
+            painter.line_segment([point(5.0, -7.0), point(5.0, 7.0)], Stroke::new(1.0, color));
+        }
+        ToolbarIcon::Draw => {
+            painter.line_segment(
+                [point(-6.0, 6.0), point(5.0, -5.0)],
+                Stroke::new(3.0, color),
+            );
+            painter.line_segment([point(-7.0, 8.0), point(-6.0, 5.0)], stroke);
+        }
+        ToolbarIcon::Line => {
+            painter.line_segment([point(-7.0, 6.0), point(7.0, -6.0)], stroke);
+            painter.circle_filled(point(-7.0, 6.0), 1.8, color);
+            painter.circle_filled(point(7.0, -6.0), 1.8, color);
+        }
+        ToolbarIcon::Color => {
+            painter.circle_stroke(point(0.0, 0.0), 7.0, stroke);
+            for (x, y) in [(-3.0, -2.0), (2.0, -3.0), (3.0, 2.0), (-2.0, 3.0)] {
+                painter.circle_filled(point(x, y), 1.3, accent);
+            }
+        }
+        ToolbarIcon::RootKey => {
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                "C",
+                FontId::proportional(12.0),
+                color,
+            );
+        }
+        ToolbarIcon::Autoscroll => {
+            painter.line_segment([point(-6.0, -5.0), point(-2.0, -1.0)], stroke);
+            painter.line_segment([point(-2.0, -1.0), point(-6.0, 3.0)], stroke);
+            painter.line_segment([point(6.0, -5.0), point(2.0, -1.0)], stroke);
+            painter.line_segment([point(2.0, -1.0), point(6.0, 3.0)], stroke);
+            painter.line_segment([point(-7.0, 7.0), point(7.0, 7.0)], stroke);
+        }
+        ToolbarIcon::Snap | ToolbarIcon::SnapType => {
+            painter.line_segment([point(-6.0, -6.0), point(-6.0, 4.0)], stroke);
+            painter.line_segment([point(6.0, -6.0), point(6.0, 4.0)], stroke);
+            painter.line_segment([point(-6.0, 4.0), point(-2.0, 8.0)], stroke);
+            painter.line_segment([point(6.0, 4.0), point(2.0, 8.0)], stroke);
+            painter.line_segment([point(-2.0, 8.0), point(2.0, 8.0)], stroke);
+            if matches!(icon, ToolbarIcon::SnapType) {
+                painter.line_segment([point(-8.0, -8.0), point(8.0, -8.0)], stroke);
+            }
+        }
+        ToolbarIcon::ZeroCrossing => {
+            painter.line_segment([point(-8.0, 0.0), point(8.0, 0.0)], Stroke::new(0.8, color));
+            let wave = [
+                point(-7.0, -4.0),
+                point(-4.0, -4.0),
+                point(-1.0, 5.0),
+                point(2.0, 5.0),
+                point(5.0, -4.0),
+                point(8.0, -4.0),
+            ];
+            for pair in wave.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke);
+            }
+        }
+    }
+
+    if tooltip.is_empty() {
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
+}
+
+fn transport_panel_button(
+    ui: &mut egui::Ui,
+    origin: Pos2,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    bounds: [f32; 4],
+    label: &str,
+    tooltip: &str,
+    enabled: bool,
+    selected: bool,
+) -> egui::Response {
+    let rect = Rect::from_min_size(
+        origin + Vec2::new(bounds[0], bounds[1]),
+        Vec2::new(bounds[2], bounds[3]),
+    );
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let response = ui.interact(rect, ui.make_persistent_id(id), sense);
+    let visuals = ui.style().interact(&response);
+    if selected || response.hovered() {
+        let fill = if selected && label == "●" {
+            theme::RECORD
+        } else if selected {
+            theme::palette(ui).accent
+        } else {
+            visuals.bg_fill
+        };
+        let stroke = if selected {
+            ui.visuals().selection.stroke
+        } else {
+            visuals.bg_stroke
+        };
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(1), fill);
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(1),
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    let text_color = if selected {
+        Color32::WHITE
+    } else if enabled {
+        ui.visuals().text_color()
+    } else {
+        ui.visuals().text_color().gamma_multiply(0.7)
+    };
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(9.0),
+        text_color,
+    );
+    if tooltip.is_empty() {
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
+}
+
+fn transport_panel_text(
+    ui: &mut egui::Ui,
+    origin: Pos2,
+    bounds: [f32; 4],
+    text: &str,
+    color: Color32,
+    size: f32,
+    monospace: bool,
+) {
+    let rect = Rect::from_min_size(
+        origin + Vec2::new(bounds[0], bounds[1]),
+        Vec2::new(bounds[2], bounds[3]),
+    );
+    let font = if monospace {
+        FontId::monospace(size)
+    } else {
+        FontId::proportional(size)
+    };
+    ui.painter()
+        .text(rect.center(), Align2::CENTER_CENTER, text, font, color);
 }
 
 fn disabled_menu_commands(ui: &mut egui::Ui, commands: &[(&str, &str)]) {
@@ -637,11 +1153,18 @@ impl WorkstationApp {
         } else {
             startup_messages.join(" · ")
         };
+        let project_window = restore_project_window_state(
+            workspace_state
+                .active_index
+                .and_then(|index| workspace_state.workspaces.get(index)),
+            0,
+        );
 
         let mut app = Self {
             dock_state,
             workspace_state,
             arrange_view_state: ArrangeViewState::default(),
+            project_window,
             workspace_preferences,
             data: AppData::default(),
             main_window_bounds: None,
@@ -672,8 +1195,10 @@ impl WorkstationApp {
             midi_editor_focus_requested: false,
             channel_settings_window: NativeWindowState::default(),
             mixer_window: NativeWindowState::default(),
+            compressor_editor: CompressorEditorState::default(),
             media_window: NativeWindowState::default(),
             track_rename_dialog: None,
+            track_add_dialog: None,
             pending_track_delete_id: None,
             midi_position_quantize_beats,
             midi_length_quantize_beats,
@@ -727,6 +1252,7 @@ impl WorkstationApp {
                 &self.dock_state,
                 self.main_window_bounds.clone(),
                 &self.arrange_view_state,
+                &self.project_window,
                 self.midi_editor_open,
                 self.midi_editor_bounds.clone(),
                 &self.channel_settings_window,
@@ -742,6 +1268,7 @@ impl WorkstationApp {
         dock_state: &DockState<PanelTab>,
         main_window_bounds: Option<WindowBounds>,
         arrange_view_state: &ArrangeViewState,
+        project_window: &ProjectWindowState,
         midi_editor_open: bool,
         midi_editor_bounds: Option<WindowBounds>,
         channel_settings_window: &NativeWindowState,
@@ -753,6 +1280,17 @@ impl WorkstationApp {
             dock_state,
             main_window_bounds,
             arrange_view_state,
+        )?;
+        store_active_workspace_child_state(
+            workspace_state,
+            PROJECT_WINDOW_ID,
+            WindowClass::ProjectSpecific,
+            project_window.open,
+            project_window.bounds.clone(),
+            project_window.restore_bounds.clone(),
+            project_window.z_order,
+            project_window.minimized,
+            project_window.maximized,
         )?;
         store_active_project_window_state(
             workspace_state,
@@ -1016,6 +1554,8 @@ impl WorkstationApp {
                 (
                     meter_peak,
                     track.gain,
+                    track.pan,
+                    track.track_delay_ms,
                     track.muted,
                     track.solo,
                     track.solo_defeat,
@@ -1085,6 +1625,8 @@ impl WorkstationApp {
         for (
             meter_peak,
             gain,
+            pan,
+            track_delay_ms,
             muted,
             solo,
             solo_defeat,
@@ -1164,6 +1706,8 @@ impl WorkstationApp {
                 instrument_factory: oscillator_instrument_factory(instrument_waveform),
                 meter_peak,
                 gain,
+                pan,
+                track_delay_ms,
                 muted,
                 solo,
                 solo_defeat,
@@ -1276,6 +1820,13 @@ impl WorkstationApp {
         self.workspace_state = initial_workspace_state(&self.dock_state)
             .expect("the built-in dock layout must be serializable");
         self.arrange_view_state = ArrangeViewState::default();
+        self.project_window = restore_project_window_state(
+            self.workspace_state
+                .active_index
+                .and_then(|index| self.workspace_state.workspaces.get(index)),
+            self.project_window.epoch,
+        );
+        self.track_add_dialog = None;
         self.main_window_restore_bounds = None;
         self.midi_editor_open = false;
         self.midi_editor_bounds = None;
@@ -1321,6 +1872,10 @@ impl WorkstationApp {
                     .active_index
                     .and_then(|index| workspace_state.workspaces.get(index))
                     .cloned();
+                let project_window = restore_project_window_state(
+                    active_workspace.as_ref(),
+                    self.project_window.epoch,
+                );
                 let arrange_view_state = active_workspace
                     .as_ref()
                     .map(arrange_view_state_from_workspace)
@@ -1353,6 +1908,8 @@ impl WorkstationApp {
                 self.workspace_state = workspace_state;
                 self.dock_state = document.live_dock_state;
                 self.arrange_view_state = arrange_view_state;
+                self.project_window = project_window;
+                self.track_add_dialog = None;
                 if let Some(bounds) = main_window_bounds {
                     self.main_window_bounds = Some(bounds.clone());
                     self.main_window_restore_bounds = Some(bounds);
@@ -1469,6 +2026,7 @@ impl WorkstationApp {
 
         let mut choice = None;
         egui::Window::new("Unsaved project changes")
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -1656,6 +2214,7 @@ impl WorkstationApp {
             &self.dock_state,
             self.main_window_bounds.clone(),
             &self.arrange_view_state,
+            &self.project_window,
             self.midi_editor_open,
             self.midi_editor_bounds.clone(),
             &self.channel_settings_window,
@@ -1686,6 +2245,8 @@ impl WorkstationApp {
         let _ = self.workspace_state.activate_index(index);
         self.dock_state = dock_state;
         self.arrange_view_state = arrange_view_state_from_workspace(&workspace);
+        self.project_window =
+            restore_project_window_state(Some(&workspace), self.project_window.epoch);
         let active_main_bounds =
             main_window_window_snapshot(&workspace).and_then(|window| window.bounds.clone());
         if let Some(bounds) = active_main_bounds.clone() {
@@ -1744,6 +2305,7 @@ impl WorkstationApp {
             &self.dock_state,
             self.main_window_bounds.clone(),
             &self.arrange_view_state,
+            &self.project_window,
             self.midi_editor_open,
             self.midi_editor_bounds.clone(),
             &self.channel_settings_window,
@@ -3520,7 +4082,11 @@ impl WorkstationApp {
 
     fn focus_tab(&mut self, tab: PanelTab) {
         match tab {
-            PanelTab::Project => {}
+            PanelTab::Project => {
+                self.project_window.open = true;
+                self.project_window.minimized = false;
+                self.project_window.focus_requested = true;
+            }
             PanelTab::Mixer => {
                 self.mixer_window.open = true;
                 self.mixer_window.focus_requested = true;
@@ -3825,8 +4391,12 @@ impl WorkstationApp {
                             ("MIDI", TrackKind::Midi),
                         ] {
                             if menu_command(ui, label, "", true).clicked() {
-                                self.data.project.add_track(kind);
-                                self.mark_modified();
+                                self.track_add_dialog = Some(TrackAddDialog {
+                                    kind,
+                                    count: 1,
+                                    audio_channels: 1,
+                                    browse_presets: true,
+                                });
                                 ui.close();
                             }
                         }
@@ -4315,7 +4885,9 @@ impl WorkstationApp {
                     }
                 });
                 ui.menu_button("Transport", |ui| {
-                    if menu_command(ui, "Transport Panel", "F2", true).clicked() {
+                    if checked_menu_command(ui, "Transport Panel", "F2", self.show_transport, true)
+                        .clicked()
+                    {
                         self.show_transport = !self.show_transport;
                         ui.close();
                     }
@@ -4393,8 +4965,32 @@ impl WorkstationApp {
                     );
                 });
                 ui.menu_button("Window", |ui| {
-                    menu_command(ui, "Minimize", "", false);
-                    menu_command(ui, "Maximize", "", false);
+                    if menu_command(ui, "Minimize", "", self.project_window.open).clicked() {
+                        self.project_window.minimized = true;
+                        ui.close();
+                    }
+                    let maximize_label = if self.project_window.maximized {
+                        "Restore"
+                    } else {
+                        "Maximize"
+                    };
+                    if menu_command(
+                        ui,
+                        maximize_label,
+                        "",
+                        self.project_window.open && !self.project_window.minimized,
+                    )
+                    .clicked()
+                    {
+                        if self.project_window.maximized {
+                            self.project_window.maximized = false;
+                            self.project_window.bounds = self.project_window.restore_bounds.take();
+                        } else {
+                            self.project_window.restore_bounds = self.project_window.bounds.clone();
+                            self.project_window.maximized = true;
+                        }
+                        ui.close();
+                    }
                     ui.separator();
                     menu_command(ui, "Close All", "", false);
                     menu_command(ui, "Minimize All", "", false);
@@ -4435,7 +5031,9 @@ impl WorkstationApp {
                         .selectable_label(true, format!("{} - Project", self.data.project.name))
                         .clicked()
                     {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                        self.project_window.open = true;
+                        self.project_window.minimized = false;
+                        self.project_window.focus_requested = true;
                         ui.close();
                     }
                     if ui
@@ -4555,27 +5153,43 @@ impl WorkstationApp {
             ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
         }
         self.mixer_window.focus_requested = false;
-        let builder = viewport_builder(
+        let mut builder = viewport_builder(
             "Mixer",
-            Vec2::new(980.0, 560.0),
-            Vec2::new(680.0, 400.0),
+            Vec2::new(1879.0, 417.0),
+            Vec2::new(680.0, 320.0),
             restore_bounds.as_ref(),
         );
+        if restore_bounds.is_none() {
+            builder = builder.with_position(Pos2::new(-2.0, 579.0));
+        }
         let mut open = true;
         let mut modified = false;
         let mut bounds = None;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
-            egui::CentralPanel::default().show(window_ctx, |ui| {
-                modified |= show_mixer(
-                    ui,
-                    &mut self.data.project,
-                    &self.data.track_meter_levels,
-                    true,
-                    false,
-                );
-            });
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(window_ctx.style().visuals.panel_fill)
+                        .inner_margin(egui::Margin {
+                            left: 5,
+                            right: 5,
+                            top: -1,
+                            bottom: 0,
+                        }),
+                )
+                .show(window_ctx, |ui| {
+                    modified |= show_mixer(
+                        ui,
+                        &mut self.data.project,
+                        &self.data.track_meter_levels,
+                        true,
+                        false,
+                        &mut self.channel_settings_window,
+                        &mut self.compressor_editor,
+                    );
+                });
             bounds = native_window_bounds(window_ctx);
         });
         self.mixer_window.open = open;
@@ -4622,12 +5236,15 @@ impl WorkstationApp {
             ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
         }
         self.channel_settings_window.focus_requested = false;
-        let builder = viewport_builder(
-            format!("Channel Settings — {track_name}"),
-            Vec2::new(860.0, 660.0),
-            Vec2::new(600.0, 420.0),
+        let mut builder = viewport_builder(
+            format!("VST Audio Channel Settings - {track_name}"),
+            Vec2::new(902.0, 430.0),
+            Vec2::new(820.0, 420.0),
             restore_bounds.as_ref(),
         );
+        if restore_bounds.is_none() {
+            builder = builder.with_position(Pos2::new(382.0, 145.0));
+        }
         let mut open = true;
         let mut modified = false;
         let mut bounds = None;
@@ -4641,6 +5258,8 @@ impl WorkstationApp {
                     &self.data.track_meter_levels,
                     false,
                     true,
+                    &mut self.channel_settings_window,
+                    &mut self.compressor_editor,
                 );
             });
             bounds = native_window_bounds(window_ctx);
@@ -4652,6 +5271,128 @@ impl WorkstationApp {
         }
         if let Some(bounds) = bounds {
             self.channel_settings_window.bounds = Some(bounds);
+        }
+        if modified {
+            self.rebuild_audio_plan();
+            self.mark_modified();
+        }
+    }
+
+    fn show_compressor_editor_window(&mut self, ctx: &egui::Context) {
+        if !self.compressor_editor.window.open {
+            self.compressor_editor.window.viewport_live = false;
+            return;
+        }
+        let Some(track_id) = self.compressor_editor.track_id else {
+            self.compressor_editor.window.open = false;
+            self.compressor_editor.window.viewport_live = false;
+            return;
+        };
+        let insert_index = self.compressor_editor.insert_index;
+        let track_name = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .map(|track| track.name.clone());
+        let Some(track_name) = track_name else {
+            self.compressor_editor.window.open = false;
+            self.compressor_editor.window.viewport_live = false;
+            return;
+        };
+        let restore_bounds = if self.compressor_editor.window.viewport_live {
+            None
+        } else {
+            self.compressor_editor
+                .window
+                .restore_bounds
+                .clone()
+                .or_else(|| self.compressor_editor.window.bounds.clone())
+        };
+        let id = egui::ViewportId::from_hash_of((
+            "compressor-editor",
+            self.compressor_editor.window.epoch,
+        ));
+        if self.compressor_editor.window.focus_requested
+            && self.compressor_editor.window.viewport_live
+        {
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+        }
+        self.compressor_editor.window.focus_requested = false;
+        let title = format!("{track_name}: Ins. {} - Compressor", insert_index + 1);
+        let mut builder = viewport_builder(
+            title,
+            Vec2::new(464.0, 227.0),
+            Vec2::new(430.0, 210.0),
+            restore_bounds.as_ref(),
+        );
+        if restore_bounds.is_none() {
+            builder = builder.with_position(Pos2::new(1326.0, 330.0));
+        }
+        let mut open = true;
+        let mut modified = false;
+        let mut bounds = None;
+        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+            self.handle_native_window_input(window_ctx);
+            open &= !window_ctx.input(|input| input.viewport().close_requested());
+            egui::CentralPanel::default().show(window_ctx, |ui| {
+                if let Some(track) = self
+                    .data
+                    .project
+                    .tracks
+                    .iter_mut()
+                    .find(|t| t.id == track_id)
+                {
+                    if let Some(insert) = track.inserts.get_mut(insert_index) {
+                        if let InsertEffectKind::Compressor {
+                            threshold_db,
+                            ratio,
+                            attack_ms,
+                            hold_ms,
+                            release_ms,
+                            analysis,
+                            makeup_db,
+                            soft_knee,
+                            auto_makeup,
+                            auto_release,
+                            rms_mode,
+                            live,
+                        } = &mut insert.kind
+                        {
+                            modified |= show_compressor_editor(
+                                ui,
+                                threshold_db,
+                                ratio,
+                                attack_ms,
+                                hold_ms,
+                                release_ms,
+                                analysis,
+                                makeup_db,
+                                soft_knee,
+                                auto_makeup,
+                                auto_release,
+                                rms_mode,
+                                live,
+                                &mut insert.enabled,
+                            );
+                        } else {
+                            ui.label("The selected insert is not a Compressor.");
+                        }
+                    } else {
+                        ui.label("The selected insert is no longer available.");
+                    }
+                }
+            });
+            bounds = native_window_bounds(window_ctx);
+        });
+        self.compressor_editor.window.open = open;
+        self.compressor_editor.window.viewport_live = open;
+        if restore_bounds.is_some() {
+            self.compressor_editor.window.restore_bounds = None;
+        }
+        if let Some(bounds) = bounds {
+            self.compressor_editor.window.bounds = Some(bounds);
         }
         if modified {
             self.rebuild_audio_plan();
@@ -4808,217 +5549,885 @@ impl WorkstationApp {
         }
     }
 
-    fn show_toolbar(&mut self, ui: &mut egui::Ui) {
-        let workspace_name = self
-            .workspace_state
-            .active_index
-            .and_then(|index| self.workspace_state.workspaces.get(index))
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_else(|| "No workspace".to_owned());
-        let workspace_locked = self
-            .workspace_state
-            .active_index
-            .and_then(|index| self.workspace_state.workspaces.get(index))
-            .is_some_and(|workspace| workspace.locked);
-        ui.horizontal(|ui| {
-            ui.strong(&self.data.project.name);
-            ui.label(
-                egui::RichText::new(format!("Workspace: {workspace_name}"))
-                    .small()
-                    .color(theme::palette(ui).muted),
-            );
-            if workspace_locked {
-                ui.label(egui::RichText::new("LOCKED").small().color(theme::WARNING));
+    fn show_project_window(&mut self, ctx: &egui::Context) {
+        if !self.project_window.open {
+            return;
+        }
+
+        let workspace_index = self.workspace_state.active_index.unwrap_or(0);
+        let title = format!("Project - {}", self.data.project.name);
+        let saved_bounds = self.project_window.bounds.clone();
+        let position_beats = self.data.transport.position_beats;
+        let beats_per_bar = self.data.project.beats_per_bar;
+        let initial_pos = saved_bounds
+            .as_ref()
+            .map(|bounds| {
+                Pos2::new(
+                    bounds.left as f32,
+                    bounds.top as f32 + theme::spacing::MENU_BAR_HEIGHT,
+                )
+            })
+            .unwrap_or_else(|| Pos2::new(6.0, 21.0));
+        let initial_size = saved_bounds
+            .as_ref()
+            .map(|bounds| Vec2::new(bounds.width as f32, bounds.height as f32))
+            .unwrap_or_else(|| Vec2::new(1874.0, 535.0));
+        let minimized = self.project_window.minimized;
+        let maximized = self.project_window.maximized;
+        let epoch = self.project_window.epoch;
+        let mut open = self.project_window.open;
+        let mut updated_bounds = None;
+        let mut modified = false;
+
+        if minimized {
+            let id = Id::new(("project-child-minimized", workspace_index, epoch));
+            if self.project_window.focus_requested {
+                ctx.memory_mut(|memory| {
+                    memory
+                        .areas_mut()
+                        .move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+                });
+                self.project_window.focus_requested = false;
             }
-            ui.separator();
-            if ui.button("+ Audio").clicked() {
-                self.data.project.add_track(TrackKind::Audio);
-                self.mark_modified();
+            let response = egui::Area::new(id)
+                .order(egui::Order::Middle)
+                .movable(true)
+                .constrain(true)
+                .default_pos(initial_pos)
+                .show(ctx, |ui| {
+                    egui::Frame::window(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(&title);
+                            if ui.button("Restore").clicked() {
+                                self.project_window.minimized = false;
+                            }
+                            if ui.button("□").clicked() {
+                                self.project_window.restore_bounds =
+                                    self.project_window.bounds.clone();
+                                self.project_window.maximized = true;
+                                self.project_window.minimized = false;
+                            }
+                            if ui.button("×").clicked() {
+                                open = false;
+                            }
+                        });
+                    });
+                });
+            updated_bounds = Some(WindowBounds {
+                left: f64::from(response.response.rect.left()),
+                top: f64::from(response.response.rect.top())
+                    - f64::from(theme::spacing::MENU_BAR_HEIGHT),
+                width: f64::from(response.response.rect.width()),
+                height: f64::from(response.response.rect.height()),
+                inner_width: None,
+                inner_height: None,
+                monitor_id: None,
+            });
+        } else {
+            let id = Id::new(("project-child-layout-v2", workspace_index, epoch, maximized));
+            if self.project_window.focus_requested {
+                ctx.memory_mut(|memory| {
+                    memory
+                        .areas_mut()
+                        .move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+                });
+                self.project_window.focus_requested = false;
             }
-            if ui.button("+ Instrument").clicked() {
-                self.data.project.add_track(TrackKind::Instrument);
-                self.mark_modified();
+            let mut window = egui::Window::new(title)
+                .id(id)
+                .open(&mut open)
+                .collapsible(false)
+                .movable(true)
+                .resizable(true)
+                .min_size(Vec2::new(720.0, 300.0))
+                .constrain(true);
+            if maximized {
+                let viewport = ctx.input(|input| input.viewport().inner_rect);
+                let parent = viewport.unwrap_or_else(|| ctx.content_rect());
+                let rect = Rect::from_min_max(
+                    Pos2::new(
+                        parent.left(),
+                        parent.top() + theme::spacing::MENU_BAR_HEIGHT,
+                    ),
+                    Pos2::new(parent.right(), parent.bottom() - 25.0),
+                );
+                window = window.fixed_rect(rect);
+            } else {
+                window = window.default_pos(initial_pos).default_size(initial_size);
             }
-            if ui.button("+ MIDI").clicked() {
-                self.data.project.add_track(TrackKind::Midi);
-                self.mark_modified();
+            if let Some(result) = window.show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(2.0, 1.0);
+                self.show_toolbar(ui);
+                egui::Frame::new()
+                    .fill(theme::palette(ui).canvas)
+                    .inner_margin(egui::Margin::symmetric(8, 0))
+                    .show(ui, |ui| {
+                        ui.set_min_height(27.0);
+                        ui.vertical_centered_justified(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("No Object Selected")
+                                        .small()
+                                        .color(theme::palette(ui).text),
+                                );
+                            });
+                        });
+                    });
+                ui.separator();
+                modified = show_project(
+                    ui,
+                    &mut self.data.project,
+                    position_beats,
+                    beats_per_bar,
+                    &self.data.audio_sources,
+                    &mut self.arrange_view_state,
+                    &mut self.midi_editor_open,
+                    &mut self.midi_editor_focus_requested,
+                    &mut self.channel_settings_window,
+                    &mut self.track_rename_dialog,
+                );
+            }) {
+                let rect = result.response.rect;
+                updated_bounds = Some(WindowBounds {
+                    left: f64::from(rect.left()),
+                    top: f64::from(rect.top()) - f64::from(theme::spacing::MENU_BAR_HEIGHT),
+                    width: f64::from(rect.width()),
+                    height: f64::from(rect.height()),
+                    inner_width: None,
+                    inner_height: None,
+                    monitor_id: None,
+                });
             }
-            let selected_midi_track = self
-                .data
-                .project
-                .selected_track
-                .and_then(|index| self.data.project.tracks.get(index as usize))
-                .is_some_and(|track| matches!(track.kind, TrackKind::Midi | TrackKind::Instrument));
-            if ui
-                .add_enabled(selected_midi_track, egui::Button::new("+ MIDI Part"))
-                .clicked()
-            {
-                if let Some(track_index) = self.data.project.selected_track.map(|i| i as usize) {
-                    let beats_per_bar = f64::from(self.data.project.beats_per_bar);
-                    let start = self.data.transport.position_beats.max(0.0);
-                    if self
-                        .data
-                        .project
-                        .add_midi_part(track_index, start, beats_per_bar * 4.0)
-                        .is_some()
+        }
+
+        self.project_window.open = open;
+        if let Some(bounds) = updated_bounds {
+            self.project_window.bounds = Some(bounds);
+        }
+        if modified {
+            self.mark_modified();
+            self.rebuild_audio_plan();
+        }
+    }
+
+    fn show_track_add_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.track_add_dialog.take() else {
+            return;
+        };
+        let title = match dialog.kind {
+            TrackKind::Audio => "Add Audio Track",
+            TrackKind::Instrument => "Add Instrument Track",
+            TrackKind::Midi => "Add MIDI Track",
+        };
+        let configuration = match dialog.kind {
+            TrackKind::Audio => "Audio Track Configuration",
+            TrackKind::Instrument => "Instrument Track Configuration",
+            TrackKind::Midi => "MIDI Track Configuration",
+        };
+        let viewport = ctx.content_rect();
+        // Window::fixed_size applies to the content area; the captured outer window is 338×162.
+        let dialog_size = Vec2::new(338.0, 128.0);
+        let dialog_pos = Pos2::new(
+            (viewport.width() - dialog_size.x).max(0.0) * 0.5,
+            (viewport.height() - dialog_size.y).max(0.0) * 0.5,
+        );
+        let mut open = true;
+        let mut accepted = false;
+        let mut cancelled = false;
+        egui::Window::new(title)
+            .id(Id::new("add-track-configuration-dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(dialog_pos)
+            .fixed_size(dialog_size)
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 1.0);
+                ui.spacing_mut().interact_size.y = 16.0;
+                ui.spacing_mut().button_padding.y = 1.0;
+                egui::Frame::group(ui.style())
+                    .inner_margin(egui::Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 1.0);
+                        ui.spacing_mut().interact_size.y = 16.0;
+                        ui.spacing_mut().button_padding.y = 1.0;
+                        ui.vertical(|ui| {
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(configuration).size(12.0))
+                            });
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                let controls_width = match dialog.kind {
+                                    TrackKind::Audio => 40.0 + 6.0 + 78.0 + 6.0 + 78.0,
+                                    TrackKind::Instrument => 40.0 + 6.0 + 160.0,
+                                    TrackKind::Midi => 40.0,
+                                };
+                                ui.add_space(
+                                    ((ui.available_width() - controls_width) * 0.5 - 18.0).max(0.0),
+                                );
+                                ui.vertical(|ui| {
+                                    ui.add_sized(
+                                        Vec2::new(40.0, 16.0),
+                                        egui::DragValue::new(&mut dialog.count)
+                                            .range(1..=64)
+                                            .speed(1),
+                                    );
+                                    ui.label(egui::RichText::new("count").size(10.0));
+                                });
+                                match dialog.kind {
+                                    TrackKind::Audio => {
+                                        ui.vertical(|ui| {
+                                            egui::ComboBox::from_id_salt(
+                                                "add-audio-track-configuration",
+                                            )
+                                            .width(78.0)
+                                            .selected_text(if dialog.audio_channels == 1 {
+                                                "Mono"
+                                            } else {
+                                                "Stereo"
+                                            })
+                                            .show_ui(
+                                                ui,
+                                                |ui| {
+                                                    ui.selectable_value(
+                                                        &mut dialog.audio_channels,
+                                                        1,
+                                                        "Mono",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut dialog.audio_channels,
+                                                        2,
+                                                        "Stereo",
+                                                    );
+                                                },
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("configuration").size(10.0),
+                                            );
+                                        });
+                                        ui.vertical(|ui| {
+                                            // Only the displayed default is recorded; speaker choices are unverified.
+                                            ui.add_enabled_ui(false, |ui| {
+                                                egui::ComboBox::from_id_salt("add-audio-speakers")
+                                                    .width(78.0)
+                                                    .selected_text("M")
+                                                    .show_ui(ui, |_| {});
+                                            });
+                                            ui.label(egui::RichText::new("speakers").size(10.0));
+                                        });
+                                    }
+                                    TrackKind::Instrument => {
+                                        ui.add_enabled_ui(false, |ui| {
+                                            egui::ComboBox::from_id_salt("add-instrument-choice")
+                                                .selected_text("No VST Instrument")
+                                                .show_ui(ui, |_| {});
+                                        });
+                                    }
+                                    TrackKind::Midi => {}
+                                }
+                            });
+                            ui.radio_value(&mut dialog.browse_presets, true, "Browse Presets");
+                        });
+                    });
+                ui.add_space(6.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    if ui
+                        .add_sized(
+                            Vec2::new(70.0, 22.0),
+                            egui::Button::new(egui::RichText::new("Cancel").size(12.0)),
+                        )
+                        .clicked()
                     {
-                        self.midi_editor_open = true;
-                        self.midi_editor_focus_requested = true;
-                        self.mark_modified();
+                        cancelled = true;
                     }
+                    if ui
+                        .add_sized(
+                            Vec2::new(78.0, 22.0),
+                            egui::Button::new(egui::RichText::new("OK").size(12.0)),
+                        )
+                        .clicked()
+                    {
+                        accepted = true;
+                    }
+                });
+            });
+        if accepted && open {
+            let count = dialog.count.clamp(1, 64);
+            let mut last_track_id = None;
+            for _ in 0..count {
+                let index = self
+                    .data
+                    .project
+                    .insert_track_below_selection(dialog.kind, dialog.audio_channels);
+                last_track_id = self.data.project.tracks.get(index).map(|track| track.id);
+            }
+            self.arrange_view_state.selected_track_ids.clear();
+            if let Some(track_id) = last_track_id {
+                self.arrange_view_state.selected_track_ids.insert(track_id);
+                self.arrange_view_state.selection_anchor_track_id = Some(track_id);
+            }
+            self.mark_modified();
+            self.rebuild_audio_plan();
+        } else if !cancelled && open {
+            self.track_add_dialog = Some(dialog);
+        }
+    }
+
+    fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_height(34.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+            ui.add_space(10.0);
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Power, "Activate Project", false, false);
+            let _ = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Constraint,
+                "Constrain Delay Compensation",
+                false,
+                false,
+            );
+            ui.separator();
+            let inspector = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Inspector,
+                "Show Inspector",
+                self.arrange_view_state.show_inspector,
+                true,
+            );
+            if inspector.clicked() {
+                self.arrange_view_state.show_inspector = !self.arrange_view_state.show_inspector;
+            }
+            let _ = toolbar_icon_button(
+                ui,
+                ToolbarIcon::InfoLine,
+                "Show Event Info Line",
+                true,
+                false,
+            );
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Overview, "Show Overview", false, false);
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Pool, "Open Pool", false, false);
+            let mixer = toolbar_icon_button(ui, ToolbarIcon::Mixer, "Open Mixer", true, true);
+            if mixer.clicked() {
+                self.mixer_window.open = true;
+                self.mixer_window.focus_requested = true;
+            }
+            let _ = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Automation,
+                "Show Automation Panel",
+                false,
+                false,
+            );
+            let mode = ui.add_enabled(false, egui::Button::new("Touch ▾"));
+            mode.on_hover_text("Global Automation Mode");
+
+            ui.separator();
+            let previous = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Previous,
+                "Goto Previous Marker / Zero",
+                false,
+                true,
+            );
+            if previous.clicked() {
+                self.data.transport.position_beats = 0.0;
+                self.set_transport_playing(false);
+                if let Some(engine) = &self.audio_engine {
+                    engine.seek_seconds(0.0);
                 }
             }
-            let selected_track = self
-                .data
-                .project
-                .selected_track
-                .is_some_and(|index| (index as usize) < self.data.project.tracks.len());
-            if ui
-                .add_enabled(selected_track, egui::Button::new("Channel Settings"))
-                .clicked()
-            {
-                self.channel_settings_window.open = true;
-                self.channel_settings_window.focus_requested = true;
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Next, "Goto Next Marker", false, false);
+            let cycle = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Cycle,
+                "Transport Cycle On/Off",
+                self.data.transport.cycle,
+                true,
+            );
+            if cycle.clicked() {
+                self.toggle_cycle();
             }
+            let stop = toolbar_icon_button(ui, ToolbarIcon::Stop, "Transport Stop", false, true);
+            if stop.clicked() {
+                self.set_transport_playing(false);
+                self.data.transport.recording = false;
+            }
+            let play = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Play,
+                "Transport Play",
+                self.data.transport.playing,
+                true,
+            );
+            if play.clicked() {
+                if self.is_recording() {
+                    self.finish_recording();
+                }
+                self.set_transport_playing(true);
+                self.data.transport.recording = false;
+            }
+            let record = toolbar_icon_button(
+                ui,
+                ToolbarIcon::Record,
+                "Transport Record",
+                self.data.transport.recording,
+                true,
+            );
+            if record.clicked() {
+                self.toggle_recording();
+            }
+
             ui.separator();
-            for (tool, label) in [
-                (EditTool::Select, "Select 1"),
-                (EditTool::Range, "Range 2"),
-                (EditTool::Split, "Split 3"),
-                (EditTool::Glue, "Glue 4"),
-                (EditTool::Delete, "Delete 5"),
-                (EditTool::Zoom, "Zoom 6"),
-                (EditTool::Mute, "Mute 7"),
-                (EditTool::Draw, "Draw 8"),
-                (EditTool::Play, "Play 9"),
-                (EditTool::Drumstick, "Drumstick 0"),
+            for (icon, tooltip, tool, enabled) in [
+                (
+                    ToolbarIcon::Select,
+                    "Object Selection",
+                    EditTool::Select,
+                    true,
+                ),
+                (ToolbarIcon::Range, "Range Selection", EditTool::Range, true),
+                (ToolbarIcon::Split, "Split", EditTool::Split, true),
+                (ToolbarIcon::Glue, "Glue", EditTool::Glue, true),
+                (ToolbarIcon::Erase, "Erase", EditTool::Delete, true),
+                (ToolbarIcon::Zoom, "Zoom", EditTool::Zoom, true),
+                (ToolbarIcon::Mute, "Mute", EditTool::Mute, true),
             ] {
-                if ui.selectable_label(self.edit_tool == tool, label).clicked() {
+                let response =
+                    toolbar_icon_button(ui, icon, tooltip, self.edit_tool == tool, enabled);
+                if response.clicked() {
                     self.edit_tool = tool;
                 }
             }
+            let _ = toolbar_icon_button(ui, ToolbarIcon::TimeWarp, "Time Warp", false, false);
+            for (icon, tooltip, tool) in [
+                (ToolbarIcon::Draw, "Draw", EditTool::Draw),
+                (ToolbarIcon::PlayTool, "Play", EditTool::Play),
+            ] {
+                let response = toolbar_icon_button(ui, icon, tooltip, self.edit_tool == tool, true);
+                if response.clicked() {
+                    self.edit_tool = tool;
+                }
+            }
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Line, "Line", false, false);
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Color, "Color Tool", false, false);
+
             ui.separator();
-            ui.label(
-                egui::RichText::new(format!("{:.2} BPM", self.data.project.tempo_bpm))
-                    .color(theme::palette(ui).muted),
-            );
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}/{}",
-                    self.data.project.beats_per_bar, self.data.project.beat_unit
-                ))
-                .color(theme::palette(ui).muted),
+            let root_key =
+                toolbar_icon_button(ui, ToolbarIcon::RootKey, "Project Root Key", false, false);
+            let _ = root_key;
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Autoscroll, "Autoscroll", false, false);
+            let _ = toolbar_icon_button(ui, ToolbarIcon::Snap, "Snap On/Off", false, false);
+            let _ = toolbar_icon_button(ui, ToolbarIcon::SnapType, "Snap Type", false, false);
+            let grid = ui.add_enabled(false, egui::Button::new("Bar ▾"));
+            grid.on_hover_text("Grid Type");
+            let quantize = ui.add_enabled(false, egui::Button::new("1/16 ▾"));
+            quantize.on_hover_text("Quantize Type");
+            let _ = toolbar_icon_button(
+                ui,
+                ToolbarIcon::ZeroCrossing,
+                "Snap to Zero Crossing",
+                false,
+                false,
             );
         });
     }
 
     fn show_transport(&mut self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("TRANSPORT")
-                        .small()
-                        .strong()
-                        .color(theme::palette(ui).muted),
-                );
-                ui.separator();
-                if ui.button("|< Start").clicked() {
-                    self.data.transport.position_beats = 0.0;
-                    self.set_transport_playing(false);
-                    if let Some(engine) = &self.audio_engine {
-                        engine.seek_seconds(0.0);
-                    }
-                }
-                if ui.button("Stop").clicked() {
-                    self.set_transport_playing(false);
-                    self.data.transport.recording = false;
-                }
-                let play = if self.data.transport.playing {
-                    "Pause"
-                } else {
-                    "Play"
-                };
-                if ui.button(play).clicked() {
-                    self.set_transport_playing(!self.data.transport.playing);
-                    self.data.transport.recording = false;
-                }
-                let record = egui::Button::new("Record").fill(if self.data.transport.recording {
-                    theme::RECORD
-                } else {
-                    theme::palette(ui).surface_raised
-                });
-                if ui.add(record).clicked() {
-                    self.toggle_recording();
-                }
-                let cycle = egui::Button::new("Cycle").fill(if self.data.transport.cycle {
-                    theme::palette(ui).accent
-                } else {
-                    theme::palette(ui).surface_raised
-                });
-                if ui.add(cycle).clicked() {
-                    self.toggle_cycle();
-                }
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format_position(
-                        self.data.transport.position_beats,
-                        self.data.project.beats_per_bar,
-                    ))
-                    .monospace()
-                    .size(20.0)
-                    .color(theme::palette(ui).text),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{:.2} BPM    {}/{}",
-                            self.data.project.tempo_bpm,
-                            self.data.project.beats_per_bar,
-                            self.data.project.beat_unit
-                        ))
-                        .color(theme::palette(ui).muted),
-                    );
-                });
-            });
+        let palette = theme::palette(ui);
+        let content = ui.available_rect_before_wrap();
+        let origin = content.min;
+        let panel = Rect::from_min_size(origin, content.size());
+        let painter = ui.painter().clone();
+        painter.rect_filled(panel, egui::CornerRadius::ZERO, palette.surface_raised);
+        painter.rect_stroke(
+            panel,
+            egui::CornerRadius::ZERO,
+            Stroke::new(1.0, palette.grid),
+            egui::StrokeKind::Inside,
+        );
+        for x in [24.0, 96.0, 248.0, 486.0, 612.0, 746.0] {
+            painter.line_segment(
+                [origin + Vec2::new(x, 4.0), origin + Vec2::new(x, 59.0)],
+                Stroke::new(1.0, palette.grid),
+            );
+        }
 
-            let mut loop_start = self.data.project.loop_start_beats;
-            let mut loop_end = self.data.project.loop_end_beats;
-            let mut locator_changed = false;
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("CYCLE LOCATORS")
-                        .small()
-                        .color(theme::palette(ui).muted),
+        // Compact original controls follow the captured Transport Panel's one-row layout.
+        for (index, height) in [25.0, 38.0, 31.0, 44.0, 36.0].into_iter().enumerate() {
+            let x = 5.0 + index as f32 * 3.5;
+            let bar =
+                Rect::from_min_size(origin + Vec2::new(x, 55.0 - height), Vec2::new(2.0, height));
+            painter.rect_filled(bar, egui::CornerRadius::ZERO, palette.text);
+        }
+
+        let normal = transport_panel_button(
+            ui,
+            origin,
+            "record-mode",
+            [28.0, 6.0, 63.0, 15.0],
+            "Normal ▾",
+            "Linear Record Mode",
+            false,
+            false,
+        );
+        let mix = transport_panel_button(
+            ui,
+            origin,
+            "midi-record-mode",
+            [28.0, 23.0, 63.0, 15.0],
+            "Mix (MIDI) ▾",
+            "Cycle Record Mode",
+            false,
+            false,
+        );
+        let auto = transport_panel_button(
+            ui,
+            origin,
+            "auto-quantize",
+            [28.0, 41.0, 31.0, 14.0],
+            "AUTO",
+            "Automatic MIDI Record Quantize",
+            false,
+            false,
+        );
+        let _ = (normal, mix, auto);
+        transport_panel_text(
+            ui,
+            origin,
+            [61.0, 41.0, 30.0, 14.0],
+            "OFF",
+            palette.muted,
+            9.0,
+            true,
+        );
+
+        let left = transport_panel_button(
+            ui,
+            origin,
+            "left-locator",
+            [98.0, 7.0, 145.0, 21.0],
+            &format!(
+                "L  {}",
+                format_transport_position(
+                    self.data.project.loop_start_beats,
+                    self.data.project.beats_per_bar
+                )
+            ),
+            "Left Locator Position",
+            false,
+            false,
+        );
+        let right = transport_panel_button(
+            ui,
+            origin,
+            "right-locator",
+            [98.0, 34.0, 145.0, 21.0],
+            &format!(
+                "R  {}",
+                format_transport_position(
+                    self.data.project.loop_end_beats,
+                    self.data.project.beats_per_bar
+                )
+            ),
+            "Right Locator Position",
+            false,
+            false,
+        );
+        let _ = (left, right);
+
+        let position = transport_panel_button(
+            ui,
+            origin,
+            "primary-time",
+            [253.0, 6.0, 130.0, 23.0],
+            &format_transport_position(
+                self.data.transport.position_beats,
+                self.data.project.beats_per_bar,
+            ),
+            "Primary Time Display",
+            false,
+            false,
+        );
+        let seconds = self.data.transport.position_beats.max(0.0) * 60.0
+            / self.data.project.tempo_bpm.max(1.0);
+        let time_display = format!(
+            "{}:{:02}:{:02}.{:03}",
+            (seconds / 3600.0).floor() as u64,
+            ((seconds / 60.0).floor() as u64) % 60,
+            seconds.floor() as u64 % 60,
+            (seconds.fract() * 1000.0).round() as u16
+        );
+        transport_panel_text(
+            ui,
+            origin,
+            [384.0, 6.0, 97.0, 23.0],
+            &time_display,
+            palette.text,
+            11.0,
+            true,
+        );
+        let _ = position;
+
+        let previous = transport_panel_button(
+            ui,
+            origin,
+            "left-locator-jump",
+            [252.0, 34.0, 25.0, 23.0],
+            "|◀",
+            "Goto Previous Marker / Zero",
+            true,
+            false,
+        );
+        let rewind = transport_panel_button(
+            ui,
+            origin,
+            "rewind",
+            [278.0, 34.0, 25.0, 23.0],
+            "◀◀",
+            "Rewind",
+            true,
+            false,
+        );
+        let fast_forward = transport_panel_button(
+            ui,
+            origin,
+            "fast-forward",
+            [304.0, 34.0, 25.0, 23.0],
+            "▶▶",
+            "Fast Forward",
+            true,
+            false,
+        );
+        let next = transport_panel_button(
+            ui,
+            origin,
+            "right-locator-jump",
+            [330.0, 34.0, 25.0, 23.0],
+            "▶|",
+            "Goto Next Marker / Project End",
+            false,
+            false,
+        );
+        let cycle = transport_panel_button(
+            ui,
+            origin,
+            "cycle",
+            [356.0, 34.0, 25.0, 23.0],
+            "↻",
+            "Cycle",
+            true,
+            self.data.transport.cycle,
+        );
+        let stop = transport_panel_button(
+            ui,
+            origin,
+            "stop",
+            [382.0, 34.0, 25.0, 23.0],
+            "■",
+            "Stop",
+            true,
+            false,
+        );
+        let play = transport_panel_button(
+            ui,
+            origin,
+            "play",
+            [408.0, 34.0, 25.0, 23.0],
+            "▶",
+            "Play",
+            true,
+            self.data.transport.playing,
+        );
+        let record = transport_panel_button(
+            ui,
+            origin,
+            "record",
+            [434.0, 34.0, 25.0, 23.0],
+            "●",
+            "Record",
+            true,
+            self.data.transport.recording,
+        );
+        let _ = next;
+
+        let click = transport_panel_button(
+            ui,
+            origin,
+            "click",
+            [491.0, 7.0, 37.0, 15.0],
+            "CLICK",
+            "Metronome/Click (use CTRL to open metronome settings)",
+            false,
+            false,
+        );
+        let tempo_mode = transport_panel_button(
+            ui,
+            origin,
+            "tempo-mode",
+            [491.0, 25.0, 54.0, 15.0],
+            "TEMPO TRACK",
+            "Activate Tempo Track (use CTRL to open project tempo track editor)",
+            false,
+            false,
+        );
+        let sync_mode = transport_panel_button(
+            ui,
+            origin,
+            "sync-mode",
+            [491.0, 43.0, 42.0, 15.0],
+            "SYNC INT.",
+            "Activate External Sync (use CTRL to open synchronisation settings)",
+            false,
+            false,
+        );
+        let _ = (click, tempo_mode, sync_mode);
+        transport_panel_text(
+            ui,
+            origin,
+            [530.0, 7.0, 22.0, 15.0],
+            "OFF",
+            palette.muted,
+            9.0,
+            true,
+        );
+        transport_panel_text(
+            ui,
+            origin,
+            [550.0, 25.0, 23.0, 15.0],
+            &format!(
+                "{}/{}",
+                self.data.project.beats_per_bar, self.data.project.beat_unit
+            ),
+            palette.text,
+            8.0,
+            true,
+        );
+        transport_panel_text(
+            ui,
+            origin,
+            [574.0, 25.0, 34.0, 15.0],
+            &format!("{:.3}", self.data.project.tempo_bpm),
+            palette.text,
+            8.0,
+            true,
+        );
+        transport_panel_text(
+            ui,
+            origin,
+            [535.0, 43.0, 73.0, 15.0],
+            "Offline",
+            palette.muted,
+            9.0,
+            true,
+        );
+
+        let show_markers = transport_panel_button(
+            ui,
+            origin,
+            "show-markers",
+            [616.0, 6.0, 36.0, 15.0],
+            "SHOW",
+            "Open Markers",
+            false,
+            false,
+        );
+        let marker_selector = transport_panel_button(
+            ui,
+            origin,
+            "marker-selector",
+            [655.0, 6.0, 74.0, 15.0],
+            "MARKER",
+            "",
+            false,
+            false,
+        );
+        let _ = (show_markers, marker_selector);
+        for row in 0..3 {
+            for column in 0..5 {
+                let marker = row * 5 + column + 1;
+                let response = transport_panel_button(
+                    ui,
+                    origin,
+                    format!("marker-{marker}"),
+                    [
+                        616.0 + column as f32 * 26.0,
+                        24.0 + row as f32 * 12.0,
+                        25.0,
+                        11.0,
+                    ],
+                    &marker.to_string(),
+                    if marker == 1 {
+                        "Jump to Marker 1 (use ALT to set)"
+                    } else {
+                        ""
+                    },
+                    false,
+                    false,
                 );
-                locator_changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut loop_start)
-                            .speed(0.25)
-                            .max_decimals(3)
-                            .range(0.0..=(loop_end - 0.001).max(0.0))
-                            .prefix("L "),
-                    )
-                    .changed();
-                locator_changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut loop_end)
-                            .speed(0.25)
-                            .max_decimals(3)
-                            .range((loop_start + 0.001)..=1_000_000.0)
-                            .prefix("R "),
-                    )
-                    .changed();
-                ui.label(
-                    egui::RichText::new("beats")
-                        .small()
-                        .color(theme::palette(ui).muted),
-                );
-            });
-            if locator_changed && self.data.project.set_loop_range(loop_start, loop_end) {
-                self.mark_modified();
-                self.rebuild_audio_plan();
+                let _ = response;
             }
-        });
+        }
+
+        for index in 0..5 {
+            let x = 753.0 + index as f32 * 14.0;
+            let meter = Rect::from_min_size(origin + Vec2::new(x, 8.0), Vec2::new(8.0, 47.0));
+            painter.rect_filled(meter, egui::CornerRadius::ZERO, palette.surface);
+            painter.rect_stroke(
+                meter,
+                egui::CornerRadius::ZERO,
+                Stroke::new(1.0, palette.grid),
+                egui::StrokeKind::Inside,
+            );
+            for y in (12..54).step_by(6) {
+                painter.line_segment(
+                    [
+                        origin + Vec2::new(x + 2.0, y as f32),
+                        origin + Vec2::new(x + 6.0, y as f32),
+                    ],
+                    Stroke::new(1.0, palette.muted),
+                );
+            }
+        }
+
+        if previous.clicked() {
+            self.data.transport.position_beats = self.data.project.loop_start_beats;
+            self.set_transport_playing(false);
+            if let Some(engine) = &self.audio_engine {
+                engine.seek_seconds(
+                    self.data.transport.position_beats * 60.0
+                        / self.data.project.tempo_bpm.max(1.0),
+                );
+            }
+        }
+        if rewind.clicked() || fast_forward.clicked() {
+            let delta = if rewind.clicked() { -1.0 } else { 1.0 };
+            self.data.transport.position_beats =
+                (self.data.transport.position_beats + delta).max(0.0);
+            if let Some(engine) = &self.audio_engine {
+                engine.seek_seconds(
+                    self.data.transport.position_beats * 60.0
+                        / self.data.project.tempo_bpm.max(1.0),
+                );
+            }
+        }
+        if cycle.clicked() {
+            self.toggle_cycle();
+        }
+        if stop.clicked() {
+            self.set_transport_playing(false);
+            self.data.transport.recording = false;
+        }
+        if play.clicked() {
+            if self.is_recording() {
+                self.finish_recording();
+            }
+            self.set_transport_playing(true);
+            self.data.transport.recording = false;
+        }
+        if record.clicked() {
+            self.toggle_recording();
+        }
     }
 
     fn show_status(&self, ui: &mut egui::Ui) {
@@ -5114,35 +6523,40 @@ impl eframe::App for WorkstationApp {
                     .inner_margin(egui::Margin::symmetric(3, 0)),
             )
             .show(ui, |ui| self.show_menu(ui));
-        egui::Panel::top("tool-bar").show(ui, |ui| self.show_toolbar(ui));
         if self.show_transport {
-            egui::Panel::bottom("transport-panel")
-                .exact_size(78.0)
-                .show(ui, |ui| self.show_transport(ui));
+            egui::Window::new("Transport Panel")
+                .id(egui::Id::new("floating-transport-panel-m1-position-v5"))
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .movable(true)
+                .constrain(false)
+                .default_pos(Pos2::new(552.0, 663.0))
+                .fixed_size(Vec2::new(837.0, 69.0))
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::palette(ui).surface_raised)
+                        .stroke(Stroke::new(1.0, theme::palette(ui).grid))
+                        .inner_margin(egui::Margin::same(2)),
+                )
+                .show(ui.ctx(), |ui| self.show_transport(ui));
         }
         egui::Panel::bottom("status-bar")
             .exact_size(25.0)
             .show(ui, |ui| self.show_status(ui));
 
         egui::CentralPanel::default().show(ui, |ui| {
-            let mut modified = false;
-            let mut viewer = WorkstationTabs {
-                data: &mut self.data,
-                modified: &mut modified,
-                arrange_view_state: &mut self.arrange_view_state,
-                midi_editor_open: &mut self.midi_editor_open,
-                midi_editor_focus_requested: &mut self.midi_editor_focus_requested,
-                channel_settings_window: &mut self.channel_settings_window,
-                track_rename_dialog: &mut self.track_rename_dialog,
-            };
-            DockArea::new(&mut self.dock_state).show_inside(ui, &mut viewer);
-            if modified {
-                self.mark_modified();
-                self.rebuild_audio_plan();
-            }
+            ui.painter().rect_filled(
+                ui.max_rect(),
+                egui::CornerRadius::ZERO,
+                theme::palette(ui).canvas,
+            );
         });
+        self.show_project_window(&ctx);
+        self.show_track_add_dialog(&ctx);
         self.show_mixer_window(&ctx);
         self.show_channel_settings_window(&ctx);
+        self.show_compressor_editor_window(&ctx);
         self.show_media_window(&ctx);
         self.show_midi_editor_window(&ctx);
         self.show_key_commands_window(&ctx);
@@ -5192,64 +6606,6 @@ impl eframe::App for WorkstationApp {
             &self.midi_length_quantize_beats,
         );
         eframe::set_value(storage, "midi-insert-velocity", &self.midi_insert_velocity);
-    }
-}
-
-struct WorkstationTabs<'a> {
-    data: &'a mut AppData,
-    modified: &'a mut bool,
-    arrange_view_state: &'a mut ArrangeViewState,
-    midi_editor_open: &'a mut bool,
-    midi_editor_focus_requested: &'a mut bool,
-    channel_settings_window: &'a mut NativeWindowState,
-    track_rename_dialog: &'a mut Option<TrackRenameDialog>,
-}
-
-impl TabViewer for WorkstationTabs<'_> {
-    type Tab = PanelTab;
-
-    fn id(&mut self, tab: &mut Self::Tab) -> Id {
-        Id::new(*tab)
-    }
-
-    fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
-        match tab {
-            PanelTab::Project => "Project".into(),
-            PanelTab::Mixer => "Mixer".into(),
-            PanelTab::Media => "MediaBay".into(),
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
-        match tab {
-            PanelTab::Project => {
-                let beats_per_bar = self.data.project.beats_per_bar;
-                let audio_sources = &self.data.audio_sources;
-                let project = &mut self.data.project;
-                *self.modified |= show_project(
-                    ui,
-                    project,
-                    self.data.transport.position_beats,
-                    beats_per_bar,
-                    audio_sources,
-                    self.arrange_view_state,
-                    self.midi_editor_open,
-                    self.midi_editor_focus_requested,
-                    self.channel_settings_window,
-                    self.track_rename_dialog,
-                );
-            }
-            PanelTab::Mixer => {
-                *self.modified |= show_mixer(
-                    ui,
-                    &mut self.data.project,
-                    &self.data.track_meter_levels,
-                    true,
-                    true,
-                )
-            }
-            PanelTab::Media => *self.modified |= show_media(ui, &mut self.data.selected_media),
-        }
     }
 }
 
@@ -5373,6 +6729,358 @@ fn instrument_waveform_name(waveform: InstrumentWaveform) -> &'static str {
     }
 }
 
+/// Compact Inspector fields with original, code-drawn level/balance/time symbols.
+fn inspector_parameter_row(
+    ui: &mut egui::Ui,
+    symbol: u8,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    unit: &str,
+    tooltip: Option<&str>,
+) -> bool {
+    let palette = theme::palette(ui);
+    let mut changed = false;
+    let previous_interact_height = ui.spacing().interact_size.y;
+    ui.spacing_mut().interact_size.y = 18.0;
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = 18.0;
+        ui.spacing_mut().button_padding.y = 0.0;
+        ui.style_mut().explanation_tooltips = false;
+        {
+            let visuals = &mut ui.visuals_mut().widgets.inactive;
+            visuals.weak_bg_fill = palette.canvas;
+            visuals.bg_fill = palette.canvas;
+            visuals.bg_stroke = Stroke::new(1.0, palette.grid);
+            visuals.corner_radius = egui::CornerRadius::ZERO;
+        }
+        let (icon, _) = ui.allocate_exact_size(Vec2::new(52.0, 18.0), Sense::hover());
+        let center = Pos2::new(icon.right() - 12.0, icon.center().y);
+        let painter = ui.painter();
+        let stroke = Stroke::new(1.2, palette.text);
+        let point = |x, y| center + Vec2::new(x, y);
+        match symbol {
+            0 => {
+                for (x, height) in [(-6.0, 3.0), (-2.0, 6.0), (2.0, 9.0), (6.0, 12.0)] {
+                    painter.line_segment([point(x, 6.0), point(x, 6.0 - height)], stroke);
+                }
+            }
+            1 => {
+                painter.line_segment([point(0.0, -6.0), point(0.0, 6.0)], stroke);
+                painter.line_segment([point(-7.0, 0.0), point(7.0, 0.0)], stroke);
+                for side in [-1.0, 1.0] {
+                    painter.line_segment([point(side * 7.0, 0.0), point(side * 4.0, -3.0)], stroke);
+                    painter.line_segment([point(side * 7.0, 0.0), point(side * 4.0, 3.0)], stroke);
+                }
+            }
+            _ => {
+                painter.circle_stroke(center, 6.0, stroke);
+                painter.line_segment([center, point(0.0, -4.0)], stroke);
+                painter.line_segment([center, point(3.0, 1.0)], stroke);
+                painter.line_segment([point(-3.0, -8.0), point(3.0, -8.0)], stroke);
+            }
+        }
+        let mut field = egui::DragValue::new(value)
+            .range(range)
+            .speed(if symbol == 1 { 1.0 } else { 0.1 })
+            .fixed_decimals(2)
+            .suffix(if unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {unit}")
+            });
+        if symbol == 1 {
+            field = field
+                .custom_formatter(|number, _| {
+                    if number.abs() < 0.5 {
+                        "C".to_owned()
+                    } else if number < 0.0 {
+                        format!("L {:.0}", -number)
+                    } else {
+                        format!("R {number:.0}")
+                    }
+                })
+                .custom_parser(|text| {
+                    let text = text.trim();
+                    if text.eq_ignore_ascii_case("c") {
+                        Some(0.0)
+                    } else if let Some(number) = text.strip_prefix(['L', 'l']) {
+                        number.trim().parse::<f64>().ok().map(|v| -v.abs())
+                    } else if let Some(number) = text.strip_prefix(['R', 'r']) {
+                        number.trim().parse::<f64>().ok().map(f64::abs)
+                    } else {
+                        text.parse().ok()
+                    }
+                });
+        }
+        let response = ui.add_sized(Vec2::new(ui.available_width(), 18.0), field);
+        let bar = response.rect.shrink2(Vec2::new(3.0, 1.0));
+        let y = bar.bottom() - 1.0;
+        ui.painter().line_segment(
+            [Pos2::new(bar.left(), y), Pos2::new(bar.right(), y)],
+            Stroke::new(1.0, palette.grid),
+        );
+        let fraction = match symbol {
+            0 => ((*value + 60.0) / 60.0).clamp(0.0, 1.0),
+            1 => ((*value + 100.0) / 200.0).clamp(0.0, 1.0),
+            _ => ((*value + 2000.0) / 4000.0).clamp(0.0, 1.0),
+        };
+        let x = egui::lerp(bar.x_range(), fraction);
+        ui.painter().line_segment(
+            [Pos2::new(x, y - 2.0), Pos2::new(x, y)],
+            Stroke::new(2.0, palette.accent),
+        );
+        changed = response.changed();
+    });
+    ui.spacing_mut().interact_size.y = previous_interact_height;
+    if let Some(text) = tooltip {
+        row.response.on_hover_text(text);
+    }
+    changed
+}
+
+fn show_project_inspector(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    channel_settings_window: &mut NativeWindowState,
+) -> bool {
+    let mut modified = false;
+    let Some(track_index) = project
+        .selected_track
+        .map(|index| index as usize)
+        .filter(|index| *index < project.tracks.len())
+    else {
+        ui.label("No track selected");
+        return false;
+    };
+    let mut solo_exclusively = None;
+    {
+        let track = &mut project.tracks[track_index];
+        let track_id = track.id;
+        ui.set_min_width(151.0);
+        ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+        ui.spacing_mut().slider_width = 72.0;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(&track.name)
+                    .strong()
+                    .small()
+                    .color(theme::palette(ui).text),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("e")
+                    .on_hover_text("Edit Channel Settings")
+                    .clicked()
+                {
+                    channel_settings_window.open = true;
+                    channel_settings_window.focus_requested = true;
+                }
+            });
+        });
+
+        ui.horizontal(|ui| {
+            for (label, active, tooltip, action) in [
+                ("M", track.muted, "Mute", 0_u8),
+                (
+                    "S",
+                    track.solo || track.solo_defeat,
+                    "Solo State (Solo Defeat with ALT click)",
+                    1,
+                ),
+                ("R", track.armed, "Record Enable", 2),
+                ("R", false, "Read Enable", 3),
+                ("W", false, "Write Enable", 4),
+                ("◉", false, "Monitor", 5),
+            ] {
+                let button = egui::Button::new(label).small().fill(if active {
+                    if action == 0 {
+                        theme::WARNING
+                    } else if action == 2 {
+                        theme::RECORD
+                    } else {
+                        theme::palette(ui).accent
+                    }
+                } else {
+                    theme::palette(ui).surface_raised
+                });
+                let response = if action >= 3 {
+                    ui.add_enabled(false, button)
+                } else {
+                    ui.add(button)
+                }
+                .on_hover_text(tooltip);
+                if response.clicked() {
+                    match action {
+                        0 => {
+                            track.muted = !track.muted;
+                            modified = true;
+                        }
+                        1 => {
+                            let modifiers = ui.input(|input| input.modifiers);
+                            if modifiers.alt {
+                                track.solo_defeat = !track.solo_defeat;
+                                if track.solo_defeat {
+                                    track.solo = false;
+                                }
+                            } else {
+                                track.solo = !track.solo;
+                                if track.solo {
+                                    track.solo_defeat = false;
+                                    if modifiers.ctrl {
+                                        solo_exclusively = Some(track_id);
+                                    }
+                                }
+                            }
+                            modified = true;
+                        }
+                        2 => {
+                            track.armed = !track.armed;
+                            modified = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_enabled(false, egui::Button::new("▦").small())
+                .on_hover_text("Open Device Panels");
+            ui.add_enabled(false, egui::Button::new("…").small())
+                .on_hover_text("Auto Fades Settings...");
+            let enable_record = ui
+                .add(egui::Button::new(if track.armed { "●" } else { "○" }).small())
+                .on_hover_text("Enable Record");
+            if enable_record.clicked() {
+                track.armed = !track.armed;
+                modified = true;
+            }
+            ui.add_enabled(false, egui::Button::new("♫").small())
+                .on_hover_text("Toggle Timebase between Musical and Linear");
+            ui.add_enabled(false, egui::Button::new("▣").small())
+                .on_hover_text("Lock");
+            ui.add_enabled(false, egui::Button::new("≡").small())
+                .on_hover_text("Lane Display Type");
+            if track.kind == TrackKind::Audio {
+                ui.add_enabled(false, egui::Button::new("F").small())
+                    .on_hover_text("Freeze Audio Channel");
+            }
+        });
+
+        let mut gain_db = if track.gain <= 0.001 {
+            -60.0
+        } else {
+            20.0 * track.gain.log10()
+        };
+        if inspector_parameter_row(ui, 0, &mut gain_db, -60.0..=0.0, "dB", Some("Volume")) {
+            track.gain = 10.0_f32.powf(gain_db / 20.0).clamp(0.0, 1.0);
+            modified = true;
+        }
+        let mut pan_percent = track.pan * 100.0;
+        if inspector_parameter_row(ui, 1, &mut pan_percent, -100.0..=100.0, "", Some("Pan")) {
+            track.pan = pan_percent / 100.0;
+            modified = true;
+        }
+        // No delay tooltip was observed in the reference sweep.
+        modified |= inspector_parameter_row(
+            ui,
+            2,
+            &mut track.track_delay_ms,
+            -2000.0..=2000.0,
+            "ms",
+            None,
+        );
+        ui.vertical(|ui| {
+            let input_name = if track.audio_channels == 1 {
+                "Left - Stereo In"
+            } else {
+                "Stereo In"
+            };
+            ui.add_enabled(
+                false,
+                egui::Button::new(input_name).min_size(Vec2::new(ui.available_width(), 18.0)),
+            )
+            .on_hover_text("Input Routing (all selected with Shift + ALT + click)");
+            ui.add_enabled(
+                false,
+                egui::Button::new("Stereo Out").min_size(Vec2::new(ui.available_width(), 18.0)),
+            )
+            .on_hover_text("Output Routing (all selected with Shift + ALT + click)");
+        });
+        ui.add_enabled(
+            false,
+            egui::Button::new("No Track Preset").min_size(Vec2::new(ui.available_width(), 18.0)),
+        )
+        .on_hover_text("Apply Track Preset");
+
+        let sections = [
+            ("Inserts", "inserts", Some("Shows Active Inserts")),
+            ("Equalizers", "equalizers", Some("Shows Active Equalizers")),
+            ("Sends", "sends", Some("Shows Active Sends")),
+            ("Channel", "channel", None),
+            ("Notepad", "notepad", Some("Notepad is empty")),
+            (
+                "Quick Controls",
+                "quick-controls",
+                Some("Shows Active Quick Controls"),
+            ),
+        ];
+        for (title, key, tooltip) in sections {
+            let section = egui::CollapsingHeader::new(title)
+                .id_salt(("project-inspector", track_id, key))
+                .default_open(false)
+                .show(ui, |ui| match key {
+                    "inserts" => {
+                        if track.inserts.is_empty() {
+                            ui.label("No active inserts");
+                        } else {
+                            for insert in &track.inserts {
+                                let name = match &insert.kind {
+                                    InsertEffectKind::TestGenerator { .. } => "Test Generator",
+                                    InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
+                                    InsertEffectKind::Compressor { .. } => "Compressor",
+                                };
+                                ui.label(name);
+                            }
+                        }
+                    }
+                    "equalizers" => {
+                        for (index, band) in track.equalizer.bands.iter().enumerate() {
+                            ui.label(format!(
+                                "EQ Band {}  {:.0} Hz",
+                                index + 1,
+                                band.frequency_hz
+                            ));
+                        }
+                    }
+                    "sends" => {
+                        ui.label("No active sends");
+                    }
+                    "channel" => {
+                        ui.label("Channel controls");
+                    }
+                    "notepad" => {
+                        ui.label("Notepad is empty");
+                    }
+                    "quick-controls" => {
+                        ui.label("No quick controls");
+                    }
+                    _ => {}
+                });
+            if let Some(tooltip) = tooltip {
+                section.header_response.on_hover_text(tooltip);
+            }
+        }
+    }
+    if let Some(solo_track_id) = solo_exclusively {
+        for track in &mut project.tracks {
+            if track.id != solo_track_id {
+                track.solo = false;
+            }
+        }
+    }
+    modified
+}
+
 fn show_project(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -5386,52 +7094,60 @@ fn show_project(
     track_rename_dialog: &mut Option<TrackRenameDialog>,
 ) -> bool {
     let mut modified = false;
-    ui.horizontal(|ui| {
-        ui.heading("Project");
-        ui.separator();
-        ui.label(
-            egui::RichText::new("ARRANGE")
-                .small()
-                .color(theme::palette(ui).muted),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let selected_midi_track = project
-                .selected_track
-                .and_then(|index| project.tracks.get(index as usize))
-                .is_some_and(|track| matches!(track.kind, TrackKind::Midi | TrackKind::Instrument));
-            if ui
-                .add_enabled(selected_midi_track, egui::Button::new("+ MIDI Part"))
-                .clicked()
-            {
-                if let Some(track_index) = project.selected_track.map(|index| index as usize) {
-                    let duration = f64::from(beats_per_bar.max(1)) * 4.0;
-                    if project
-                        .add_midi_part(track_index, position_beats.max(0.0), duration)
-                        .is_some()
-                    {
-                        *midi_editor_open = true;
-                        *midi_editor_focus_requested = true;
-                        modified = true;
-                    }
-                }
-            }
-            ui.label(
-                egui::RichText::new("Bars  /  Beats")
-                    .small()
-                    .color(theme::palette(ui).muted),
-            );
-        });
-    });
-    ui.separator();
+    if arrange_view_state.selected_track_ids.is_empty()
+        && let Some(track_id) = project
+            .selected_track
+            .and_then(|index| project.tracks.get(index as usize))
+            .map(|track| track.id)
+    {
+        arrange_view_state.selected_track_ids.insert(track_id);
+        arrange_view_state.selection_anchor_track_id = Some(track_id);
+    }
+    if arrange_view_state.show_inspector {
+        egui::Panel::left("project-inspector")
+            .exact_size(159.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::palette(ui).surface_raised)
+                    .stroke(Stroke::new(1.0, theme::palette(ui).grid))
+                    .inner_margin(egui::Margin::same(3)),
+            )
+            .show(ui, |ui| {
+                modified |= show_project_inspector(ui, project, channel_settings_window);
+            });
+    }
 
-    let lane_header_width = 250.0;
-    let ruler_height = 30.0;
-    let bar_width = 84.0;
+    let lane_header_width = 194.0;
+    let ruler_height = 22.0;
+    let bar_width = ((ui.available_width() - lane_header_width) / 50.0).max(16.0);
     let track_ids = project
         .tracks
         .iter()
         .map(|track| track.id)
         .collect::<Vec<_>>();
+    arrange_view_state
+        .selected_track_ids
+        .retain(|track_id| track_ids.contains(track_id));
+    if let Some(track_id) = project
+        .selected_track
+        .and_then(|index| track_ids.get(index as usize))
+        .copied()
+        && !arrange_view_state.selected_track_ids.contains(&track_id)
+    {
+        arrange_view_state.selected_track_ids.clear();
+        arrange_view_state.selected_track_ids.insert(track_id);
+        arrange_view_state.selection_anchor_track_id = Some(track_id);
+    }
+    if arrange_view_state
+        .selection_anchor_track_id
+        .is_some_and(|anchor| !track_ids.contains(&anchor))
+    {
+        arrange_view_state.selection_anchor_track_id = project
+            .selected_track
+            .and_then(|index| track_ids.get(index as usize))
+            .copied();
+    }
     let beats_per_bar_f64 = f64::from(beats_per_bar);
     let furthest_clip_beat = project
         .tracks
@@ -5450,14 +7166,14 @@ fn show_project(
         })
         .fold(32.0 * beats_per_bar_f64, f64::max);
     let visible_bars =
-        ((furthest_clip_beat / beats_per_bar_f64).ceil() + 4.0).clamp(32.0, 256.0) as usize;
-    let visible_rows = project.tracks.len().max(6);
+        ((furthest_clip_beat / beats_per_bar_f64).ceil() + 4.0).clamp(50.0, 256.0) as usize;
+    let visible_rows = project.tracks.len();
     let row_heights = (0..visible_rows)
         .map(|row| {
             track_ids
                 .get(row)
                 .map(|track_id| arrange_view_state.track_height(*track_id))
-                .unwrap_or(62.0)
+                .unwrap_or(42.0)
         })
         .collect::<Vec<_>>();
     let mut row_offsets = Vec::with_capacity(visible_rows);
@@ -5468,9 +7184,12 @@ fn show_project(
     }
     let total_size = Vec2::new(
         lane_header_width + bar_width * visible_bars as f32,
-        ruler_height + tracks_height,
+        ui.available_height().max(ruler_height + tracks_height),
     );
     let mut exclusive_solo_track_id = None;
+    let mut reorder_after_draw = None;
+    let mut clear_all_muted = false;
+    let mut clear_all_solo = false;
 
     egui::ScrollArea::both()
         .auto_shrink([false, false])
@@ -5485,17 +7204,40 @@ fn show_project(
                 [ruler.left_bottom(), ruler.right_bottom()],
                 Stroke::new(1.0, theme::palette(ui).grid),
             );
-            painter.text(
-                Pos2::new(canvas.min.x + 12.0, canvas.min.y + ruler_height * 0.5),
-                Align2::LEFT_CENTER,
-                "TRACKS",
-                FontId::proportional(theme::type_size::LABEL),
-                theme::palette(ui).muted,
-            );
+            let track_toolbar = [
+                ("≡", "Track Controls Settings", false),
+                ("↔", "Toggle In-place Editor for Selected Tracks", false),
+                ("M", "Unmute All", true),
+                ("S", "Deactivate All Solo", true),
+                ("R", "All Automation to Read Status", false),
+                ("W", "All Automation to Write Status", false),
+                ("C", "Show/Hide Track Colors", true),
+            ];
+            for (index, (label, tooltip, enabled)) in track_toolbar.into_iter().enumerate() {
+                let rect = Rect::from_min_size(
+                    Pos2::new(canvas.min.x + 4.0 + index as f32 * 25.0, canvas.min.y + 5.0),
+                    Vec2::new(21.0, 20.0),
+                );
+                let response = ui
+                    .put(rect, egui::Button::new(label).small())
+                    .on_hover_text(tooltip);
+                if enabled && response.clicked() {
+                    match index {
+                        2 => clear_all_muted = true,
+                        3 => clear_all_solo = true,
+                        6 => {
+                            arrange_view_state.show_track_colors =
+                                !arrange_view_state.show_track_colors;
+                            modified = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
 
             for bar in 0..=visible_bars {
                 let x = canvas.min.x + lane_header_width + bar as f32 * bar_width;
-                let color = if bar % 4 == 0 {
+                let color = if bar % 2 == 0 {
                     theme::palette(ui).grid
                 } else {
                     theme::palette(ui).surface_raised
@@ -5505,9 +7247,9 @@ fn show_project(
                         Pos2::new(x, canvas.min.y + ruler_height),
                         Pos2::new(x, canvas.max.y),
                     ],
-                    Stroke::new(if bar % 4 == 0 { 1.0 } else { 0.5 }, color),
+                    Stroke::new(if bar % 2 == 0 { 1.0 } else { 0.5 }, color),
                 );
-                if bar < visible_bars {
+                if bar < visible_bars && bar % 2 == 0 {
                     painter.text(
                         Pos2::new(x + 6.0, canvas.min.y + ruler_height * 0.5),
                         Align2::LEFT_CENTER,
@@ -5585,21 +7327,24 @@ fn show_project(
                         Sense::click(),
                     );
                     let name_rect = Rect::from_min_size(
-                        Pos2::new(row_rect.min.x + 22.0, top + 4.0),
-                        Vec2::new(106.0, 25.0),
+                        Pos2::new(row_rect.min.x + 82.0, top + 2.0),
+                        Vec2::new(110.0, 20.0),
                     );
                     let name_response = ui.interact(
                         name_rect,
                         Id::new(("track-header-name", track.id)),
-                        Sense::click(),
+                        Sense::click_and_drag(),
                     );
                     if arrange_response.clicked() || name_response.clicked() {
-                        let selected_track = Some(row as u32);
-                        if project.selected_track != selected_track {
-                            project.selected_track = selected_track;
-                            project.selected_midi_part_id = None;
-                            modified = true;
-                        }
+                        let modifiers = ui.input(|input| input.modifiers);
+                        modified |= select_arrange_track(
+                            &mut project.selected_track,
+                            &mut project.selected_midi_part_id,
+                            &track_ids,
+                            arrange_view_state,
+                            row,
+                            modifiers,
+                        );
                     }
                     if name_response.double_clicked() {
                         *track_rename_dialog = Some(TrackRenameDialog {
@@ -5607,31 +7352,47 @@ fn show_project(
                             draft: track.name.clone(),
                         });
                     }
-                    if project.selected_track == Some(row as u32) {
+                    if name_response.drag_stopped() {
+                        if let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) {
+                            let target = row_offsets
+                                .iter()
+                                .zip(&row_heights)
+                                .position(|(offset, height)| {
+                                    pointer.y < canvas.min.y + ruler_height + offset + height * 0.5
+                                })
+                                .unwrap_or_else(|| visible_rows.saturating_sub(1));
+                            if target != row && target < visible_rows {
+                                reorder_after_draw = Some((row, target));
+                            }
+                        }
+                    }
+                    if arrange_view_state.selected_track_ids.contains(&track.id) {
                         painter.rect_filled(
                             Rect::from_min_size(row_rect.min, Vec2::new(3.0, lane_height)),
                             egui::CornerRadius::ZERO,
                             theme::palette(ui).accent,
                         );
                     }
+                    let track_color = if arrange_view_state.show_track_colors {
+                        track_kind_color(track.kind)
+                    } else {
+                        theme::palette(ui).muted
+                    };
                     painter.rect_filled(
                         Rect::from_min_size(
                             Pos2::new(row_rect.min.x + 12.0, top + 8.0),
                             Vec2::new(3.0, (lane_height - 16.0).min(30.0)),
                         ),
                         egui::CornerRadius::same(2),
-                        track_kind_color(track.kind),
+                        track_color,
                     );
                     let compact_controls = lane_height < 54.0;
-                    painter.text(
-                        Pos2::new(
-                            row_rect.min.x + 24.0,
-                            if compact_controls {
-                                top + lane_height * 0.5
-                            } else {
-                                top + 15.0
-                            },
-                        ),
+                    let text_painter = painter.with_clip_rect(Rect::from_min_size(
+                        Pos2::new(row_rect.min.x + 32.0, top),
+                        Vec2::new(lane_header_width - 32.0, lane_height),
+                    ));
+                    text_painter.text(
+                        Pos2::new(row_rect.min.x + 84.0, top + 10.0),
                         Align2::LEFT_CENTER,
                         &track.name,
                         FontId::proportional(if compact_controls {
@@ -5641,22 +7402,20 @@ fn show_project(
                         }),
                         theme::palette(ui).text,
                     );
-                    if !compact_controls {
-                        painter.text(
-                            Pos2::new(row_rect.min.x + 24.0, top + 44.0),
-                            Align2::LEFT_CENTER,
-                            track_kind_label(track.kind),
-                            FontId::proportional(theme::type_size::SMALL),
-                            track_kind_color(track.kind),
-                        );
-                    }
-                    let button_size = if compact_controls { 17.0 } else { 22.0 };
-                    let button_height = if compact_controls { 17.0 } else { 21.0 };
-                    let control_top = if compact_controls {
-                        top + (lane_height - button_height) * 0.5
-                    } else {
-                        top + 33.0
+                    let channel_label = match track.kind {
+                        TrackKind::Audio if track.audio_channels == 1 => "mono",
+                        TrackKind::Audio => "stereo",
+                        _ => track_kind_label(track.kind),
                     };
+                    text_painter.text(
+                        Pos2::new(row_rect.min.x + 35.0, top + 32.0),
+                        Align2::LEFT_CENTER,
+                        channel_label,
+                        FontId::proportional(theme::type_size::SMALL),
+                        track_color,
+                    );
+                    let button_size = 20.0;
+                    let button_height = 14.0;
                     let solo_fill = if track.solo {
                         theme::palette(ui).accent
                     } else if track.solo_defeat {
@@ -5664,41 +7423,63 @@ fn show_project(
                     } else {
                         theme::palette(ui).surface_raised
                     };
-                    let solo_tooltip = if track.solo_defeat {
-                        "Solo Defeat; Alt-click to disable"
-                    } else {
-                        "Solo; Ctrl-click to solo exclusively; Alt-click for Solo Defeat"
-                    };
                     for (button_index, (label, active, fill, tooltip)) in [
-                        ("M", track.muted, theme::WARNING, "Mute track"),
+                        ("M", track.muted, theme::WARNING, "Mute"),
                         (
                             "S",
                             track.solo || track.solo_defeat,
                             solo_fill,
-                            solo_tooltip,
+                            "Solo State (Solo Defeat with ALT click)",
                         ),
-                        ("R", track.armed, theme::RECORD, "Record enable"),
+                        ("R", track.armed, theme::RECORD, "Record Enable"),
+                        ("◉", false, theme::palette(ui).surface_raised, "Monitor"),
+                        ("R", false, theme::palette(ui).surface_raised, "Read Enable"),
+                        (
+                            "W",
+                            false,
+                            theme::palette(ui).surface_raised,
+                            "Write Enable",
+                        ),
                         (
                             "e",
                             false,
                             theme::palette(ui).surface_raised,
-                            "Open Channel Settings",
+                            "Edit Channel Settings",
                         ),
                     ]
                     .into_iter()
                     .enumerate()
                     {
-                        let spacing = if compact_controls { 20.0 } else { 25.0 };
-                        let left = row_rect.min.x + 142.0 + button_index as f32 * spacing;
+                        if compact_controls && button_index == 6 {
+                            continue;
+                        }
+                        let (left, control_top) = if button_index < 2 {
+                            (
+                                row_rect.min.x + 35.0 + button_index as f32 * 23.0,
+                                top + 3.0,
+                            )
+                        } else {
+                            (
+                                row_rect.min.x + 84.0 + (button_index - 2) as f32 * 23.0,
+                                top + 25.0,
+                            )
+                        };
                         let button_rect = Rect::from_min_size(
                             Pos2::new(left, control_top),
                             Vec2::new(button_size, button_height),
                         );
-                        let button = egui::Button::new(label).small().fill(if active {
-                            fill
-                        } else {
-                            theme::palette(ui).surface_raised
-                        });
+                        let mut button = egui::Button::new(egui::RichText::new(label).size(10.0))
+                            .small()
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .fill(if active {
+                                fill
+                            } else {
+                                theme::palette(ui).surface_raised
+                            });
+                        let enabled = button_index < 3 || button_index == 6;
+                        if !enabled {
+                            button = button.sense(Sense::hover());
+                        }
                         let response = ui.put(button_rect, button).on_hover_text(tooltip);
                         if response.clicked() {
                             match button_index {
@@ -5728,13 +7509,17 @@ fn show_project(
                                     track.armed = !track.armed;
                                     modified = true;
                                 }
-                                _ => {
+                                6 => {
                                     project.selected_track = Some(row as u32);
                                     project.selected_midi_part_id = None;
+                                    arrange_view_state.selected_track_ids.clear();
+                                    arrange_view_state.selected_track_ids.insert(track.id);
+                                    arrange_view_state.selection_anchor_track_id = Some(track.id);
                                     channel_settings_window.open = true;
                                     channel_settings_window.focus_requested = true;
                                     modified = true;
                                 }
+                                _ => {}
                             }
                         }
                     }
@@ -5756,7 +7541,7 @@ fn show_project(
                             Pos2::new(clip_left, top + 6.0),
                             Pos2::new(clip_right, top + lane_height - 6.0),
                         );
-                        let clip_color = track_kind_color(track.kind);
+                        let clip_color = track_color;
                         painter.rect_filled(
                             clip_rect,
                             egui::CornerRadius::same(4),
@@ -5815,7 +7600,7 @@ fn show_project(
                             Pos2::new(part_left, top + 6.0),
                             Pos2::new(part_right, top + lane_height - 6.0),
                         );
-                        let part_color = track_kind_color(track.kind);
+                        let part_color = track_color;
                         let part_response =
                             ui.interact(part_rect, Id::new(("midi-part", part.id)), Sense::click());
                         if part_response.clicked() || part_response.double_clicked() {
@@ -5881,15 +7666,20 @@ fn show_project(
                             theme::palette(ui).text,
                         );
                     }
-                } else if project.tracks.is_empty() && row == 2 {
-                    painter.text(
-                        Pos2::new(row_rect.min.x + 20.0, top + lane_height * 0.5),
-                        Align2::LEFT_CENTER,
-                        "Add a track to begin arranging",
-                        FontId::proportional(theme::type_size::BODY),
-                        theme::palette(ui).muted,
-                    );
                 }
+            }
+
+            if project.tracks.is_empty() {
+                painter.text(
+                    Pos2::new(
+                        canvas.min.x + lane_header_width + 18.0,
+                        canvas.min.y + ruler_height + 22.0,
+                    ),
+                    Align2::LEFT_CENTER,
+                    "Add a track to begin arranging",
+                    FontId::proportional(theme::type_size::BODY),
+                    theme::palette(ui).muted,
+                );
             }
 
             let bar_position = (position_beats / f64::from(beats_per_bar)) as f32;
@@ -5902,6 +7692,25 @@ fn show_project(
                 Stroke::new(2.0, theme::RECORD),
             );
         });
+    if clear_all_muted {
+        for track in &mut project.tracks {
+            if track.muted {
+                track.muted = false;
+                modified = true;
+            }
+        }
+    }
+    if clear_all_solo {
+        for track in &mut project.tracks {
+            if track.solo {
+                track.solo = false;
+                modified = true;
+            }
+        }
+    }
+    if let Some((from, to)) = reorder_after_draw {
+        modified |= project.move_track(from, to);
+    }
     if let Some(solo_track_id) = exclusive_solo_track_id {
         for track in &mut project.tracks {
             if track.id != solo_track_id && track.solo {
@@ -5910,6 +7719,64 @@ fn show_project(
         }
     }
     modified
+}
+
+fn select_arrange_track(
+    selected_track: &mut Option<u32>,
+    selected_midi_part_id: &mut Option<u64>,
+    track_ids: &[u64],
+    arrange_view_state: &mut ArrangeViewState,
+    row: usize,
+    modifiers: egui::Modifiers,
+) -> bool {
+    let Some(track_id) = track_ids.get(row).copied() else {
+        return false;
+    };
+    let previous_selection = arrange_view_state.selected_track_ids.clone();
+    let previous_track = *selected_track;
+
+    if modifiers.shift {
+        let anchor = arrange_view_state
+            .selection_anchor_track_id
+            .and_then(|anchor| track_ids.iter().position(|id| *id == anchor))
+            .unwrap_or(row);
+        if !modifiers.ctrl {
+            arrange_view_state.selected_track_ids.clear();
+        }
+        for index in anchor.min(row)..=anchor.max(row) {
+            if let Some(id) = track_ids.get(index) {
+                arrange_view_state.selected_track_ids.insert(*id);
+            }
+        }
+    } else if modifiers.ctrl {
+        if !arrange_view_state.selected_track_ids.remove(&track_id) {
+            arrange_view_state.selected_track_ids.insert(track_id);
+        }
+        if arrange_view_state.selected_track_ids.is_empty() {
+            arrange_view_state.selected_track_ids.insert(track_id);
+        }
+        arrange_view_state.selection_anchor_track_id = Some(track_id);
+    } else {
+        arrange_view_state.selected_track_ids.clear();
+        arrange_view_state.selected_track_ids.insert(track_id);
+        arrange_view_state.selection_anchor_track_id = Some(track_id);
+    }
+
+    *selected_track = if arrange_view_state.selected_track_ids.contains(&track_id) {
+        u32::try_from(row).ok()
+    } else {
+        arrange_view_state
+            .selected_track_ids
+            .iter()
+            .find_map(|selected| {
+                track_ids
+                    .iter()
+                    .position(|id| id == selected)
+                    .and_then(|index| u32::try_from(index).ok())
+            })
+    };
+    *selected_midi_part_id = None;
+    previous_selection != arrange_view_state.selected_track_ids || previous_track != *selected_track
 }
 
 fn show_midi_editor(
@@ -6679,6 +8546,1014 @@ fn show_mixer(
     meter_levels: &HashMap<u64, f32>,
     show_strips: bool,
     show_settings: bool,
+    channel_settings_window: &mut NativeWindowState,
+    compressor_editor: &mut CompressorEditorState,
+) -> bool {
+    if show_strips {
+        show_mixer_channels(ui, project, meter_levels, channel_settings_window)
+    } else if show_settings {
+        show_channel_settings(ui, project, compressor_editor)
+    } else {
+        false
+    }
+}
+
+fn show_mixer_channels(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    meter_levels: &HashMap<u64, f32>,
+    channel_settings_window: &mut NativeWindowState,
+) -> bool {
+    mixer::show_channels(ui, project, meter_levels, channel_settings_window)
+}
+
+fn update_mixer_fader(response: &egui::Response, rect: Rect, gain: &mut f32) {
+    if response.clicked() || response.dragged() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let range = (rect.height() - 10.0).max(1.0);
+            *gain = (1.0 - ((pointer.y - rect.top() - 5.0) / range)).clamp(0.0, 1.0);
+        }
+    }
+}
+
+fn paint_mixer_fader(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    gain: f32,
+    peak: f32,
+    master: bool,
+) {
+    let palette = theme::palette(ui);
+    let meter = Rect::from_min_size(
+        Pos2::new(rect.left() - 12.0, rect.top()),
+        Vec2::new(7.0, rect.height()),
+    );
+    painter.rect_filled(meter, egui::CornerRadius::same(1), palette.canvas);
+    let fill = meter_fill_fraction(peak);
+    if fill > 0.0 {
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(meter.left(), meter.bottom() - meter.height() * fill),
+                meter.max,
+            ),
+            egui::CornerRadius::same(1),
+            if master {
+                theme::WARNING
+            } else {
+                palette.accent
+            },
+        );
+    }
+    painter.rect_filled(rect, egui::CornerRadius::same(2), palette.grid);
+    let handle_y = rect.top() + 5.0 + (rect.height() - 10.0) * (1.0 - gain.clamp(0.0, 1.0));
+    let handle = Rect::from_center_size(
+        Pos2::new(rect.center().x, handle_y),
+        Vec2::new(rect.width() + 10.0, 18.0),
+    );
+    painter.rect_filled(handle, egui::CornerRadius::same(2), palette.muted);
+    painter.rect_stroke(
+        handle,
+        egui::CornerRadius::same(2),
+        Stroke::new(1.0, palette.grid),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        Pos2::new(rect.center().x, rect.bottom() + 4.0),
+        egui::Align2::CENTER_TOP,
+        format!("{:.2} dB", linear_gain_db(gain)),
+        egui::FontId::proportional(10.0),
+        palette.text,
+    );
+}
+
+fn draw_vertical_meter(ui: &mut egui::Ui, peak: f32, width: f32, height: f32, master: bool) {
+    let (meter, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let palette = theme::palette(ui);
+    ui.painter()
+        .rect_filled(meter, egui::CornerRadius::same(1), palette.canvas);
+    let fraction = meter_fill_fraction(peak);
+    if fraction > 0.0 {
+        let fill = if master {
+            theme::WARNING
+        } else {
+            palette.accent
+        };
+        ui.painter().rect_filled(
+            Rect::from_min_max(
+                Pos2::new(meter.min.x, meter.max.y - height * fraction),
+                meter.max,
+            ),
+            egui::CornerRadius::same(1),
+            fill,
+        );
+    }
+    let _ = response;
+}
+
+fn show_track_routing_menus(ui: &mut egui::Ui, track: &mut Track, modified: &mut bool) {
+    ui.spacing_mut().button_padding = Vec2::new(1.0, 1.0);
+    ui.spacing_mut().item_spacing = Vec2::new(0.5, 0.5);
+    let default_input = if track.audio_channels == 1 {
+        "Left - Stereo In"
+    } else {
+        "Stereo In"
+    };
+    let input_label = track
+        .input_routing
+        .as_deref()
+        .unwrap_or(default_input)
+        .to_owned();
+    let output_label = track
+        .output_routing
+        .as_deref()
+        .unwrap_or("Stereo Out")
+        .to_owned();
+    ui.vertical(|ui| {
+        let input = ui.menu_button(egui::RichText::new(input_label).size(7.0), |ui| {
+            if ui.button("No Bus").clicked() {
+                track.input_routing = Some("No Bus".to_owned());
+                *modified = true;
+                ui.close();
+            }
+            ui.menu_button("Stereo In", |ui| {
+                for label in ["Left - Stereo In", "Right - Stereo In"] {
+                    if ui.button(label).clicked() {
+                        track.input_routing = Some(label.to_owned());
+                        *modified = true;
+                        ui.close();
+                    }
+                }
+            });
+        });
+        input
+            .response
+            .on_hover_text("Input Routing (all selected with Shift + ALT + click)");
+        let output = ui.menu_button(egui::RichText::new(output_label).size(7.0), |ui| {
+            if ui.button("No Bus").clicked() {
+                track.output_routing = Some("No Bus".to_owned());
+                *modified = true;
+                ui.close();
+            }
+            for label in ["Stereo Out", "Left", "Right"] {
+                if ui.button(label).clicked() {
+                    track.output_routing = Some(label.to_owned());
+                    *modified = true;
+                    ui.close();
+                }
+            }
+        });
+        output
+            .response
+            .on_hover_text("Output Routing (all selected with Shift + ALT + click)");
+    });
+}
+
+fn show_channel_settings(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    compressor_editor: &mut CompressorEditorState,
+) -> bool {
+    let mut modified = false;
+    let Some(track_index) = project
+        .selected_track
+        .map(|index| index as usize)
+        .filter(|index| *index < project.tracks.len())
+    else {
+        ui.label("Select an audio channel to edit.");
+        return false;
+    };
+    let track = &mut project.tracks[track_index];
+    ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            Vec2::new(148.0, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| show_insert_rack(ui, track, compressor_editor, &mut modified),
+        );
+        ui.separator();
+        ui.allocate_ui_with_layout(
+            Vec2::new(466.0, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| show_equalizer_panel(ui, &mut track.equalizer, &mut modified),
+        );
+        ui.separator();
+        ui.allocate_ui_with_layout(
+            Vec2::new(148.0, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| show_send_rack(ui, track, &mut modified),
+        );
+        ui.separator();
+        ui.allocate_ui_with_layout(
+            Vec2::new(94.0, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| show_channel_strip(ui, track, &mut modified),
+        );
+    });
+    modified
+}
+
+fn show_insert_rack(
+    ui: &mut egui::Ui,
+    track: &mut Track,
+    compressor_editor: &mut CompressorEditorState,
+    modified: &mut bool,
+) {
+    ui.set_min_width(148.0);
+    ui.set_max_width(148.0);
+    ui.label(egui::RichText::new("Inserts").small())
+        .on_hover_text("Shows Active Inserts");
+    for slot in 0..8 {
+        ui.allocate_ui_with_layout(
+            Vec2::new(148.0, 45.0),
+            egui::Layout::left_to_right(egui::Align::Min),
+            |ui| {
+                let slot_rect = Rect::from_min_size(ui.min_rect().min, Vec2::new(145.0, 41.0));
+                let palette = theme::palette(ui);
+                ui.painter().rect_filled(slot_rect, 1.0, palette.canvas);
+                ui.painter().rect_stroke(
+                    slot_rect,
+                    1.0,
+                    Stroke::new(1.0, palette.grid),
+                    egui::StrokeKind::Inside,
+                );
+                if let Some(insert) = track.inserts.get_mut(slot) {
+                    let power_label = if insert.enabled { "●" } else { "○" };
+                    let power_tooltip = format!(
+                        "{} Insert {}",
+                        if insert.enabled {
+                            "Deactivate"
+                        } else {
+                            "Activate"
+                        },
+                        slot + 1
+                    );
+                    let enabled = ui
+                        .toggle_value(&mut insert.enabled, power_label)
+                        .on_hover_text(power_tooltip);
+                    if enabled.changed() {
+                        *modified = true;
+                    }
+                    let name = insert_effect_name(&insert.kind);
+                    let button = ui
+                        .add_sized([98.0, 41.0], egui::Button::new(name))
+                        .on_hover_text(format!("Select Insert Type {}", slot + 1));
+                    if button.clicked() {
+                        if matches!(insert.kind, InsertEffectKind::Compressor { .. }) {
+                            compressor_editor.track_id = Some(track.id);
+                            compressor_editor.insert_index = slot;
+                            compressor_editor.window.open = true;
+                            compressor_editor.window.focus_requested = true;
+                        }
+                    }
+                    if button.secondary_clicked() {
+                        compressor_editor.window.open = false;
+                    }
+                } else {
+                    let mut added = None;
+                    let response = ui.menu_button("○", |ui| {
+                        ui.menu_button("Dynamics", |ui| {
+                            if ui.button("Compressor").clicked() {
+                                added = Some(InsertEffectKind::Compressor {
+                                    threshold_db: -20.0,
+                                    ratio: 2.0,
+                                    attack_ms: 1.0,
+                                    hold_ms: 1.0,
+                                    release_ms: 500.0,
+                                    analysis: 80.0,
+                                    makeup_db: 0.0,
+                                    soft_knee: true,
+                                    auto_makeup: true,
+                                    auto_release: false,
+                                    rms_mode: false,
+                                    live: true,
+                                });
+                                ui.close();
+                            }
+                        });
+                        if ui.button("Stereo Delay").clicked() {
+                            added = Some(InsertEffectKind::default());
+                            ui.close();
+                        }
+                        if ui.button("Test Generator").clicked() {
+                            added = Some(InsertEffectKind::TestGenerator {
+                                waveform: GeneratorWaveform::Sine,
+                                frequency_hz: 440.0,
+                                gain_db: -18.0,
+                            });
+                            ui.close();
+                        }
+                    });
+                    response
+                        .response
+                        .on_hover_text(format!("Activate Insert {}", slot + 1));
+                    ui.add_sized([98.0, 41.0], egui::Label::new(""));
+                    if let Some(kind) = added {
+                        track.inserts.insert(
+                            slot.min(track.inserts.len()),
+                            InsertEffect {
+                                enabled: true,
+                                kind,
+                            },
+                        );
+                        *modified = true;
+                    }
+                }
+                ui.label(egui::RichText::new(format!("i {}", slot + 1)).small());
+            },
+        );
+    }
+}
+
+fn insert_effect_name(effect: &InsertEffectKind) -> &'static str {
+    match effect {
+        InsertEffectKind::TestGenerator { .. } => "Test Generator",
+        InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
+        InsertEffectKind::Compressor { .. } => "Compressor",
+    }
+}
+
+fn show_equalizer_panel(
+    ui: &mut egui::Ui,
+    equalizer: &mut workstation_core::project::ChannelEqualizer,
+    modified: &mut bool,
+) {
+    ui.set_min_width(466.0);
+    ui.set_max_width(466.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Equalizers").small());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            *modified |= ui.checkbox(&mut equalizer.bypassed, "Bypass").changed();
+        });
+    });
+    let (graph_rect, _) = ui.allocate_exact_size(Vec2::new(460.0, 258.0), Sense::hover());
+    draw_equalizer_graph(ui, graph_rect, equalizer);
+    ui.horizontal_top(|ui| {
+        for (index, band) in equalizer.bands.iter_mut().enumerate() {
+            ui.vertical(|ui| {
+                ui.set_min_width(108.0);
+                ui.set_max_width(108.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("eq {}", index + 1)).small());
+                    let active = ui.checkbox(&mut band.enabled, "");
+                    let active_changed = active.changed();
+                    active.on_hover_text(format!("EQ Band {} Active", index + 1));
+                    *modified |= active_changed;
+                });
+                let gain = ui
+                    .add_sized(
+                        [104.0, 20.0],
+                        egui::DragValue::new(&mut band.gain_db)
+                            .range(-24.0..=24.0)
+                            .speed(0.1)
+                            .fixed_decimals(1)
+                            .suffix(" dB"),
+                    )
+                    .on_hover_text(format!("EQ Band {} Gain", index + 1));
+                *modified |= gain.changed();
+                let frequency = ui
+                    .add_sized(
+                        [104.0, 20.0],
+                        egui::DragValue::new(&mut band.frequency_hz)
+                            .range(20.0..=20_000.0)
+                            .speed(1.0)
+                            .fixed_decimals(1)
+                            .suffix(" Hz"),
+                    )
+                    .on_hover_text(format!("EQ Band {} Freq", index + 1));
+                *modified |= frequency.changed();
+                let q = ui
+                    .add_sized(
+                        [104.0, 20.0],
+                        egui::DragValue::new(&mut band.q)
+                            .range(0.1..=10.0)
+                            .speed(0.01)
+                            .fixed_decimals(1)
+                            .prefix("Q "),
+                    )
+                    .on_hover_text(format!("EQ Band {} Q", index + 1));
+                *modified |= q.changed();
+            });
+        }
+    });
+}
+
+fn draw_equalizer_graph(
+    ui: &egui::Ui,
+    rect: Rect,
+    equalizer: &workstation_core::project::ChannelEqualizer,
+) {
+    let palette = theme::palette(ui);
+    let painter = ui.painter();
+    painter.rect_filled(rect, egui::CornerRadius::same(1), palette.canvas);
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(1),
+        Stroke::new(1.0, palette.grid),
+        egui::StrokeKind::Inside,
+    );
+    let plot = rect.shrink2(Vec2::new(24.0, 17.0));
+    for gain in [-24, -16, -8, 0, 8, 16, 24] {
+        let y = plot.center().y - gain as f32 / 48.0 * plot.height();
+        painter.line_segment(
+            [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+            Stroke::new(1.0, palette.surface_raised),
+        );
+        painter.text(
+            Pos2::new(plot.left() - 3.0, y),
+            egui::Align2::RIGHT_CENTER,
+            gain.to_string(),
+            egui::FontId::proportional(9.0),
+            palette.muted,
+        );
+    }
+    for frequency in [
+        20.0_f32, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0,
+    ] {
+        let x = plot.left() + plot.width() * (frequency / 20.0).ln() / 1000.0_f32.ln();
+        painter.line_segment(
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+            Stroke::new(1.0, palette.surface_raised),
+        );
+        let label = if frequency >= 1000.0 {
+            format!("{}k", frequency / 1000.0)
+        } else {
+            format!("{frequency:.0}")
+        };
+        painter.text(
+            Pos2::new(x, plot.bottom() + 3.0),
+            egui::Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(9.0),
+            palette.muted,
+        );
+    }
+    let rect = plot;
+    let mut points = Vec::with_capacity(101);
+    for sample in 0..=100 {
+        let fraction = sample as f32 / 100.0;
+        let frequency = 20.0 * (20_000.0_f32 / 20.0).powf(fraction);
+        let mut gain_db = 0.0;
+        if !equalizer.bypassed {
+            for band in &equalizer.bands {
+                if band.enabled {
+                    let width = (0.45 / band.q.max(0.1)).clamp(0.04, 2.0);
+                    let distance = ((frequency / band.frequency_hz.max(20.0)).ln() / width).powi(2);
+                    gain_db += band.gain_db * (-0.5 * distance).exp();
+                }
+            }
+        }
+        let y_fraction = (0.5 - gain_db.clamp(-24.0, 24.0) / 48.0).clamp(0.0, 1.0);
+        points.push(Pos2::new(
+            rect.left() + rect.width() * fraction,
+            rect.top() + rect.height() * y_fraction,
+        ));
+    }
+    painter.add(egui::Shape::line(points, Stroke::new(2.0, palette.accent)));
+    for band in &equalizer.bands {
+        if band.enabled && !equalizer.bypassed {
+            let x_fraction = (band.frequency_hz.max(20.0) / 20.0).ln() / (20_000.0_f32 / 20.0).ln();
+            let y_fraction = (0.5 - band.gain_db.clamp(-24.0, 24.0) / 48.0).clamp(0.0, 1.0);
+            painter.circle_filled(
+                Pos2::new(
+                    rect.left() + rect.width() * x_fraction,
+                    rect.top() + rect.height() * y_fraction,
+                ),
+                4.0,
+                palette.accent,
+            );
+        }
+    }
+}
+
+fn show_send_rack(ui: &mut egui::Ui, track: &mut Track, modified: &mut bool) {
+    ui.set_min_width(148.0);
+    ui.set_max_width(148.0);
+    ui.label(egui::RichText::new("Sends").small())
+        .on_hover_text("Shows Active Sends");
+    for slot in 0..8 {
+        ui.allocate_ui_with_layout(
+            Vec2::new(148.0, 45.0),
+            egui::Layout::left_to_right(egui::Align::Min),
+            |ui| {
+                let active = track
+                    .send_routing
+                    .get(slot)
+                    .and_then(Option::as_deref)
+                    .is_some();
+                let mut selected: Option<Option<String>> = None;
+                let response = ui.menu_button(if active { "●" } else { "○" }, |ui| {
+                    if ui.button("No Bus").clicked() {
+                        selected = Some(None);
+                        ui.close();
+                    }
+                    ui.menu_button("Outputs", |ui| {
+                        for destination in ["Stereo Out", "Left", "Right"] {
+                            if ui.button(destination).clicked() {
+                                selected = Some(Some(destination.to_owned()));
+                                ui.close();
+                            }
+                        }
+                    });
+                });
+                response
+                    .response
+                    .on_hover_text(format!("Activate Send {}", slot + 1));
+                let label = track
+                    .send_routing
+                    .get(slot)
+                    .and_then(Option::as_deref)
+                    .unwrap_or("");
+                ui.add_sized([98.0, 41.0], egui::Button::new(label));
+                ui.label(egui::RichText::new(format!("s {}", slot + 1)).small());
+                if let Some(destination) = selected {
+                    if track.send_routing.len() <= slot {
+                        track.send_routing.resize(slot + 1, None);
+                    }
+                    track.send_routing[slot] = destination;
+                    *modified = true;
+                }
+            },
+        );
+    }
+}
+
+fn show_channel_strip(ui: &mut egui::Ui, track: &mut Track, modified: &mut bool) {
+    let palette = theme::palette(ui);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(94.0, ui.available_height()), Sense::hover());
+    let r = rect.shrink(3.0);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        ui.set_clip_rect(r);
+        ui.spacing_mut().button_padding = Vec2::new(1.0, 1.0);
+        let at = |x: f32, y: f32, w: f32, h: f32| {
+            Rect::from_min_size(r.min + Vec2::new(x, y), Vec2::new(w, h))
+        };
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(at(0.0, 0.0, 86.0, 42.0)),
+            |ui| show_track_routing_menus(ui, track, modified),
+        );
+        ui.painter().text(
+            r.min + Vec2::new(2.0, 53.0),
+            egui::Align2::LEFT_CENTER,
+            if track.audio_channels == 1 {
+                "mono"
+            } else {
+                "stereo"
+            },
+            egui::FontId::proportional(10.0),
+            palette.muted,
+        );
+        let phase = ui
+            .put(
+                at(0.0, 65.0, 22.0, 18.0),
+                egui::Button::new("Ø").selected(track.input_phase_inverted),
+            )
+            .on_hover_text("Input Phase");
+        if phase.clicked() {
+            track.input_phase_inverted = !track.input_phase_inverted;
+            *modified = true;
+        }
+        *modified |= ui
+            .put(
+                at(25.0, 65.0, 61.0, 18.0),
+                egui::DragValue::new(&mut track.input_gain_db)
+                    .range(-24.0..=24.0)
+                    .speed(0.1)
+                    .fixed_decimals(1),
+            )
+            .on_hover_text("Input Gain")
+            .changed();
+        *modified |= ui
+            .put(
+                at(0.0, 87.0, 86.0, 18.0),
+                egui::DragValue::new(&mut track.pan)
+                    .range(-1.0..=1.0)
+                    .speed(0.01)
+                    .custom_formatter(|value, _| {
+                        if value.abs() < 0.005 {
+                            "C".to_owned()
+                        } else if value < 0.0 {
+                            format!("L {:.0}", value.abs() * 100.0)
+                        } else {
+                            format!("R {:.0}", value * 100.0)
+                        }
+                    }),
+            )
+            .changed();
+        for (index, (label, active, tooltip)) in [
+            ("M", track.muted, "Mute"),
+            (
+                "S",
+                track.solo || track.solo_defeat,
+                "Solo State (Solo Defeat with ALT click)",
+            ),
+            ("L", track.listen, "Listen"),
+            ("R", track.automation_read, "Read Automation"),
+            ("W", track.automation_write, "Write Automation"),
+            ("●", track.armed, "Record Enable"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if ui
+                .put(
+                    at(0.0, 118.0 + index as f32 * 25.0, 25.0, 22.0),
+                    egui::Button::new(label).fill(if active {
+                        if index == 5 {
+                            theme::RECORD
+                        } else {
+                            palette.accent
+                        }
+                    } else {
+                        palette.surface_raised
+                    }),
+                )
+                .on_hover_text(tooltip)
+                .clicked()
+            {
+                match index {
+                    0 => track.muted = !track.muted,
+                    1 => {
+                        if ui.input(|input| input.modifiers.alt) {
+                            track.solo_defeat = !track.solo_defeat;
+                            if track.solo_defeat {
+                                track.solo = false;
+                            }
+                        } else {
+                            track.solo = !track.solo;
+                            if track.solo {
+                                track.solo_defeat = false;
+                            }
+                        }
+                    }
+                    2 => track.listen = !track.listen,
+                    3 => track.automation_read = !track.automation_read,
+                    4 => track.automation_write = !track.automation_write,
+                    _ => track.armed = !track.armed,
+                }
+                *modified = true;
+            }
+        }
+        let fader = at(63.0, 122.0, 10.0, (r.height() - 181.0).max(80.0));
+        let response = ui.interact(
+            fader.expand(6.0),
+            ui.id().with(("settings-fader", track.id)),
+            Sense::click_and_drag(),
+        );
+        let old_gain = track.gain;
+        update_mixer_fader(&response, fader, &mut track.gain);
+        *modified |= old_gain != track.gain;
+        paint_mixer_fader(ui, ui.painter(), fader, track.gain, 0.0, false);
+        ui.interact(
+            Rect::from_center_size(
+                fader.center_bottom() + Vec2::new(0.0, 12.0),
+                Vec2::new(40.0, 18.0),
+            ),
+            ui.id().with("level"),
+            Sense::hover(),
+        )
+        .on_hover_text("Channel Level");
+        let footer = Rect::from_min_size(
+            Pos2::new(r.left(), r.bottom() - 24.0),
+            Vec2::new(r.width(), 23.0),
+        );
+        ui.painter().rect_filled(footer, 1.0, palette.canvas);
+        ui.painter().text(
+            footer.center(),
+            egui::Align2::CENTER_CENTER,
+            &track.name,
+            egui::FontId::proportional(11.0),
+            palette.text,
+        );
+    });
+}
+
+fn track_index_label(track: &Track) -> String {
+    track
+        .name
+        .split_whitespace()
+        .last()
+        .unwrap_or("1")
+        .to_owned()
+}
+
+fn linear_gain_db(gain: f32) -> f32 {
+    if gain <= 0.0 {
+        -60.0
+    } else {
+        20.0 * gain.log10()
+    }
+}
+
+fn show_compressor_editor(
+    ui: &mut egui::Ui,
+    threshold_db: &mut f32,
+    ratio: &mut f32,
+    attack_ms: &mut f32,
+    hold_ms: &mut f32,
+    release_ms: &mut f32,
+    analysis: &mut f32,
+    makeup_db: &mut f32,
+    soft_knee: &mut bool,
+    auto_makeup: &mut bool,
+    auto_release: &mut bool,
+    rms_mode: &mut bool,
+    live: &mut bool,
+    enabled: &mut bool,
+) -> bool {
+    let mut modified = false;
+    let (canvas, _) = ui.allocate_exact_size(Vec2::new(450.0, 212.0), Sense::hover());
+    let origin = canvas.min;
+    let graph_threshold = *threshold_db;
+    let graph_ratio = *ratio;
+    let graph_makeup = *makeup_db;
+    let power = Rect::from_min_size(origin, Vec2::new(22.0, 20.0));
+    let response = ui.put(power, egui::Button::new(if *enabled { "●" } else { "○" }));
+    if response.clicked() {
+        *enabled = !*enabled;
+        modified = true;
+    }
+    for (label, x) in [("▤", 26.0), ("R", 48.0), ("W", 70.0), ("↔", 92.0)] {
+        ui.put(
+            Rect::from_min_size(origin + Vec2::new(x, 0.0), Vec2::new(18.0, 20.0)),
+            egui::Button::new(label),
+        );
+    }
+    ui.put(
+        Rect::from_min_size(origin + Vec2::new(128.0, 0.0), Vec2::new(132.0, 20.0)),
+        egui::Button::new(" "),
+    );
+
+    for (label, value, range, decimals, center_x) in [
+        ("Threshold", threshold_db, -60.0..=0.0, 1, 32.0),
+        ("Ratio", ratio, 1.0..=20.0, 2, 92.0),
+        ("Make-Up", makeup_db, 0.0..=24.0, 1, 152.0),
+    ] {
+        modified |= show_compressor_knob(
+            ui, origin, label, value, range, decimals, center_x, 19.0, 72.0, 31.0,
+        );
+    }
+    modified |= show_compressor_toggle(ui, origin, soft_knee, "soft knee", 72.0, 101.0);
+    modified |= show_compressor_toggle(ui, origin, auto_makeup, "auto", 132.0, 101.0);
+
+    for (label, value, range, decimals, center_x) in [
+        ("Attack", attack_ms, 0.1..=200.0, 1, 32.0),
+        ("Hold", hold_ms, 0.0..=500.0, 0, 92.0),
+        ("Release", release_ms, 5.0..=2_000.0, 0, 152.0),
+        ("Analysis", analysis, 0.0..=100.0, 0, 212.0),
+    ] {
+        modified |= show_compressor_knob(
+            ui, origin, label, value, range, decimals, center_x, 119.0, 174.0, 133.0,
+        );
+    }
+    modified |= show_compressor_toggle(ui, origin, auto_release, "auto", 132.0, 199.0);
+    modified |= show_compressor_toggle(ui, origin, rms_mode, "peak - rms", 195.0, 199.0);
+    modified |= show_compressor_toggle(ui, origin, live, "live", 370.0, 199.0);
+
+    let graph = Rect::from_min_size(origin + Vec2::new(250.0, 20.0), Vec2::new(198.0, 174.0));
+    draw_compressor_curve(ui, graph, graph_threshold, graph_ratio, graph_makeup);
+    modified
+}
+
+fn show_compressor_toggle(
+    ui: &mut egui::Ui,
+    origin: Pos2,
+    value: &mut bool,
+    label: &str,
+    x: f32,
+    y: f32,
+) -> bool {
+    let button = Rect::from_min_size(origin + Vec2::new(x, y), Vec2::new(12.0, 12.0));
+    let response = ui.put(button, egui::Button::new(if *value { "●" } else { "○" }));
+    let label_rect =
+        Rect::from_min_size(origin + Vec2::new(x + 14.0, y - 1.0), Vec2::new(64.0, 14.0));
+    ui.put(
+        label_rect,
+        egui::Label::new(
+            egui::RichText::new(label)
+                .italics()
+                .size(8.0)
+                .color(theme::palette(ui).muted),
+        ),
+    );
+    if response.clicked() {
+        *value = !*value;
+        true
+    } else {
+        false
+    }
+}
+
+fn show_compressor_knob(
+    ui: &mut egui::Ui,
+    origin: Pos2,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    decimals: usize,
+    center_x: f32,
+    label_y: f32,
+    center_y: f32,
+    value_y: f32,
+) -> bool {
+    let mut modified = false;
+    let min = *range.start();
+    let max = *range.end();
+    let label_rect = Rect::from_min_size(
+        origin + Vec2::new(center_x - 30.0, label_y),
+        Vec2::new(60.0, 12.0),
+    );
+    ui.painter().text(
+        label_rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(9.0),
+        theme::palette(ui).text,
+    );
+    let knob_rect =
+        Rect::from_center_size(origin + Vec2::new(center_x, center_y), Vec2::splat(42.0));
+    let knob = ui.interact(
+        knob_rect,
+        egui::Id::new(("compressor-knob", label)),
+        Sense::click_and_drag(),
+    );
+    let drag_start = knob.id.with("drag-start");
+    if knob.drag_started() {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(drag_start, *value));
+    }
+    if knob.dragged() {
+        let start = ui
+            .ctx()
+            .data(|data| data.get_temp::<f32>(drag_start))
+            .unwrap_or(*value);
+        let next = start - knob.drag_delta().y * (max - min) / 120.0;
+        let next = next.clamp(min, max);
+        modified |= (next - *value).abs() > f32::EPSILON;
+        *value = next;
+    }
+    if knob.drag_stopped() {
+        ui.ctx().data_mut(|data| data.remove::<f32>(drag_start));
+    }
+    let palette = theme::palette(ui);
+    let painter = ui.painter().with_clip_rect(ui.clip_rect());
+    let center = knob_rect.center();
+    let radius = 18.0;
+    painter.circle_filled(center, radius, palette.surface_raised);
+    painter.circle_stroke(center, radius, Stroke::new(1.0, palette.grid));
+    let start_angle = 3.0 * std::f32::consts::PI / 4.0;
+    let end_angle = 9.0 * std::f32::consts::PI / 4.0;
+    let normalized = ((*value - min) / (max - min)).clamp(0.0, 1.0);
+    let pointer_angle = start_angle + (end_angle - start_angle) * normalized;
+    let mut previous = None;
+    for step in 0..=24 {
+        let t = step as f32 / 24.0;
+        let angle = start_angle + (end_angle - start_angle) * t;
+        let point = center + Vec2::new(angle.cos(), angle.sin()) * 18.0;
+        if let Some(previous) = previous {
+            painter.line_segment(
+                [previous, point],
+                Stroke::new(
+                    2.0,
+                    if t <= normalized {
+                        palette.accent
+                    } else {
+                        palette.grid
+                    },
+                ),
+            );
+        }
+        previous = Some(point);
+    }
+    let pointer = center + Vec2::new(pointer_angle.cos(), pointer_angle.sin()) * 10.0;
+    painter.line_segment([center, pointer], Stroke::new(2.0, palette.text));
+    let value_rect = Rect::from_min_size(
+        origin + Vec2::new(center_x - 30.0, value_y),
+        Vec2::new(60.0, 14.0),
+    );
+    let value_response = ui
+        .scope(|ui| {
+            let palette = theme::palette(ui);
+            let fill = egui::Color32::from_rgb(4, 12, 20);
+            let visuals = ui.visuals_mut();
+            for state in [
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+            ] {
+                state.bg_fill = fill;
+                state.weak_bg_fill = fill;
+                state.bg_stroke = Stroke::NONE;
+                state.fg_stroke = Stroke::new(1.0, palette.text);
+                state.corner_radius = egui::CornerRadius::ZERO;
+            }
+            ui.put(
+                value_rect,
+                egui::DragValue::new(value)
+                    .range(min..=max)
+                    .speed((max - min) / 500.0)
+                    .fixed_decimals(decimals),
+            )
+        })
+        .inner;
+    modified |= value_response.changed();
+    modified
+}
+
+fn draw_compressor_curve(ui: &egui::Ui, rect: Rect, threshold: f32, ratio: f32, makeup: f32) {
+    let palette = theme::palette(ui);
+    let painter = ui.painter();
+    let plot_rect = Rect::from_min_size(
+        Pos2::new(rect.left() + 29.0, rect.top() + 22.0),
+        Vec2::new(126.0, 126.0),
+    );
+    for (label, x) in [
+        ("IN", rect.left() + 3.0),
+        ("GR", rect.left() + 167.0),
+        ("OUT", rect.left() + 186.0),
+    ] {
+        painter.text(
+            Pos2::new(x + 5.0, rect.top() + 9.0),
+            Align2::CENTER_CENTER,
+            label,
+            FontId::proportional(7.5),
+            palette.muted,
+        );
+    }
+    for x in [rect.left() + 3.0, rect.left() + 164.0, rect.left() + 184.0] {
+        let bar = Rect::from_min_size(
+            Pos2::new(x, plot_rect.top()),
+            Vec2::new(14.0, plot_rect.height()),
+        );
+        painter.rect_filled(bar, egui::CornerRadius::same(1), palette.surface_raised);
+        painter.rect_stroke(
+            bar,
+            egui::CornerRadius::same(1),
+            Stroke::new(1.0, palette.grid),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.rect_filled(plot_rect, egui::CornerRadius::same(1), palette.canvas);
+    painter.rect_stroke(
+        plot_rect,
+        egui::CornerRadius::same(1),
+        Stroke::new(1.0, palette.grid),
+        egui::StrokeKind::Inside,
+    );
+    let mut points = Vec::with_capacity(65);
+    for step in 0..=64 {
+        let input = -60.0 + 60.0 * step as f32 / 64.0;
+        let output = if input <= threshold {
+            input
+        } else {
+            threshold + (input - threshold) / ratio.max(1.0)
+        } + makeup;
+        let x = plot_rect.left() + plot_rect.width() * (input + 60.0) / 60.0;
+        let y = plot_rect.bottom() - plot_rect.height() * (output + 60.0).clamp(0.0, 60.0) / 60.0;
+        points.push(Pos2::new(x, y));
+    }
+    let mut fill_points = points.clone();
+    fill_points.push(Pos2::new(plot_rect.right(), plot_rect.bottom()));
+    fill_points.push(Pos2::new(plot_rect.left(), plot_rect.bottom()));
+    painter.add(egui::Shape::convex_polygon(
+        fill_points,
+        Color32::from_rgba_unmultiplied(
+            palette.accent.r(),
+            palette.accent.g(),
+            palette.accent.b(),
+            42,
+        ),
+        Stroke::NONE,
+    ));
+    for step in 0..=4 {
+        let t = step as f32 / 4.0;
+        let x = plot_rect.left() + plot_rect.width() * t;
+        let y = plot_rect.top() + plot_rect.height() * t;
+        painter.line_segment(
+            [
+                Pos2::new(x, plot_rect.top()),
+                Pos2::new(x, plot_rect.bottom()),
+            ],
+            Stroke::new(1.0, palette.surface_raised),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(plot_rect.left(), y),
+                Pos2::new(plot_rect.right(), y),
+            ],
+            Stroke::new(1.0, palette.surface_raised),
+        );
+    }
+    painter.add(egui::Shape::line(points, Stroke::new(2.0, palette.accent)));
+}
+
+#[allow(dead_code)]
+fn show_mixer_legacy(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    meter_levels: &HashMap<u64, f32>,
+    show_strips: bool,
+    show_settings: bool,
 ) -> bool {
     let mut modified = false;
     let mut exclusive_solo_track_id = None;
@@ -7015,8 +9890,15 @@ fn show_mixer(
                                     threshold_db: -18.0,
                                     ratio: 3.0,
                                     attack_ms: 10.0,
+                                    hold_ms: 1.0,
                                     release_ms: 120.0,
+                                    analysis: 80.0,
                                     makeup_db: 0.0,
+                                    soft_knee: true,
+                                    auto_makeup: true,
+                                    auto_release: false,
+                                    rms_mode: false,
+                                    live: true,
                                 },
                             });
                             modified = true;
@@ -7136,6 +10018,7 @@ fn show_mixer(
                                         attack_ms,
                                         release_ms,
                                         makeup_db,
+                                        ..
                                     } => {
                                         modified |= ui
                                             .add(
@@ -7570,13 +10453,16 @@ fn format_key_chord(chord: KeyChord) -> String {
     parts.join("+")
 }
 
-fn format_position(beats: f64, beats_per_bar: u8) -> String {
-    let whole = beats.max(0.0).floor() as u64;
+fn format_transport_position(beats: f64, beats_per_bar: u8) -> String {
+    let beats = beats.max(0.0);
+    let whole = beats.floor() as u64;
     let beats_per_bar = u64::from(beats_per_bar.max(1));
     let bar = whole / beats_per_bar + 1;
     let beat = whole % beats_per_bar + 1;
-    let tick = ((beats.fract().max(0.0)) * 960.0).round() as u16;
-    format!("{bar:03}.{beat:02}.{tick:03}")
+    let within_beat = beats.fract() * 4.0;
+    let sixteenth = within_beat.floor() as u64 + 1;
+    let tick = ((within_beat.fract()) * 120.0).round() as u16;
+    format!("{bar}.{beat}.{sixteenth}.{tick}")
 }
 
 fn safe_project_filename(project_name: &str) -> String {
