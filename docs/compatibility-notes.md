@@ -4,11 +4,11 @@ These observations support OpenTrack-, a full Rust reimplementation. Static file
 
 ## REA installation inventory
 
-The saved report at ../_analysis-tools/reports/cubase-install.evidence.json records an REA safe artifact graph scan. It examined 2,839 entries, probed 44 files, and read 14,256 bytes within its configured limits. It reported no application candidates or component classifications. It did identify Cubase5.exe and bundled plug-in binaries as x86 PE files.
+The saved report at ../../_analysis-tools/reports/cubase-install.evidence.json records an REA safe artifact graph scan. It examined 2,839 entries, probed 44 files, and read 14,256 bytes within its configured limits. It reported no application candidates or component classifications. It did identify Cubase5.exe and bundled plug-in binaries as x86 PE files.
 
 This is bounded static inventory, not a runtime trace or an atomic snapshot of all file contents. It does not establish which code Cubase loads, how a plug-in behaves, or whether a binary corresponds to a particular running build. See the limitations in the evidence report.
 
-REA 6.7.0 is installed in the analysis-tools directory. The current `rea doctor` report has no configured Ghidra, Hopper, or IDA provider, and the listed native UI capability is macOS-only on this Windows host. REA has therefore contributed static installation evidence here; no native decompilation or Cubase window screenshot is claimed.
+REA 6.7.0 is installed in the analysis-tools directory. The current `rea doctor` report has no configured Ghidra, Hopper, or IDA provider, and the listed native UI capability is macOS-only on this Windows host. Portable REA PE inspection is available: the 2026-10-24 export-table pass confirmed Cubase5.exe is x86 with no PE export directory, TestGenerator exports `VSTPluginMain`, and all three supplied `.vst3` modules are x86 and export `GetPluginFactory`, `InitDll`, and `ExitDll`. The Evidence IDs and target hashes are recorded in [the legacy-hosting study](legacy-plugin-hosting.md) and [plug-in inventory](plugin-rewrite-inventory.md). No native decompilation or Cubase window screenshot is claimed.
 
 ## CPR project files
 
@@ -50,7 +50,7 @@ Do not write into reference files. Do not claim CPR round-trip or general compat
 
 - The supplied Cubase5.exe has PE machine type 0x014c (x86). The installer header also identifies an x86 launcher; this does not determine whether its payload contains other builds.
 - VSTPlugins contains 29 DLL plug-in paths; each has PE machine type 0x014c (x86).
-- vst3 contains three paths ending in .vst3, but their module contents were not probed, so their architecture is not established by this report.
+- The initial inventory did not probe the three `.vst3` modules. A later REA export-table pass established they are x86 PE files and each exposes `ExitDll`, `GetPluginFactory`, and `InitDll`; this does not prove complete ABI compatibility or runtime loading.
 - The DLL locations suggest legacy VST modules, but their exact ABI has not been confirmed.
 - No plug-in binaries were executed during the recorded inventory. See [the plug-in rewrite inventory](plugin-rewrite-inventory.md) for paths and per-module status.
 

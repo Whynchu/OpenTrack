@@ -727,6 +727,7 @@ mod tests {
                 solo_defeat: false,
                 equalizer: super::super::ChannelEqualizer::default(),
                 inserts: Vec::new(),
+                inserts_bypassed: false,
             }],
             1,
             48_000,

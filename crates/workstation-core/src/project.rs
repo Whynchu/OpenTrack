@@ -20,6 +20,9 @@ pub struct Track {
     pub id: u64,
     pub name: String,
     pub kind: TrackKind,
+    /// Original UI palette selection; absent in older RWP files.
+    #[serde(default)]
+    pub color_index: Option<u8>,
     /// Configured audio channel width. Non-audio tracks use two channels.
     #[serde(default = "default_audio_channels")]
     pub audio_channels: u8,
@@ -64,6 +67,12 @@ pub struct Track {
     /// Ordered audio insert effects.
     #[serde(default)]
     pub inserts: Vec<InsertEffect>,
+    /// Bypasses every insert on this channel without changing per-insert state.
+    #[serde(default)]
+    pub inserts_bypassed: bool,
+    /// Send rack bypass state. Routing and send processing remain independent.
+    #[serde(default)]
+    pub sends_bypassed: bool,
     /// Selected channel input bus. `None` represents No Bus.
     #[serde(default)]
     pub input_routing: Option<String>,
@@ -149,6 +158,14 @@ pub enum FilterType {
     HighShelf,
     LowPass,
     HighPass,
+    ParametricI,
+    ParametricII,
+    LowShelfI,
+    LowShelfII,
+    LowShelfIII,
+    LowShelfIV,
+    HighPassI,
+    HighPassII,
 }
 
 /// Oscillator shape for OpenTrack-'s starter built-in instrument.
@@ -398,6 +415,7 @@ impl Project {
             id,
             name: format!("{prefix} {:02}", self.next_track_number),
             kind,
+            color_index: None,
             audio_channels,
             muted: false,
             solo: false,
@@ -415,6 +433,8 @@ impl Project {
             clips: Vec::new(),
             equalizer: ChannelEqualizer::default(),
             inserts: Vec::new(),
+            inserts_bypassed: false,
+            sends_bypassed: false,
             input_routing: if kind == TrackKind::Audio {
                 Some(if audio_channels == 1 {
                     "Left - Stereo In".to_owned()
@@ -814,7 +834,12 @@ impl Project {
                 {
                     return Err("equalizer parameters are outside the supported range");
                 }
-                if matches!(band_index, 1 | 2) && band.filter != FilterType::Bell {
+                if matches!(band_index, 1 | 2)
+                    && !matches!(
+                        band.filter,
+                        FilterType::Bell | FilterType::ParametricI | FilterType::ParametricII
+                    )
+                {
                     return Err("EQ bands 2 and 3 must use the parametric bell filter");
                 }
             }

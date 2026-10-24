@@ -1,5 +1,7 @@
 # Fidelity delivery plan
 
+> Current scope and status: [workflow/current.md](workflow/current.md). The successive current-position sections below are historical records, not concurrent instructions. The 2026-10-24 [user intent and delivery workflow](workflow/README.md) supersede old plugin-rewrite mandates and old scope restrictions. Preserve their evidence; use the active task for execution.
+
 ## Working principle
 
 Observe a complete Cubase 5 workflow, document its visible states and behavior, reproduce it in original Rust code and graphics, then compare it before expanding it. The full product goal remains unchanged, including CPR investigation and optional legacy plug-in hosting.
@@ -69,3 +71,25 @@ The latest user correction raises the Mixer e glyph another1px (total offset-2.5
 
 The user accepted the Mixer checkpoint and explicitly requested commit/push, then a focused Project-window comparison covering the timeline grid and surrounding layout. This supersedes the exclusive Mixer scope above. Preserve Mixer and Compressor during the Project pass. Use approved L1 frame 04-preferred-approved-0.png and the existing Project tooltip captures; record differences and display conditions outside Git, rebuild and capture the bounded visual slice, then stop for screenshot review. No audio/backend parity or L4 completion is implied.
 
+
+## Project visual review checkpoint
+
+The latest bounded Project pass replaces the Inspector grouping with original vector controls, corrects the ruler/track boundary, and refines the flow-based toolbar after the rejected absolute-position pass was removed. The live two-track capture, comparison images, 90-observation manifest coverage and remaining feature/geometry gaps are recorded outside Git in Project-review-report.md under opentrack-comparisons. Mute and Record Enable UI synchronization were exercised and restored; no audio parity is claimed. Main Project fidelity is incomplete, including lower navigation and detailed toolbar alignment. Pause for screenshot review before continuing the next substantial batch.
+
+
+## Live Project interaction evidence
+
+The user opened Cubase for a targeted study and clarified the clickable right-edge track color strip and the distinct below-tracks Track List context menu. Fifteen capture manifests and images remain outside Git in Project-live-study. See [Project interaction study](reviews/project-interaction-study.md) for the region-specific menus, ruler drag observations, unknowns and bounded implementation acceptance. This study changes no product code; do not confuse the Track List background with the timeline background.
+
+
+
+## Inspector and Project header audit
+
+The user requested analysis before implementation. [Project layout audit](reviews/project-layout-audit.md) records the left inset, parameter wells, label contrast, Inspector grouping and top toolbar mismatches, with external matched-region comparison captures and a bounded correction order. No product changes were made in this audit.
+
+## Current desktop-capture limitation — M2 visual iteration
+
+This session’s computer-use `getState()` currently reports no native apps or browser tabs, and the enabled tool inventory has no OpenTrack window-control endpoint. Windows process inspection confirms the latest OpenTrack executable is running with a nonzero main-window handle, but Sky cannot enumerate it for a screenshot or interaction. The current request is for the user to bring OpenTrack to the foreground once. Do not use direct OS window/message injection as a workaround, and do not operate Cubase; continue source and review-note work while the desktop tool is unavailable. Before the next build, close the running OpenTrack process as the user requested. The latest build is `C3E31E57F789B644044B0135E7A019B65086CC408EB7DFE4AE4A5B2A730AF8C8`; current source has unbuilt toolbar-ink and Inspector clock-icon refinements.
+## 2026-10-24 recovery and single-instance rule
+
+A stale direct Node session returned an old window inventory while get_window's recovery error listed current windows. Resetting `node_repl`, reimporting `@oai/sky`, and re-enumerating returned the current OpenTrack and native picker windows. A zero process MainWindowHandle also failed to reflect a GUI visible to the user. Neither signal authorizes another launch. Keep one OpenTrack instance; recover/reset the tool first, bind exact returned windows, and close OpenTrack through its UI before rebuilding and at review end. For the native picker, bind its separate returned window instead of clicking the dialog as if it were the root app screenshot. The final E955D248 review closed without a prompt after selection-only activity; no process remained.

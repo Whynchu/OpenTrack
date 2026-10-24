@@ -28,6 +28,24 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
 const ARRANGE_VIEW_STATE_KEY: &str = "arrange_view_state_v1";
+pub(crate) const DEFAULT_EVENT_COLORS: [[u8; 3]; 16] = [
+    [211, 116, 87],
+    [219, 151, 93],
+    [231, 180, 100],
+    [235, 216, 108],
+    [175, 195, 115],
+    [119, 177, 120],
+    [72, 155, 124],
+    [76, 162, 165],
+    [87, 158, 185],
+    [100, 137, 176],
+    [113, 117, 161],
+    [122, 98, 146],
+    [146, 98, 145],
+    [170, 108, 149],
+    [194, 115, 148],
+    [216, 111, 130],
+];
 pub(crate) const CHANNEL_SETTINGS_WINDOW_ID: &str = "channel-settings";
 pub(crate) const MIXER_WINDOW_ID: &str = "mixer";
 pub(crate) const MEDIA_WINDOW_ID: &str = "media";
@@ -49,8 +67,38 @@ pub(crate) struct ProjectFile {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ArrangeViewState {
+    #[serde(default = "default_project_dock_fraction")]
+    pub(crate) project_dock_fraction: f32,
+    #[serde(default = "default_timeline_zoom")]
+    pub(crate) timeline_zoom: f32,
+    /// Horizontal scroll position in content pixels, used to keep the ruler and
+    /// track headers pinned while the arrange grid moves beneath them.
+    #[serde(default)]
+    pub(crate) timeline_scroll_x: f32,
+    /// Vertical scroll position in content pixels, shared by track headers and
+    /// the arrange lanes.
+    #[serde(default)]
+    pub(crate) track_scroll_y: f32,
+    #[serde(default = "default_true")]
+    pub(crate) show_info_line: bool,
+    #[serde(default = "default_true")]
+    pub(crate) snap_enabled: bool,
+    #[serde(default)]
+    pub(crate) autoscroll_enabled: bool,
+    #[serde(default)]
+    pub(crate) selected_event_color: Option<u8>,
+    #[serde(default = "default_event_colors")]
+    pub(crate) event_colors: [[u8; 3]; 16],
+    #[serde(default)]
+    pub(crate) ruler_format: u8,
+    #[serde(default = "default_true")]
+    pub(crate) ruler_time_linear: bool,
+    #[serde(default)]
+    pub(crate) ruler_bars_beats_linear: bool,
     #[serde(default)]
     pub(crate) track_heights: std::collections::BTreeMap<u64, f32>,
+    #[serde(default)]
+    pub(crate) automation_visible: std::collections::BTreeSet<u64>,
     #[serde(default = "default_true")]
     pub(crate) show_inspector: bool,
     #[serde(default = "default_true")]
@@ -68,7 +116,20 @@ pub(crate) struct ArrangeViewState {
 impl Default for ArrangeViewState {
     fn default() -> Self {
         Self {
+            project_dock_fraction: default_project_dock_fraction(),
+            timeline_zoom: default_timeline_zoom(),
+            timeline_scroll_x: 0.0,
+            track_scroll_y: 0.0,
+            show_info_line: true,
+            snap_enabled: true,
+            autoscroll_enabled: false,
+            selected_event_color: None,
+            event_colors: DEFAULT_EVENT_COLORS,
+            ruler_format: 0,
+            ruler_time_linear: true,
+            ruler_bars_beats_linear: false,
             track_heights: Default::default(),
+            automation_visible: Default::default(),
             show_inspector: true,
             show_track_colors: true,
             selected_track_ids: Default::default(),
@@ -79,8 +140,17 @@ impl Default for ArrangeViewState {
     }
 }
 
+fn default_project_dock_fraction() -> f32 {
+    // The Project/Mixer split follows the measured 535:449 px window heights.
+    535.0 / 984.0
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn default_event_colors() -> [[u8; 3]; 16] {
+    DEFAULT_EVENT_COLORS
 }
 
 impl ArrangeViewState {
@@ -108,6 +178,7 @@ impl ArrangeViewState {
     }
 
     fn normalize(&mut self) {
+        self.ruler_format = self.ruler_format.min(4);
         self.track_heights.retain(|_, height| height.is_finite());
         for height in self.track_heights.values_mut() {
             *height = height.clamp(36.0, 240.0);
@@ -438,6 +509,23 @@ pub(crate) fn arrange_view_state_from_workspace(workspace: &Workspace) -> Arrang
         .unwrap_or_default();
     state.normalize();
     state
+}
+
+/// Selection is recalled on an explicit save, but navigation alone is not an edit.
+pub(crate) fn clear_transient_workspace_selection(
+    workspace_state: &mut ProjectWorkspaceState,
+) -> Result<(), ProjectFileError> {
+    for workspace in &mut workspace_state.workspaces {
+        for window in &mut workspace.windows {
+            if let Some(serialized) = window.view_state.get_mut(ARRANGE_VIEW_STATE_KEY) {
+                let mut view: ArrangeViewState = serde_json::from_str(serialized)?;
+                view.selected_track_ids.clear();
+                view.selection_anchor_track_id = None;
+                *serialized = serde_json::to_string(&view)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn store_active_project_window_state(
@@ -1178,4 +1266,8 @@ mod tests {
         set_test_dock_geometry(&mut dock_state);
         serde_json::from_value(dock_state).expect("finite dock state should deserialize")
     }
+}
+
+fn default_timeline_zoom() -> f32 {
+    1.0
 }

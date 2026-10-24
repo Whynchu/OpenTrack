@@ -80,3 +80,8 @@ Still required: New Project/template/folder flow; track rename, drag reorder, ro
 ## Review result
 
 L1 was accepted and the user requested the L2 implementation. Project-window, Inspector, track-list, and Add Track source changes are present, with live screenshots and comparisons captured through `node_repl` and `@oai/sky`. Track creation, record enable, Project-child drag, two-track RWP reopen and new track pan/delay save/reopen have been exercised; this does not establish full L2 or audio parity. See the [M2 review report](../../_analysis-tools/reports/opentrack-comparisons/M2-review-report.md) for current captures, remaining layout/behavior gaps and build status. The [remote review workflow](reviews/remote-review-workflow.md) records the working desktop hook. Use the saved Cubase evidence for this checkpoint.
+
+
+## Project file naming (2026-10-23)
+
+New saves use **OpenTrack Project (`.opr`)**. The Open dialog also accepts existing `.otp` projects and legacy `.rwp` projects. Saving one of those older formats offers a new OPR path and preserves the original. The internal serialization identifier and version remain compatible; no project file contents are rewritten by changing the filename extension.

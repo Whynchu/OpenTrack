@@ -1,10 +1,10 @@
-# Cubase 5 plug-in rewrite inventory
+# Cubase 5 plug-in evidence inventory (development deferred)
 
-This is the source inventory for OpenTrack-'s original Rust plug-in rewrites. It records installed paths and bounded static evidence only. A filename or folder name does not establish a plug-in's controls, signal flow, or behavior.
+This historical inventory is retained as evidence. Bundled plug-in recreation is deferred; 1:1 copies are not required. Future plug-ins are designed individually, potentially studying purchased Waves products when requested. This table is not an implementation queue or part of the transport percentage. It records installed paths and bounded static evidence only. A filename or folder name does not establish a plug-in's controls, signal flow, or behavior.
 
 ## Evidence boundary
 
-Source: `../_analysis-tools/reports/cubase-install.evidence.json`, an REA safe artifact graph scan of the local reference install. The scan examined 2,839 entries, probed 44 files, and read 14,256 bytes. It recorded PE machine type `0x014c` (x86) for each of the 29 DLLs under `VSTPlugins`. It also listed three paths ending in `.vst3`, but those module contents were not selected for probing; their architecture is unknown from this report. None of the plug-ins were run during that scan.
+Source: `../../_analysis-tools/reports/cubase-install.evidence.json`, an REA safe artifact graph scan of the local reference install. The scan examined 2,839 entries, probed 44 files, and read 14,256 bytes. It recorded PE machine type `0x014c` (x86) for each of the 29 DLLs under `VSTPlugins`. A follow-up read-only REA export-table pass established x86 PE format and exports for three `.vst3` modules; those results are listed below. None of the plug-ins were run.
 
 The category names below reproduce their parent folders. They are inventory paths, not verified functional classifications. `Q.dll` appears under two distinct paths; the scan does not establish whether the files are identical.
 
@@ -39,16 +39,16 @@ The category names below reproduce their parent folders. They are inventory path
 | `VSTPlugins/SurroundDither/SurroundDither.dll` | PE x86 | Not started | Not started |
 | `VSTPlugins/Tools/MultiScope.dll` | PE x86 | Not started | Not started |
 | `VSTPlugins/Tools/SMPTEGenerator.dll` | PE x86 | Not started | Not started |
-| `VSTPlugins/Tools/TestGenerator.dll` | PE x86 | Manual-derived control list recorded; runtime study pending | Original DSP prototype integrated in the track insert chain; parity pending |
+| `VSTPlugins/Tools/TestGenerator.dll` | PE x86; REA export reader found `VSTPluginMain` (ordinal 1), Evidence `ev_4708b1f4b90e1a5066e5634fb892c6bdba0cd7b10dde50e6bf6eeb067bc95fc7` | Manual-derived control list recorded; runtime study pending | Original DSP prototype integrated in the track insert chain; parity pending |
 | `VSTPlugins/Vocoder/Vocoder.dll` | PE x86 | Not started | Not started |
 
 ## VST3 paths
 
 | Installed path | Static result | Behavioral study | Rust rewrite |
 | --- | --- | --- | --- |
-| `vst3/Cubase Plug-in Set.vst3` | Listed; module not probed | Not started | Not started |
-| `vst3/Groove Agent ONE.vst3` | Listed; module not probed | Not started | Not started |
-| `vst3/SynthEngine.vst3` | Listed; module not probed | Not started | Not started |
+| `vst3/Cubase Plug-in Set.vst3` | PE x86 (32-bit); exports `ExitDll`, `GetPluginFactory`, `InitDll`; SHA-256 `5302badb38ab2a54cd5c243fdb23d360a965a1f75b1bf0773149e93651e99662`; Evidence `ev_dab388ccec06490f47f00319140a48b547d2ecb4ecf4d0ea29f0fc6c707aa0fd` | Not started | Not started |
+| `vst3/Groove Agent ONE.vst3` | PE x86 (32-bit); exports `ExitDll`, `GetPluginFactory`, `InitDll`; SHA-256 `d766e3325c0d07726779b87ce5d6f4ed7d7bf3da669b06f13aa603e40ec1644a`; Evidence `ev_20aac02d8c8a270637aa592b80ca96186f98fd0933b7964d13cf7f7e609a6310` | Not started | Not started |
+| `vst3/SynthEngine.vst3` | PE x86 (32-bit); exports `ExitDll`, `GetPluginFactory`, `InitDll`; SHA-256 `9447f7d87e803e7b86495981b27fb7ffc3ae34d6223e700c5b39ceac487205ad`; Evidence `ev_d20a57ea6884ac23b21b76b4eea0983109dd17440af44dfabb6166550f34b268` | Not started | Not started |
 
 The adjacent `vst3/Groove Agent ONE.bin` file is also present in the inventory. Its relationship to the `.vst3` path and its contents have not been established, so it is not counted as a separate plug-in here.
 

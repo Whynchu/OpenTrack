@@ -12,7 +12,7 @@ struct MixerView {
 }
 
 #[derive(Clone, Copy)]
-enum Icon {
+pub(super) enum Icon {
     Text(&'static str),
     Phase,
     Edit,
@@ -177,7 +177,7 @@ fn icon(p: &egui::Painter, rect: Rect, icon: Icon, ink: Color32) {
     }
 }
 
-fn control(
+pub(super) fn control(
     ui: &mut egui::Ui,
     rect: Rect,
     id: impl std::hash::Hash + std::fmt::Debug,
@@ -325,7 +325,6 @@ pub(super) fn show_channels(
                         modified |= changed;
                         if select {
                             selected = Some(index as u32);
-                            modified = true;
                         }
                         if solo {
                             exclusive = Some(track.id);
@@ -710,7 +709,7 @@ fn input_row(ui: &mut egui::Ui, r: Rect, track: &mut Track) -> bool {
     modified
 }
 
-fn knob_graphic(ui: &egui::Ui, rect: Rect, gain: f32) {
+pub(super) fn knob_graphic(ui: &egui::Ui, rect: Rect, gain: f32) {
     let p = theme::palette(ui);
     let center = rect.center();
     ui.painter().circle_filled(center, 11.0, p.surface_raised);
@@ -1011,7 +1010,13 @@ fn strip(
         select |= ui
             .interact(name_rect, ui.id().with("select-channel"), Sense::click())
             .clicked();
-        footer(ui, r, &track.name, Some(index + 1));
+        footer(
+            ui,
+            r,
+            &track.name,
+            Some(index + 1),
+            project_controls::has_track_color(track).then(|| project_controls::track_color(track)),
+        );
     }
     (modified, select, exclusive)
 }
@@ -1142,23 +1147,30 @@ fn bus(ui: &mut egui::Ui, r: Rect, input: bool, _hide_routing: bool) {
         }
         let mut gain = 1.0;
         fader(ui, r, &mut gain, 0.0, false);
-        footer(ui, r, if input { "Stereo In" } else { "Stereo Out" }, None);
+        footer(
+            ui,
+            r,
+            if input { "Stereo In" } else { "Stereo Out" },
+            None,
+            None,
+        );
     }
 }
 
-fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>) {
+fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>, color: Option<Color32>) {
     let p = theme::palette(ui);
     let name_rect = Rect::from_min_size(
         Pos2::new(r.left(), r.bottom() - 29.0),
         Vec2::new(r.width() - 1.0, 16.0),
     );
-    ui.painter().rect_filled(name_rect, 0.0, p.canvas);
+    ui.painter()
+        .rect_filled(name_rect, 0.0, color.unwrap_or(p.canvas));
     text(
         ui,
         name_rect.shrink2(Vec2::new(3.0, 0.0)),
         name,
         11.0,
-        p.text,
+        color.map(project_controls::label_ink).unwrap_or(p.text),
         Align2::LEFT_CENTER,
     );
     let lower = Rect::from_min_size(
@@ -1188,6 +1200,38 @@ fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>) {
 }
 
 fn fader(ui: &mut egui::Ui, r: Rect, gain: &mut f32, peak: f32, enabled: bool) -> bool {
+    fader_impl(ui, r, gain, peak, enabled, "mixer-fader").0
+}
+
+pub(super) fn channel_settings_fader(
+    ui: &mut egui::Ui,
+    r: Rect,
+    gain: &mut f32,
+    peak: f32,
+    track_id: u64,
+) -> (bool, egui::Response) {
+    let (changed, response) = fader_impl(
+        ui,
+        r,
+        gain,
+        peak,
+        true,
+        ("channel-settings-fader", track_id),
+    );
+    (
+        changed,
+        response.expect("Channel Settings fader is always interactive"),
+    )
+}
+
+fn fader_impl(
+    ui: &mut egui::Ui,
+    r: Rect,
+    gain: &mut f32,
+    peak: f32,
+    enabled: bool,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+) -> (bool, Option<egui::Response>) {
     let p = theme::palette(ui);
     let top = r.top() + 104.0;
     let bottom = r.bottom() - 69.0;
@@ -1266,13 +1310,13 @@ fn fader(ui: &mut egui::Ui, r: Rect, gain: &mut f32, peak: f32, enabled: bool) -
         Stroke::new(1.2, Color32::from_gray(40)),
     );
     let mut changed = false;
-    if enabled {
+    let response = if enabled {
         let response = ui.interact(
             Rect::from_min_max(
                 Pos2::new(r.left() + 39.0, top),
                 Pos2::new(r.left() + 61.0, bottom),
             ),
-            ui.id().with("fader"),
+            ui.id().with(id_salt),
             Sense::click_and_drag(),
         );
         if response.clicked() || response.dragged() {
@@ -1292,7 +1336,10 @@ fn fader(ui: &mut egui::Ui, r: Rect, gain: &mut f32, peak: f32, enabled: bool) -
             changed |= *gain != 1.0;
             *gain = 1.0;
         }
-    }
+        Some(response)
+    } else {
+        None
+    };
     let level = Rect::from_min_size(
         Pos2::new(r.left() + 39.0, r.bottom() - 65.0),
         Vec2::new(r.width() - 42.0, 29.0),
@@ -1319,5 +1366,5 @@ fn fader(ui: &mut egui::Ui, r: Rect, gain: &mut f32, peak: f32, enabled: bool) -
     );
     ui.interact(level, ui.id().with("channel-level"), Sense::hover())
         .on_hover_text("Channel Level");
-    changed
+    (changed, response)
 }

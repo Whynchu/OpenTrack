@@ -9,7 +9,9 @@ mod recording;
 mod streaming;
 
 pub use midi::{MidiInputDevice, MidiInputEvent, MidiInputMessage, MidiInputStream};
-pub use recording::{AudioInputDevice, AudioMonitorBuffer, AudioRecorder, RecordingSummary};
+pub use recording::{
+    AudioInputDevice, AudioInputFormat, AudioMonitorBuffer, AudioRecorder, RecordingSummary,
+};
 pub use streaming::{AudioSource, PlaybackSource, StreamedWav, StreamingPlayback};
 
 use std::{
@@ -239,6 +241,7 @@ impl PlaybackTrackRuntime {
         let processor = ChannelProcessor::new(
             &settings.equalizer,
             &settings.inserts,
+            settings.inserts_bypassed,
             &settings.midi_notes,
             &settings.midi_controllers,
             settings.instrument_factory.as_ref(),
@@ -270,6 +273,7 @@ pub struct PlaybackTrackSettings {
     pub solo_defeat: bool,
     pub equalizer: ChannelEqualizer,
     pub inserts: Vec<InsertEffect>,
+    pub inserts_bypassed: bool,
 }
 
 // SAFETY: the only mutable access to the processor and peak accumulator is
@@ -1768,6 +1772,7 @@ fn oscillator_sample(waveform: InstrumentWaveform, phase: f32) -> f32 {
 
 struct ChannelProcessor {
     equalizer_bypassed: bool,
+    inserts_bypassed: bool,
     equalizer: [Biquad; 4],
     inserts: Vec<InsertProcessor>,
     instrument: Box<dyn InstrumentProcessor>,
@@ -1777,6 +1782,7 @@ impl ChannelProcessor {
     fn new(
         equalizer: &ChannelEqualizer,
         inserts: &[InsertEffect],
+        inserts_bypassed: bool,
         midi_notes: &[PlaybackMidiNote],
         midi_controllers: &[PlaybackMidiController],
         instrument_factory: &dyn InstrumentFactory,
@@ -1791,6 +1797,7 @@ impl ChannelProcessor {
             .collect();
         Self {
             equalizer_bypassed: equalizer.bypassed,
+            inserts_bypassed,
             equalizer: bands,
             inserts,
             instrument: instrument_factory.create_processor(
@@ -1810,12 +1817,41 @@ impl ChannelProcessor {
                 }
             }
         }
-        for insert in &mut self.inserts {
-            if insert.enabled() {
-                insert.process(left, right);
+        if !self.inserts_bypassed {
+            for insert in &mut self.inserts {
+                if insert.enabled() {
+                    insert.process(left, right);
+                }
             }
         }
     }
+}
+
+/// Magnitude of OpenTrack's actual channel EQ filters, for the channel editor curve.
+pub fn channel_equalizer_response_db(
+    equalizer: &workstation_core::project::ChannelEqualizer,
+    frequency_hz: f32,
+    sample_rate: u32,
+) -> f32 {
+    if equalizer.bypassed {
+        return 0.0;
+    }
+    let omega = std::f32::consts::TAU * frequency_hz / sample_rate.max(1) as f32;
+    let (sin, cos) = omega.sin_cos();
+    let (sin2, cos2) = (2.0 * omega).sin_cos();
+    equalizer
+        .bands
+        .iter()
+        .filter(|band| band.enabled)
+        .map(|band| {
+            let f = Biquad::from_band(band, sample_rate);
+            let numerator =
+                (f.b0 + f.b1 * cos + f.b2 * cos2).powi(2) + (f.b1 * sin + f.b2 * sin2).powi(2);
+            let denominator =
+                (1.0 + f.a1 * cos + f.a2 * cos2).powi(2) + (f.a1 * sin + f.a2 * sin2).powi(2);
+            10.0 * (numerator.max(1.0e-20) / denominator.max(1.0e-20)).log10()
+        })
+        .sum()
 }
 
 struct Biquad {
@@ -1841,7 +1877,7 @@ impl Biquad {
         let a = 10.0_f32.powf(band.gain_db / 40.0);
         let alpha = sin / (2.0 * q);
         let (b0, b1, b2, a0, a1, a2) = match band.filter {
-            FilterType::Bell => (
+            FilterType::Bell | FilterType::ParametricI | FilterType::ParametricII => (
                 1.0 + alpha * a,
                 -2.0 * cos,
                 1.0 - alpha * a,
@@ -1857,7 +1893,7 @@ impl Biquad {
                 -2.0 * cos,
                 1.0 - alpha,
             ),
-            FilterType::HighPass => (
+            FilterType::HighPass | FilterType::HighPassI | FilterType::HighPassII => (
                 (1.0 + cos) * 0.5,
                 -(1.0 + cos),
                 (1.0 + cos) * 0.5,
@@ -1865,12 +1901,24 @@ impl Biquad {
                 -2.0 * cos,
                 1.0 - alpha,
             ),
-            FilterType::LowShelf | FilterType::HighShelf => {
+            FilterType::LowShelf
+            | FilterType::LowShelfI
+            | FilterType::LowShelfII
+            | FilterType::LowShelfIII
+            | FilterType::LowShelfIV
+            | FilterType::HighShelf => {
                 let slope = (1.0 / q).clamp(0.1, 10.0);
                 let shelf_alpha =
                     sin * 0.5 * ((a + 1.0 / a) * (1.0 / slope - 1.0) + 2.0).max(0.0).sqrt();
                 let beta = 2.0 * a.sqrt() * shelf_alpha;
-                if band.filter == FilterType::LowShelf {
+                if matches!(
+                    band.filter,
+                    FilterType::LowShelf
+                        | FilterType::LowShelfI
+                        | FilterType::LowShelfII
+                        | FilterType::LowShelfIII
+                        | FilterType::LowShelfIV
+                ) {
                     (
                         a * ((a + 1.0) - (a - 1.0) * cos + beta),
                         2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
@@ -1946,6 +1994,24 @@ enum InsertProcessor {
 #[cfg(test)]
 mod processing_tests {
     use super::*;
+
+    #[test]
+    fn editor_curve_uses_enabled_filter_response_and_channel_bypass() {
+        let mut eq = workstation_core::project::ChannelEqualizer::default();
+        eq.bands[1] = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 6.0,
+            q: 1.0,
+        };
+        assert!((channel_equalizer_response_db(&eq, 1000.0, 48000) - 6.0).abs() < 0.01);
+        eq.bands[1].enabled = false;
+        assert_eq!(channel_equalizer_response_db(&eq, 1000.0, 48000), 0.0);
+        eq.bands[1].enabled = true;
+        eq.bypassed = true;
+        assert_eq!(channel_equalizer_response_db(&eq, 1000.0, 48000), 0.0);
+    }
 
     #[test]
     fn bell_eq_applies_requested_gain_at_center_frequency() {
@@ -2146,6 +2212,7 @@ mod processing_tests {
         let mut processor = ChannelProcessor::new(
             &ChannelEqualizer::default(),
             &[],
+            false,
             &[],
             &[],
             instrument_factory.as_ref(),
@@ -2415,6 +2482,7 @@ mod processing_tests {
                 solo_defeat: false,
                 equalizer: ChannelEqualizer::default(),
                 inserts: Vec::new(),
+                inserts_bypassed: false,
             }],
             1,
             48_000,

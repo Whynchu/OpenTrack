@@ -29,6 +29,17 @@ pub fn palette(ui: &egui::Ui) -> Palette {
     palette_for(ui.visuals())
 }
 
+pub fn toolbar_button_fill(visuals: &egui::Visuals) -> Color32 {
+    let from = visuals.widgets.inactive.bg_fill;
+    let amount = if visuals.dark_mode { 0.48 } else { 0.70 };
+    let mix = |a: u8| {
+        (f32::from(a) + (255.0 - f32::from(a)) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(mix(from.r()), mix(from.g()), mix(from.b()))
+}
+
 fn palette_for(visuals: &egui::Visuals) -> Palette {
     Palette {
         canvas: visuals.extreme_bg_color,
@@ -148,6 +159,15 @@ fn install_windows_font(ctx: &egui::Context) {
 }
 
 pub fn menu_bar_style(style: &mut egui::Style) {
+    let background = toolbar_button_fill(&style.visuals);
+    style.visuals.panel_fill = background;
+    style.visuals.widgets.inactive.bg_fill = background;
+    style.visuals.widgets.inactive.weak_bg_fill = background;
+    if style.visuals.dark_mode {
+        let foreground = Color32::from_gray(24);
+        style.visuals.widgets.noninteractive.fg_stroke.color = foreground;
+        style.visuals.widgets.inactive.fg_stroke.color = foreground;
+    }
     style.spacing.item_spacing = Vec2::ZERO;
     style.spacing.button_padding = Vec2::new(spacing::MENU_BAR_ITEM_PADDING_X, 1.0);
     style.spacing.interact_size = Vec2::new(18.0, spacing::MENU_ITEM_HEIGHT);
@@ -160,6 +180,15 @@ pub fn menu_popup_style(style: &mut egui::Style) {
     style.spacing.interact_size = Vec2::new(18.0, spacing::MENU_ROW_HEIGHT);
     style.spacing.menu_margin = egui::Margin::same(spacing::MENU_MARGIN);
     style.spacing.menu_width = spacing::MENU_WIDTH;
+    style.override_font_id = Some(FontId::proportional(type_size::MENU));
+}
+
+pub fn channel_settings_menu_popup_style(style: &mut egui::Style) {
+    style.spacing.item_spacing = Vec2::ZERO;
+    style.spacing.button_padding = Vec2::new(8.0, 1.0);
+    style.spacing.interact_size = Vec2::new(18.0, 22.0);
+    style.spacing.menu_margin = egui::Margin::same(2);
+    style.spacing.menu_width = 220.0;
     style.override_font_id = Some(FontId::proportional(type_size::MENU));
 }
 

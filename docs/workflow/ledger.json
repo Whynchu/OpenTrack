@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "version": "transport-v1",
+    "description": "Project transport pilot and follow-on interactions; whole DAW inventory not yet established.",
+    "baseline_complete": false,
+    "change_reason": "Initial scope from user directions on 2026-10-24; no prior metrics replaced."
+  },
+  "evidence": {
+    "intent-2026-10-24": {
+      "kind": "user",
+      "location": "docs/workflow/README.md#recorded-user-intent--2026-10-24",
+      "note": "Repository attestation of user conversation; behavior specification, not a Cubase measurement."
+    }
+  },
+  "requirements": [
+    {
+      "id": "seek-pointer",
+      "weight": 3,
+      "outcome": "Normal ruler drag continuously seeks with the marker under the pointer.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "snap-release",
+      "weight": 3,
+      "outcome": "On release the cursor snaps according to the specified active grid settings.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "mixed-scrub-zoom",
+      "weight": 3,
+      "outcome": "Horizontal seeking and vertical anchor-preserving zoom operate simultaneously.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "middle-pan",
+      "weight": 2,
+      "outcome": "Middle-button dragging pans the timeline.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "loop-range",
+      "weight": 3,
+      "outcome": "Top ruler pencil drag left to right creates a purple repeat region.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "skip-range",
+      "weight": 3,
+      "outcome": "Top ruler pencil drag right to left creates a red/orange skip region.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "range-endpoint-snap",
+      "weight": 2,
+      "outcome": "Range endpoint snap behavior matches the separately confirmed specification.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "unknown",
+        "evidence": []
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "cycle-audio",
+      "weight": 3,
+      "outcome": "Loop enable changes actual audible playback and cursor behavior at cycle boundaries.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "skip-audio",
+      "weight": 3,
+      "outcome": "Actual playback and cursor obey the confirmed skip-region semantics.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "unknown",
+        "evidence": []
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "drag-edge-scroll",
+      "weight": 3,
+      "outcome": "Both edges scroll while held during drag, stop away from edges, and retain pointer alignment.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "playback-follow",
+      "weight": 3,
+      "outcome": "Playback-follow scrolling obeys its explicit enable/mode specification.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "unknown",
+        "evidence": []
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "adaptive-ruler",
+      "weight": 2,
+      "outcome": "Ruler label and tick density adapts to zoom without changing snap resolution.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "wide-navigation",
+      "weight": 2,
+      "outcome": "Ruler/grid use available width and horizontal navigation continues beyond bar 50.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "ruler-regressions",
+      "weight": 2,
+      "outcome": "Pinned headers, scrollbars and ruler right-click behavior remain correct without invented tooltips.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    }
+  ],
+  "gates": {
+    "dirty-state": {
+      "description": "Seeking/view activity does not create an unintended save prompt.",
+      "status": "pending",
+      "evidence": []
+    },
+    "range-persistence": {
+      "description": "Range content survives native save/reopen and its edits follow documented undo/dirty semantics.",
+      "status": "pending",
+      "evidence": []
+    },
+    "audible-boundaries": {
+      "description": "Cycle and skip execute at correct audio boundaries with cursor/audio agreement.",
+      "status": "pending",
+      "evidence": []
+    },
+    "accepted-ui": {
+      "description": "Affected accepted Mixer and Project controls pass regression checks.",
+      "status": "pending",
+      "evidence": []
+    }
+  },
+  "workflows": [
+    {
+      "id": "seeking",
+      "weight": 3,
+      "requirements": [
+        "seek-pointer",
+        "snap-release"
+      ],
+      "gates": [
+        "dirty-state"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "gestures",
+      "weight": 3,
+      "requirements": [
+        "mixed-scrub-zoom",
+        "middle-pan"
+      ],
+      "gates": [
+        "dirty-state"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "ranges",
+      "weight": 3,
+      "requirements": [
+        "loop-range",
+        "skip-range",
+        "range-endpoint-snap"
+      ],
+      "gates": [
+        "range-persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "playback",
+      "weight": 3,
+      "requirements": [
+        "cycle-audio",
+        "skip-audio"
+      ],
+      "gates": [
+        "audible-boundaries",
+        "range-persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "navigation",
+      "weight": 2,
+      "requirements": [
+        "drag-edge-scroll",
+        "playback-follow",
+        "adaptive-ruler",
+        "wide-navigation",
+        "ruler-regressions"
+      ],
+      "gates": [
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    }
+  ]
+}

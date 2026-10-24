@@ -162,6 +162,13 @@ pub struct AudioInputDevice {
     pub name: String,
 }
 
+/// Default capture parameters reported for an input device, without opening a stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioInputFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
 /// Active default-device input stream plus the background WAV writer.
 pub struct AudioRecorder {
     stream: Option<cpal::Stream>,
@@ -180,6 +187,36 @@ pub struct AudioRecorder {
 }
 
 impl AudioRecorder {
+    /// Reads the device's default input format without starting capture.
+    pub fn input_format(device_id: Option<&str>) -> Result<AudioInputFormat, String> {
+        let host = cpal::default_host();
+        let device = if let Some(device_id) = device_id {
+            let device_id = DeviceId::from_str(device_id)
+                .map_err(|error| format!("invalid audio input device identifier: {error}"))?;
+            host.device_by_id(&device_id).ok_or_else(|| {
+                "the selected audio input device is no longer available".to_owned()
+            })?
+        } else {
+            host.default_input_device()
+                .ok_or_else(|| "no default audio input device is available".to_owned())?
+        };
+        let config = device
+            .default_input_config()
+            .map_err(|error| format!("could not read the input format: {error}"))?;
+        let format = AudioInputFormat {
+            sample_rate: config.sample_rate(),
+            channels: config.channels(),
+        };
+        if format.sample_rate == 0 || !(1..=2).contains(&format.channels) {
+            return Err(format!(
+                "the default input format is not supported ({channels} channels at {sample_rate} Hz)",
+                channels = format.channels,
+                sample_rate = format.sample_rate
+            ));
+        }
+        Ok(format)
+    }
+
     /// Lists input-capable devices without opening audio streams.
     pub fn available_input_devices() -> Result<Vec<AudioInputDevice>, String> {
         let host = cpal::default_host();
@@ -996,6 +1033,7 @@ mod tests {
                 solo_defeat: false,
                 equalizer: workstation_core::project::ChannelEqualizer::default(),
                 inserts: Vec::new(),
+                inserts_bypassed: false,
             }],
             1,
             48_000,
