@@ -61,7 +61,7 @@ User requested polish of the existing pieces, excluding Compressor. The current 
 
 ## Current position — exclusive Mixer fidelity
 
-The user narrowed work exclusively to Mixer. Its measured renderer is now isolated in crates/workstation-app/src/mixer.rs, with corrected fader/meter order, full channel button stacks and two-column sidebar. Live Mixer bounds match(5,579),1881x449. The user accepted the visual direction and requested the e glyph be raised slightly; the final build moves it up1.5px. [Mixer review](../../_analysis-tools/reports/opentrack-comparisons/M3-mixer-focus-review.md) and its97-observation coverage table separate working controls from disabled backend gaps. Channel Settings, Compressor and Transport were excluded; L4 remains untouched. Pause for the updated glyph screenshot review. Keep subsequent work exclusive to Mixer unless the user changes scope.
+The user narrowed work exclusively to Mixer. Its measured renderer is now isolated in crates/opentrack-app/src/mixer.rs, with corrected fader/meter order, full channel button stacks and two-column sidebar. Live Mixer bounds match(5,579),1881x449. The user accepted the visual direction and requested the e glyph be raised slightly; the final build moves it up1.5px. [Mixer review](../../_analysis-tools/reports/opentrack-comparisons/M3-mixer-focus-review.md) and its97-observation coverage table separate working controls from disabled backend gaps. Channel Settings, Compressor and Transport were excluded; L4 remains untouched. Pause for the updated glyph screenshot review. Keep subsequent work exclusive to Mixer unless the user changes scope.
 
 ### Mixer optical centering and feature audit
 

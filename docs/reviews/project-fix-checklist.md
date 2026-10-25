@@ -42,7 +42,7 @@ Track reordering is now implemented in source for a single dragged track, with a
 
 ## Source iteration 2 — pending live review
 
-Changed source: `app.rs`, `project_file.rs`, `project_controls.rs`, `project_inspector.rs`, `workstation-core/src/project.rs`, and the `.opr` workflow text in `AGENTS.md` and `basic-track-workflow.md`. `cargo check -p opentrack` succeeds. No screenshot was captured during this iteration because the user asked that the running programs not be touched; the existing external baseline screenshots therefore do not show these changes.
+Changed source: `app.rs`, `project_file.rs`, `project_controls.rs`, `project_inspector.rs`, `opentrack-core/src/project.rs`, and the `.opr` workflow text in `AGENTS.md` and `basic-track-workflow.md`. `cargo check -p opentrack` succeeds. No screenshot was captured during this iteration because the user asked that the running programs not be touched; the existing external baseline screenshots therefore do not show these changes.
 
 | Reference | Control / behavior | Expected evidence | Current source location | Current screenshot | Match status |
 | --- | --- | --- | --- | --- | --- |

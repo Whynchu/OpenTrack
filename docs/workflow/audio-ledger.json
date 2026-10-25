@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "version": "audio-interface-v1",
+    "description": "Windows endpoint selection, capture, monitoring, recording, low-latency modes, and hardware qualification; excludes third-party plug-in hosting and whole-DAW readiness.",
+    "baseline_complete": true,
+    "change_reason": "Initial frozen audio scope from T012. Weights: core workflow 3, common requirement 2, qualification/polish 1 or 3 according to workflow criticality."
+  },
+  "evidence": {
+    "t012-source-review": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/wasapi_backend.rs, recording.rs, lib.rs; crates/opentrack-app/src/app.rs",
+      "identity": "exe SHA-256 50632E097BE3518FF49379575B40FA4C87EED2A549AADA414DE3DAC16C36FB13; source hashes for app.rs, project_file.rs, wasapi_backend.rs, recording.rs, lib.rs are recorded in tasks/T012-wasapi-low-latency.md"
+    },
+    "t012-user-intent": {
+      "kind": "user",
+      "location": "docs/workflow/README.md#recorded-user-intent--2026-10-24",
+      "note": "User's target-device, shared-audio, optional-exclusive, low-latency and track-routing requirements; not runtime evidence."
+    }
+  },
+  "requirements": [
+    {
+      "id": "endpoint-discovery",
+      "weight": 3,
+      "outcome": "Capture and render endpoints are selectable independently by stable ID, and endpoint enumeration failures are visible.",
+      "implementation": "complete",
+      "source_evidence": ["t012-source-review"],
+      "reference": {"status": "user_specified", "evidence": ["t012-user-intent"]},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Endpoint selection and enumeration diagnostics exist in source; Onyx discovery on this PC is not verified."
+    },
+    {
+      "id": "independent-input-test",
+      "weight": 2,
+      "outcome": "An input-test session runs independently of Record and shows distinct capture-channel meters.",
+      "implementation": "complete",
+      "source_evidence": ["t012-source-review"],
+      "reference": {"status": "user_specified", "evidence": ["t012-user-intent"]},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "The Windows input probe is independent of recording and can meter up to 64 channels; physical signal is unverified."
+    },
+    {
+      "id": "shared-low-latency-and-exclusive",
+      "weight": 3,
+      "outcome": "Windows offers shared low-latency, visible shared-compatible fallback, and explicit opt-in exclusive stream modes.",
+      "implementation": "complete",
+      "source_evidence": ["t012-source-review"],
+      "reference": {"status": "user_specified", "evidence": ["t012-user-intent"]},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "The WASAPI paths are implemented; actual supported periods and endpoint behavior are not measured."
+    },
+    {
+      "id": "per-track-monitor-processing",
+      "weight": 3,
+      "outcome": "A monitored track selects a physical input channel and sends it through that track's processing and output route.",
+      "implementation": "partial",
+      "source_evidence": ["t012-source-review"],
+      "reference": {"status": "user_specified", "evidence": ["t012-user-intent"]},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Stereo/Left/Right capture and Stereo/Left/Right/Disconnected output routes exist, but there is no general typed bus matrix or arbitrary endpoint channel mapping."
+    },
+    {
+      "id": "isolated-recording",
+      "weight": 3,
+      "outcome": "Armed tracks record their selected input channel to separate synchronized WAV takes through a bounded writer path.",
+      "implementation": "complete",
+      "source_evidence": ["t012-source-review"],
+      "reference": {"status": "user_specified", "evidence": ["t012-user-intent"]},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Per-track stereo/left/right routes and separate files are present; synchronization and isolation need two-input hardware review."
+    },
+    {
+      "id": "device-recovery-and-transaction",
+      "weight": 2,
+      "outcome": "Failed device changes preserve valid streams, explain causes, and recover after endpoint loss or reclaim.",
+      "implementation": "partial",
+      "source_evidence": ["t012-source-review"],
+      "reference": {"status": "user_specified", "evidence": ["t012-user-intent"]},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Explicit release/reopen and generic stream errors exist. Atomic capture+render rollback, endpoint hot-plug notifications, and a complete actionable error taxonomy are not implemented."
+    },
+    {
+      "id": "measured-hardware-qualification",
+      "weight": 3,
+      "outcome": "Onyx shared/exclusive behavior, round-trip latency, other-app coexistence, and sustained stability are measured and reported.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {"status": "unknown", "evidence": []},
+      "runtime": {"status": "pending", "evidence": []},
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "This is a hardware qualification gate and has not been run."
+    }
+  ],
+  "gates": {
+    "onyx-inputs": {"description": "Onyx inputs 1 and 2 appear and produce independent meters.", "status": "pending", "evidence": []},
+    "shared-coexistence": {"description": "Monitoring/recording and browser/game audio work together in shared mode.", "status": "pending", "evidence": []},
+    "track-routing": {"description": "Track processing and selected input/output routes produce isolated expected signals.", "status": "pending", "evidence": []},
+    "exclusive-recovery": {"description": "Exclusive access and release behave as selected, with safe return to shared mode.", "status": "pending", "evidence": []},
+    "latency-and-endurance": {"description": "Physical round-trip latency and sustained stability are measured on the target device.", "status": "pending", "evidence": []}
+  },
+  "workflows": [
+    {"id": "input-discovery", "weight": 3, "requirements": ["endpoint-discovery", "independent-input-test"], "gates": ["onyx-inputs"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []},
+    {"id": "monitor-and-record", "weight": 3, "requirements": ["per-track-monitor-processing", "isolated-recording"], "gates": ["shared-coexistence", "track-routing"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []},
+    {"id": "device-modes-and-qualification", "weight": 3, "requirements": ["shared-low-latency-and-exclusive", "device-recovery-and-transaction", "measured-hardware-qualification"], "gates": ["exclusive-recovery", "latency-and-endurance"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []}
+  ]
+}

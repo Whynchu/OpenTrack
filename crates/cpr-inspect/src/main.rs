@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use workstation_core::cpr::{
+use opentrack_core::cpr::{
     CprStructure, decode_root_label_strings, printable_ascii_runs,
     printable_ascii_runs_with_offsets,
 };

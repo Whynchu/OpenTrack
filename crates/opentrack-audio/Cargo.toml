@@ -1,0 +1,21 @@
+[package]
+name = "opentrack-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+local-asio = ["dep:maolan-asio"]
+
+[dependencies]
+arc-swap = "=1.9.2"
+cpal = "=0.18.2"
+hound = "=3.5.1"
+opentrack-core = { path = "../opentrack-core" }
+
+[target.'cfg(windows)'.dependencies]
+maolan-asio = { path = "../../vendor/maolan-asio", version = "=0.0.1", optional = true }
+wasapi = "=0.26.0"
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_Audio"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Media", "Win32_Media_Audio", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

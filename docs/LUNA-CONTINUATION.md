@@ -100,7 +100,7 @@ Report briefly: what changed, what was exercised, what the comparison shows, and
 
 - All active OpenTrack windows were closed through SKY; the final fresh window list was empty.
 - Inspector level, pan, and delay controls have earlier review artifacts in the external comparison folder.
-- The current Add Audio source requests `Vec2::new(338.0, 128.0)` in `crates/workstation-app/src/app.rs`. A successful build was recorded, but its final dialog dimensions still require a fresh live comparison. The older comparison used a 338 x 160 OpenTrack crop against a 338 x 162 reference; do not present it as verification of the latest build.
+- The current Add Audio source requests `Vec2::new(338.0, 128.0)` in `crates/opentrack-app/src/app.rs`. A successful build was recorded, but its final dialog dimensions still require a fresh live comparison. The older comparison used a 338 x 160 OpenTrack crop against a 338 x 162 reference; do not present it as verification of the latest build.
 - Read the external `M2-review-report.md` and latest user approvals before deciding whether M2 is accepted and M3 may begin.
 
 ## Done means all five

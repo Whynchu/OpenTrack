@@ -1,6 +1,6 @@
 # Legacy 32-bit plug-in hosting investigation
 
-This note evaluates whether the x64 workstation should host original x86 plug-ins. It is separate from deferred, individually designed first-party effects and instruments; Cubase bundled rewrites are no longer required.
+This note evaluates whether the x64 OpenTrack should host original x86 plug-ins. It is separate from deferred, individually designed first-party effects and instruments; Cubase bundled rewrites are no longer required.
 
 ## Local evidence
 

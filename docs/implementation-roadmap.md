@@ -1,6 +1,6 @@
 # OpenTrack- implementation roadmap
 
-This roadmap tracks the path from the current prototype to a dependable audio workstation. The product target is broad Cubase 5 workflow coverage in original Rust code. Compatibility claims require evidence from the reference application; matching control names alone is not enough.
+This roadmap tracks the path from the current prototype to a dependable OpenTrack DAW. The product target is broad Cubase 5 workflow coverage in original Rust code. Compatibility claims require evidence from the reference application; matching control names alone is not enough.
 
 ## Working method
 

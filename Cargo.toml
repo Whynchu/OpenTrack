@@ -1,11 +1,12 @@
 [workspace]
 members = [
-    "crates/workstation-core",
-    "crates/workstation-audio",
+    "crates/opentrack-core",
+    "crates/opentrack-audio",
     "crates/cpr-inspect",
-    "crates/workstation-app",
+    "crates/opentrack-app",
 ]
 resolver = "3"
+exclude = ["vendor/maolan-asio"]
 
 [workspace.package]
 version = "0.1.0"

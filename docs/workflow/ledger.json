@@ -1,16 +1,124 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "transport-v1",
+    "version": "transport-v4",
     "description": "Project transport pilot and follow-on interactions; whole DAW inventory not yet established.",
-    "baseline_complete": false,
-    "change_reason": "Initial scope from user directions on 2026-10-24; no prior metrics replaced."
+    "baseline_complete": true,
+    "change_reason": "T009 refines enabled grid-field presentation and toolbar glyphs. Panel/window toggle coverage is recorded in T009 without adding unrelated items to the transport-v4 denominator. Current live review remains pending."
   },
   "evidence": {
     "intent-2026-10-24": {
       "kind": "user",
       "location": "docs/workflow/README.md#recorded-user-intent--2026-10-24",
       "note": "Repository attestation of user conversation; behavior specification, not a Cubase measurement."
+    },
+    "transport-source-audit": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/app.rs at main commit cbd9835 (transport baseline) and current working tree",
+      "identity": "git:cbd9835 plus T002 source change"
+    },
+    "grid-source-audit": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/app.rs toolbar and crates/opentrack-core/src/project.rs position-beat units at main cbd9835",
+      "identity": "git:cbd9835"
+    },
+    "timeline-view-state": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/project_file.rs ArrangeViewState at main cbd9835",
+      "identity": "git:cbd9835"
+    },
+    "t002-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T002-snap-release.md#source-and-build-verification",
+      "identity": "git:cbd9835; exe:sha256:025AA199F7FC0852B37DE5581915D79C12949BBFC7D317F7FC58C0CA0D1B36DA; app.rs:sha256:CEC003FA65D026B7E751EF825381F17B56DF9883A697F355A4E591FE5C30467F; project_file.rs:sha256:72A859C50ECE8BE7D5920F9B06894153405FFCB8EB8DE2E4379AA1F86CABFD16; timeline.rs:sha256:8F2251E1A6EE66812DCF13AB0F4EAB385E293E717818C5013A50EF44B910F4FE; main.rs:sha256:9308BB47C2FF30797669DDAA53B241E215B264CB3A37987A519CD2EDCFDB9E21"
+    },
+    "t002-partial-runtime": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T002-snap-release.md#partial-runtime-checks--2026-10-24",
+      "identity": "exe:sha256:025AA199F7FC0852B37DE5581915D79C12949BBFC7D317F7FC58C0CA0D1B36DA; app.rs:sha256:CEC003FA65D026B7E751EF825381F17B56DF9883A697F355A4E591FE5C30467F; project_file.rs:sha256:72A859C50ECE8BE7D5920F9B06894153405FFCB8EB8DE2E4379AA1F86CABFD16; timeline.rs:sha256:8F2251E1A6EE66812DCF13AB0F4EAB385E293E717818C5013A50EF44B910F4FE",
+      "note": "Historical self-report superseded by user failure and subsequent source changes; not acceptance of any current binary."
+    },
+    "t003-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T003-directional-ruler-ranges.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:39846420C9B1FABEC70651448FE78DBC06BEF63478F990B460747C1F6915B4B4; app.rs:sha256:6AEA5BC16274331E8FFB4DF12EBCA1C9EBE0753CE66874BAD3269C5E52AF9A1B; timeline.rs:sha256:033A05E24A9A9BD29DDDD6F0F0CEC7D35B6E8A1BE2326986E1E27F84CBD637C7; project_file.rs:sha256:94C9956EB106406FE88C467C3607A2CA9C996B89D3DD2D90D085A97E71227144; core-project.rs:sha256:DE84304607D308E8E1400488536BCB7F87223D5BF19D0356EC3E49DDAC9CA33C; audio-lib.rs:sha256:EB4F3EA3AF2C5E3929FA11183764372CFCD281B09C58797E105D3C2D4AB0940C"
+    },
+    "t002-user-failure": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T002-snap-release.md#user-failure-and-correction--2026-10-24",
+      "identity": "User-reported failed check; exe:sha256:025AA199F7FC0852B37DE5581915D79C12949BBFC7D317F7FC58C0CA0D1B36DA",
+      "note": "User reports cursor did not snap and drawable loop sections were absent. Previous partial self-report is superseded. New binary awaits user check."
+    },
+    "t003-user-loop-skip": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T003-directional-ruler-ranges.md",
+      "identity": "User confirmation of delivered exe:sha256:39846420C9B1FABEC70651448FE78DBC06BEF63478F990B460747C1F6915B4B4",
+      "note": "User reports it loops fine and skip also worked. Audio-media fixture, precise boundaries, persistence and snap were not explicitly specified. Range rendering subsequently changed in T004."
+    },
+    "t004-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T004-range-polish.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:76416EC3F931E4BCD550BC18C2F3D447C0D6AAF16B0D7CFAA60F32F0E85056F5; app.rs:sha256:294E85343C38520A66AE7AA2BA0D6923DFCE51C08ABB5405CDF1C1A2A33A1289; timeline.rs:sha256:BD16422F5FCAF065BDDE034CEEA670F4A147E182B718BB7D034AFE3F25A2EA04"
+    },
+    "t005-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T005-range-move-and-mixed-ruler.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:10348198E8F94CC0EB19518560243DC0131A2E3FADF744F51FAF7F2CAE60E464; app.rs:sha256:8180A91FE9C0F302E27F61ACD07354947D27F71E161ECCE96E714AD752BCB479; timeline.rs:sha256:D96E0BDC76FF36939A2EBBE3190C78EC97F88D3502B92601780ED01E427710F2"
+    },
+    "t006-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T006-range-handles-and-hand-cursors.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:C2705180F527BC846EB34E11931C5BA89920DD9A32D27DB4BA66DA7A68D1B3A7; app.rs:sha256:1D3EFAE2B2209AD13FC09DECD7E91AB31226BEE9D62B8225A19E2B80E6B7D434; timeline.rs:sha256:D488618134F8EF6C8797B58E258B2689F60BEEF7C25986F32A83F3735F1DD611"
+    },
+    "t006-user-resize": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T006-range-handles-and-hand-cursors.md",
+      "identity": "User feedback for delivered exe:sha256:C2705180F527BC846EB34E11931C5BA89920DD9A32D27DB4BA66DA7A68D1B3A7",
+      "note": "User reports extension worked well; rejected custom held-hand appearance and requested four-way move cursor. Detailed modes/boundaries/current visuals remain pending."
+    },
+    "t007-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T007-ruler-subdivisions.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:4FD865CF370BE82707BB910971E4AB99A5FE1D6B53D33DB2CF583698BD36335E; app.rs:sha256:FC05D7F3224DFFD3A51F87AA10F1D8F86EAA2FCEBA8C323360080FC6E46ACFB2; timeline.rs:sha256:27B80128DB4B7673813AC7BFA12972AAE7FC93D7F9B78B5F595D1A978F5EDCCC; project_controls.rs:sha256:F1A56FF32FE33EEC1A5344FA403684A4C3449484CC391D901C2ADBEBA4382472"
+    },
+    "t008-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T008-grid-and-quantize.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:26C78F5DEED2C03BE31A26ECD5558806A5F6E0A735FE3765BFC8531C92DE4933; app.rs:sha256:7968A58EF0A4B609C7D9F9D514E98885861FFC15385B6E89B65E7E3004404887; timeline.rs:sha256:E13D7B0D16D9C27C34C2BC9E0042A18FF7892C6B4115A9F9208A78D758DF673A; project_file.rs:sha256:E303EFCB4282F46264A6695EA89FFFAE688E735057A2B85DB51B70BC3E1705F3"
+    },
+    "t009-source-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T009-toolbar-polish-and-panel-toggles.md",
+      "identity": "git:cbd9835 plus working tree; exe:sha256:630599410BE46E7D4A0911262D5EA26228DCC1CB08D69D6E1714253062EC6725; app.rs:sha256:E598F44695F2C68FCC9F67DD38C07F0A65ACFD6381DE089D8435CCED8CD0BA55; icons.rs:sha256:B80887A6B7EFE32A6C3895772470604CBD21C344DD95B87DD9213CEB91C1292B; channel_settings.rs:sha256:3E740B2C0A1FF01B01B71401172171F4BD56C6626698772008F5C7791659D75F"
+    },
+    "t009-simple-icons": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T009-toolbar-polish-and-panel-toggles.md#simple-icon-follow-up--2026-10-24",
+      "identity": "exe:sha256:00AB986E197E560D2D5A630131B5220DC4675D2F650A5B9EA1EA52AA10C3FA19; icons.rs:sha256:4293398B324A18687F1F6BA3CB47A6F140EE06C505009BAC6B0EAD17D68092C7",
+      "note": "User-directed simpler toolbar appearance. Two headless toolbar checks and build pass; synthetic preview inspected. Live appearance pending; transport-v4 denominator unchanged."
+    },
+    "t010-hover-and-menu-font": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T010-hover-feedback-and-menu-text.md",
+      "identity": "exe:sha256:E8A5C7E76DDFDED1EC1D40D248E7545E4585037BCF3043C734DFDB610BB896F8; theme.rs:sha256:DAF72CAC9C75EFA8A13BDFA0CC2363996D1AE7E7F961ECB4EE4BA663269F0CDD; mixer.rs:sha256:C3819A2C493EEF40BE6FA8CBE7F1AE37D1F26DA3FC1D2F56941E75E83344C260; channel_settings.rs:sha256:ED43CDAFC3FA92451EE2506E98DE8B265F46DF99DB73F2292A90619DA4298A27; project_controls.rs:sha256:A88960CDE654FB145BDD22613342A2D8FBB494ADD2065AB2F67C34C40726762F; project_inspector.rs:sha256:E7EC0C9572FC50F59849B30C5EB52E0DF99C66A47C933D7191F94DF0EA9B0726; app.rs:sha256:E4DAE772B071AF6806F32DA9E690130504AA144EFD019502BFB916987E51BCD9",
+      "note": "User-requested consistent hover feedback and clearer menus. Release build and formatting pass; no runtime or user acceptance claimed. No transport-v4 denominator change."
+    },
+    "t011-audio-io-audit": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T011-audio-interface-and-routing.md",
+      "identity": "git:cbd9835 plus current working tree; audit only; executable unchanged from T010",
+      "note": "Source gaps and registry driver presence audited; user confirms Onyx Producer 2-2. No hardware/runtime validation; transport-v4 denominator unchanged."
+    },
+    "t011-device-session-build": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T011-audio-interface-and-routing.md#device-session-foundation-implementation-2026-10-24",
+      "identity": "exe:sha256:5785DBD36E6EBA6EC0CF26A905C60EF61D6A02025A08C28DC0092F9242498A59; app.rs:sha256:5BCB659CF24B4C59D7A709638F320035DAD94F65DC7BF28B5467F3621C6CDA45; audio-lib.rs:sha256:804622BA6B8F7BC738AA8A313668606A756D54D2FC4BA44759C30A99B00D0295; recording.rs:sha256:C2069E3157E76915C0CB481BF5D2A04FEF2272BAE0B921FD40049DACCE2E6CA1; devices.rs:sha256:692E22EC021EFC0D4C59E56FAF82281A55F44DEA9DAE039457F4AE107E5F9F88",
+      "note": "Cross-host selection/configuration source and Windows x64 build evidence. The app was not launched and no device/audio behavior was verified. No transport-v4 denominator change."
+    },
+    "t012-input-failure-and-plan": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T012-wasapi-low-latency.md",
+      "note": "User reports no usable input devices; requests lowest stable latency, other-app audio and optional exclusive. Research plan only; no hardware verification or change to transport-v4 denominator."
     }
   },
   "requirements": [
@@ -18,8 +126,14 @@
       "id": "seek-pointer",
       "weight": 3,
       "outcome": "Normal ruler drag continuously seeks with the marker under the pointer.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t002-source-build",
+        "t003-source-build",
+        "t005-source-build",
+        "t008-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -31,14 +145,22 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Current ruler handlers use a shared pointer-to-beats transform; actual headless seek/release tests pass. Live continuous alignment remains pending."
     },
     {
       "id": "snap-release",
       "weight": 3,
       "outcome": "On release the cursor snaps according to the specified active grid settings.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "grid-source-audit",
+        "t002-source-build",
+        "t003-source-build",
+        "t005-source-build",
+        "t008-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -50,14 +172,19 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "T008 uses one selected-grid resolver: Bar=project measure, Beat=one quarter-note beat, Use Quantize=selected straight/triplet/dotted duration; Snap off is free. Actual popup and seek/range gesture tests pass. Live acceptance pending."
     },
     {
       "id": "mixed-scrub-zoom",
       "weight": 3,
       "outcome": "Horizontal seeking and vertical anchor-preserving zoom operate simultaneously.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t005-source-build",
+        "t007-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -69,14 +196,19 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "T005 removes exclusive direction locking. Each captured update applies vertical anchor-preserving zoom, independent accumulated edge scroll, and pointer seeking through the resulting transform. Both initial movement directions and project-start anchor restoration pass headless interaction tests; live alignment pending."
     },
     {
       "id": "middle-pan",
       "weight": 2,
       "outcome": "Middle-button dragging pans the timeline.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t006-source-build",
+        "t007-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -88,14 +220,21 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Middle drag starts in ruler or canvas, avoids a first-press jump, pans both axes and stops without content mutation/seek. T007 uses the native four-way held cursor instead of the rejected custom hand. Headless interaction passes; current live review pending."
     },
     {
       "id": "loop-range",
       "weight": 3,
       "outcome": "Top ruler pencil drag left to right creates a purple repeat region.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build",
+        "t004-source-build",
+        "t005-source-build",
+        "t006-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -107,14 +246,21 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Top 7px ruler strip previews/commits a purple left-to-right cycle range, with pencil cursor, captured release, cancellation and edge scroll. One persistent range; headless handler tests pass, live visual review pending. User confirmed functional loop/skip operation on T003. T004 adds monochrome pencil, inward corner flags, matching active Cycle button colors and full-height faint range tint; current visual acceptance pending. T005 adds hand-driven translation over the existing range; original drawing begins outside it. Current interaction review pending; historical T003 functional user evidence remains in the evidence registry."
     },
     {
       "id": "skip-range",
       "weight": 3,
       "outcome": "Top ruler pencil drag right to left creates a red/orange skip region.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build",
+        "t004-source-build",
+        "t005-source-build",
+        "t006-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -126,14 +272,19 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Top ruler right-to-left drag commits orange Skip mode with ascending stored bounds. Handler tested headlessly, live behavior pending. User confirmed functional loop/skip operation on T003. T004 adds monochrome pencil, inward corner flags, matching active Cycle button colors and full-height faint range tint; current visual acceptance pending. T005 adds hand-driven translation over the existing range; original drawing begins outside it. Current interaction review pending; historical T003 functional user evidence remains in the evidence registry."
     },
     {
       "id": "range-endpoint-snap",
       "weight": 2,
       "outcome": "Range endpoint snap behavior matches the separately confirmed specification.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "partial",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build",
+        "t008-source-build"
+      ],
       "reference": {
         "status": "unknown",
         "evidence": []
@@ -143,14 +294,18 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "T008 endpoints use the shared selected interval, with free positions when Snap is off. Settings/defaults persist and selected-grid draw/resize tests pass. Exact reference endpoint policies remain unmeasured."
     },
     {
       "id": "cycle-audio",
       "weight": 3,
       "outcome": "Loop enable changes actual audible playback and cursor behavior at cycle boundaries.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -159,34 +314,47 @@
       },
       "runtime": {
         "status": "pending",
-        "evidence": []
+        "evidence": [
+          "t003-user-loop-skip"
+        ]
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Cycle state and core mode reach the audio plan. The callback applies looping per frame; offline buffer-boundary test passes. Listening and live cursor/audio agreement pending. User reports functional loop and skip success on T003; audible fixture and precise cursor/audio boundary agreement remain unmeasured, so full runtime requirement acceptance is pending."
     },
     {
       "id": "skip-audio",
       "weight": 3,
       "outcome": "Actual playback and cursor obey the confirmed skip-region semantics.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build"
+      ],
       "reference": {
         "status": "unknown",
         "evidence": []
       },
       "runtime": {
         "status": "pending",
-        "evidence": []
+        "evidence": [
+          "t003-user-loop-skip"
+        ]
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Skip mode jumps [start,end) to end per audio frame when Cycle is enabled; no-engine fallback follows the same mode. Offline boundary test passes. Reference semantics and audible/live acceptance pending. User reports functional loop and skip success on T003; audible fixture and precise cursor/audio boundary agreement remain unmeasured, so full runtime requirement acceptance is pending."
     },
     {
       "id": "drag-edge-scroll",
       "weight": 3,
       "outcome": "Both edges scroll while held during drag, stop away from edges, and retain pointer alignment.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build",
+        "t005-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -198,14 +366,17 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Existing seek edge scroll retained; range drawing also uses elapsed-time edge scroll. Pure held-edge checks pass; live regression pending."
     },
     {
       "id": "playback-follow",
       "weight": 3,
       "outcome": "Playback-follow scrolling obeys its explicit enable/mode specification.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "partial",
+      "source_evidence": [
+        "transport-source-audit"
+      ],
       "reference": {
         "status": "unknown",
         "evidence": []
@@ -215,14 +386,20 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "autoscroll_enabled is persisted and its toolbar toggles it; no playback-follow consumer found."
     },
     {
       "id": "adaptive-ruler",
       "weight": 2,
       "outcome": "Ruler label and tick density adapts to zoom without changing snap resolution.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t004-source-build",
+        "t007-source-build",
+        "t008-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -234,14 +411,18 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "T007 preserves globally anchored power-of-two bar strides and refines to quarter/eighth/sixteenth grid ticks as space permits. Bars+Beats fractional labels appear according to measured label width; actual emitted label text is tested headlessly through finer and coarser zooms. Shared zoom range is now 0.25-256. Snap remains independent. Live review/reference thresholds pending."
     },
     {
       "id": "wide-navigation",
       "weight": 2,
       "outcome": "Ruler/grid use available width and horizontal navigation continues beyond bar 50.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -253,14 +434,23 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Timeline runway now grows with range bounds and current navigation as well as cursor/material; available width is retained. Live regression pending."
     },
     {
       "id": "ruler-regressions",
       "weight": 2,
       "outcome": "Pinned headers, scrollbars and ruler right-click behavior remain correct without invented tooltips.",
-      "implementation": "unassessed",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "transport-source-audit",
+        "t003-source-build",
+        "t004-source-build",
+        "t005-source-build",
+        "t006-source-build",
+        "t007-source-build",
+        "t008-source-build"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -272,7 +462,79 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "One ruler response retains its context menu; a top range zone and lower seek zone prevent gesture conflicts. No ruler tooltip added. Live pinned-header/scrollbar/menu regression pending."
+    },
+    {
+      "id": "range-move",
+      "weight": 2,
+      "outcome": "Hand dragging the existing ruler range translates both bounds, preserving its duration, mode and grab offset.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t005-source-build",
+        "t006-source-build",
+        "t007-source-build",
+        "t008-source-build"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Rigid translation preserves fractional length, mode and grab offset, with Bar-delta snap and project clamps. T007 removes rejected custom fist: native pointing hand on hover, native four-way Move while held. Headless actual range-move regression passes; current live review pending. T008 replaces fixed Bar spacing with the shared selected interval; rigid moves snap delta, resizing snaps the moving boundary. Selected 1/8 gesture regression passes."
+    },
+    {
+      "id": "range-resize",
+      "weight": 2,
+      "outcome": "Dragging either corner triangle extends or shortens only that boundary while retaining the opposite boundary and Loop/Skip mode.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t006-source-build",
+        "t008-source-build"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Handle capture preserves grab offset; snapped/free resizing respects project bounds and prevents crossing/empty ranges. Preview, release commit and Undo share existing range path. Tests cover both handles and both modes; live behavior and reference crossing semantics pending. User reported extension works on T006; resize logic is retained in T007. Detailed current-build acceptance remains pending. T008 replaces fixed Bar spacing with the shared selected interval; rigid moves snap delta, resizing snaps the moving boundary. Selected 1/8 gesture regression passes."
+    },
+    {
+      "id": "grid-selection",
+      "weight": 2,
+      "outcome": "Grid Type and Quantize Type menus choose and persist the interval used by enabled ruler/range snapping.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t008-source-build",
+        "t009-source-build"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "intent-2026-10-24"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Bar/Beat/Use Quantize menus and 1/1-1/128 straight/triplet/dotted values are functional. Actual popup selections, shared seek/draw/move/resize snap, OPR v17 round-trip and legacy defaults pass headless tests. Full reference menu layout and live user check pending. T009 makes implemented field captions/arrows high contrast, verified from emitted text in both themes; actual popup/menu regressions pass. Live toolbar appearance pending."
     }
   ],
   "gates": {
@@ -303,7 +565,8 @@
       "weight": 3,
       "requirements": [
         "seek-pointer",
-        "snap-release"
+        "snap-release",
+        "grid-selection"
       ],
       "gates": [
         "dirty-state"
@@ -338,7 +601,9 @@
       "requirements": [
         "loop-range",
         "skip-range",
-        "range-endpoint-snap"
+        "range-endpoint-snap",
+        "range-move",
+        "range-resize"
       ],
       "gates": [
         "range-persistence"

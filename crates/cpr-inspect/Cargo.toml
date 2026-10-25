@@ -9,4 +9,4 @@ name = "cpr-inspect"
 path = "src/main.rs"
 
 [dependencies]
-workstation-core = { path = "../workstation-core" }
+opentrack-core = { path = "../opentrack-core" }

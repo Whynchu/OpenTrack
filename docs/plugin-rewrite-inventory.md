@@ -64,7 +64,7 @@ The local Operation Manual says the detailed plug-in descriptions are in a separ
 
 The set also includes different host cases: a MIDI-triggered audio effect, a generated audio signal, a time-code source, a visual analyzer, and multi-channel processing. This points to typed audio/MIDI buses and non-audio plug-in roles in the eventual host; a stereo audio-effect-only interface would not cover the observed set.
 
-The manual confirms user-facing intent and broad parameters; it does not establish numerical DSP parity. The Rust `TestGenerator` in `crates/workstation-audio/src/plugins/test_generator.rs` implements the documented waveform list and frequency/gain limits with original oscillator and noise algorithms. It is connected to the per-track insert chain and project state. Its output, defaults, and noise spectra have not been compared with Cubase.
+The manual confirms user-facing intent and broad parameters; it does not establish numerical DSP parity. The Rust `TestGenerator` in `crates/opentrack-audio/src/plugins/test_generator.rs` implements the documented waveform list and frequency/gain limits with original oscillator and noise algorithms. It is connected to the per-track insert chain and project state. Its output, defaults, and noise spectra have not been compared with Cubase.
 
 Sources: [Steinberg Cubase 5 support page](https://o.steinberg.net/index.php?L=1&id=1782) (official listing of the Cubase 5.0 documentation set) and [Cubase 5.0 Plug-in Reference PDF](https://images.thomann.de/pics/prod/222910_plugineng.pdf) (rehosted copy of the manual).
 ## Per-plug-in evidence to collect

@@ -1,0 +1,849 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "version": "audio-workflow-v6",
+    "description": "Audio workflow through T017: full-height waveforms and Discard cleanup of unsaved recordings. No whole-DAW score.",
+    "baseline_complete": false,
+    "change_reason": "Retains all 25 v5 requirements/weights; refines waveform detail to use full lane height and adds unsaved-recording Discard cleanup. User explicitly authorized publishing this checkpoint. Baseline remains incomplete."
+  },
+  "evidence": {
+    "t014-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#source-findings",
+      "identity": "app.rs SHA-256 470D8E9948D8428C540E2EAD334E4249829A8AD0DF648983E11D7ADA2BA81E47; delivered EXE SHA-256 50632E097BE3518FF49379575B40FA4C87EED2A549AADA414DE3DAC16C36FB13",
+      "note": "Historical source identity from the previously delivered build; superseded by t014-current-source."
+    },
+    "t014-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#user-direction",
+      "note": "User-specified local optional Mackie ASIO support, format/rate choices, menu hierarchy and meter corrections."
+    },
+    "t014-meter-failure": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#evidence-reviewed",
+      "identity": "User feedback on current delivered build, EXE SHA-256 50632E097BE3518FF49379575B40FA4C87EED2A549AADA414DE3DAC16C36FB13",
+      "note": "User reports lag/freeze and missing Project meter; no independent timing measurement."
+    },
+    "t014-connections-images": {
+      "kind": "reference",
+      "location": "C:/Users/Samue/Pictures/Screenshots/VST connections -Inputs.png; VST connections - Outputs.png",
+      "note": "Static layout only, reviewed 2026-10-24; no runtime semantics inferred."
+    },
+    "t014-current-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#source-findings",
+      "identity": "x64 OpenTrack.exe SHA-256 38EAF574F1C51C66A5FB9124440A015660636241FA697DA145E9C11B729BBF25; app.rs 4D75E3A993C106B6B280E5ACFE9E33AC210F31D929670AC5AA8F7572D67B3628; mixer.rs 623BD16482488540B3191446EA04902A3005150EC68B4698F17A3AD7DC7CCD49; recording.rs ABD174909D0238C8E040CF72877CDDA7EBB8EF5E4A1DE1FE00BFF4C0E1D57D18; project.rs 755B3824E9C671545DD4C26A71703E33722C5BC5CE2C907D9A06332EB6BF735A",
+      "note": "x64 release built successfully. Full workspace tests passed before the final read-only Connections and stereo Mixer meter presentation edits; final edits passed cargo check and release compilation. No live app/hardware verification."
+    },
+    "t014-correction-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#correction-pass-after-the-38eaf574-review",
+      "note": "Current explicit user correction; exclusive response was reported good, while meter/configuration/routing gaps were reported."
+    },
+    "t014-correction-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#correction-pass-after-the-38eaf574-review",
+      "identity": "x64 local-asio EXE SHA-256 634F3128A3939259BCAB8C4E255FA4FAFD7C0E61C0108797416557754F69060C; crates/opentrack-app/src/app.rs: DE88D47CB69720FE6EA60831459D6A31CDB8AA736E8C415AE0AF57E278940592; crates/opentrack-app/src/audio_configuration.rs: DC77868DDD572B67DF86D4B15E2D8AD63956246C4F35166C465670A2CF2B5851; crates/opentrack-app/src/mixer.rs: F607917E66CABEAE8FC19280864C7199DBC51E1675B009AF7D385B77F101DDA2; crates/opentrack-app/src/project_file.rs: 565434C3FB5287BE9E94BA60FD007A551F790DAF88585B351475241BE315C6A3; crates/opentrack-audio/src/lib.rs: AA409398CC801737396540B927EF0511686ED38B1AE3353ACB65E346C37CDAB2; crates/opentrack-audio/src/asio_backend.rs: A024D7946701A17C5CEF1374546A6C4A91E86FCCBE5A8D9ACB9AC81BBF1AC0E6; crates/opentrack-audio/src/recording.rs: 44E43796BA48300555CA8A2C2854955B388DC874C4300586668A4893E9FB1954; vendor/maolan-asio/src/stream.rs: CDFD3A89CF3FCEA0954E08EFBB7A39593DDB5575FEE0B59EB8EE7B5D70A0C25A",
+      "note": "86 workspace unit tests and 34 host unit tests plus one doc test passed. Default WASAPI/local-ASIO compile checks passed. Final idle-release guard and Debug safety cleanup compiled/rebuilt. Local-ASIO x64 release successful; app deliberately left closed, visual/audible checks pending."
+    },
+    "t014-correction-failures": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#correction-pass-after-the-38eaf574-review",
+      "identity": "User review of x64 EXE SHA-256 38EAF574F1C51C66A5FB9124440A015660636241FA697DA145E9C11B729BBF25",
+      "note": "Good Exclusive response; absent ASIO list, mismatched configuration layouts, no panned L/R/master/idle-input metering, wrong routing default/menu, settings not discoverable. New code makes these results stale."
+    },
+    "t014-mackie-query": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#mackie-capability-query-read-only-no-stream",
+      "identity": "asio_inspect.rs SHA-256 DFA271CED668F99BA9F74BBAF23E339C1B07D06CA464FA396B9C89B1AC09C933; Mackie CLSID {AE035966-7908-4E7C-B724-E358222D9718}; DLL 4.47.0.0 x64",
+      "note": "Read-only open/query succeeded; Analog 1/2, Int32Lsb, supported rates and buffer/latencies reported. No stream or settings change; does not pass audible ASIO acceptance."
+    },
+    "t014-device-setup-crash": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#device-setup-crash-correction-2026-10-24",
+      "identity": "EXE 634F3128A3939259BCAB8C4E255FA4FAFD7C0E61C0108797416557754F69060C",
+      "note": "User reported crash opening Device Setup; reproduced in headless UI regression as indent in horizontal layout."
+    },
+    "t014-device-setup-fix": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T014-audio-configuration-and-metering.md#device-setup-crash-correction-2026-10-24",
+      "identity": "x64 local-asio EXE SHA-256 5E3A608D48C11B7A4B7AA97A654FE7927487BA7C26E884FA76DC12CE92F0603B; crates/opentrack-app/src/app.rs: 5D3DDF1007BB538FBDE5392E1E0AA5E073D59B95FD84D417B5EB15AEBC54D2ED; crates/opentrack-app/src/audio_configuration.rs: 97997CB901B550C7F7DC2DA94097181EEB2F27E4DF6573424D0F001128071E5C; crates/opentrack-app/src/crash_log.rs: B731326ABE2E1D0F2B374FB8F233D0E557F1FA52B2B8927BC82AB6DD42D730E3; crates/opentrack-app/src/main.rs: 63D48BEBA6FCCED247AF750C07DF34E5022EF4D05E87CE18DEF27CC925F5B1BF",
+      "note": "Explicit vertical navigation layout. Regression failed before and passes after; all 87 workspace tests pass. Headless regression does not establish desktop, visual, or hardware acceptance."
+    },
+    "t015-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T015-device-bus-channels.md",
+      "note": "Functional bus controls/editors and approximately half-height Device Setup explicitly requested by the user."
+    },
+    "t015-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T015-device-bus-channels.md",
+      "identity": "x64 local-asio EXE SHA-256 A7685D081B704ACEE8530368849D3CF775D9442C14E1484F97338713150545F3; crates/opentrack-core/src/project.rs: 7369D17B024FAC83FCADABD919C9DC0EEA054229EFEABE35AD29C0315DA4CDC9; crates/opentrack-audio/src/bus.rs: AECC33B01BEDEDE0B0F91753AE0B58C51C384143519FA38EABF2252B50215AFA; crates/opentrack-audio/src/lib.rs: E07B3A26D60030646B3A5509CF7866C1869D6D64B3165467D903BEF584EF8F1B; crates/opentrack-audio/src/recording.rs: 6CA92AEF9EA27B4DCC333CA33125CECB615DD223AA2133E9FD3FD782755DDD83; crates/opentrack-app/src/app.rs: 55C35EEE280EA5EC47C75A53DE43B06B8EE8E26443E014C584868CA5DD45AEFE; crates/opentrack-app/src/mixer.rs: FD5814182C878BA6DA090FBF9702A1A92F6ED5F641B53EC3216A0370A4F2772D; crates/opentrack-app/src/channel_settings.rs: 817BB9C7128183F5F9D1CE48D80DFE0C2B76973757514071F8FA358CE4476388; crates/opentrack-app/src/audio_configuration.rs: 5DBA914AD6396A347B8482ED1B1666D857454362854C6400E6415B0A85510ABD; crates/opentrack-app/src/project_file.rs: 126AFC32E04C71062CDD1F26CFCC83F0ACDC81F17712F945C15F8F7D46DCCE2C",
+      "note": "97 offline workspace tests pass with local-asio; standard cargo check and x64 release pass. Headless UI and deterministic audio checks are source validation; desktop/physical audio/reference acceptance remains pending."
+    },
+    "t016-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T016-recording-undo-and-waveforms.md",
+      "note": "User requests physical recording-file removal on undo plus growing/detailed waveforms; user closed OpenTrack for rebuild."
+    },
+    "t016-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T016-recording-undo-and-waveforms.md",
+      "identity": "x64 local-asio EXE SHA-256 701D8792297C48D9EB1841B5B4108CD344C47A12841DE54E6AA1AFC5D520CC11; crates/opentrack-app/src/app.rs: 6A8C238879FDF0F42DCBC78C1597D0D56157A58232910ACE06AF1F21C71D677B; crates/opentrack-app/src/recording_undo.rs: 06E2B1B132F78620837A2CE44D4BC63CF43DEDFBEE653406051FEBA0BC23585B; crates/opentrack-app/src/waveform_view.rs: 81343562B025B809DF4F29DD761FAA608DB35DACAF10B2B358BC6CDB3ED4DC55; crates/opentrack-audio/src/waveform.rs: 3F4F7E5552DE6E77FFDD594FB96F8991724F10DA59C8DFAB200A8AC2CB1F7184; crates/opentrack-audio/src/lib.rs: 82E24FA0FF855AF44B7A0F0EA85CCF0C04B9E7C5C59B358668F7F411F2CF413C; crates/opentrack-audio/src/streaming.rs: 39D6FF9CAE48EF9FF95E99464ECFD158B12A4B83D6DB6726844AD13BAAE0F20C; crates/opentrack-audio/src/recording.rs: 6CD9645819A99C4F729EBF2347D03999AD28429A180C21E0304D329176CCF3E0",
+      "note": "105 offline workspace tests pass, final history cleanup passes four targeted filesystem tests, default cargo check and x64 release pass. No desktop/hardware acceptance. Automated post-crash recovery and sample-level streamed-file zoom remain gaps."
+    },
+    "t017-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T017-waveform-height-and-discard.md",
+      "note": "User requests full-height audio drawing, deletes recordings when discarding unsaved project changes, and authorizes Git push."
+    },
+    "t017-feedback": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T017-waveform-height-and-discard.md",
+      "identity": "T016 EXE 701D8792297C48D9EB1841B5B4108CD344C47A12841DE54E6AA1AFC5D520CC11",
+      "note": "User reports waveform appearance positively but requests full-height drawing. Does not verify recording file lifecycle, or the subsequent height adjustment."
+    },
+    "t017-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T017-waveform-height-and-discard.md",
+      "identity": "x64 local-asio EXE SHA-256 88482EEE7B248AF7F32A36D7CBD69CF7921484B101976324A0900BE23BD3666F; crates/opentrack-app/src/app.rs: 90C36949FB8F19BED275828498D5BF0B797005930259BE15B393AC5DAC0DDC98; crates/opentrack-app/src/recording_undo.rs: 704FABD3573A1F026C98C23A9EA815DC3DB84B874E755113806E33F80135D43D; crates/opentrack-app/src/waveform_view.rs: 17207DDAE9247E43400402AC56FE7449336B6F653493647C5CB67D3E2C362F57",
+      "note": "108 workspace tests pass; standard WASAPI check and x64 local-asio build pass. Added Discard/new-name filesystem checks. No live GUI/recording acceptance for these final corrections."
+    }
+  },
+  "requirements": [
+    {
+      "id": "meter-refresh",
+      "weight": 3,
+      "outcome": "Live track/bus meters refresh and decay smoothly while foreground or background.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-correction-failures"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "project-track-meter",
+      "weight": 3,
+      "outcome": "The Project header shows a live track meter beside the color strip.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-correction-failures"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "devices-menu-ownership",
+      "weight": 2,
+      "outcome": "Device Setup and VST Connections/F4 are reachable through Devices, with Audio configuration duplication removed.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t014-correction-source",
+        "t014-device-setup-fix",
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-device-setup-crash"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "local-mackie-asio",
+      "weight": 3,
+      "outcome": "An optional local backend opens the installed x64 Mackie ASIO driver for full-duplex audio.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": [
+          "t014-mackie-query"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "driver-settings",
+      "weight": 2,
+      "outcome": "Driver controls show resolved names, supported rates, actual buffers/latencies and vendor Control Panel.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": [
+          "t014-mackie-query"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "typed-bus-routing",
+      "weight": 3,
+      "outcome": "Persistent mono/stereo buses map physical channels and are shared across Project, Inspector, Mixer and Channel Settings.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "connections-layout",
+      "weight": 2,
+      "outcome": "Inputs and Outputs tables retain the supplied parent/child rows, columns, tab hierarchy and control grouping.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t014-correction-source",
+        "t015-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t014-connections-images"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "recording-encoding",
+      "weight": 3,
+      "outcome": "Recording produces correctly encoded 16-bit PCM, 24-bit PCM or 32-bit float WAV files as selected.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "project-sample-rate",
+      "weight": 3,
+      "outcome": "Project sample-rate selection includes 44.1/48 kHz with correct conversion when capture differs.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "record-format-display",
+      "weight": 2,
+      "outcome": "Project settings/status show actual record rate/resolution and storage-derived time.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "backend-coexistence",
+      "weight": 3,
+      "outcome": "Browser/game coexistence, deliberate release and lowest stable buffer are qualified for each selected backend.",
+      "implementation": "unassessed",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "persistence-recovery",
+      "weight": 3,
+      "outcome": "New format/bus/backend settings survive reopen and driver failure without losing the project or changing an unrelated device.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t014-correction-source",
+        "t015-source",
+        "t016-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "track-meter-pan",
+      "weight": 3,
+      "outcome": "Track and Channel Settings L/R meters follow post-processing gain and pan.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-correction-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-correction-failures"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "stereo-output-meter",
+      "weight": 3,
+      "outcome": "Stereo Out meters display the actual summed L/R output.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source",
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-correction-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-correction-failures"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "idle-input-meter",
+      "weight": 3,
+      "outcome": "Stereo In meters display physical input without enabling audible track monitoring.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source",
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-correction-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-correction-failures"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "input-width-defaults",
+      "weight": 3,
+      "outcome": "Mono tracks default to a mono input and stereo tracks can select the full Stereo In bus consistently across views.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-correction-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-correction-failures"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "configuration-visual-structure",
+      "weight": 2,
+      "outcome": "Device Setup and Connections retain the supplied tree/page and tabbed table structure, density, columns, and nesting.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t014-correction-source",
+        "t014-device-setup-fix",
+        "t015-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t014-connections-images"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-device-setup-crash"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "existing-project-settings-access",
+      "weight": 3,
+      "outcome": "An already-created project exposes editable rate and PCM16/PCM24/Float32 settings through discoverable Project Setup actions.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t014-correction-source",
+        "t014-device-setup-fix"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t014-correction-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t014-device-setup-crash"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "device-bus-strips",
+      "weight": 3,
+      "outcome": "Both existing device buses have independent shared Mixer/Channel Settings controls and correct editor targeting.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t015-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "device-bus-processing",
+      "weight": 3,
+      "outcome": "Input processing reaches monitored/recorded samples exactly once; output processing affects the final sum and matching stereo meters.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t015-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "device-bus-persistence",
+      "weight": 2,
+      "outcome": "Both bus settings survive save/reopen and undo, and old projects default to neutral buses without arrange lanes.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t015-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "compact-device-setup",
+      "weight": 1,
+      "outcome": "Device Setup is roughly half its former height with reachable scrollable pages.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t015-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t015-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "recording-file-undo",
+      "weight": 3,
+      "outcome": "Undo removes new recording files and events; redo restores exact files without deleting imported media or corrupting saved references.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t016-source",
+        "t017-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t016-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "live-recording-waveform",
+      "weight": 3,
+      "outcome": "Growing route-correct waveforms are drawn during capture from recorded frames without callback drawing work.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t016-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t016-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "waveform-detail",
+      "weight": 2,
+      "outcome": "Signed stereo waveforms reveal transients at pixel density and individual decoded samples at close zoom. Drawing uses the full lane height while retaining true amplitude.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t016-source",
+        "t017-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t016-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t017-feedback"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "discard-unsaved-recordings",
+      "weight": 3,
+      "outcome": "Closing with Discard deletes recorder-created takes since the last save, preserves imported/saved audio and works beyond undo-history trimming.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t017-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t017-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    }
+  ],
+  "gates": {
+    "live-meters": {
+      "description": "Project/Mixer meters remain responsive and correctly routed while backgrounded.",
+      "status": "stale",
+      "evidence": [
+        "t014-correction-failures"
+      ]
+    },
+    "mackie-driver": {
+      "description": "The exact installed Mackie ASIO driver is active and correct physical inputs/outputs work.",
+      "status": "pending",
+      "evidence": []
+    },
+    "coexistence": {
+      "description": "Backend sharing/release/stability behavior is demonstrated with other apps.",
+      "status": "pending",
+      "evidence": []
+    },
+    "wav-integrity": {
+      "description": "Selected resolution/rate is independently verified in recorded/reopened WAV samples and headers.",
+      "status": "pending",
+      "evidence": []
+    },
+    "persistence": {
+      "description": "Settings/routes reopen correctly, preserve old projects and recover device errors.",
+      "status": "pending",
+      "evidence": []
+    }
+  },
+  "workflows": [
+    {
+      "id": "live-metering",
+      "weight": 3,
+      "requirements": [
+        "meter-refresh",
+        "project-track-meter",
+        "track-meter-pan",
+        "stereo-output-meter",
+        "idle-input-meter"
+      ],
+      "gates": [
+        "live-meters"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "devices-and-buses",
+      "weight": 3,
+      "requirements": [
+        "devices-menu-ownership",
+        "local-mackie-asio",
+        "driver-settings",
+        "typed-bus-routing",
+        "connections-layout",
+        "backend-coexistence",
+        "input-width-defaults",
+        "configuration-visual-structure"
+      ],
+      "gates": [
+        "mackie-driver",
+        "coexistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "project-recording-format",
+      "weight": 3,
+      "requirements": [
+        "recording-encoding",
+        "project-sample-rate",
+        "record-format-display",
+        "persistence-recovery",
+        "existing-project-settings-access"
+      ],
+      "gates": [
+        "wav-integrity",
+        "persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "device-bus-channel-control",
+      "weight": 3,
+      "requirements": [
+        "device-bus-strips",
+        "device-bus-processing",
+        "device-bus-persistence",
+        "compact-device-setup"
+      ],
+      "gates": [
+        "live-meters",
+        "mackie-driver",
+        "wav-integrity",
+        "persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "recording-undo-and-waveform-review",
+      "weight": 3,
+      "requirements": [
+        "recording-file-undo",
+        "live-recording-waveform",
+        "waveform-detail"
+      ],
+      "gates": [
+        "wav-integrity",
+        "persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "discard-recorded-project",
+      "weight": 3,
+      "requirements": [
+        "discard-unsaved-recordings"
+      ],
+      "gates": [
+        "wav-integrity",
+        "persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    }
+  ]
+}

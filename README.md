@@ -1,6 +1,6 @@
 # OpenTrack
 
-OpenTrack is an open source digital audio workstation being built in Rust. Its goal is to provide a dependable, expressive environment for recording, editing, arranging, mixing, and finishing music.
+OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide a dependable, expressive environment for recording, editing, arranging, mixing, and finishing music.
 
 ![OpenTrack with the EXAMPLE project, Mixer, transport, and Channel Settings open](docs/images/opentrack-example.png)
 

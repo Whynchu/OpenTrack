@@ -4,11 +4,11 @@ This specifies the direction for incremental work, not a claim that all boundari
 
 | Responsibility | Owner / constraint |
 | --- | --- |
-| Persistent project state | workstation-core: stable track/event identity, musical time, ranges, parameters, versioned serialization; no screen coordinates |
+| Persistent project state | opentrack-core: stable track/event identity, musical time, ranges, parameters, versioned serialization; no screen coordinates |
 | Editing operations | Core commands or an explicit application command layer: one mutation path, undo/redo, dirty state, validation; Project/Inspector/Mixer use the same track identity and commands |
 | Gesture interpretation | App timeline interaction module: pointer input, capture, hit zones, viewport transform, cursor feedback; emit explicit seek/zoom/range actions |
 | Rendering | App views: shared state in, commands out; avoid independent copies of playback or track state |
-| Transport execution | workstation-audio: sample clock, audible seek/cycle/skip execution; UI reads an engine transport snapshot during playback |
+| Transport execution | opentrack-audio: sample clock, audible seek/cycle/skip execution; UI reads an engine transport snapshot during playback |
 | Persistence and platform services | Explicit adapters for files, device APIs, windows, plug-in ABI; keep platform specifics outside domain calculations |
 
 ## Invariants to establish as features are touched

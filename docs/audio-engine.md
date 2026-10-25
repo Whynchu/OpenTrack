@@ -1,21 +1,30 @@
 # Audio engine and plug-in rewrite target
 
+## T014 current audio path
+
+The normal build uses WASAPI. `build.ps1 -Architecture x64 -LocalAsio` adds the optional local Rust ASIO host. The driver selector in Devices > Device Setup > VST Audio System enumerates native x64 registry identities; selecting ASIO opens one capture/render session on a dedicated COM owner thread. The same capture feeds input meters, track monitoring, and the recording worker. No driver DLL or SDK is copied. Dependency provenance, safety patches, and BSD notices are documented in `vendor/maolan-asio/OPENTRACK-PATCHES.md` and `docs/third-party-notices.md`.
+
+The installed Mackie driver was opened for read-only capability queries: Analog 1/2 inputs/outputs, Int32Lsb, supported 44.1/48/88.2/96/176.4/192 kHz, buffer limits 8..2048 with power-of-two progression, preferred 128 frames, current rate 44.1 kHz. Streamed hardware monitoring/recording, buffer qualification, driver control panel, reset/hotplug, and coexistence remain pending. Current support is the first mono/stereo pair, fitting the Onyx Producer 2-2; arbitrary multichannel buses remain unimplemented.
+
+Track meter telemetry now carries separate L/R peaks after track DSP, gain, and pan. Stereo Out receives the summed output meter. Raw input metering remains active with an open project even when track monitoring is off. Project, Mixer, and Channel Settings share the UI-owned snapshots and elapsed-time decay. The recording writer uses persisted project rate and PCM16/PCM24/Float32 format, with linear rate conversion when necessary; integer conversion clamps/rounds without dither. Existing files retain their format. These are source facts and offline checks, not live acceptance.
+
+The following older design notes include historical limitations; T014 and its ledger own current delivery status.
+
 ## Backend choice
 
-The internal workstation-audio crate uses CPAL 0.18.2 for device enumeration and output streams. CPAL is a low-level Rust audio I/O library; Windows uses WASAPI by default, with ASIO available as an optional backend.
+The `opentrack-audio` crate uses Windows WASAPI streams for native capture and render. It uses IAudioClient3 event-driven shared streams when available, exposes a visible standard-shared fallback, and provides explicit opt-in exclusive mode. CPAL remains for endpoint inventory and non-Windows streams. No ASIO SDK or vendor agreement is required for this path.
 
-The first build uses the default WASAPI backend. CPAL's ASIO feature requires an ASIO SDK plus LLVM/Clang for binding generation and adds build-environment requirements. Keep ASIO optional until the x64 output path and device-selection UI are established. This keeps the first build easy to reproduce and leaves the device layer replaceable.
+Shared mode is the default so other applications can use the Windows mixer. Exclusive mode may take ownership of the selected endpoint and can prevent other applications from using it. The application reports the selected mode and negotiated period details; actual device behavior and end-to-end latency still require hardware measurement.
 
 ## Implemented
 
-- Open and start the system's default output device using its default sample rate and channel count.
-- Enumerate audio inputs and let the user choose a device in the Audio menu; remember its CPAL device ID between launches. Record one selected mono/stereo input into synchronized WAV takes for every armed audio track. One CPAL stream feeds a shared bounded queue and one worker writes all take files; the selected signal is currently duplicated to each track because per-track input routing is not implemented. The Record dialog chooses a new base name; existing files are not overwritten.
-- Capture F32, I16, or U16 input through a bounded, preallocated single-producer/single-consumer ring. The callback performs sample conversion and copying only; a worker thread writes 32-bit float WAV data.
-- Optionally monitor the active recording input through a separate 2,048-frame atomic stereo ring. The input callback publishes normalized samples without blocking; the output callback linearly resamples when input and output rates differ and mixes monitoring into the master output even while transport is stopped. The Audio menu toggle defaults off, and monitoring-ring overflows are reported when the take ends. This direct-to-master route bypasses per-track EQ and inserts; latency and device-clock drift need target-PC measurement.
-- On stop, drain and finalize the WAV, add it as an audio clip at the record-start position, load its waveform, and include its external path in the native project. Pressing Record again ends capture and leaves playback running; Stop ends capture and stops playback.
+- Select capture and render endpoints independently by persistent endpoint ID. Input testing runs without Record and exposes separate channel meters. Active endpoint enumeration errors are surfaced in the Device Setup panel.
+- Capture F32, I16, or U16 input through a bounded, preallocated queue. WASAPI callbacks normalize and publish samples; a worker thread writes 32-bit float WAV data. Capture packet timestamps, discontinuities, queue drops, and timestamp errors are retained for recording summaries.
+- Per-track input monitoring selects Stereo, Left, or Right from the first two input channels and flows through that track's processing and output route. Output choices are Stereo, Left, Right, and Disconnected. Monitoring uses an atomic stereo ring and output-rate conversion; separate capture/render clocks and monitoring latency remain unmeasured.
+- Recording creates numbered WAV takes under the managed project folder's `Audio/Recordings` directory and creates separate track-named files for multiple armed tracks. There is no destination dialog when Record starts. On stop, takes are finalized, added as clips at the record-start position, and included in the native project.
 - Report recording file/stream errors and dropped input frames. The queue holds 262,144 stereo samples (about 2.73 seconds at 48 kHz); full queues drop whole frames, report the count, and the writer inserts silence at those frame positions to preserve take duration.
-- Import mono or stereo PCM/float WAV files. Sources up to 512 MiB of decoded float samples are loaded in memory; larger sources use a per-clip 32,768-frame atomic sample ring fed by a background reader. Large-file waveform peaks are scanned separately in the background.
-- Place WAV clips on audio tracks and save their external source paths in the native project.
+- Import mono or stereo PCM/float WAV files. External files are copied on a worker thread into the managed project folder's `Audio/Imports` directory using unique destination names; files already inside the project remain in place. Sources up to 512 MiB of decoded float samples are loaded in memory; larger sources use a per-clip 32,768-frame atomic sample ring fed by a background reader. Large-file waveform peaks are scanned separately in the background.
+- Place WAV clips on audio tracks and save their source paths in the native project. Paths remain absolute, and legacy linked media is not copied during project-folder migration.
 - Relink unavailable or unreadable WAV sources from the File menu. The replacement is decoded before project paths change; all clips sharing the old path update together and the edit can be undone.
 - Mix clip playback through the default output device with track mute, solo, Solo Defeat, gain, four-band EQ, and an ordered insert chain that users can reorder in Mixer Channel Settings. EQ and insert state are serialized per track.
 - Add an OpenTrack- Compressor insert with a stereo-linked peak detector, threshold, ratio, attack, release, and makeup controls. Its detector uses attack/release smoothing and a hard-knee static curve; all parameters are validated before playback-plan construction. This is an original native effect and has not been compared with a Cubase compressor or plug-in.
@@ -31,7 +40,7 @@ The first build uses the default WASAPI backend. CPAL's ASIO feature requires an
 - Cycle playback uses project-persisted left/right positions in quarter-note beats. When Cycle is enabled, the playback plan converts those locators to frames and the callback wraps at the right locator without locking or allocating. There is no crossfade at the boundary, and recording does not create cycle takes.
 - Emit silence unless the user starts project playback or explicitly selects Audio menu: Play Test Tone.
 - Generate a 440 Hz diagnostic tone at a low fixed level without allocating, locking, or reading files in the audio callback.
-- Support F32, I16, and U16 output sample formats. If the selected default device returns another format, report that output is unavailable.
+- Open a user-selected output endpoint in shared low-latency, shared-compatible, or opt-in exclusive mode. If low-period shared initialization is unavailable, retry standard shared mode and surface the fallback. The shared-low-latency path uses the Windows mix format; project-rate conversion and user-selectable input formats remain incomplete.
 
 Playback plans are immutable snapshots with callback-owned EQ, insert, and streaming-source state. The UI builds replacements, and the callback reads a snapshot without locking; the callback gate prevents simultaneous mutable DSP access. Replaced plans are reclaimed on the UI thread after the callback has finished using them. Large-file reads, waveform scans, and file seeking happen on per-source worker threads. The audio callback reads only atomic sample-cache entries; unavailable frames render as silence and a later UI update reports stream underruns or read errors.
 
@@ -39,18 +48,32 @@ The recording worker has a synthetic end-to-end check that writes float WAV data
 
 Large recorded WAV takes can be attached and played through the same streamed-source path. The current stream uses a fixed 32,768-frame ring per arranged clip and has automated sample, seek, waveform, and playback-plan checks. Hardware stress testing, performance under many simultaneous streamed clips, and waveform behavior on multi-gigabyte files remain open.
 
-The audio recorder supports multiple armed audio tracks from one selected mono/stereo input device by writing synchronized, separate takes; MIDI recording supports multiple armed MIDI/Instrument tracks from one selected Windows MIDI input. Audio and MIDI can record together. Per-track input and output routing, multichannel input, sample-rate/bit-depth choice, cycle takes, pre-record buffer, and latency compensation are not implemented. MIDI output ports and MIDI bus routing are also absent. Cycle-loop playback exists, but its locators and behavior are OpenTrack- choices that have not been checked against Cubase. Recorded media stays at its selected external path. Input stream errors are reported when recording stops; device stream errors have no recovery UI.
+The audio recorder supports multiple armed audio tracks with Stereo/Left/Right input selection and separate synchronized files; capture recording supports up to two channels. MIDI recording supports multiple armed MIDI/Instrument tracks from one selected Windows MIDI input. Audio and MIDI can record together. Arbitrary multi-channel routing, per-endpoint channel maps, project-rate conversion policy, cycle takes, pre-record buffer, latency compensation, endpoint hot-plug recovery, and fully transactional capture/render reconfiguration are not implemented. MIDI output ports and MIDI bus routing are also absent. Cycle-loop playback exists, but its locators and behavior are OpenTrack choices that have not been checked against reference evidence. Input stream errors and actual device recovery have not been accepted on the target hardware.
 
 ## Not implemented
 
-MIDI output ports and typed MIDI/audio bus routing, richer instrument controls and presets, a general-purpose plug-in ABI/host, automation, time stretching, ASIO selection, and output-device selection are not implemented. The current WAV decoder handles mono or stereo PCM and IEEE float WAV files; compressed audio and surround sources are unsupported. The test tone is a diagnostic signal, not an instrument or project track.
+MIDI output ports and typed MIDI/audio bus routing, arbitrary endpoint channel maps, endpoint hot-plug recovery, measured latency compensation, richer instrument controls and presets, a general-purpose plug-in ABI/host, automation, and time stretching are not implemented. The current WAV decoder handles mono or stereo PCM and IEEE float WAV files; compressed audio and surround sources are unsupported. The test tone is a diagnostic signal, not an instrument or project track.
 
 ## Bundled plug-in rewrite target
 
-OpenTrack- intends to provide original Rust implementations of the bundled Cubase 5 effects and instruments. The inventory records 29 VSTPlugins DLL paths with x86 PE headers and three `.vst3` modules confirmed x86 by a follow-up REA export-table inspection. TestGenerator exports `VSTPluginMain`; each VST3 module exports `GetPluginFactory`, `InitDll`, and `ExitDll`. These static symbols do not establish runtime behavior or full ABI support. The bounded REA scan does not reveal DSP behavior or state semantics; the manual-derived observations and TestGenerator status are in [the plug-in rewrite inventory](plugin-rewrite-inventory.md). TestGenerator is integrated as the first supported Cubase effect, with its algorithm still unverified. The built-in Stereo Delay is an original OpenTrack- effect, not a parity-verified Cubase rewrite. No general-purpose plug-in ABI or parity-verified bundled rewrite is implemented. Use REA and controlled reference-app sessions to record each plug-in's parameters, audio/MIDI inputs and outputs, automation, presets, and state before claiming parity. Loading original binaries through a helper is a separate third-party compatibility question, not the rewrite plan.
+Bundled plug-ins are not a 1:1 rewrite target. Future effects and instruments will be designed individually with the user, and purchased plug-ins may be studied when requested. A general-purpose third-party plug-in host remains a separate future requirement. TestGenerator and the built-in effects are OpenTrack implementations; their DSP behavior has not been compared against a reference. REA findings about installed binaries are documented in [the plug-in inventory](plugin-rewrite-inventory.md), but static inspection does not establish ABI or runtime behavior.
 
 ## References
 
 - CPAL supported platforms and backends: https://github.com/RustAudio/cpal#supported-platforms
 - CPAL ASIO build requirements: https://github.com/RustAudio/cpal#compiling-for-asio
 - CPAL DeviceTrait: https://docs.rs/cpal/0.18.2/cpal/traits/trait.DeviceTrait.html
+
+
+## T015 device bus processing
+
+Stereo In processing precedes capture fanout to monitor and recording. The input channel meter is post bus processing; Device Setup retains raw device meters. Stereo Out processing follows the track sum, live MIDI and test tone, before device conversion/clipping. Both bus strips persist in OPR v20, reuse the existing channel editor, and do not create arrange tracks. Capture graph swaps retire on the control thread; callbacks serialize DSP state without taking its retirement mutex. Built-in inserts/EQ are available; bus sends, automation, Listen/Solo, extra buses and arbitrary physical maps remain unavailable. Hardware/visual acceptance is pending; see T015.
+
+
+## T016 waveform data and recording history
+
+The recording writer publishes growing signed per-channel envelopes about every 33 ms, using 64-frame bins and shared immutable chunks. The UI paints a growing event without waiting for WAV finalization. Completed decoded assets use exact samples at close zoom; streamed assets build 64-frame envelopes in the background. The Project painter draws connected stereo silhouettes at visible pixel density. Hardware/UI cadence and long-take resource behavior remain pending user qualification.
+
+Recording-created takes carry file effects with the undo entry. Undo removes their original filenames; redo uses Metadata/Undo recovery. Recovery is discarded when no longer needed by redo or the saved document. Only recorder-created files are registered. Saved-project Discard restores saved references, and file conflicts fail without replacing another file. Crash recovery has a path manifest but no automated replay. See T016.
+
+T017: waveform drawing uses full event height with a small border margin. Discard tracks and removes unsaved recorder-created takes independently of undo-history trimming, restores saved recording references, and preserves imports. Take naming reserves undo/saved-recovery paths to prevent collisions. Filesystem regressions pass; live user checks remain pending.

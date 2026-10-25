@@ -1,0 +1,19 @@
+[package]
+name = "maolan-asio"
+version = "0.0.1"
+edition = "2024"
+description = "Pure-Rust ASIO host backend for Windows: driver enumeration, duplex streaming, and buffer-switch handling without the Steinberg SDK"
+license = "BSD-2-Clause"
+readme = "README.md"
+repository = "https://github.com/maolan/asio"
+homepage = "https://maolan.rs"
+documentation = "https://doc.maolan.rs"
+keywords = ["audio", "asio", "windows", "driver"]
+categories = ["multimedia::audio"]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+] }

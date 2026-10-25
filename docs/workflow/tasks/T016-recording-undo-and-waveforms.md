@@ -1,0 +1,30 @@
+# T016 - Recording-owned file undo and detailed live waveforms
+
+- Status: review_pending. Actual implementer: GPT-6.1 Sol.
+- Scope: audio-workflow-v5. Adds recording-file-undo, live-recording-waveform, waveform-detail; retains v4 requirements/weights.
+- User specification: undo a recording must remove its files, not only the events; draw waveforms during recording and improve the sparse low-resolution vertical-line display.
+- Architecture: media side effects attach to the actual recording history entry. Only successfully created/placed takes from the recorder are registered, never inferred from a generic event deletion. Waveform envelopes live in the audio asset/writer layer; the shared Project painter consumes immutable snapshots. No audio callback file operations or waveform allocations.
+- Acceptance: multi-take file removal and exact redo; import preservation; collision/failed-operation handling; saved-project discard; waveform publication while writer runs; per-channel signed ranges, tail, zoom and clipping; UI/audio user review pending.
+
+## Implementation
+
+Recording undo removes each newly recorded WAV from Audio/Recordings, while its redo recovery data lives in Metadata/Undo/recording-<process>-<sequence>. Same-volume hard links avoid copying long takes before unlinking the original filename; a create-new copy fallback supports filesystems without hard links. Redo restores the same filenames/bytes without overwriting another file. Multi-take changes preflight and roll back on failure; errors leave the history step available and report failure. Recovery is retained after failed filesystem operations; a paths.txt manifest identifies original filenames. Automatic recovery after abnormal termination is not implemented.
+
+Discarding a redo branch/history removes unneeded recovery. Files referenced by the last saved project remain recoverable even when redo is cleared; Discard restores those saved files before leaving the project. Imported/existing files and ordinary event-removal edits do not acquire recording ownership. History commits are held during both audio and MIDI recording so one stopped take remains one undo operation; undo/redo is blocked during capture. Recovery does not permanently free all recorded bytes while redo or saved-document protection still needs them.
+
+The previous display used 256 absolute peaks per entire file and at most one vertical stem per three logical pixels. Completed files now have signed minimum/maximum envelopes per channel in 64-frame blocks. Decoded files use original individual samples at close zoom. Large streamed files build the same detailed envelope asynchronously. The painter aggregates every covered bin, maps only the visible time interval, draws a connected filled silhouette at display-pixel density (up to 4096 columns), and separates stereo channels. It preserves signs rather than mirroring every peak around zero. Large streamed sources retain 64-frame granularity at maximum zoom; sample-level streamed zoom remains a gap.
+
+The existing recording writer builds an immutable growing waveform from captured frames, including silence for missing-frame positions, and publishes approximately every 33 ms. Full 2048-bin chunks are shared; only the tail is copied for publication. The Project view draws a growing red recording event at the session start, with route-correct mono/stereo preview. No temporary arrange clip is inserted: final event/file placement still occurs when capture finishes. Preview length follows captured/writer frames, not wall-clock estimates. Actual desktop update cadence and long-duration performance remain unmeasured.
+
+## Verification
+
+105 workspace tests passed with local-asio (55 app, 39 audio, 11 core); standard WASAPI workspace cargo check passed. After a final history error/reset cleanup, all four recording-history filesystem regressions passed again. Tests cover repeated file undo/redo, branch cleanup, imported-file preservation, failed undo/redo and collision avoidance, saved/discard protection, publication before recording finishes, streamed/decoded agreement, individual-sample zoom, signed channel separation and dense clipped mesh geometry. Eight new regressions were added since T015.
+
+OpenTrack was closed by the user and was not launched for verification. EXAMPLE.opr was not opened or modified. No screenshot, audible hardware recording, or visual acceptance is claimed. The user should record a disposable short mono/stereo take, inspect growth and zoom, stop, undo (events and original WAV filenames disappear), redo (both return), then save/reopen. Check unrelated imported audio survives. Do not use EXAMPLE for destructive recording checks.
+
+x64 local-asio release built successfully with build.ps1 -Architecture x64 -LocalAsio. Artifact: builds/x64/OpenTrack.exe. HEAD remains cbd9835 plus preserved dirty work; no commit/push in this slice.
+
+Identity: x64 local-asio EXE SHA-256 701D8792297C48D9EB1841B5B4108CD344C47A12841DE54E6AA1AFC5D520CC11; crates/opentrack-app/src/app.rs: 6A8C238879FDF0F42DCBC78C1597D0D56157A58232910ACE06AF1F21C71D677B; crates/opentrack-app/src/recording_undo.rs: 06E2B1B132F78620837A2CE44D4BC63CF43DEDFBEE653406051FEBA0BC23585B; crates/opentrack-app/src/waveform_view.rs: 81343562B025B809DF4F29DD761FAA608DB35DACAF10B2B358BC6CDB3ED4DC55; crates/opentrack-audio/src/waveform.rs: 3F4F7E5552DE6E77FFDD594FB96F8991724F10DA59C8DFAB200A8AC2CB1F7184; crates/opentrack-audio/src/lib.rs: 82E24FA0FF855AF44B7A0F0EA85CCF0C04B9E7C5C59B358668F7F411F2CF413C; crates/opentrack-audio/src/streaming.rs: 39D6FF9CAE48EF9FF95E99464ECFD158B12A4B83D6DB6726844AD13BAAE0F20C; crates/opentrack-audio/src/recording.rs: 6CD9645819A99C4F729EBF2347D03999AD28429A180C21E0304D329176CCF3E0
+ Stop for user review; T015 hardware/visual acceptance and other audio gaps remain pending.
+
+Final process check: OpenTrack was running again after the release build (PID 12292, start 23:23:04 local). The agent did not launch, inspect, or close that newly running instance; user/runtime acceptance remains pending.
