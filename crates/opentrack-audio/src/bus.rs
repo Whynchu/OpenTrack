@@ -37,16 +37,43 @@ impl BusRuntime {
             )),
         }
     }
-    pub(crate) fn process(&self, mut left: f32, mut right: f32) -> (f32, f32) {
+    pub(crate) fn process(&self, left: f32, right: f32) -> (f32, f32) {
+        self.process_inner(left, right, None)
+    }
+    pub(crate) fn process_unanalyzed(&self, left: f32, right: f32) -> (f32, f32) {
+        self.process(left, right)
+    }
+    pub(crate) fn process_analyzed(
+        &self,
+        left: f32,
+        right: f32,
+        meter: &StereoMeter,
+        rate: u32,
+    ) -> (f32, f32) {
+        self.process_inner(left, right, Some((meter, rate)))
+    }
+    fn process_inner(
+        &self,
+        mut left: f32,
+        mut right: f32,
+        analysis: Option<(&StereoMeter, u32)>,
+    ) -> (f32, f32) {
         let s = &self.settings;
-        if s.muted {
+        if s.muted && !analysis.is_some_and(|(meter, _)| meter.spectrum_enabled()) {
             return (0.0, 0.0);
         }
         left *= self.pre_gain;
         right *= self.pre_gain;
+        let pre = (left, right);
         // SAFETY: only the serialized audio callback accesses processor state.
         unsafe {
             (&mut *self.processor.get()).process(&mut left, &mut right);
+        }
+        if let Some((meter, rate)) = analysis {
+            meter.record_spectrum(pre, (left, right), rate);
+        }
+        if s.muted {
+            return (0.0, 0.0);
         }
         (left * self.left_gain, right * self.right_gain)
     }
@@ -56,7 +83,7 @@ pub(crate) struct InputBusProcessor {
     current: ArcSwap<BusRuntime>,
     retired: Mutex<Vec<Arc<BusRuntime>>>,
     active: AtomicBool,
-    meter: StereoMeter,
+    meter: Arc<StereoMeter>,
     rate: u32,
 }
 impl InputBusProcessor {
@@ -68,7 +95,7 @@ impl InputBusProcessor {
             )),
             retired: Mutex::new(Vec::new()),
             active: AtomicBool::new(false),
-            meter: StereoMeter::default(),
+            meter: Arc::new(StereoMeter::default()),
             rate,
         }
     }
@@ -93,11 +120,14 @@ impl InputBusProcessor {
             return (0.0, 0.0);
         }
         let state = self.current.load();
-        let result = state.process(left, right);
+        let result = state.process_analyzed(left, right, &self.meter, self.rate);
         self.meter.publish([result.0.abs(), result.1.abs()]);
         drop(state);
         self.active.store(false, Ordering::SeqCst);
         result
+    }
+    pub(crate) fn meter_tap(&self) -> Arc<StereoMeter> {
+        Arc::clone(&self.meter)
     }
     pub(crate) fn take_peaks(&self) -> [f32; 2] {
         self.meter.take()
@@ -179,6 +209,28 @@ mod tests {
         bus.set(&settings);
         assert_eq!(bus.process(1.0, 1.0), (0.0, 0.0));
         assert_eq!(bus.take_peaks(), [0.0; 2]);
+    }
+    #[test]
+    fn analyzed_bus_reports_real_pre_post_eq_without_unmuting_audio() {
+        let mut settings = opentrack_core::project::BusChannel::output().strip;
+        settings.muted = true;
+        settings.equalizer.bands[1].enabled = true;
+        settings.equalizer.bands[1].frequency_hz = 1500.0;
+        settings.equalizer.bands[1].gain_db = 6.0;
+        let bus = BusRuntime::new(&settings, 48000);
+        let meter = StereoMeter::default();
+        meter.enable_spectrum(true);
+        for i in 0..8192 {
+            let sample = (i as f32 * std::f32::consts::TAU * 1500.0 / 48000.0).sin() * 0.25;
+            assert_eq!(
+                bus.process_analyzed(sample, sample, &meter, 48000),
+                (0.0, 0.0)
+            );
+        }
+        let pre = meter.spectrum_frame(SpectrumStage::Pre).unwrap();
+        let post = meter.spectrum_frame(SpectrumStage::Post).unwrap();
+        assert!((pre.bins_dbfs[64] + 12.0412).abs() < 0.05);
+        assert!((post.bins_dbfs[64] - pre.bins_dbfs[64] - 6.0).abs() < 0.1);
     }
     #[test]
     fn bus_eq_and_insert_bypass_restore_unprocessed_samples() {

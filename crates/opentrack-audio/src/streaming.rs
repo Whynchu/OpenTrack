@@ -22,6 +22,25 @@ const STREAM_READ_BLOCK_FRAMES: usize = 2_048;
 const WAVEFORM_BUCKETS: usize = 256;
 const WAVEFORM_CANCEL_CHECK_FRAMES: u32 = 4_096;
 
+/// Header-only metadata read for project rate-change review (not used by callbacks).
+#[derive(Clone, Debug)]
+pub struct AudioFileMetadata {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bits_per_sample: u16,
+    pub frames: u32,
+}
+pub fn audio_file_metadata(path: &Path) -> Result<AudioFileMetadata, String> {
+    let reader = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec = reader.spec();
+    validate_spec(spec)?;
+    Ok(AudioFileMetadata {
+        sample_rate: spec.sample_rate,
+        channels: spec.channels,
+        bits_per_sample: spec.bits_per_sample,
+        frames: reader.duration(),
+    })
+}
 /// An audio asset that is either decoded in memory or read through a bounded stream cache.
 #[derive(Clone)]
 pub enum AudioSource {
@@ -53,6 +72,18 @@ impl AudioSource {
         }
     }
 
+    pub fn channels(&self) -> u16 {
+        match self {
+            Self::Decoded(s) => s.channels,
+            Self::Streamed(s) => s.channels,
+        }
+    }
+    pub fn sample_rate(&self) -> u32 {
+        match self {
+            Self::Decoded(s) => s.sample_rate,
+            Self::Streamed(s) => s.sample_rate,
+        }
+    }
     pub fn duration_seconds(&self) -> f64 {
         match self {
             Self::Decoded(source) => source.duration_seconds(),
@@ -785,6 +816,7 @@ mod tests {
             120.0,
             vec![super::super::PlaybackTrackSettings {
                 clips: vec![super::super::PlaybackClip {
+                    source_fades: Vec::new(),
                     source: PlaybackSource::Streamed {
                         source: Arc::clone(&source),
                         reader: Arc::clone(&reader),

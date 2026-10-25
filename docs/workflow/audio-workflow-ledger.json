@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "audio-workflow-v6",
-    "description": "Audio workflow through T017: full-height waveforms and Discard cleanup of unsaved recordings. No whole-DAW score.",
+    "version": "audio-workflow-v12",
+    "description": "Audio workflow through T028 Channel Settings lifecycle and application-relative pinning. No whole-DAW score.",
     "baseline_complete": false,
-    "change_reason": "Retains all 25 v5 requirements/weights; refines waveform detail to use full lane height and adds unsaved-recording Discard cleanup. User explicitly authorized publishing this checkpoint. Baseline remains incomplete."
+    "change_reason": "Preserves v11 members and weights; adds explicit channel-editor reopening and application-relative pinning requirements after user feedback. No live acceptance inferred."
   },
   "evidence": {
     "t014-source": {
@@ -108,6 +108,95 @@
       "location": "docs/workflow/tasks/T017-waveform-height-and-discard.md",
       "identity": "x64 local-asio EXE SHA-256 88482EEE7B248AF7F32A36D7CBD69CF7921484B101976324A0900BE23BD3666F; crates/opentrack-app/src/app.rs: 90C36949FB8F19BED275828498D5BF0B797005930259BE15B393AC5DAC0DDC98; crates/opentrack-app/src/recording_undo.rs: 704FABD3573A1F026C98C23A9EA815DC3DB84B874E755113806E33F80135D43D; crates/opentrack-app/src/waveform_view.rs: 17207DDAE9247E43400402AC56FE7449336B6F653493647C5CB67D3E2C362F57",
       "note": "108 workspace tests pass; standard WASAPI check and x64 local-asio build pass. Added Discard/new-name filesystem checks. No live GUI/recording acceptance for these final corrections."
+    },
+    "t020-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T020-automation-and-channel-gain.md",
+      "note": "User requests less aggressive faders with -30 dB floor, bottom mute and positive track gain; Stereo In/Out editors do not need Sends."
+    },
+    "t020-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T020-automation-and-channel-gain.md",
+      "identity": "x64 local-asio EXE SHA-256 0A33F1CDACFC10BED0067BEBE92B468931AB22F4492A230B8DDF37D157EC1362; crates/opentrack-app/src/app.rs: 159AF276DF6CCCE45A8575FD827169699ABC1955DD0F0394D7F837DCD63899F4; crates/opentrack-app/src/channel_gain.rs: 3BBEFD5D5CAD45013F4CFBED914B2321304E6816AE9D016DEB38542FA058A059; crates/opentrack-app/src/mixer.rs: EC3171148E57EB71BD842C5FB81ABEDAF867561080BCBF42189595D07F56E04A; crates/opentrack-app/src/channel_settings.rs: B1D06240D4071AA2778D9B017585A081774F44395AAA7BCB967B463C2EFCE1CC; crates/opentrack-app/src/project_inspector.rs: 957ACC6F15FDC88F2063DA169BF5EE0CC20D2F95D46006A4F479CA7EBEAED2DE; crates/opentrack-app/src/project_file.rs: 76220FA7A664A556B3776EE12183117BA580B480F6B929AFC1DCB7F4EDE62332; crates/opentrack-core/src/project.rs: 35B98732A5D50B852883C30FDD4171558FC8D6B4893B30A8ECFA17ACB64AEE78; crates/opentrack-audio/src/lib.rs: 55820CF979238640907E0F0CEA695E539C7FFD1ACC32ECC7D2A0A8883E428CC6",
+      "note": "124 release tests pass; final fine precision passes focused fader tests; release build succeeds. Positive live MIDI gain and bus/track Sends rendering checked offline. Hardware/visual review pending."
+    },
+    "t021-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T021-peak-hold-and-spectrum.md",
+      "note": "Current user specification; no reference runtime inferred."
+    },
+    "t021-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T021-peak-hold-and-spectrum.md",
+      "note": "129 release tests pass; source wired to real pre/post audio. Live hardware/UI acceptance pending.",
+      "identity": "builds/x64/OpenTrack.exe: CC913709320C3677EDA3EA5F0BC1110BCF658B6094B73B6B439ECBA49C399733; crates/opentrack-app/src/app.rs: DC553EE40501FFC6D17FA83409290882E70970053456872D162EF9B038CC5F41; crates/opentrack-app/src/analyzer_view.rs: F998FC0FC7655C4D1E52D007D3591B022577096BA78B8CC57E3DD0BDDBAF1130; crates/opentrack-app/src/channel_settings.rs: E459A13954A296E1064686DA38A73825340565F91BF9982B6C6938ECE4B01D36; crates/opentrack-app/src/mixer.rs: 51877EA4BCBF7C2C1018418900FBEA3171CB8251019CB3327047486E8A3B4456; crates/opentrack-audio/src/lib.rs: 800ADA46976356E9907F212F2B98E890DFCBAA8349851E2EA631652BC3672A49; crates/opentrack-audio/src/spectrum.rs: DA401F8F10C20446B6EBD23819BEF37F7CBD36FC4F04708B7E65207ACEE31309; crates/opentrack-audio/src/bus.rs: 8B151AF5D2674A3C4225A987C55D83E76305CC3C1D7D433667BF447144469E1C; crates/opentrack-audio/src/recording.rs: 031566532F6AC64C3235820F698E320A56DA8C5E2BF96880064DCB9B97851E64"
+    },
+    "t022-reference": {
+      "kind": "reference",
+      "location": "docs/reviews/preferences-reference-inventory.md",
+      "note": "32 user-supplied static captures; named primary PNG copies/hashes in external manifest. VST Metering PREF-30 shows3000ms,20dB/s,40dB/s and direct-monitor map. Dynamic semantics/ranges unknown."
+    },
+    "t022-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T022-preferences-and-metering.md",
+      "note": "User requests organized capture archive, documented non-Video/non-Scores preferences and immediate functional VST Metering; reports strange display speed."
+    },
+    "t022-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T022-preferences-and-metering.md",
+      "identity": "builds/x64/OpenTrack.exe: BDB8BAA55753030063BD86B7E1E96AD9774AD212B660BFF4F0E86BEB0E4B4E7E; crates/opentrack-app/src/app.rs: BD60610803AFD08E71583BB3C118EA00E7A0DBC4BD46437EE3BF49DF1122C6C9; crates/opentrack-app/src/preferences.rs: DC0C923B2E897B77CC522C4A8B9317B13E865C1DD0ED47BB24DD441F821F42E1; crates/opentrack-app/src/metering.rs: 7EBDD2ACAA436C99930C6866B98AD4DB9B4DF21A1CF3788097C94B34CE5A92A6; crates/opentrack-app/src/analyzer_view.rs: 6DC281C9EB85152E7525ED44EDC91FE3E5F54ACEB25184B7C39E35AE639DDB5F; crates/opentrack-app/src/mixer.rs: 9064F9888C6C4A5BC34E00D59BA30C3881D435C8939B278EF7A113BB73A4DA91; crates/opentrack-app/src/channel_settings.rs: E5E01F4CC736B17C40E36EAA0BC5D8CFBB95D6129E611C1F0048F433C68073B8",
+      "note": "134 release tests pass, including actual Apply/Cancel/Defaults/OK input, timing and spectral release checks; x64 local-asio built. No live hardware/UI acceptance."
+    },
+    "t025-rate-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T025-media-lifecycle-and-editor-navigation.md",
+      "note": "User requests handling/alignment and warning for media left at prior project sample rate; non-destructive playback conformity was stated in session."
+    },
+    "t025-rate-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T025-media-lifecycle-and-editor-navigation.md",
+      "identity": "builds/x64/OpenTrack.exe: FACA03D9BE1B532CAD0B64FF2D313BF5E29BA707FA2BE741DB7073F2F301355C; crates/opentrack-app/src/app.rs: 80D3AA0072F0AC905A5E6E92D4C130C25E4BB23F5C467DC723AFC21B6E9382A7; crates/opentrack-app/src/media_pool.rs: 7ACC15314E4AF32C9BFE757CF5A8E0B2ADF00096601980E88A3A120F78076036; crates/opentrack-app/src/project_rate.rs: B46818A5DCED5B75960665D9D53EE1AEA2F07A8773489723DCE0104046BFA815; crates/opentrack-app/src/recording_undo.rs: AC5A8B465A3BF127F2EB0A194051CC9E7307D41BBA32FDF033BD92AE20A738B0; crates/opentrack-app/src/sample_editor.rs: 3237043BF2CC28D0F5DA06C020A9CE9C2BB4E2CFF59B90C9B6E8EDBA6F24A35F; crates/opentrack-app/src/audio_events.rs: AA0A1A882E163C6F828EBF24B44D33FE8C59E3C45C037D825D37FD4899AFCB32; crates/opentrack-app/src/audio_configuration.rs: 5AB3BAAC6FC58DD3FC6FED208B863358BA7D363C5172BE74E2EB2A2DF4AFA6AB; crates/opentrack-app/src/system_tool_icons.rs: 609EC2DDE3C33BA8FCDADB51FC7FEDB84B2FC83F2C9919E2D5EB49EC3317B2C7; crates/opentrack-app/src/project_file.rs: 8F91CBA2D054F68AAD9053F76177D46B4760C22DF8A5C5166EDBE045730992CA; crates/opentrack-core/src/project.rs: 13916E4569EE452E2653508EBD08CE34216322669F27B0D9ADEBFF82AFFF3CAF; crates/opentrack-audio/src/streaming.rs: E379FC405A9F50C083C1EBA5828C9210ED2A80B4BB61B205A458E8D900989CB9; crates/opentrack-audio/src/lib.rs: FA5CD3F7E0E1446B85C2840B8D8E1CDB38BBB4BF79FFCAD119F45573B1DDE019",
+      "note": "Header review covers pool/live files; explicit confirmation, cancellation, recording guard and undo. Offline44.1/48/96kHz playback tone checks pass. Live hardware review pending."
+    },
+    "t027-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T027-monitoring-and-take-layering.md#user-direction",
+      "note": "User requests no audible pops during live fader/EQ changes, monitor-only sound on monitored tracks during playback, and recording-overdub takes with only the topmost take visible/audible; dedicated take-lane controls are deferred."
+    },
+    "t027-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T027-monitoring-and-take-layering.md#implementation-handoff",
+      "identity": "builds/x64/OpenTrack.exe SHA-256 A80F304B4504614D4AF7B80D8ADBFD365EDE2C8F9BC0D1E723D2A1A8574CBA7B; crates/opentrack-audio/src/lib.rs FE043F40E5826C0632F1EBE8F1C30E32D0203A483903F433BAAA9615533F20AA; crates/opentrack-audio/src/bus.rs 0E1C8534B7A5AAD3D889AEFDF33D1E36ABA59015A4C72B17F39C357241123FD2; crates/opentrack-app/src/app.rs 6FD8ED84842A125F1BD9CEBE5DD18C4B2375E9B7A01A8CC7CA0AA1EE18B2D05E",
+      "note": "Full release workspace suite passes: 95 app, 44 audio, 16 core. x64 release build passes. Audio tests cover plan crossfade continuity, monitor-exclusive track output, newest overlapping take, intentional X-crossfade preservation, and output-bus processing. GUI/audio-device acceptance pending."
+    },
+    "t027-backend-failure": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T027-monitoring-and-take-layering.md#correction-after-user-review--missing-asio-backend",
+      "identity": "User review of A80F304B4504614D4AF7B80D8ADBFD365EDE2C8F9BC0D1E723D2A1A8574CBA7B",
+      "note": "User reports only WASAPI, no monitoring sound and cannot start playback. The executable omitted local-asio. No independent hardware reproduction."
+    },
+    "t027-backend-correction": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T027-monitoring-and-take-layering.md#correction-after-user-review--missing-asio-backend",
+      "identity": "x64 local-ASIO executable SHA-256 DCAF34686CCC5CC61B17E3F1482304E1875673E9575A2A766E63C76D1BB1AE50",
+      "note": "Restored local-asio; 47 ASIO-enabled audio tests pass. Build script persists feature choice and migration notices; successive standard builds retain ASIO. Live driver/monitor/playback review pending."
+    },
+    "t028-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T028-channel-window-lifecycle.md",
+      "note": "User reports no window after Stereo Out and then other channels; specifies application-relative pin below dialogs/external programs."
+    },
+    "t028-editor-failure": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T028-channel-window-lifecycle.md#findings-and-implementation",
+      "identity": "User report after delivery of DCAF34686CCC5CC61B17E3F1482304E1875673E9575A2A766E63C76D1BB1AE50; no independent desktop reproduction",
+      "note": "Stereo Out editor fails to appear and later channel editors fail. Exact native cause unconfirmed; corrected lifecycle needs recheck."
+    },
+    "t028-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T028-channel-window-lifecycle.md",
+      "identity": "x64 local-ASIO executable SHA-256 3A682D584BD9FFAC78BFAB885599BC96752CF7B31569CD1219F715C6CC947C5C",
+      "note": "97 release app tests pass including actual editor lifecycle and hidden Windows ownership checks; build succeeds. Live user desktop acceptance pending."
     }
   },
   "requirements": [
@@ -188,7 +277,8 @@
       "outcome": "An optional local backend opens the installed x64 Mackie ASIO driver for full-duplex audio.",
       "implementation": "complete",
       "source_evidence": [
-        "t014-correction-source"
+        "t014-correction-source",
+        "t027-backend-correction"
       ],
       "reference": {
         "status": "user_specified",
@@ -197,9 +287,9 @@
         ]
       },
       "runtime": {
-        "status": "pending",
+        "status": "stale",
         "evidence": [
-          "t014-mackie-query"
+          "t027-backend-failure"
         ]
       },
       "parity": "pending",
@@ -534,8 +624,10 @@
         ]
       },
       "runtime": {
-        "status": "pending",
-        "evidence": []
+        "status": "stale",
+        "evidence": [
+          "t028-editor-failure"
+        ]
       },
       "parity": "pending",
       "comparison_evidence": []
@@ -690,6 +782,327 @@
       },
       "parity": "pending",
       "comparison_evidence": []
+    },
+    {
+      "id": "channel-fader-control",
+      "weight": 3,
+      "outcome": "Mixer/Channel Settings/Inspector share fine channel gain control, -30 dB audible floor, bottom zero-gain mute and positive headroom with persistence.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t020-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t020-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "device-bus-editor-layout",
+      "weight": 2,
+      "outcome": "Stereo In/Out Channel Settings have no Sends sections or customization entries while normal track Sends/layout preferences remain available.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t020-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t020-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t028-editor-failure"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "peak-hold-headroom",
+      "weight": 3,
+      "outcome": "Retain per-channel maximum dB until reset, red above 0 dB, shared stereo meters with red headroom.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t021-source",
+        "t022-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t021-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "channel-live-spectrum",
+      "weight": 3,
+      "outcome": "Live selected-channel FFT with pre/post inserts/EQ selection for tracks and device buses, without callback FFT/allocation.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t021-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t021-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "spectrum-compare-reset",
+      "weight": 2,
+      "outcome": "Orange comparison spectrum/EQ response of another channel, reset to Post/None on owner change or close.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t021-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t021-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "file-preferences",
+      "weight": 2,
+      "outcome": "File Preferences opens from empty shell/project with retained hierarchy, transactional global settings, unsupported pages clearly planned and no Video/Scores.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t022-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t022-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "configurable-meter-ballistics",
+      "weight": 3,
+      "outcome": "Configurable hold time and slow/fast dB-per-second decay drive shared Project/Mixer/Channel Settings bar and peak-marker display with session max retained.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t022-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t022-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "spectrum-release-control",
+      "weight": 2,
+      "outcome": "Adjustable display-only spectrum release smoothing with immediate attack and raw option.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t022-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t022-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "hardware-direct-monitor-meter-map",
+      "weight": 2,
+      "outcome": "Map routed input-bus signal to audio-track meters during hardware Direct Monitoring.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t022-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "project-rate-media-conformity",
+      "weight": 3,
+      "outcome": "Project rate changes warn/confirm mismatched or unavailable media; original files/timing/pitch remain and playback resamples; rate change is undoable and recording guarded.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-rate-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-rate-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "parameter-change-click-reduction",
+      "weight": 3,
+      "outcome": "Fader/EQ/insert parameter snapshot changes crossfade over a short bounded transition to reduce clicks during playback.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t027-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t027-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "monitor-exclusive-track-playback",
+      "weight": 3,
+      "outcome": "When input monitoring is enabled for a track during playback, that track emits its live input and suppresses its recorded clips and instrument; other tracks continue.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t027-source",
+        "t027-backend-correction"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t027-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t027-backend-failure"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "overdub-topmost-take",
+      "weight": 3,
+      "outcome": "Overlapping recorded takes remain separate, the newest/topmost take is visible and audible, and deliberate X-crossfades remain audible.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t027-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t027-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "channel-editor-reopen",
+      "weight": 3,
+      "outcome": "Output/Input/track Channel Settings opens reliably via all entry points, restores hidden/minimized windows, and reopens after close without stale shared-window failure.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t028-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t028-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t028-editor-failure"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "application-relative-channel-pin",
+      "weight": 2,
+      "outcome": "Always on Top keeps Channel Settings above Project/Mixer while dialogs and external programs can cover it; confirmations remain reachable.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t028-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t028-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
     }
   ],
   "gates": {
@@ -702,8 +1115,10 @@
     },
     "mackie-driver": {
       "description": "The exact installed Mackie ASIO driver is active and correct physical inputs/outputs work.",
-      "status": "pending",
-      "evidence": []
+      "status": "stale",
+      "evidence": [
+        "t027-backend-failure"
+      ]
     },
     "coexistence": {
       "description": "Backend sharing/release/stability behavior is demonstrated with other apps.",
@@ -717,6 +1132,48 @@
     },
     "persistence": {
       "description": "Settings/routes reopen correctly, preserve old projects and recover device errors.",
+      "status": "pending",
+      "evidence": []
+    },
+    "channel-control-review": {
+      "description": "User exercises precise/mute/positive faders, audible headroom, persistence and correct bus/normal track editor sections on current build.",
+      "status": "pending",
+      "evidence": []
+    },
+    "spectrum-review": {
+      "description": "Live audio tracks/device buses show correct peak holds, over-zero red, timely Pre/Post spectrum and orange comparison; close/channel reset verified. Direct live MIDI per-track gap remains explicit.",
+      "status": "pending",
+      "evidence": []
+    },
+    "preferences-meter-review": {
+      "description": "Live meter feel, timed marker and bar/spectrum rates, global persistence and Apply/Cancel/Defaults/OK verified without project dirtying. Hardware Direct Monitoring remains absent.",
+      "status": "pending",
+      "evidence": []
+    },
+    "project-rate-review": {
+      "description": "Disposable project old-rate media confirmation/cancel/conform/Undo/persistence plus live pitch/timing and missing-media behavior verified.",
+      "status": "pending",
+      "evidence": []
+    },
+    "parameter-change-listening": {
+      "description": "Adjust track gain and EQ while audio plays; no objectionable pops/dropouts, level jumps, or broken playback.",
+      "status": "pending",
+      "evidence": []
+    },
+    "monitor-exclusive-listening": {
+      "description": "During playback, an armed/monitored track outputs only its selected live input; toggling monitoring restores its clips without affecting other tracks.",
+      "status": "stale",
+      "evidence": [
+        "t027-backend-failure"
+      ]
+    },
+    "overdub-take-review": {
+      "description": "Record over an existing event; new event is displayed above and is the only audible take in overlap, outside explicit X-crossfades. Existing takes remain recoverable.",
+      "status": "pending",
+      "evidence": []
+    },
+    "channel-window-desktop": {
+      "description": "Live Output/Input/track repeated open/close plus hidden/minimized restore, application pin, quit/config/native dialogs and external application ordering are verified.",
       "status": "pending",
       "evidence": []
     }
@@ -837,6 +1294,147 @@
       "gates": [
         "wav-integrity",
         "persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "channel-fader-and-bus-layout",
+      "weight": 3,
+      "requirements": [
+        "channel-fader-control",
+        "device-bus-editor-layout"
+      ],
+      "gates": [
+        "channel-control-review"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "channel-diagnostics",
+      "weight": 3,
+      "requirements": [
+        "peak-hold-headroom",
+        "channel-live-spectrum",
+        "spectrum-compare-reset"
+      ],
+      "gates": [
+        "spectrum-review",
+        "live-meters"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "preferences-metering",
+      "weight": 3,
+      "requirements": [
+        "file-preferences",
+        "configurable-meter-ballistics",
+        "spectrum-release-control",
+        "hardware-direct-monitor-meter-map"
+      ],
+      "gates": [
+        "preferences-meter-review",
+        "live-meters"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "project-rate-transition",
+      "weight": 3,
+      "requirements": [
+        "project-rate-media-conformity"
+      ],
+      "gates": [
+        "project-rate-review",
+        "persistence"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "parameter-change-during-playback",
+      "weight": 3,
+      "requirements": [
+        "parameter-change-click-reduction"
+      ],
+      "gates": [
+        "parameter-change-listening"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "monitor-input-during-playback",
+      "weight": 3,
+      "requirements": [
+        "monitor-exclusive-track-playback"
+      ],
+      "gates": [
+        "monitor-exclusive-listening"
+      ],
+      "scenario": {
+        "status": "stale",
+        "evidence": [
+          "t027-backend-failure"
+        ]
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "record-overdub-take-layer",
+      "weight": 3,
+      "requirements": [
+        "overdub-topmost-take"
+      ],
+      "gates": [
+        "overdub-take-review",
+        "wav-integrity"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "channel-window-lifecycle-and-pinning",
+      "weight": 3,
+      "requirements": [
+        "channel-editor-reopen",
+        "application-relative-channel-pin"
+      ],
+      "gates": [
+        "channel-window-desktop"
       ],
       "scenario": {
         "status": "pending",

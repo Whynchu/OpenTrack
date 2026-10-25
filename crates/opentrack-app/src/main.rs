@@ -4,7 +4,9 @@ mod app;
 mod crash_log;
 mod icons;
 mod native_keys;
+mod native_windows;
 mod project_file;
+mod system_tool_icons;
 mod theme;
 mod timeline;
 

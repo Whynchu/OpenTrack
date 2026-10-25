@@ -80,3 +80,16 @@ T017: waveform drawing uses full event height with a small border margin. Discar
 
 
 T018 audio events: playback stops at each event duration, reads from its persisted source offset, and applies linear event fade-in/out and event gain before track processing. The Project waveform uses the same envelope. New pointer/domain/sample tests pass; desktop/hardware and exact reference fade laws remain unverified. See T018 for migration and bounds.
+
+
+T020: channel faders expose +6.02..-30 dB plus true bottom mute; core channel gain now allows 2.0 linear. Live MIDI gain uses this headroom instead of clamping at unity. Main and bus processors already consume the actual gain. OPR v22 retains earlier versions and legacy quieter values; the interaction range does not rewrite old levels on open. Desktop/hardware confirmation is pending.
+
+## Session spectrum diagnostics (T021)
+
+Selected/reference channel taps copy pre/post stereo frames into bounded atomic rings. The UI computes a calibrated 2048-point Hann FFT, retaining stereo power to avoid anti-phase cancellation. Capture allocates only on control-thread activation; callbacks do no FFT/allocation. Taps precede channel fader/pan and straddle EQ/inserts; device output sees the final mixed signal including live MIDI. Direct live MIDI bypasses individual track DSP in the current architecture, so per-track live-instrument spectrum is a documented gap. Close/channel change disables old taps and resets Post/no comparison. Peak holds are session UI state, while raw callback peaks preserve values above unity.
+
+T022 meter display: filled-bar release defaults20dB/s; timed peak markers hold3000ms then fall40dB/s, bounded below by level bars. Retained numeric maxima remain separate. Global Preferences persist timing without changing audio/device configuration or .opr. Spectrum release is immediate attack/exponential dB release (default180ms,0 raw), computed on UI only. Slow/bar-fast/marker assignment is a documented design pending reference measurement. Hardware Direct Monitoring meter mapping is not implemented.
+
+## T027 parameter smoothing and take monitoring
+
+Playback-plan updates retain the prior plan for a 10 ms linear output crossfade. The callback crossfades old and new processed snapshots while the UI/control thread retires completed plans. This is intended to reduce parameter-step clicks when faders, EQ, or inserts change during playback; live listening and rapid-edit/dropout qualification remain pending. During input monitoring, the selected track suppresses its arranged audio events and built-in instrument while passing the selected live input through that track's processor and route. Other tracks continue playback. For overlapping events on one track, the newest active event in arranged order is the audible/displayed take; an intentional prior fade-out plus new fade-in X-crossfade remains mixed. Recording preview is drawn after arranged events so it appears on top. Separate take-lane controls are deferred. See T027 for acceptance steps and known limits.

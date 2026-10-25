@@ -10,7 +10,9 @@ mod devices;
 mod midi;
 pub mod plugins;
 mod recording;
+mod spectrum;
 mod streaming;
+pub use spectrum::{SpectrumFrame, SpectrumStage};
 mod waveform;
 pub use waveform::{WAVEFORM_BLOCK_FRAMES, Waveform};
 #[cfg(windows)]
@@ -25,7 +27,10 @@ pub use recording::{
     AudioInputDevice, AudioInputFormat, AudioInputProbe, AudioMonitorBuffer, AudioRecordRoute,
     AudioRecorder, RecordingSummary,
 };
-pub use streaming::{AudioSource, PlaybackSource, StreamedWav, StreamingPlayback};
+pub use streaming::{
+    AudioFileMetadata, AudioSource, PlaybackSource, StreamedWav, StreamingPlayback,
+    audio_file_metadata,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioDeviceMode {
@@ -81,6 +86,7 @@ use cpal::{BufferSize, SampleFormat};
 const TEST_TONE_HZ: f32 = 440.0;
 const TEST_TONE_LEVEL: f32 = 0.08;
 const MAX_DECODED_WAV_BYTES: u64 = 512 * 1024 * 1024;
+const PLAYBACK_PARAMETER_FADE_MS: u32 = 10;
 
 /// A fully decoded mono or stereo WAV file held in memory.
 #[derive(Clone, Debug)]
@@ -185,6 +191,7 @@ fn make_waveform_peaks(samples: &[f32], channels: u16) -> Vec<f32> {
 /// One decoded source placed in the project timeline.
 #[derive(Clone, Debug)]
 pub struct PlaybackClip {
+    pub source_fades: Vec<opentrack_core::project::SourceFade>,
     pub source: PlaybackSource,
     pub start_beats: f64,
     pub source_offset_seconds: f64,
@@ -315,13 +322,35 @@ impl PlaybackTrackRuntime {
 #[derive(Default)]
 pub struct StereoMeter {
     peaks: [AtomicU32; 2],
+    spectrum: std::sync::OnceLock<spectrum::SpectrumTap>,
 }
 
 impl StereoMeter {
+    /// Control-thread activation; allocation never occurs in record_spectrum().
+    pub fn enable_spectrum(&self, enabled: bool) {
+        if enabled {
+            self.spectrum
+                .get_or_init(spectrum::SpectrumTap::new)
+                .enable(true);
+        } else if let Some(tap) = self.spectrum.get() {
+            tap.enable(false);
+        }
+    }
+    pub fn spectrum_enabled(&self) -> bool {
+        self.spectrum.get().is_some_and(|tap| tap.enabled())
+    }
+    pub fn spectrum_frame(&self, stage: SpectrumStage) -> Option<SpectrumFrame> {
+        self.spectrum.get()?.frame(stage)
+    }
+    pub(crate) fn record_spectrum(&self, pre: (f32, f32), post: (f32, f32), rate: u32) {
+        if let Some(tap) = self.spectrum.get() {
+            tap.record(pre, post, rate);
+        }
+    }
     pub fn publish(&self, levels: [f32; 2]) {
         for (peak, level) in self.peaks.iter().zip(levels) {
             if level.is_finite() && level > 0.0 {
-                peak.fetch_max(level.min(4.0).to_bits(), Ordering::Relaxed);
+                peak.fetch_max(level.to_bits(), Ordering::Relaxed);
             }
         }
     }
@@ -385,6 +414,10 @@ pub struct PlaybackPlan {
     loop_range_frames: Option<(u64, u64)>,
     cycle_mode: CycleMode,
     generation: u64,
+    monitor_mute_mask: Vec<bool>,
+    transition_from: ArcSwapOption<PlaybackPlan>,
+    transition_position: AtomicU32,
+    transition_frames: u32,
 }
 
 impl PlaybackPlan {
@@ -401,6 +434,10 @@ impl PlaybackPlan {
             loop_range_frames: None,
             cycle_mode: CycleMode::Loop,
             generation: 0,
+            monitor_mute_mask: Vec::new(),
+            transition_from: ArcSwapOption::empty(),
+            transition_position: AtomicU32::new(0),
+            transition_frames: 0,
         }
     }
 
@@ -439,6 +476,10 @@ impl PlaybackPlan {
             let range = (start_frame.round() as u64, end_frame.round() as u64);
             (range.1 > range.0).then_some(range)
         });
+        let monitor_mute_mask = tracks
+            .iter()
+            .map(|track| track.monitor_input.is_some())
+            .collect();
         Self {
             output_bus: bus::BusRuntime::new(
                 &opentrack_core::project::BusChannel::output().strip,
@@ -454,7 +495,33 @@ impl PlaybackPlan {
             loop_range_frames,
             cycle_mode: CycleMode::Loop,
             generation,
+            monitor_mute_mask,
+            transition_from: ArcSwapOption::empty(),
+            transition_position: AtomicU32::new(0),
+            transition_frames: (sample_rate.saturating_mul(PLAYBACK_PARAMETER_FADE_MS) / 1000)
+                .max(1),
         }
+    }
+
+    fn begin_parameter_transition(&self, previous: Arc<PlaybackPlan>) {
+        self.transition_position.store(0, Ordering::Relaxed);
+        self.transition_from.store(Some(previous));
+    }
+
+    fn detach_completed_transition(&self) -> Option<Arc<PlaybackPlan>> {
+        (self.transition_frames == 0
+            || self.transition_position.load(Ordering::Acquire) >= self.transition_frames)
+            .then(|| self.transition_from.swap(None))
+            .flatten()
+    }
+}
+
+/// Break completed snapshot links on the control thread so retired DSP state
+/// is never deallocated by the real-time callback.
+fn detach_transition_chain(plan: &PlaybackPlan, retired: &mut Vec<Arc<PlaybackPlan>>) {
+    if let Some(previous) = plan.detach_completed_transition() {
+        detach_transition_chain(&previous, retired);
+        retired.push(previous);
     }
 }
 
@@ -993,6 +1060,7 @@ impl AudioEngine {
         output_channel: &opentrack_core::project::Track,
     ) {
         self.current_generation = self.current_generation.wrapping_add(1).max(1);
+        let previous = self.plan.load_full();
         let mut new_plan = PlaybackPlan::new(
             tempo_bpm,
             tracks,
@@ -1003,6 +1071,7 @@ impl AudioEngine {
         new_plan.output_meter = Arc::clone(&self.plan.load().output_meter);
         new_plan.cycle_mode = cycle_mode;
         new_plan.output_bus = bus::BusRuntime::new(output_channel, self.sample_rate);
+        new_plan.begin_parameter_transition(previous);
         self.retired_plans.push(self.plan.swap(Arc::new(new_plan)));
         self.reclaim_retired_plans();
     }
@@ -1011,6 +1080,14 @@ impl AudioEngine {
     pub fn reclaim_retired_plans(&mut self) {
         if self.callback_active.load(Ordering::SeqCst) {
             return;
+        }
+        let current = self.plan.load();
+        detach_transition_chain(&current, &mut self.retired_plans);
+        let mut index = 0;
+        while index < self.retired_plans.len() {
+            let plan = Arc::clone(&self.retired_plans[index]);
+            detach_transition_chain(&plan, &mut self.retired_plans);
+            index += 1;
         }
         let callback_generation = self.callback_generation.load(Ordering::Acquire);
         let mut index = 0;
@@ -1023,6 +1100,9 @@ impl AudioEngine {
         }
     }
 
+    pub fn output_meter_tap(&self) -> Arc<StereoMeter> {
+        Arc::clone(&self.plan.load().output_meter)
+    }
     pub fn take_output_peaks(&self) -> [f32; 2] {
         self.plan.load().output_meter.take()
     }
@@ -1051,7 +1131,8 @@ impl AudioEngine {
     pub fn set_live_midi_gain(&self, gain: f32) {
         self.live_midi_gain.store(
             if gain.is_finite() {
-                gain.clamp(0.0, 1.0).to_bits()
+                gain.clamp(0.0, opentrack_core::project::MAX_CHANNEL_GAIN)
+                    .to_bits()
             } else {
                 0.0_f32.to_bits()
             },
@@ -1243,7 +1324,8 @@ impl LiveMidiRenderer {
         self.synth.set_waveform(instrument_waveform_from_code(
             self.waveform.load(Ordering::Acquire),
         ));
-        let gain = f32::from_bits(self.gain.load(Ordering::Acquire)).clamp(0.0, 1.0);
+        let gain = f32::from_bits(self.gain.load(Ordering::Acquire))
+            .clamp(0.0, opentrack_core::project::MAX_CHANNEL_GAIN);
         let (left, right) = self.synth.next_frame(sample_rate);
         (left * gain, right * gain)
     }
@@ -1724,17 +1806,11 @@ fn render_frames<T>(
             monitor_reader.reset();
             (0.0, 0.0)
         };
-        let (mut left, mut right) = mix_frame(
-            &plan_snapshot,
-            output_frame,
-            sample_rate,
-            (monitor_left, monitor_right),
-            playing,
-        );
+        let mut external_input = (0.0_f32, 0.0_f32);
         if tone.load(Ordering::Relaxed) {
             let tone_sample = (*phase * std::f32::consts::TAU).sin() * TEST_TONE_LEVEL;
-            left += tone_sample;
-            right += tone_sample;
+            external_input.0 += tone_sample;
+            external_input.1 += tone_sample;
         }
         *phase += TEST_TONE_HZ / sample_rate as f32;
         if *phase >= 1.0 {
@@ -1742,10 +1818,19 @@ fn render_frames<T>(
         }
         if let Some(midi) = live_midi.as_mut() {
             let (midi_left, midi_right) = midi.next_frame(sample_rate);
-            left += midi_left;
-            right += midi_right;
+            external_input.0 += midi_left;
+            external_input.1 += midi_right;
         }
-        (left, right) = plan_snapshot.output_bus.process(left, right);
+        let (left, right) = render_plan_frame(
+            &plan_snapshot,
+            output_frame,
+            sample_rate,
+            (monitor_left, monitor_right),
+            external_input,
+            playing,
+            &plan_snapshot.monitor_mute_mask,
+            true,
+        );
         output_peaks[0] = output_peaks[0].max(left.abs());
         output_peaks[1] = output_peaks[1].max(right.abs());
         for (channel, sample) in frame.iter_mut().enumerate() {
@@ -1796,6 +1881,7 @@ fn wrap_playhead_frame(frame: u64, loop_range: Option<(u64, u64)>, mode: CycleMo
     }
 }
 
+#[cfg(test)]
 fn mix_frame(
     plan: &PlaybackPlan,
     output_frame: u64,
@@ -1803,16 +1889,38 @@ fn mix_frame(
     monitor_input: (f32, f32),
     playing: bool,
 ) -> (f32, f32) {
+    mix_frame_with_policy(
+        plan,
+        output_frame,
+        output_rate,
+        monitor_input,
+        playing,
+        true,
+        &[],
+    )
+}
+
+fn mix_frame_with_policy(
+    plan: &PlaybackPlan,
+    output_frame: u64,
+    output_rate: u32,
+    monitor_input: (f32, f32),
+    playing: bool,
+    analyze: bool,
+    monitor_mute_mask: &[bool],
+) -> (f32, f32) {
     let timeline_beats = output_frame as f64 * plan.tempo_bpm / (f64::from(output_rate) * 60.0);
     let mut left = 0.0;
     let mut right = 0.0;
-    for track in &plan.tracks {
-        if track.settings.muted
-            || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat)
-        {
+    for (track_index, track) in plan.tracks.iter().enumerate() {
+        let inaudible = track.settings.muted
+            || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+        if inaudible && !track.settings.meter_peak.spectrum_enabled() {
             continue;
         }
-        let (mut track_left, mut track_right) = if playing {
+        let monitor_only = track.settings.monitor_input.is_some()
+            || monitor_mute_mask.get(track_index).copied().unwrap_or(false);
+        let (mut track_left, mut track_right) = if playing && !monitor_only {
             mix_track_frame(plan, track, timeline_beats)
         } else {
             (0.0, 0.0)
@@ -1836,14 +1944,24 @@ fn mix_frame(
         // SAFETY: callback_active permits exactly one callback to mutate the
         // processor state; the UI never accesses this cell.
         let processor = unsafe { &mut *track.processor.get() };
-        let (instrument_left, instrument_right) = if playing {
+        let (instrument_left, instrument_right) = if playing && !monitor_only {
             processor.instrument.next_frame(output_frame)
         } else {
             (0.0, 0.0)
         };
         track_left += instrument_left;
         track_right += instrument_right;
+        let pre = (track_left, track_right);
         processor.process(&mut track_left, &mut track_right);
+        if analyze {
+            track
+                .settings
+                .meter_peak
+                .record_spectrum(pre, (track_left, track_right), output_rate);
+        }
+        if inaudible {
+            continue;
+        }
         // Linear stereo balance preserves unity at center, with the opposite
         // side attenuated toward either edge. Exact reference pan law is unmeasured.
         let output_left = track_left * track.settings.gain * (1.0 - track.settings.pan.max(0.0));
@@ -1863,6 +1981,69 @@ fn mix_frame(
         }
     }
     (left, right)
+}
+
+fn render_plan_frame(
+    plan: &PlaybackPlan,
+    output_frame: u64,
+    output_rate: u32,
+    monitor_input: (f32, f32),
+    external_input: (f32, f32),
+    playing: bool,
+    monitor_mute_mask: &[bool],
+    analyze: bool,
+) -> (f32, f32) {
+    let (mut left, mut right) = mix_frame_with_policy(
+        plan,
+        output_frame,
+        output_rate,
+        monitor_input,
+        playing,
+        analyze,
+        monitor_mute_mask,
+    );
+    left += external_input.0;
+    right += external_input.1;
+    if analyze {
+        (left, right) =
+            plan.output_bus
+                .process_analyzed(left, right, &plan.output_meter, output_rate);
+    } else {
+        (left, right) = plan.output_bus.process_unanalyzed(left, right);
+    }
+
+    let total = plan.transition_frames;
+    if total == 0 || plan.transition_position.load(Ordering::Relaxed) >= total {
+        return (left, right);
+    }
+    let previous = plan.transition_from.load();
+    let Some(previous) = previous.as_ref() else {
+        return (left, right);
+    };
+    let position = plan
+        .transition_position
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_add(1))
+        })
+        .unwrap_or_else(|value| value);
+    if position >= total {
+        return (left, right);
+    }
+    let (old_left, old_right) = render_plan_frame(
+        previous,
+        output_frame,
+        output_rate,
+        monitor_input,
+        external_input,
+        playing,
+        monitor_mute_mask,
+        false,
+    );
+    let blend = (position + 1) as f32 / total.max(1) as f32;
+    (
+        old_left * (1.0 - blend) + left * blend,
+        old_right * (1.0 - blend) + right * blend,
+    )
 }
 
 /// Linear event fades; the source media is never rewritten.
@@ -1888,16 +2069,34 @@ fn mix_track_frame(
     track: &PlaybackTrackRuntime,
     timeline_beats: f64,
 ) -> (f32, f32) {
+    let Some(top_index) =
+        track.settings.clips.iter().rposition(|clip| {
+            !clip.muted && clip_event_seconds(plan, clip, timeline_beats).is_some()
+        })
+    else {
+        return (0.0, 0.0);
+    };
+    let top = &track.settings.clips[top_index];
+    // Retain the intentional X crossfade pair; all other overlaps use the
+    // newest event as the audible take layer.
+    let crossfade_index = track.settings.clips[..top_index]
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, clip)| {
+            let overlaps =
+                clip.start_beats + clip.duration_seconds * plan.tempo_bpm / 60.0 > top.start_beats;
+            (overlaps && clip.fade_out_seconds > 0.0 && top.fade_in_seconds > 0.0).then_some(index)
+        });
     let mut left = 0.0;
     let mut right = 0.0;
-    for clip in &track.settings.clips {
-        if clip.muted {
+    for (index, clip) in track.settings.clips.iter().enumerate() {
+        if index != top_index && Some(index) != crossfade_index {
             continue;
         }
-        let event_seconds = (timeline_beats - clip.start_beats) * 60.0 / plan.tempo_bpm;
-        if event_seconds < 0.0 || event_seconds >= clip.duration_seconds {
+        let Some(event_seconds) = clip_event_seconds(plan, clip, timeline_beats) else {
             continue;
-        }
+        };
         let source_frame =
             (event_seconds + clip.source_offset_seconds) * f64::from(clip.source.sample_rate());
         let source_frames = clip.source.frame_count();
@@ -1918,11 +2117,25 @@ fn mix_track_frame(
             clip.duration_seconds,
             clip.fade_in_seconds,
             clip.fade_out_seconds,
-        ) * clip.gain;
+        ) * clip.gain
+            * clip
+                .source_fades
+                .iter()
+                .map(|f| f.gain_at(event_seconds + clip.source_offset_seconds))
+                .product::<f32>();
         left += (first_left * (1.0 - fraction) + second_left * fraction) * envelope;
         right += (first_right * (1.0 - fraction) + second_right * fraction) * envelope;
     }
     (left, right)
+}
+
+fn clip_event_seconds(
+    plan: &PlaybackPlan,
+    clip: &PlaybackClip,
+    timeline_beats: f64,
+) -> Option<f64> {
+    let seconds = (timeline_beats - clip.start_beats) * 60.0 / plan.tempo_bpm;
+    (seconds >= 0.0 && seconds < clip.duration_seconds).then_some(seconds)
 }
 
 const MAX_ACTIVE_MIDI_VOICES: usize = 64;
@@ -2485,6 +2698,292 @@ mod processing_tests {
     use super::*;
 
     #[test]
+    fn split_fade_lineage_preserves_rendered_audio_and_crossfades_sum_to_unity() {
+        use opentrack_core::project::{Project, TrackKind};
+        fn plan(p: &Project) -> PlaybackPlan {
+            let source = Arc::new(DecodedWav {
+                samples: vec![1.0; 8000].into(),
+                waveform_peaks: Arc::new(vec![]),
+                waveform: Arc::new(Waveform::default()),
+                channels: 1,
+                sample_rate: 1000,
+            });
+            PlaybackPlan::new(
+                p.tempo_bpm,
+                vec![PlaybackTrackSettings {
+                    clips: p.tracks[0]
+                        .clips
+                        .iter()
+                        .map(|c| PlaybackClip {
+                            source_fades: c.source_fades.clone(),
+                            source: PlaybackSource::Decoded(source.clone()),
+                            start_beats: c.start_beats,
+                            source_offset_seconds: c.source_offset_seconds,
+                            duration_seconds: c.duration_seconds,
+                            fade_in_seconds: c.fade_in_seconds,
+                            fade_out_seconds: c.fade_out_seconds,
+                            gain: c.gain,
+                            muted: false,
+                            solo: false,
+                        })
+                        .collect(),
+                    midi_notes: vec![],
+                    midi_controllers: vec![],
+                    instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+                    meter_peak: Arc::new(StereoMeter::default()),
+                    gain: 1.0,
+                    pan: 0.0,
+                    track_delay_ms: 0.0,
+                    muted: false,
+                    solo: false,
+                    solo_defeat: false,
+                    equalizer: ChannelEqualizer::default(),
+                    inserts: vec![],
+                    inserts_bypassed: false,
+                    monitor_input: None,
+                    output_route: PlaybackOutputRoute::Stereo,
+                }],
+                1,
+                48000,
+                None,
+            )
+        }
+        let mut p = Project::default();
+        p.tempo_bpm = 120.0;
+        p.add_track(TrackKind::Audio);
+        let id = p.add_audio_clip(0, "signal.wav".into(), 0.0, 4.0).unwrap();
+        let track = p.tracks[0].id;
+        p.tracks[0].clips[0].source_offset_seconds = 0.5;
+        p.tracks[0].clips[0].fade_in_seconds = 2.0;
+        p.tracks[0].clips[0].fade_out_seconds = 1.0;
+        let before = plan(&p);
+        let right = p.split_audio_clip(track, id, 1.0).unwrap();
+        assert!(p.split_audio_clip(track, right, 3.0).is_some());
+        let after = plan(&p);
+        for i in 0..4000 {
+            let beat = i as f64 / 500.0;
+            let a = mix_track_frame(&before, &before.tracks[0], beat);
+            let b = mix_track_frame(&after, &after.tracks[0], beat);
+            assert!((a.0 - b.0).abs() < 1e-6);
+            assert_eq!(b.0, b.1);
+        }
+        p.tracks[0].clips.clear();
+        let a = p.add_audio_clip(0, "a.wav".into(), 0.0, 2.0).unwrap();
+        let b = p.add_audio_clip(0, "b.wav".into(), 3.0, 2.0).unwrap();
+        assert!(p.crossfade_audio_clips(a, b));
+        let crossfade = plan(&p);
+        for i in 1500..2000 {
+            let out = mix_track_frame(&crossfade, &crossfade.tracks[0], i as f64 / 500.0);
+            assert!((out.0 - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn newest_overlapping_recording_is_the_audible_layer_except_for_crossfades() {
+        fn source(value: f32) -> PlaybackSource {
+            PlaybackSource::Decoded(Arc::new(DecodedWav {
+                samples: vec![value; 100_000].into(),
+                waveform_peaks: Arc::new(Vec::new()),
+                waveform: Arc::new(Waveform::default()),
+                channels: 1,
+                sample_rate: 48_000,
+            }))
+        }
+        let plan = PlaybackPlan::new(
+            120.0,
+            vec![PlaybackTrackSettings {
+                clips: vec![
+                    PlaybackClip {
+                        source_fades: Vec::new(),
+                        source: source(0.25),
+                        start_beats: 0.0,
+                        source_offset_seconds: 0.0,
+                        duration_seconds: 2.0,
+                        fade_in_seconds: 0.0,
+                        fade_out_seconds: 0.0,
+                        gain: 1.0,
+                        muted: false,
+                        solo: false,
+                    },
+                    PlaybackClip {
+                        source_fades: Vec::new(),
+                        source: source(0.75),
+                        start_beats: 0.0,
+                        source_offset_seconds: 0.0,
+                        duration_seconds: 1.0,
+                        fade_in_seconds: 0.0,
+                        fade_out_seconds: 0.0,
+                        gain: 1.0,
+                        muted: false,
+                        solo: false,
+                    },
+                ],
+                midi_notes: Vec::new(),
+                midi_controllers: Vec::new(),
+                instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+                meter_peak: Arc::new(StereoMeter::default()),
+                gain: 1.0,
+                pan: 0.0,
+                track_delay_ms: 0.0,
+                muted: false,
+                solo: false,
+                solo_defeat: false,
+                equalizer: ChannelEqualizer::default(),
+                inserts: Vec::new(),
+                inserts_bypassed: false,
+                monitor_input: None,
+                output_route: PlaybackOutputRoute::Stereo,
+            }],
+            1,
+            48_000,
+            None,
+        );
+        assert_eq!(mix_track_frame(&plan, &plan.tracks[0], 0.0), (0.75, 0.75));
+        assert_eq!(mix_track_frame(&plan, &plan.tracks[0], 3.0), (0.25, 0.25));
+    }
+
+    #[test]
+    fn playback_parameter_snapshots_crossfade_without_an_output_step() {
+        fn plan(gain: f32) -> Arc<PlaybackPlan> {
+            Arc::new(PlaybackPlan::new(
+                120.0,
+                vec![PlaybackTrackSettings {
+                    clips: Vec::new(),
+                    midi_notes: Vec::new(),
+                    midi_controllers: Vec::new(),
+                    instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+                    meter_peak: Arc::new(StereoMeter::default()),
+                    gain,
+                    pan: 0.0,
+                    track_delay_ms: 0.0,
+                    muted: false,
+                    solo: false,
+                    solo_defeat: false,
+                    equalizer: ChannelEqualizer::default(),
+                    inserts: Vec::new(),
+                    inserts_bypassed: false,
+                    monitor_input: Some(PlaybackInputChannel::Stereo),
+                    output_route: PlaybackOutputRoute::Stereo,
+                }],
+                1,
+                48_000,
+                None,
+            ))
+        }
+        let previous = plan(1.0);
+        let current = plan(0.0);
+        current.begin_parameter_transition(previous);
+        let mut values = Vec::new();
+        for frame in 0..current.transition_frames {
+            values.push(
+                render_plan_frame(
+                    &current,
+                    frame as u64,
+                    48_000,
+                    (1.0, 1.0),
+                    (0.0, 0.0),
+                    true,
+                    &current.monitor_mute_mask,
+                    true,
+                )
+                .0,
+            );
+        }
+        assert!(values.first().copied().unwrap() > 0.99);
+        assert!(values.last().copied().unwrap().abs() < 1.0e-6);
+        assert!(
+            values
+                .windows(2)
+                .all(|pair| (pair[1] - pair[0]).abs() < 0.003)
+        );
+    }
+    #[test]
+    fn mixed_rate_source_playback_preserves_pitch_and_duration_at_project_output_rates() {
+        for rate in [44100, 48000, 96000] {
+            let source = Arc::new(DecodedWav {
+                samples: (0..44100)
+                    .map(|i| (i as f32 * std::f32::consts::TAU * 440.0 / 44100.0).sin())
+                    .collect::<Vec<_>>()
+                    .into(),
+                waveform_peaks: Arc::new(vec![]),
+                waveform: Arc::new(Waveform::default()),
+                channels: 1,
+                sample_rate: 44100,
+            });
+            let plan = PlaybackPlan::new(
+                120.0,
+                vec![PlaybackTrackSettings {
+                    clips: vec![PlaybackClip {
+                        source_fades: vec![],
+                        source: PlaybackSource::Decoded(source),
+                        start_beats: 2.0,
+                        source_offset_seconds: 0.0,
+                        duration_seconds: 1.0,
+                        fade_in_seconds: 0.0,
+                        fade_out_seconds: 0.0,
+                        gain: 1.0,
+                        muted: false,
+                        solo: false,
+                    }],
+                    midi_notes: vec![],
+                    midi_controllers: vec![],
+                    instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+                    meter_peak: Arc::new(StereoMeter::default()),
+                    gain: 1.0,
+                    pan: 0.0,
+                    track_delay_ms: 0.0,
+                    muted: false,
+                    solo: false,
+                    solo_defeat: false,
+                    equalizer: ChannelEqualizer::default(),
+                    inserts: vec![],
+                    inserts_bypassed: false,
+                    monitor_input: None,
+                    output_route: PlaybackOutputRoute::Stereo,
+                }],
+                1,
+                rate,
+                None,
+            );
+            for frame in (0..rate).step_by(97) {
+                let seconds = frame as f64 / rate as f64;
+                let actual = mix_track_frame(&plan, &plan.tracks[0], 2.0 + seconds * 2.0).0;
+                let expected = (seconds * std::f64::consts::TAU * 440.0).sin() as f32;
+                assert!((actual - expected).abs() < 0.0015, "{rate} frame {frame}");
+            }
+            assert_eq!(mix_track_frame(&plan, &plan.tracks[0], 4.0), (0.0, 0.0));
+        }
+    }
+    #[test]
+    fn live_midi_gain_above_unity_reaches_audio_instead_of_being_clamped() {
+        fn renderer(gain: f32) -> LiveMidiRenderer {
+            let queue = Arc::new(LiveMidiQueue::new());
+            assert!(queue.push(MidiInputMessage::NoteOn {
+                channel: 0,
+                key: 69,
+                velocity: 100
+            }));
+            LiveMidiRenderer::new(
+                queue,
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(AtomicU8::new(0)),
+                Arc::new(AtomicU32::new(gain.to_bits())),
+            )
+        }
+        let mut unity = renderer(1.0);
+        let mut boosted = renderer(2.0);
+        let mut heard = false;
+        for _ in 0..512 {
+            let a = unity.next_frame(48000);
+            let b = boosted.next_frame(48000);
+            assert!((b.0 - a.0 * 2.0).abs() < 0.000001);
+            if a.0.abs() > 0.001 {
+                heard = true;
+            }
+        }
+        assert!(heard);
+    }
+    #[test]
     fn audio_event_trim_gain_and_fades_change_rendered_samples_and_stop_at_event_end() {
         let source = Arc::new(DecodedWav {
             samples: vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7].into(),
@@ -2497,6 +2996,7 @@ mod processing_tests {
             120.0,
             vec![PlaybackTrackSettings {
                 clips: vec![PlaybackClip {
+                    source_fades: Vec::new(),
                     source: PlaybackSource::Decoded(source),
                     start_beats: 1.0,
                     source_offset_seconds: 1.0,
@@ -2999,7 +3499,7 @@ mod processing_tests {
     }
 
     #[test]
-    fn output_callback_mixes_live_input_when_transport_is_stopped() {
+    fn monitoring_during_playback_suppresses_recorded_audio_on_that_track() {
         let monitor = Arc::new(AudioMonitorBuffer::new(48_000));
         monitor.set_enabled(true);
         assert!(monitor.push_frame(0.25, -0.25));
@@ -3007,10 +3507,28 @@ mod processing_tests {
         assert!(monitor.push_frame(0.75, -0.75));
         let input_monitor = Arc::new(ArcSwapOption::empty());
         input_monitor.store(Some(Arc::clone(&monitor)));
+        let playback = PlaybackSource::Decoded(Arc::new(DecodedWav {
+            samples: vec![0.9; 16].into(),
+            waveform_peaks: Arc::new(Vec::new()),
+            waveform: Arc::new(Waveform::default()),
+            channels: 1,
+            sample_rate: 48_000,
+        }));
         let plan = ArcSwap::from(Arc::new(PlaybackPlan::new(
             120.0,
             vec![PlaybackTrackSettings {
-                clips: Vec::new(),
+                clips: vec![PlaybackClip {
+                    source_fades: Vec::new(),
+                    source: playback,
+                    start_beats: 0.0,
+                    source_offset_seconds: 0.0,
+                    duration_seconds: 1.0,
+                    fade_in_seconds: 0.0,
+                    fade_out_seconds: 0.0,
+                    gain: 1.0,
+                    muted: false,
+                    solo: false,
+                }],
                 midi_notes: Vec::new(),
                 midi_controllers: Vec::new(),
                 instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
@@ -3032,7 +3550,7 @@ mod processing_tests {
             None,
         )));
         let tone = AtomicBool::new(false);
-        let playing = AtomicBool::new(false);
+        let playing = AtomicBool::new(true);
         let playhead = AtomicU64::new(0);
         let callback_generation = AtomicU64::new(0);
         let callback_active = AtomicBool::new(false);

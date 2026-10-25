@@ -366,9 +366,7 @@ pub(super) fn show(
         )
         .clicked()
         {
-            channel_settings_window.channel_bus = None;
-            channel_settings_window.open = true;
-            channel_settings_window.focus_requested = true;
+            channel_settings_window.request_channel_settings(None);
         }
         let (controls, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), Sense::hover());
@@ -499,13 +497,16 @@ pub(super) fn show(
             Stroke::new(1.0, p.grid),
             egui::StrokeKind::Inside,
         );
-        let mut gain_db = if track.gain <= 0.001 {
-            -60.0
-        } else {
-            20.0 * track.gain.log10()
-        };
-        if inspector_parameter_row(ui, 0, &mut gain_db, -60.0..=0.0, "dB", Some("Volume")) {
-            track.gain = 10.0_f32.powf(gain_db / 20.0).clamp(0.0, 1.0);
+        let mut gain_db = channel_gain::inspector_db(track.gain);
+        if inspector_parameter_row(
+            ui,
+            0,
+            &mut gain_db,
+            channel_gain::MUTE_DB..=channel_gain::MAX_DB,
+            "dB",
+            Some("Volume"),
+        ) {
+            track.gain = channel_gain::from_inspector_db(gain_db);
             modified = true;
         }
         let mut pan_percent = track.pan * 100.0;

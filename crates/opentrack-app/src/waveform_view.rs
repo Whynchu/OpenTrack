@@ -6,6 +6,22 @@ pub(super) fn draw(
     visible: Rect,
     channels: usize,
     duration: f64,
+    columns: impl FnMut(f64, f64, usize, usize) -> Vec<[f32; 2]>,
+) {
+    let color = if painter.ctx().global_style().visuals.dark_mode {
+        Color32::from_gray(215)
+    } else {
+        Color32::from_gray(40)
+    };
+    draw_colored(painter, rect, visible, channels, duration, color, columns);
+}
+pub(super) fn draw_colored(
+    painter: &egui::Painter,
+    rect: Rect,
+    visible: Rect,
+    channels: usize,
+    duration: f64,
+    color: Color32,
     mut columns: impl FnMut(f64, f64, usize, usize) -> Vec<[f32; 2]>,
 ) {
     let visible = rect.intersect(visible);
@@ -19,11 +35,6 @@ pub(super) fn draw(
         .clamp(2.0, 4096.0) as usize;
     let lanes = channels.clamp(1, 2);
     let lane_height = rect.height().max(1.0) / lanes as f32;
-    let color = if painter.ctx().global_style().visuals.dark_mode {
-        Color32::from_gray(215)
-    } else {
-        Color32::from_gray(40)
-    };
     let painter = painter.with_clip_rect(visible);
     for channel in 0..lanes {
         let samples = columns(start, end, count, channel);

@@ -431,7 +431,11 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
     ui.painter().text(
         value.center(),
         Align2::CENTER_CENTER,
-        format!("{:.2}", 20.0 * track.gain.max(0.001).log10()),
+        if track.gain <= 0.0 {
+            "??".to_owned()
+        } else {
+            format!("{:.2}", 20.0 * track.gain.log10())
+        },
         FontId::proportional(10.0),
         Color32::from_gray(18),
     );

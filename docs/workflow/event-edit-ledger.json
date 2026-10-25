@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "event-edit-v1",
-    "description": "T018 single audio-event bounds, selection, movement, trimming, fades and gain plus requested menu/startup presentation. No whole-DAW score.",
+    "version": "event-edit-v7",
+    "description": "Event editing through T026 and the explicit T028 on-demand pitch-analysis/persistence contract. No whole-DAW score.",
     "baseline_complete": false,
-    "change_reason": "New bounded inventory from five user-supplied event captures and explicit behavior/style overrides; exact reference curve/ranges and live acceptance remain incomplete."
+    "change_reason": "Preserves v6 membership/weights; refines the existing absent detected-pitch requirement to require explicit activation, reuse and persisted state. No implementation increase."
   },
   "evidence": {
     "t018-intent": {
@@ -22,16 +22,90 @@
       "location": "docs/workflow/tasks/T018-audio-event-editing.md",
       "identity": "x64 local-asio EXE SHA-256 579AB98888B4A151B5EDA62E82F2615E05B90A41B94003C34EEAAB4B108B6262; crates/opentrack-app/src/audio_events.rs: 48B81735834FC7B6B6DEAF5EEC3F48E804B49A45BD57FE82F386911E33499C48; crates/opentrack-app/src/app.rs: F7413FEE4F4D9B3768D47AB5ECC60CB5DA8C0DF32F8766AA7BE34681A8DC11E8; crates/opentrack-app/src/main.rs: 0B80617CE97181D46666A34C5942982B319AFAF4990FEA7268A5CAB77F4F5942; crates/opentrack-app/src/native_keys.rs: 583B1340D2EAAB187C72F8ADEC7C89E3D5659D291C5D47D088F56606D1F9A0A5; crates/opentrack-app/src/theme.rs: 3CA86A8836531EB7E1D7642C6BC20F0BC0EE070F160318CC8E37475374502571; crates/opentrack-app/src/project_file.rs: 506A9F197750F2FF2C3320194871D038F0276F42DC5D13C95C192DE0D841B1C8; crates/opentrack-core/src/project.rs: 87A5B7078439DD8605D51BC3D0A56AC71BEF4BA536F071DEFF5C3D066E344784; crates/opentrack-audio/src/lib.rs: FE3F463F4A26ECFD8C999EF06DC7D057C4E57E1E34D6CB7F569F396FBE71D97A",
       "note": "117 tests pass; default WASAPI check and x64 local-asio release pass. No live GUI launch, screenshot, hardware playback or startup-flash acceptance."
+    },
+    "t020-review": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T020-automation-and-channel-gain.md",
+      "identity": "Reviewed T019 EXE 5AFF02C355A5260D2B575D54E961AB9E02BD269A49D6C9A212F645FCD4021A15",
+      "note": "User confirms opening works and editing/fading worked fairly; reports automation reveal stretches audio into its reserved area. Specific unexercised scenarios are not inferred."
+    },
+    "t020-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T020-automation-and-channel-gain.md",
+      "identity": "x64 local-asio EXE SHA-256 0A33F1CDACFC10BED0067BEBE92B468931AB22F4492A230B8DDF37D157EC1362; crates/opentrack-app/src/app.rs: 159AF276DF6CCCE45A8575FD827169699ABC1955DD0F0394D7F837DCD63899F4; crates/opentrack-app/src/channel_gain.rs: 3BBEFD5D5CAD45013F4CFBED914B2321304E6816AE9D016DEB38542FA058A059; crates/opentrack-app/src/mixer.rs: EC3171148E57EB71BD842C5FB81ABEDAF867561080BCBF42189595D07F56E04A; crates/opentrack-app/src/channel_settings.rs: B1D06240D4071AA2778D9B017585A081774F44395AAA7BCB967B463C2EFCE1CC; crates/opentrack-app/src/project_inspector.rs: 957ACC6F15FDC88F2063DA169BF5EE0CC20D2F95D46006A4F479CA7EBEAED2DE; crates/opentrack-app/src/project_file.rs: 76220FA7A664A556B3776EE12183117BA580B480F6B929AFC1DCB7F4EDE62332; crates/opentrack-core/src/project.rs: 35B98732A5D50B852883C30FDD4171558FC8D6B4893B30A8ECFA17ACB64AEE78; crates/opentrack-audio/src/lib.rs: 55820CF979238640907E0F0CEA695E539C7FFD1ACC32ECC7D2A0A8883E428CC6",
+      "note": "Separate media/automation geometry and full-grid drop test pass; 124 release workspace tests pass. Current live acceptance pending."
+    },
+    "t023-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T023-sample-editor-foundation.md",
+      "note": "Current user requests plus explicit Rust/Cubase-style direction; first foundation stage announced in session."
+    },
+    "t023-reference": {
+      "kind": "reference",
+      "location": "docs/reviews/sample-editor-study.md",
+      "note": "Seven supplied static captures viewed; SE01 editor arrangement, SE02-06 note/pitch/warp states, SE07 visible scissors/split. Exact gestures/audio unknown."
+    },
+    "t023-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T023-sample-editor-foundation.md",
+      "identity": "builds/x64/OpenTrack.exe: 606AC9D14975F5BDE1AD4F0BFFE4BC68A81E865C82CD5E94806CF554A938A3C3; crates/opentrack-app/src/app.rs: 9EF5C33BD5E399630F79DEEEF35F56F907D4CF55CF286E9AF63B1725C21458FF; crates/opentrack-app/src/audio_events.rs: 091C47B95BA76EB2C11F87403BDCA149E082D732EF513C4CC3B9DFAE54FE7055; crates/opentrack-app/src/sample_editor.rs: F36DBDAA9E7D964FE753406E6BED3019FD3D840FCC0DEC7501425A537AF0611C; crates/opentrack-app/src/project_file.rs: DACEEE5EC5D5B3936CCA3430B7CDD27D65980F30853D60C1B8535188E0974A46; crates/opentrack-core/src/project.rs: 1E849BF03B07779A1C109069FA7D438037918AE4DDFA52222140C39EF6352FD9; crates/opentrack-audio/src/lib.rs: 587F5E42BD7D6FBADCC95D2FD4B598F68815A195ED3A252BB199E3B44DD751C8",
+      "note": "141 release tests pass, including actual input events and offline sample identity/crossfade rendering. x64 local-asio build succeeded; no live GUI/audible acceptance."
+    },
+    "t024-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T024-editor-transport-and-fidelity.md",
+      "note": "Current corrections: no AudioWarp, OS icons, gray precise cut guide, same transport, mono/color and reference organization."
+    },
+    "t024-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T024-editor-transport-and-fidelity.md",
+      "identity": "builds/x64/OpenTrack.exe: B998CE89E013B65B1B147DF3831DB04212BC2310235C7BC90C044DC4DCFFEA7F; crates/opentrack-app/src/app.rs: 6BB3BD8FD5D74D46FF81648E7ECCD1C09AE8C5ACA4B10E9DDBC917DE94DBEF50; crates/opentrack-app/src/sample_editor.rs: D49174FEF268811CC24698D7ECDC472C2A5B7678351F6BFE5CF1CDE5D9016628; crates/opentrack-app/src/audio_events.rs: 4F13AAD2DB31CB9A238E2B58B5DDD457022473A0F274B0FDA258C63F1F2F15E1; crates/opentrack-app/src/system_tool_icons.rs: 94D150DF1473671980FFC3DF4E78B136C227CD28CF5A322D855156C3E9100517; crates/opentrack-app/src/icons.rs: 46F715306B872A52000664B0993BF55AC890E7425CF173569F4D75C832BFBE16; crates/opentrack-app/src/theme.rs: 7E2AE33AE2A9F30AFEBC14BEBCAD2A20A5C81DBC95D8DD244AD9C7B0C3C8E638; crates/opentrack-app/src/waveform_view.rs: 58FC289F06F63AA65B8349A736C98C8BA7AC7E1AC46901A9909957326FFFA757; crates/opentrack-audio/src/streaming.rs: AE2839B18070AF205C6B0712DD385B0C73D955CD09E8C447D270D82B67E425DE; crates/opentrack-core/src/project.rs: AD14BC9B1496EB8783BD53EC8AA21F69C7A81F4C6514D97D02A4079AD4FE394C",
+      "note": "144 release tests and x64 local-asio build pass; native resource and real mono WAV/headless UI tested. No live visual/audio acceptance."
+    },
+    "t024-feedback": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T024-editor-transport-and-fidelity.md",
+      "identity": "User review following T023 delivered EXE606AC9D14975F5BDE1AD4F0BFFE4BC68A81E865C82CD5E94806CF554A938A3C3",
+      "note": "User reports missing same editor cursor, duplicated-looking mono waveform and primitive organization/custom icons; no independent timing/screenshot capture. New source supersedes these results."
+    },
+    "t025-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T025-media-lifecycle-and-editor-navigation.md",
+      "note": "User explicitly targets recorded audio rectangles first, separately selected rows, recoverable source deletion, own editor snap/navigation, left controls and snapped tool artwork."
+    },
+    "t025-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T025-media-lifecycle-and-editor-navigation.md",
+      "identity": "builds/x64/OpenTrack.exe: FACA03D9BE1B532CAD0B64FF2D313BF5E29BA707FA2BE741DB7073F2F301355C; crates/opentrack-app/src/app.rs: 80D3AA0072F0AC905A5E6E92D4C130C25E4BB23F5C467DC723AFC21B6E9382A7; crates/opentrack-app/src/media_pool.rs: 7ACC15314E4AF32C9BFE757CF5A8E0B2ADF00096601980E88A3A120F78076036; crates/opentrack-app/src/project_rate.rs: B46818A5DCED5B75960665D9D53EE1AEA2F07A8773489723DCE0104046BFA815; crates/opentrack-app/src/recording_undo.rs: AC5A8B465A3BF127F2EB0A194051CC9E7307D41BBA32FDF033BD92AE20A738B0; crates/opentrack-app/src/sample_editor.rs: 3237043BF2CC28D0F5DA06C020A9CE9C2BB4E2CFF59B90C9B6E8EDBA6F24A35F; crates/opentrack-app/src/audio_events.rs: AA0A1A882E163C6F828EBF24B44D33FE8C59E3C45C037D825D37FD4899AFCB32; crates/opentrack-app/src/audio_configuration.rs: 5AB3BAAC6FC58DD3FC6FED208B863358BA7D363C5172BE74E2EB2A2DF4AFA6AB; crates/opentrack-app/src/system_tool_icons.rs: 609EC2DDE3C33BA8FCDADB51FC7FEDB84B2FC83F2C9919E2D5EB49EC3317B2C7; crates/opentrack-app/src/project_file.rs: 8F91CBA2D054F68AAD9053F76177D46B4760C22DF8A5C5166EDBE045730992CA; crates/opentrack-core/src/project.rs: 13916E4569EE452E2653508EBD08CE34216322669F27B0D9ADEBFF82AFFF3CAF; crates/opentrack-audio/src/streaming.rs: E379FC405A9F50C083C1EBA5828C9210ED2A80B4BB61B205A458E8D900989CB9; crates/opentrack-audio/src/lib.rs: FA5CD3F7E0E1446B85C2840B8D8E1CDB38BBB4BF79FFCAD119F45573B1DDE019",
+      "note": "151 release tests and x64 local-asio build pass; byte-exact recovery/collision/discard, pool persistence, sample-rate and actual editor-input cases. Live acceptance pending."
+    },
+    "t026-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T026-shared-range-and-group-editing-plan.md",
+      "note": "User approved implementation after the plan-only checkpoint: restore true mouse crosshair while scissors remain snapped; mirror shared loop/skip display; enable void marquee selection and group moves. Live acceptance is still pending."
+    },
+    "t026-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T026-shared-range-and-group-editing-plan.md#implementation-handoff",
+      "identity": "builds/x64/OpenTrack.exe: 9A4372DF20D891BFC3D5319DE6A62E7BC762474AE46BEA141DFE170BF4ABA1C9; audio_events.rs: 80C5E2D76E95F2675848CFCFD317223DB8F1384213A5A99F93181FBAA5A126B9; sample_editor.rs: 5DADA4D30926BF5ACE3C4A983120869B72E8E5F69D6C8A5AC7E16EACB63C9BC5; system_tool_icons.rs: 03AB54B3B642969D83D45050F675F630E71AFC5FB30F53CC13E559200E6C1E9C; app.rs: 6102D51C126E8B432859A39C4ABE02BC005D7BDDD408D27024C6A095C8D7ED58; project.rs: A69082045121C8511721FDD82F6DB4624079407807EBD622A8D0AFD7AE13DDC0",
+      "note": "Full offline release workspace suite passed:95 app,45 audio,16 core. New tests cover egui marquee/group gestures, loop/skip rendering, native crosshair output and atomic mixed-width batch rejection. x64 local-ASIO build succeeded. OpenTrack was confirmed closed. These checks do not replace live GUI/user review."
+    },
+    "t028-pitch-intent": {
+      "kind": "user",
+      "location": "docs/reviews/sample-editor-study.md#on-demand-pitch--time-direction-2026-10-25",
+      "note": "Pitch & Time click starts analysis for current audio; save/reopen restores valid analyzed/editable state. No automatic analysis on ordinary project/audio/editor open."
     }
   },
   "requirements": [
     {
       "id": "event-bounds-selection",
       "weight": 2,
-      "outcome": "Colored event fills lane bounds; lower name band turns black on selection.",
+      "outcome": "Colored event fills lane bounds; lower name band turns black on selection. Media bounds exclude the reserved automation area.",
       "implementation": "complete",
       "source_evidence": [
-        "t018-source"
+        "t018-source",
+        "t020-source",
+        "t023-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -40,8 +114,10 @@
         ]
       },
       "runtime": {
-        "status": "pending",
-        "evidence": []
+        "status": "stale",
+        "evidence": [
+          "t020-review"
+        ]
       },
       "parity": "pending",
       "comparison_evidence": []
@@ -61,8 +137,10 @@
         ]
       },
       "runtime": {
-        "status": "pending",
-        "evidence": []
+        "status": "stale",
+        "evidence": [
+          "t020-review"
+        ]
       },
       "parity": "pending",
       "comparison_evidence": []
@@ -94,7 +172,8 @@
       "outcome": "White fade handles at both ends produce visible and audible fades.",
       "implementation": "complete",
       "source_evidence": [
-        "t018-source"
+        "t018-source",
+        "t023-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -136,7 +215,9 @@
       "outcome": "Event changes save/reopen and undo/redo without modifying source media.",
       "implementation": "complete",
       "source_evidence": [
-        "t018-source"
+        "t018-source",
+        "t023-source",
+        "t025-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -192,6 +273,529 @@
       },
       "parity": "pending",
       "comparison_evidence": []
+    },
+    {
+      "id": "held-toolbox",
+      "weight": 2,
+      "outcome": "Hold right button, hover cursor/scissors, release; shared toolbar tool follows.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t023-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t023-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "scissors-split",
+      "weight": 3,
+      "outcome": "Shared-grid/sample-aligned non-destructive cuts preserve source offsets and original fades.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t023-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t023-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "overlap-crossfade",
+      "weight": 3,
+      "outcome": "Select two overlapping events and press X for actual linear fades, with undo/persistence.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t023-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t023-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "sample-editor-workflow",
+      "weight": 3,
+      "outcome": "Audio-event double-click opens lower-zone tabbed Sample Editor with waveform/overview/range and all-in-one editing structure.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t023-source",
+        "t024-source",
+        "t025-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t023-reference"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t024-feedback"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "detected-pitch",
+      "weight": 3,
+      "outcome": "Pitch & Time click explicitly starts cancellable Rust-owned F0/confidence analysis for current audio; valid results/editable state persist/reuse on save/reopen, and ordinary import/play/open does not analyze pitch.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t023-intent",
+          "t028-pitch-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "note-region-editing",
+      "weight": 3,
+      "outcome": "Split/join/move/resize recognized note regions and repair tunable/unvoiced areas over original contour.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t023-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "audible-pitch-time",
+      "weight": 3,
+      "outcome": "Independent pitch/time edits render audibly with source mapping, audition/bypass, history and stable real-time publication. Separate AudioWarp panel is excluded by user.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t023-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "neural-analysis-evaluation",
+      "weight": 2,
+      "outcome": "Evaluate optional neural detector/model runtime behind Rust interfaces independently of neural synthesis and preferred UI.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t023-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "precise-gray-cut-guide",
+      "weight": 2,
+      "outcome": "Both views show light-gray scissors guide on the same snapped/sample-aligned position used by cut commit.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t024-source",
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t024-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "shared-editor-transport",
+      "weight": 3,
+      "outcome": "Editor/overview share Project beat and engine seek, independent of source trim; ruler and playback stay aligned.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t024-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t024-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "mono-color-editor-waveform",
+      "weight": 2,
+      "outcome": "Mono source/track draws one waveform, stereo/stereo two, preserving track color and source metadata.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t024-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t024-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "editor-control-organization",
+      "weight": 2,
+      "outcome": "Compact toolbar/info/overview/sidebar/ruler structure follows supplied reference, with AudioWarp absent.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t024-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t024-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "windows-tool-artwork",
+      "weight": 2,
+      "outcome": "Arrow/scissors/pencil/zoom use available Windows-owned resources/installed artwork with native pointer feedback.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t024-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t024-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "editor-independent-snap",
+      "weight": 2,
+      "outcome": "Independent persisted editor Snap/Grid/Quantize, default1/16, governs range/cut/ruler without changing Project grid.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "editor-empty-space-navigation",
+      "weight": 3,
+      "outcome": "Zoom/pan beyond source extent; middle pan and simultaneous ruler seek/zoom/held-edge scroll remain functional.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "editor-left-info-fields",
+      "weight": 1,
+      "outcome": "Event information fields are compact and mainly left aligned.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "snapped-scissors-hotspot",
+      "weight": 2,
+      "outcome": "Scissors artwork anchors to exact snapped/sample-aligned cut guide rather than raw pointer.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "event-delete-retains-media",
+      "weight": 3,
+      "outcome": "Delete removes selected recorded audio events while retaining persistent pool membership and source files; Undo restores events.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "reversible-source-file-delete",
+      "weight": 3,
+      "outcome": "Shift+Delete removes unshared paths/pool entries with byte-exact no-overwrite Undo/Redo and saved-project discard recovery.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "separate-row-delete-target",
+      "weight": 2,
+      "outcome": "An explicitly selected row is a separate deletion target; event removal cannot implicitly target the row on another Delete.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "persistent-media-pool",
+      "weight": 3,
+      "outcome": "Pool survives deletion/save/reopen and allows retained media to be placed back into the project.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t025-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t025-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "true-mouse-crosshair",
+      "weight": 1,
+      "outcome": "Native crosshair remains at raw pointer while scissors/guide stay at snapped cut hotspot.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t026-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t026-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "shared-editor-cycle-display",
+      "weight": 2,
+      "outcome": "Sample Editor ruler/waveform/overview mirror shared global loop/skip bounds, mode and enabled appearance.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t026-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t026-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "arrange-marquee-selection",
+      "weight": 3,
+      "outcome": "Void primary drag box-selects audio events across lanes without seeking or dirtying Project.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t026-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t026-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "atomic-event-group-move",
+      "weight": 3,
+      "outcome": "Selected events move as one snapped, spacing-preserving, destination-validated group with one Undo/Redo step.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t026-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t026-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
     }
   ],
   "gates": {
@@ -207,6 +811,31 @@
     },
     "startup-visual": {
       "description": "User observes startup without white flash and requested menu appearance.",
+      "status": "pending",
+      "evidence": []
+    },
+    "sample-editor-review": {
+      "description": "Current lower-zone editor/tools/cut/crossfade/undo/save scenario tested live; pitch/time stages independently verified before enabled.",
+      "status": "pending",
+      "evidence": []
+    },
+    "editor-fidelity-review": {
+      "description": "User checks light-gray exact guides, same live cursor, mono/color presentation, OS tool artwork and organized editor at current display conditions.",
+      "status": "pending",
+      "evidence": []
+    },
+    "editor-navigation-review": {
+      "description": "Live editor grid independence, empty-space navigation, ruler gestures/edge hold and snapped tool artwork accepted at current display conditions.",
+      "status": "pending",
+      "evidence": []
+    },
+    "media-delete-review": {
+      "description": "Disposable project Delete/Shift+Delete/Pool/add-back/Undo/Redo/discard/save/reopen and shared-file failures verified live.",
+      "status": "pending",
+      "evidence": []
+    },
+    "group-editing-review": {
+      "description": "Live raw-pointer/snapped-tool, shared loop display and box-select/group-move/Undo/save scenario review; implementation and headless checks are complete.",
       "status": "pending",
       "evidence": []
     }
@@ -243,6 +872,110 @@
       ],
       "gates": [
         "startup-visual"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "sample-editor-and-pitch-time",
+      "weight": 3,
+      "requirements": [
+        "held-toolbox",
+        "scissors-split",
+        "overlap-crossfade",
+        "sample-editor-workflow",
+        "detected-pitch",
+        "note-region-editing",
+        "audible-pitch-time",
+        "neural-analysis-evaluation"
+      ],
+      "gates": [
+        "sample-editor-review",
+        "event-ui",
+        "event-audio"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "editor-transport-and-fidelity",
+      "weight": 3,
+      "requirements": [
+        "precise-gray-cut-guide",
+        "shared-editor-transport",
+        "mono-color-editor-waveform",
+        "editor-control-organization",
+        "windows-tool-artwork"
+      ],
+      "gates": [
+        "editor-fidelity-review",
+        "event-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "editor-navigation-polish",
+      "weight": 3,
+      "requirements": [
+        "editor-independent-snap",
+        "editor-empty-space-navigation",
+        "editor-left-info-fields",
+        "snapped-scissors-hotspot"
+      ],
+      "gates": [
+        "editor-navigation-review"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "media-pool-and-deletion",
+      "weight": 3,
+      "requirements": [
+        "event-delete-retains-media",
+        "reversible-source-file-delete",
+        "separate-row-delete-target",
+        "persistent-media-pool"
+      ],
+      "gates": [
+        "media-delete-review"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "shared-range-and-group-editing",
+      "weight": 3,
+      "requirements": [
+        "true-mouse-crosshair",
+        "shared-editor-cycle-display",
+        "arrange-marquee-selection",
+        "atomic-event-group-move"
+      ],
+      "gates": [
+        "group-editing-review",
+        "event-ui"
       ],
       "scenario": {
         "status": "pending",

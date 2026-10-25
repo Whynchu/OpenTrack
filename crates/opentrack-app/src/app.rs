@@ -1,17 +1,31 @@
+#[path = "analyzer_view.rs"]
+mod analyzer_view;
 #[path = "audio_configuration.rs"]
 mod audio_configuration;
 #[path = "audio_events.rs"]
 pub(crate) mod audio_events;
+#[path = "channel_gain.rs"]
+mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
+#[path = "media_pool.rs"]
+mod media_pool;
+#[path = "metering.rs"]
+mod metering;
 #[path = "mixer.rs"]
 mod mixer;
+#[path = "preferences.rs"]
+mod preferences;
 #[path = "project_controls.rs"]
 mod project_controls;
 #[path = "project_inspector.rs"]
 mod project_inspector;
+#[path = "project_rate.rs"]
+mod project_rate;
 #[path = "recording_undo.rs"]
 mod recording_undo;
+#[path = "sample_editor.rs"]
+mod sample_editor;
 #[path = "waveform_view.rs"]
 mod waveform_view;
 
@@ -72,7 +86,7 @@ pub(crate) enum PanelTab {
     Media,
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum EditTool {
     #[default]
     Select,
@@ -105,6 +119,18 @@ struct NativeWindowState {
     epoch: u64,
     viewport_live: bool,
     focus_requested: bool,
+}
+
+impl NativeWindowState {
+    fn request_channel_settings(&mut self, bus: Option<bool>) {
+        if !self.open || !self.viewport_live {
+            self.epoch = self.epoch.wrapping_add(1);
+            self.viewport_live = false;
+        }
+        self.channel_bus = bus;
+        self.open = true;
+        self.focus_requested = true;
+    }
 }
 
 #[derive(Default)]
@@ -160,6 +186,12 @@ impl ChannelSettingsViewItem {
         }
     }
 
+    fn available_for_bus(self) -> bool {
+        !matches!(
+            self,
+            Self::Sends | Self::SendRouting | Self::StudioSends | Self::StudioSendsRouting
+        )
+    }
     fn implemented(self) -> bool {
         !matches!(
             self,
@@ -217,12 +249,13 @@ enum ChannelSettingsAction {
 
 #[derive(Default)]
 struct ChannelSettingsUiState {
+    analyzer: analyzer_view::State,
+    bus_context: bool,
     preferences: ChannelSettingsPreferences,
     setup_open: bool,
     selected_preset: Option<usize>,
     preset_name_draft: String,
     pending_action: Option<ChannelSettingsAction>,
-    applied_window_level: Option<bool>,
     editing_track_id: Option<u64>,
     rename_draft: String,
     rename_focus_requested: bool,
@@ -521,6 +554,9 @@ fn restore_project_window_state(
 fn native_window_bounds(ctx: &egui::Context) -> Option<WindowBounds> {
     ctx.input(|input| {
         let viewport = input.viewport();
+        if viewport.minimized.unwrap_or(false) {
+            return None;
+        }
         let outer = viewport.outer_rect?;
         let inner = viewport.inner_rect;
         Some(WindowBounds {
@@ -603,6 +639,7 @@ struct AppData {
     streaming_readers: HashMap<u64, (PathBuf, Arc<StreamingPlayback>)>,
     track_meter_peaks: HashMap<u64, Arc<opentrack_audio::StereoMeter>>,
     track_meter_levels: HashMap<u64, [f32; 2]>,
+    peak_holds: HashMap<u64, metering::Hold>,
     input_channel_meter_levels: [f32; 2],
     output_channel_meter_levels: [f32; 2],
     reported_stream_errors: HashSet<u64>,
@@ -618,6 +655,10 @@ pub struct OpenTrackApp {
     workspace_preferences: WorkspacePreferences,
     data: AppData,
     last_meter_update: Option<Instant>,
+    metering_preferences: metering::Preferences,
+    preferences_ui: preferences::Window,
+    sample_editor: sample_editor::State,
+    sample_editor_active: bool,
     main_window_bounds: Option<WindowBounds>,
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
@@ -647,6 +688,8 @@ pub struct OpenTrackApp {
     vst_connections_open: bool,
     vst_connections_tab: usize,
     project_setup_open: bool,
+    project_rate_change: Option<project_rate::Change>,
+    media_operation_error: Option<String>,
     selected_input_device: Option<String>,
     selected_output_device: Option<String>,
     selected_output_sample_rate: Option<u32>,
@@ -668,6 +711,7 @@ pub struct OpenTrackApp {
     midi_editor_focus_requested: bool,
     channel_settings_window: NativeWindowState,
     channel_settings_ui: ChannelSettingsUiState,
+    channel_window_owner: crate::native_windows::ChannelOwner,
     mixer_window: NativeWindowState,
     compressor_editor: CompressorEditorState,
     media_window: NativeWindowState,
@@ -1178,6 +1222,7 @@ struct ProjectHistory {
     undo: VecDeque<HistoryEntry>,
     redo: VecDeque<HistoryEntry>,
     pending_recording: Option<recording_undo::RecordingUndo>,
+    pending_deleted: Option<recording_undo::RecordingUndo>,
     last_error: Option<String>,
     saved_paths: HashSet<PathBuf>,
     unsaved_recordings: HashSet<PathBuf>,
@@ -1190,6 +1235,7 @@ struct ProjectHistory {
 struct HistoryEntry {
     snapshot: Vec<u8>,
     recording: Option<recording_undo::RecordingUndo>,
+    deleted: Option<recording_undo::RecordingUndo>,
 }
 impl HistoryEntry {
     fn len(&self) -> usize {
@@ -1220,6 +1266,7 @@ impl ProjectHistory {
         if self.skip_next_commit {
             self.pending = None;
             self.pending_recording = None;
+            self.pending_deleted = None;
             self.skip_next_commit = false;
             self.commit_after_frame = false;
             return false;
@@ -1243,6 +1290,7 @@ impl ProjectHistory {
         self.undo.push_back(HistoryEntry {
             snapshot: before,
             recording: self.pending_recording.take(),
+            deleted: self.pending_deleted.take(),
         });
         self.trim();
         true
@@ -1265,6 +1313,13 @@ impl ProjectHistory {
                 return None;
             }
         };
+        if let Some(deleted) = previous.deleted.as_mut() {
+            if let Err(error) = deleted.restore() {
+                self.last_error = Some(format!("Could not undo media deletion: {error}"));
+                self.undo.push_back(previous);
+                return None;
+            }
+        }
         if let Some(recording) = previous.recording.as_mut() {
             if let Err(error) = recording.remove(&restored) {
                 self.last_error = Some(format!("Could not undo recording: {error}"));
@@ -1275,6 +1330,7 @@ impl ProjectHistory {
         self.redo.push_back(HistoryEntry {
             snapshot: current,
             recording: previous.recording.take(),
+            deleted: previous.deleted.take(),
         });
         self.trim();
         Some(restored)
@@ -1297,6 +1353,13 @@ impl ProjectHistory {
                 return None;
             }
         };
+        if let Some(deleted) = next.deleted.as_mut() {
+            if let Err(error) = deleted.remove(&restored) {
+                self.last_error = Some(format!("Could not redo media deletion: {error}"));
+                self.redo.push_back(next);
+                return None;
+            }
+        }
         if let Some(recording) = next.recording.as_mut() {
             if let Err(error) = recording.restore() {
                 self.last_error = Some(format!("Could not redo recording: {error}"));
@@ -1307,36 +1370,33 @@ impl ProjectHistory {
         self.undo.push_back(HistoryEntry {
             snapshot: current,
             recording: next.recording.take(),
+            deleted: next.deleted.take(),
         });
         self.trim();
         Some(restored)
     }
 
     fn dispose_entry(&mut self, mut entry: HistoryEntry) {
-        if entry
-            .recording
-            .as_ref()
-            .is_some_and(|r| r.protects_saved(&self.saved_paths))
-        {
-            self.saved_recording_recovery
-                .push(entry.recording.take().unwrap());
+        for value in [&mut entry.recording, &mut entry.deleted] {
+            if value
+                .as_ref()
+                .is_some_and(|r| r.protects_saved(&self.saved_paths))
+            {
+                self.saved_recording_recovery.push(value.take().unwrap());
+            }
         }
     }
     fn saved(&mut self, project: &Project) {
         self.unsaved_recordings.clear();
-        self.saved_paths = project
-            .tracks
-            .iter()
-            .flat_map(|t| t.clips.iter().map(|c| c.source_path.clone()))
-            .collect();
+        self.saved_paths = project.media_paths().into_iter().collect();
         self.saved_recording_recovery
             .retain(|r| r.protects_saved(&self.saved_paths));
     }
     fn restore_saved_recordings(&mut self) -> Result<(), String> {
         for entry in self.undo.iter_mut().chain(self.redo.iter_mut()) {
-            if let Some(r) = entry
-                .recording
-                .as_mut()
+            for r in [&mut entry.recording, &mut entry.deleted]
+                .into_iter()
+                .filter_map(Option::as_mut)
                 .filter(|r| r.protects_saved(&self.saved_paths))
             {
                 r.restore()?;
@@ -1357,7 +1417,7 @@ impl ProjectHistory {
             .undo
             .iter()
             .chain(self.redo.iter())
-            .filter_map(|e| e.recording.as_ref())
+            .flat_map(|e| e.recording.iter().chain(e.deleted.iter()))
             .chain(self.saved_recording_recovery.iter())
         {
             paths.extend(r.paths().iter().cloned());
@@ -1396,6 +1456,7 @@ impl ProjectHistory {
         self.undo.clear();
         self.redo.clear();
         self.pending_recording = None;
+        self.pending_deleted = None;
         self.last_error = None;
         self.pending = None;
         self.skip_next_commit = false;
@@ -1733,6 +1794,26 @@ impl OpenTrackApp {
             workspace_preferences,
             data: AppData::default(),
             last_meter_update: None,
+            metering_preferences: {
+                let mut value = creation
+                    .storage
+                    .and_then(|s| {
+                        eframe::get_value::<metering::Preferences>(s, "metering-preferences-v1")
+                    })
+                    .unwrap_or_default();
+                value.sanitize();
+                value
+            },
+            preferences_ui: preferences::Window::default(),
+            sample_editor: {
+                let mut state = sample_editor::State::default();
+                state.snap = creation
+                    .storage
+                    .and_then(|storage| eframe::get_value(storage, "sample-editor-snap-v1"))
+                    .unwrap_or_default();
+                state
+            },
+            sample_editor_active: false,
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
@@ -1762,6 +1843,8 @@ impl OpenTrackApp {
             vst_connections_open: false,
             vst_connections_tab: 0,
             project_setup_open: false,
+            project_rate_change: None,
+            media_operation_error: None,
             selected_input_device,
             selected_output_device,
             selected_output_sample_rate,
@@ -1783,11 +1866,11 @@ impl OpenTrackApp {
             midi_editor_focus_requested: false,
             channel_settings_window: NativeWindowState::default(),
             channel_settings_ui: ChannelSettingsUiState {
-                applied_window_level: Some(false),
                 preferences: channel_settings_preferences,
                 preset_name_draft: "Default".to_owned(),
                 ..Default::default()
             },
+            channel_window_owner: crate::native_windows::ChannelOwner::new(creation),
             mixer_window: NativeWindowState::default(),
             compressor_editor: CompressorEditorState::default(),
             media_window: NativeWindowState::default(),
@@ -2011,6 +2094,7 @@ impl OpenTrackApp {
             self.refresh_modified_from_saved();
             self.status_message = "Undid project edit".to_owned();
         } else if let Some(error) = self.project_history.last_error.take() {
+            self.media_operation_error = Some(error.clone());
             self.status_message = error;
         }
     }
@@ -2028,6 +2112,7 @@ impl OpenTrackApp {
             self.refresh_modified_from_saved();
             self.status_message = "Redid project edit".to_owned();
         } else if let Some(error) = self.project_history.last_error.take() {
+            self.media_operation_error = Some(error.clone());
             self.status_message = error;
         }
     }
@@ -2336,6 +2421,7 @@ impl OpenTrackApp {
                                 clip.duration_seconds,
                                 clip.fade_in_seconds,
                                 clip.fade_out_seconds,
+                                clip.source_fades.clone(),
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -2417,6 +2503,7 @@ impl OpenTrackApp {
                 duration_seconds,
                 fade_in_seconds,
                 fade_out_seconds,
+                source_fades,
             ) in clips
             {
                 active_audio_paths.insert(source_path.clone());
@@ -2470,6 +2557,7 @@ impl OpenTrackApp {
                         }
                     };
                     playback_clips.push(PlaybackClip {
+                        source_fades,
                         source: playback_source,
                         start_beats,
                         gain: clip_gain,
@@ -2566,28 +2654,30 @@ impl OpenTrackApp {
     }
 
     fn update_track_meter_levels(&mut self, delta_seconds: f32) {
-        let decay = 10.0_f32.powf(-2.0 * delta_seconds.clamp(0.0, 5.0));
-        let meter_levels = &mut self.data.track_meter_levels;
+        let settings = &self.metering_preferences;
         for (track_id, meter_peak) in &self.data.track_meter_peaks {
-            let peaks = meter_peak.take();
-            let levels = meter_levels.entry(*track_id).or_insert([0.0; 2]);
-            for (level, peak) in levels.iter_mut().zip(peaks) {
-                *level = peak.max(*level * decay);
-            }
+            self.data.peak_holds.entry(*track_id).or_default().update(
+                self.data.track_meter_levels.entry(*track_id).or_default(),
+                meter_peak.take(),
+                delta_seconds,
+                settings,
+            );
         }
         let output_peaks = self
             .audio_engine
             .as_ref()
-            .map(|engine| engine.take_output_peaks())
+            .map(|e| e.take_output_peaks())
             .unwrap_or([0.0; 2]);
-        for (level, peak) in self
-            .data
-            .output_channel_meter_levels
-            .iter_mut()
-            .zip(output_peaks)
-        {
-            *level = peak.max(*level * decay);
-        }
+        self.data
+            .peak_holds
+            .entry(opentrack_core::project::OUTPUT_BUS_ID)
+            .or_default()
+            .update(
+                &mut self.data.output_channel_meter_levels,
+                output_peaks,
+                delta_seconds,
+                settings,
+            );
         let input_peaks = if let Some(session) = self.recording_session.as_ref() {
             session.recorder.monitor_buffer().take_bus_peaks()
         } else if let Some(probe) = self.audio_input_probe.as_ref() {
@@ -2595,14 +2685,16 @@ impl OpenTrackApp {
         } else {
             [0.0; 2]
         };
-        for (level, peak) in self
-            .data
-            .input_channel_meter_levels
-            .iter_mut()
-            .zip(input_peaks)
-        {
-            *level = peak.max(*level * decay);
-        }
+        self.data
+            .peak_holds
+            .entry(opentrack_core::project::INPUT_BUS_ID)
+            .or_default()
+            .update(
+                &mut self.data.input_channel_meter_levels,
+                input_peaks,
+                delta_seconds,
+                settings,
+            );
     }
 
     fn set_transport_playing(&mut self, playing: bool) {
@@ -2662,6 +2754,9 @@ impl OpenTrackApp {
         self.workspace_state = initial_workspace_state(&self.dock_state)
             .expect("the built-in dock layout must be serializable");
         self.arrange_view_state = ArrangeViewState::default();
+        self.sample_editor.reset_target();
+        self.project_rate_change = None;
+        self.sample_editor_active = false;
         self.project_window = restore_project_window_state(
             self.workspace_state
                 .active_index
@@ -2873,6 +2968,7 @@ impl OpenTrackApp {
                     streaming_readers: HashMap::new(),
                     track_meter_peaks: HashMap::new(),
                     track_meter_levels: HashMap::new(),
+                    peak_holds: HashMap::new(),
                     input_channel_meter_levels: [0.0; 2],
                     output_channel_meter_levels: [0.0; 2],
                     reported_stream_errors: HashSet::new(),
@@ -2882,6 +2978,9 @@ impl OpenTrackApp {
                 self.workspace_state = workspace_state;
                 self.dock_state = document.live_dock_state;
                 self.arrange_view_state = arrange_view_state;
+                self.sample_editor.reset_target();
+                self.project_rate_change = None;
+                self.sample_editor_active = false;
                 self.project_window = project_window;
                 self.track_add_dialog = None;
                 if let Some(bounds) = main_window_bounds {
@@ -3473,7 +3572,9 @@ impl OpenTrackApp {
                 ui.label(format!(
                     "Remove {track_name} and all of its clips and MIDI parts?"
                 ));
-                ui.label("The track can be restored with Undo.");
+                ui.label(
+                    "The track can be restored with Undo. Audio files remain in the Media Pool.",
+                );
                 if self.is_recording() {
                     ui.colored_label(theme::WARNING, "Stop recording before removing a track.");
                 }
@@ -3832,6 +3933,39 @@ impl OpenTrackApp {
             return;
         }
         let modifiers = chord.modifiers();
+        if self.media_operation_error.is_some() {
+            if chord.key() == KeyCode::Escape {
+                self.media_operation_error = None;
+            }
+            return;
+        }
+        if self.project_rate_change.is_some() {
+            if chord.key() == KeyCode::Escape {
+                self.project_rate_change = None;
+            }
+            return;
+        }
+        if self.project_open
+            && chord.key() == KeyCode::Delete
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.windows
+            && !self.project_setup_open
+            && !self.preferences_ui.is_open
+            && self.pending_track_delete_id.is_none()
+        {
+            self.delete_audio_selection(modifiers.shift);
+            return;
+        }
+        if self.project_open
+            && chord.key() == KeyCode::Letter('P')
+            && modifiers.control
+            && !modifiers.alt
+            && !modifiers.windows
+        {
+            self.focus_tab(PanelTab::Media);
+            return;
+        }
         if self.project_open
             && chord.key() == KeyCode::Letter('S')
             && modifiers.shift
@@ -6084,7 +6218,10 @@ impl OpenTrackApp {
                     menu_command(ui, "Replace Audio in Video File...", "", false);
                     menu_command(ui, "Cleanup...", "", false);
                     ui.separator();
-                    menu_command(ui, "Preferences...", "", false);
+                    if menu_command(ui, "Preferences...", "", true).clicked() {
+                        self.preferences_ui.open(&self.metering_preferences);
+                        ui.close();
+                    }
                     if menu_command(ui, "Key Commands...", "", true).clicked() {
                         self.key_commands_open = true;
                         ui.close();
@@ -6120,11 +6257,27 @@ impl OpenTrackApp {
                             ("Copy", "Ctrl+C"),
                             ("Paste", "Ctrl+V"),
                             ("Paste at Origin", "Alt+V"),
-                            ("Delete", "Backspace"),
                             ("Split at Cursor", "Alt+X"),
                             ("Split Loop", ""),
                         ],
                     );
+                    let can_delete = self.project_open
+                        && !self.is_recording()
+                        && media_pool::selection_target(
+                            &self.data.project,
+                            &self.arrange_view_state.audio_events,
+                        )
+                        .is_some();
+                    if menu_command(ui, "Delete", "Delete", can_delete).clicked() {
+                        self.delete_audio_selection(false);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Delete with Source File", "Shift+Delete", can_delete)
+                        .clicked()
+                    {
+                        self.delete_audio_selection(true);
+                        ui.close();
+                    }
                     ui.menu_button("Range", |ui| {
                         disabled_menu_commands(
                             ui,
@@ -6246,6 +6399,10 @@ impl OpenTrackApp {
                         disabled_menu_commands(ui, &[("Expand All", ""), ("Collapse All", "")]);
                     });
                     ui.separator();
+                    if menu_command(ui, "Pool", "Ctrl+P", true).clicked() {
+                        self.focus_tab(PanelTab::Media);
+                        ui.close();
+                    }
                     if menu_command(ui, "Project Setup...", "Shift+S", true).clicked() {
                         self.project_setup_open = true;
                         ui.close();
@@ -6253,7 +6410,6 @@ impl OpenTrackApp {
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Pool", "Ctrl+P"),
                             ("Markers", "Ctrl+M"),
                             ("Tempo Track", "Ctrl+T"),
                             ("Browser", "Ctrl+B"),
@@ -6752,9 +6908,7 @@ impl OpenTrackApp {
                             )
                             .clicked()
                         {
-                            self.channel_settings_window.channel_bus = None;
-                            self.channel_settings_window.open = true;
-                            self.channel_settings_window.focus_requested = true;
+                            self.channel_settings_window.request_channel_settings(None);
                             ui.close();
                         }
                     }
@@ -6891,9 +7045,24 @@ impl OpenTrackApp {
         self.mixer_window.bounds = Some(docked_bounds(panel_rect));
         let palette = theme::palette(ui);
         ui.painter().rect_filled(panel_rect, 0.0, palette.surface);
-        if docked_panel_header(ui, "Mixer", false) {
+        if docked_panel_header(ui, "", false) {
             self.mixer_window.open = false;
             return;
+        }
+        for (index, label, active) in [(0, "Mixer", false), (1, "Sample Editor", true)] {
+            let rect = Rect::from_min_size(
+                panel_rect.min + Vec2::new(5.0 + index as f32 * 105.0, 1.0),
+                Vec2::new(102.0, PANEL_HEADER_HEIGHT - 2.0),
+            );
+            if ui
+                .put(
+                    rect,
+                    egui::Button::new(label).selected(self.sample_editor_active == active),
+                )
+                .clicked()
+            {
+                self.sample_editor_active = active;
+            }
         }
         let body_rect = Rect::from_min_max(
             Pos2::new(
@@ -6902,6 +7071,10 @@ impl OpenTrackApp {
             ),
             Pos2::new(panel_rect.right() - 5.0, panel_rect.bottom() - 3.0),
         );
+        let position_before = self.data.transport.position_beats;
+        let sample_grid = self
+            .arrange_view_state
+            .snap_grid_beats(self.data.project.beats_per_bar);
         let modified = ui
             .scope_builder(
                 egui::UiBuilder::new()
@@ -6910,18 +7083,34 @@ impl OpenTrackApp {
                 |ui| {
                     ui.set_clip_rect(body_rect);
                     ui.set_width(body_rect.width());
-                    show_mixer(
-                        ui,
-                        &mut self.data.project,
-                        &self.data.track_meter_levels,
-                        self.data.input_channel_meter_levels,
-                        self.data.output_channel_meter_levels,
-                        true,
-                        false,
-                        &mut self.channel_settings_window,
-                        &mut self.compressor_editor,
-                        &mut self.channel_settings_ui,
-                    )
+                    if self.sample_editor_active {
+                        self.sample_editor.cycle_enabled = self.data.transport.cycle;
+                        sample_editor::show(
+                            ui,
+                            &mut self.data.project,
+                            &self.data.audio_sources,
+                            &mut self.sample_editor,
+                            &mut self.edit_tool,
+                            sample_grid,
+                            self.recording_session.is_none(),
+                            &mut self.data.transport.position_beats,
+                            self.data.transport.playing,
+                        )
+                    } else {
+                        show_mixer(
+                            ui,
+                            &mut self.data.project,
+                            &self.data.track_meter_levels,
+                            &mut self.data.peak_holds,
+                            self.data.input_channel_meter_levels,
+                            self.data.output_channel_meter_levels,
+                            true,
+                            false,
+                            &mut self.channel_settings_window,
+                            &mut self.compressor_editor,
+                            &mut self.channel_settings_ui,
+                        )
+                    }
                 },
             )
             .inner;
@@ -6931,16 +7120,77 @@ impl OpenTrackApp {
             Stroke::new(1.0, palette.grid),
             egui::StrokeKind::Inside,
         );
+        if self.sample_editor.event_focus {
+            self.sample_editor.event_focus = false;
+            if let Some((_, id)) = self.sample_editor.target {
+                self.arrange_view_state.audio_events.select_one(id);
+            }
+        }
+        if self.data.transport.position_beats != position_before {
+            if let Some(engine) = &self.audio_engine {
+                engine.seek_seconds(
+                    self.data.transport.position_beats * 60.0
+                        / self.data.project.tempo_bpm.max(1.0),
+                );
+            }
+        }
         if modified {
             self.rebuild_audio_plan();
             self.mark_modified();
         }
     }
 
+    fn update_channel_analyzer(&mut self) {
+        if !self.channel_settings_window.open {
+            self.channel_settings_ui.analyzer.close();
+            return;
+        }
+        let project = &self.data.project;
+        let owner = match self.channel_settings_window.channel_bus {
+            Some(true) => Some(opentrack_core::project::INPUT_BUS_ID),
+            Some(false) => Some(opentrack_core::project::OUTPUT_BUS_ID),
+            None => project
+                .selected_track
+                .and_then(|i| project.tracks.get(i as usize))
+                .map(|t| t.id),
+        };
+        let choices = project
+            .channels()
+            .map(|t| analyzer_view::Choice {
+                id: t.id,
+                name: t.name.clone(),
+                equalizer: t.equalizer.clone(),
+            })
+            .collect();
+        let mut taps = self.data.track_meter_peaks.clone();
+        if let Some(engine) = &self.audio_engine {
+            taps.insert(
+                opentrack_core::project::OUTPUT_BUS_ID,
+                engine.output_meter_tap(),
+            );
+        }
+        let input = self
+            .recording_session
+            .as_ref()
+            .map(|s| s.recorder.monitor_buffer())
+            .or_else(|| self.audio_input_probe.as_ref().map(|p| p.monitor_buffer()));
+        if let Some(input) = input {
+            taps.insert(opentrack_core::project::INPUT_BUS_ID, input.meter_tap());
+        }
+        let rate = self
+            .audio_engine
+            .as_ref()
+            .map(|e| e.sample_rate)
+            .unwrap_or(project.sample_rate_hz);
+        self.channel_settings_ui
+            .analyzer
+            .update(owner, choices, taps, rate);
+    }
+
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
+        self.update_channel_analyzer();
         if !self.channel_settings_window.open {
             self.channel_settings_window.viewport_live = false;
-            self.channel_settings_ui.applied_window_level = None;
             return;
         }
         let track_name = match self.channel_settings_window.channel_bus {
@@ -6966,11 +7216,7 @@ impl OpenTrackApp {
             CHANNEL_SETTINGS_WINDOW_ID,
             self.channel_settings_window.epoch,
         ));
-        if self.channel_settings_window.focus_requested
-            && self.channel_settings_window.viewport_live
-        {
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
-        }
+        let focus_requested = self.channel_settings_window.focus_requested;
         self.channel_settings_window.focus_requested = false;
         let mut builder = viewport_builder(
             format!("VST Audio Channel Settings - {track_name}"),
@@ -6978,15 +7224,30 @@ impl OpenTrackApp {
             Vec2::new(820.0, 420.0),
             restore_bounds.as_ref(),
         );
+        builder = builder
+            .with_visible(true)
+            .with_window_level(egui::viewport::WindowLevel::Normal);
+        if focus_requested {
+            builder = builder.with_active(true);
+        }
         if restore_bounds.is_none() {
             builder = builder.with_position(Pos2::new(382.0, 145.0));
         }
         let mut open = true;
         let mut modified = false;
         let mut bounds = None;
+        let mut rendered = false;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+            rendered = true;
+            if focus_requested {
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
             self.handle_native_window_input(window_ctx);
-            open &= !window_ctx.input(|input| input.viewport().close_requested());
+            open &=
+                focus_requested || !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
@@ -6994,6 +7255,7 @@ impl OpenTrackApp {
                         ui,
                         &mut self.data.project,
                         &self.data.track_meter_levels,
+                        &mut self.data.peak_holds,
                         self.data.input_channel_meter_levels,
                         self.data.output_channel_meter_levels,
                         false,
@@ -7009,23 +7271,37 @@ impl OpenTrackApp {
         if let Some(action) = self.channel_settings_ui.pending_action.take() {
             modified |= self.apply_channel_settings_action(action);
         }
-        if self.channel_settings_ui.applied_window_level
-            != Some(self.channel_settings_ui.preferences.always_on_top)
-        {
-            let level = if self.channel_settings_ui.preferences.always_on_top {
-                egui::viewport::WindowLevel::AlwaysOnTop
-            } else {
-                egui::viewport::WindowLevel::Normal
-            };
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(level));
-            self.channel_settings_ui.applied_window_level =
-                Some(self.channel_settings_ui.preferences.always_on_top);
+        if !rendered {
+            open = false;
+            self.status_message =
+                "Channel Settings window could not be created; click Edit to retry".into();
+        }
+        let modal = self.pending_project_action.is_some()
+            || self.pending_track_delete_id.is_some()
+            || self.project_rate_change.is_some()
+            || self.project_folder_setup.is_some()
+            || self.project_open_error.is_some()
+            || self.media_operation_error.is_some()
+            || self.track_add_dialog.is_some()
+            || self.track_rename_dialog.is_some()
+            || self.event_colors_dialog.is_some();
+        let dialog_open = modal
+            || self.device_setup_open
+            || self.vst_connections_open
+            || self.project_setup_open
+            || self.preferences_ui.is_open
+            || self.key_commands_open
+            || self.workspace_organizer_open
+            || self.about_open;
+        if self.channel_window_owner.apply(
+            self.channel_settings_ui.preferences.always_on_top,
+            dialog_open,
+            modal,
+        ) {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
         }
         self.channel_settings_window.open = open;
         self.channel_settings_window.viewport_live = open;
-        if !open {
-            self.channel_settings_ui.applied_window_level = None;
-        }
         if restore_bounds.is_some() {
             self.channel_settings_window.restore_bounds = None;
         }
@@ -7035,6 +7311,10 @@ impl OpenTrackApp {
         if modified {
             self.rebuild_audio_plan();
             self.mark_modified();
+        }
+        self.update_channel_analyzer();
+        if self.channel_settings_window.open {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
     }
 
@@ -7323,11 +7603,7 @@ impl OpenTrackApp {
             self.media_window.viewport_live = false;
             return;
         }
-        let title = match self.data.selected_media {
-            1 => "Loop Browser",
-            2 => "Sound Browser",
-            _ => "MediaBay",
-        };
+        let title = "Media Pool";
         let restore_bounds = if self.media_window.viewport_live {
             None
         } else {
@@ -7348,13 +7624,13 @@ impl OpenTrackApp {
             restore_bounds.as_ref(),
         );
         let mut open = true;
-        let mut modified = false;
+        let mut insert = None;
         let mut bounds = None;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
-                modified |= show_media(ui, &mut self.data.selected_media);
+                insert = media_pool::show(ui, &self.data.project);
             });
             bounds = native_window_bounds(window_ctx);
         });
@@ -7366,8 +7642,8 @@ impl OpenTrackApp {
         if let Some(bounds) = bounds {
             self.media_window.bounds = Some(bounds);
         }
-        if modified {
-            self.mark_modified();
+        if let Some(path) = insert {
+            self.add_pool_media(path);
         }
     }
 
@@ -7620,12 +7896,14 @@ impl OpenTrackApp {
                     ui.set_width(body_rect.width());
                     show_project(
                         ui,
+                        &mut self.edit_tool,
                         &mut self.data.project,
                         &mut self.data.transport.position_beats,
                         self.data.transport.cycle,
                         beats_per_bar,
                         sample_rate,
                         &self.data.track_meter_levels,
+                        &self.data.peak_holds,
                         &self.data.audio_sources,
                         recording_preview.as_ref(),
                         &mut self.arrange_view_state,
@@ -7646,6 +7924,14 @@ impl OpenTrackApp {
                 self.data.transport.position_beats.max(0.0) * 60.0
                     / self.data.project.tempo_bpm.max(1.0),
             );
+        }
+        if let Some(target) = self.arrange_view_state.audio_events.open_editor.take() {
+            self.sample_editor.target = Some(target);
+            self.sample_editor_active = true;
+            self.mixer_window.open = true;
+        }
+        if let Some(message) = self.arrange_view_state.audio_events.message.take() {
+            self.status_message = message;
         }
         let zoom_rect = Rect::from_min_size(
             Pos2::new(panel_rect.right() - 113.0, panel_rect.bottom() - 17.0),
@@ -8797,7 +9083,19 @@ impl eframe::App for OpenTrackApp {
                 .input_channel_meter_levels
                 .iter()
                 .any(|level| *level > 0.0001);
-        if meter_source_active || meter_is_decaying {
+        if meter_source_active
+            || meter_is_decaying
+            || self
+                .data
+                .output_channel_meter_levels
+                .iter()
+                .any(|v| *v > 0.001)
+            || self
+                .data
+                .peak_holds
+                .values()
+                .any(|h| h.markers.iter().any(|v| *v > 0.001))
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(20));
         }
         self.poll_audio_import_task();
@@ -8887,8 +9185,14 @@ impl eframe::App for OpenTrackApp {
         self.show_key_commands_window(&ctx);
         self.show_unsaved_prompt(&ctx);
         self.show_project_open_error(&ctx);
+        self.show_project_rate_change(&ctx);
+        self.show_media_operation_error(&ctx);
         self.show_project_folder_setup(&ctx);
         self.show_about_window(&ctx);
+        self.preferences_ui
+            .show(&ctx, &mut self.metering_preferences);
+        self.channel_settings_ui.analyzer.release_ms =
+            self.metering_preferences.spectrum_release_ms;
         self.show_audio_device_setup(&ctx);
         self.show_vst_connections(&ctx);
         if self.project_open {
@@ -8903,6 +9207,12 @@ impl eframe::App for OpenTrackApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(
+            storage,
+            "metering-preferences-v1",
+            &self.metering_preferences,
+        );
+        eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(storage, "dock-state", &self.dock_state);
         eframe::set_value(
             storage,
@@ -9160,6 +9470,7 @@ fn inspector_parameter_row(
         }
         let mut field = egui::DragValue::new(value)
             .range(range)
+            .clamp_existing_to_range(false)
             .speed(if symbol == 1 { 1.0 } else { 0.1 })
             .fixed_decimals(2)
             .suffix(if unit.is_empty() {
@@ -9194,7 +9505,12 @@ fn inspector_parameter_row(
         let response = ui.add_sized(Vec2::new(ui.available_width(), 20.0), field);
         if !response.has_focus() {
             ui.painter().rect_filled(response.rect, 0.0, palette.canvas);
-            let text = if symbol == 1 {
+            let text = if symbol == 0
+                && *value <= channel_gain::MUTE_DB + 0.1
+                && *value >= channel_gain::MUTE_DB - 0.1
+            {
+                "\u{2212}\u{221e}".to_owned()
+            } else if symbol == 1 {
                 if value.abs() < 0.5 {
                     "C".to_owned()
                 } else if *value < 0.0 {
@@ -9228,7 +9544,9 @@ fn inspector_parameter_row(
             Stroke::new(1.0, palette.grid),
         );
         let fraction = match symbol {
-            0 => ((*value + 60.0) / 60.0).clamp(0.0, 1.0),
+            0 => ((*value - channel_gain::MUTE_DB)
+                / (channel_gain::MAX_DB - channel_gain::MUTE_DB))
+                .clamp(0.0, 1.0),
             1 => ((*value + 100.0) / 200.0).clamp(0.0, 1.0),
             _ => ((*value + 2000.0) / 4000.0).clamp(0.0, 1.0),
         };
@@ -9451,12 +9769,14 @@ fn panel_close_button(ui: &mut egui::Ui, rect: Rect, palette: theme::Palette) ->
 
 fn show_project(
     ui: &mut egui::Ui,
+    edit_tool: &mut EditTool,
     project: &mut Project,
     position_beats: &mut f64,
     cycle_enabled: bool,
     beats_per_bar: u8,
     sample_rate: u32,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    peak_holds: &HashMap<u64, metering::Hold>,
     audio_sources: &HashMap<PathBuf, AudioSource>,
     recording_preview: Option<&RecordingPreview>,
     arrange_view_state: &mut ArrangeViewState,
@@ -9863,30 +10183,7 @@ fn show_project(
                 } else if moving_range || (range_preview.is_none() && over_existing_range) {
                     crate::timeline::show_move_cursor(ui, moving_range && primary_down);
                 } else {
-                    // egui has no native pencil cursor. Draw an original small pencil
-                    // at the pointer, including throughout a captured range drag.
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-                    if let Some(pointer) = pointer {
-                        let cursor_painter = ui.ctx().layer_painter(egui::LayerId::new(
-                            egui::Order::Tooltip,
-                            Id::new("ruler-range-pencil"),
-                        ));
-                        cursor_painter.add(egui::Shape::convex_polygon(
-                            vec![
-                                pointer,
-                                pointer + Vec2::new(3.0, -7.0),
-                                pointer + Vec2::new(10.0, -14.0),
-                                pointer + Vec2::new(14.0, -10.0),
-                                pointer + Vec2::new(7.0, -3.0),
-                            ],
-                            Color32::WHITE,
-                            Stroke::new(1.0, Color32::BLACK),
-                        ));
-                        cursor_painter.line_segment(
-                            [pointer, pointer + Vec2::new(3.0, -3.0)],
-                            Stroke::new(2.0, Color32::BLACK),
-                        );
-                    }
+                    crate::system_tool_icons::tool_cursor(ui, ToolbarIcon::Draw);
                 }
             }
 
@@ -10419,6 +10716,7 @@ fn show_project(
 
             for row in 0..visible_rows {
                 let lane_height = row_heights[row];
+                let media_lane_height = arrange_view_state.track_height(track_ids[row]);
                 let top = canvas.min.y + ruler_height + row_offsets[row];
                 let row_rect = Rect::from_min_size(
                     Pos2::new(header_left, top),
@@ -10479,6 +10777,13 @@ fn show_project(
                         Id::new(("track-header-name", track.id)),
                         Sense::click_and_drag(),
                     );
+                    if header_response.clicked()
+                        || name_response.clicked()
+                        || header_response.secondary_clicked()
+                        || name_response.secondary_clicked()
+                    {
+                        arrange_view_state.audio_events.focus_row();
+                    }
                     if header_response.secondary_clicked() || name_response.secondary_clicked() {
                         if !arrange_view_state.selected_track_ids.contains(&track.id) {
                             select_arrange_track(
@@ -10614,6 +10919,9 @@ fn show_project(
                         meter_rect,
                         meter_levels.get(&track.id).copied().unwrap_or([0.0; 2]),
                     );
+                    if let Some(hold) = peak_holds.get(&track.id) {
+                        paint_peak_markers(ui, meter_rect, hold.markers);
+                    }
                     painter.text(
                         Pos2::new(row_rect.left() + 24.0, top + 10.0),
                         Align2::CENTER_CENTER,
@@ -10664,6 +10972,19 @@ fn show_project(
                         modified = true;
                     }
                     if expanded {
+                        let automation_rect = Rect::from_min_max(
+                            Pos2::new(grid_clip.left(), top + media_lane_height),
+                            Pos2::new(grid_clip.right(), top + lane_height),
+                        );
+                        grid_painter.rect_filled(
+                            automation_rect,
+                            0.0,
+                            theme::palette(ui).canvas_alternate,
+                        );
+                        grid_painter.line_segment(
+                            [automation_rect.left_top(), automation_rect.right_top()],
+                            Stroke::new(1.0, theme::palette(ui).grid),
+                        );
                         let y = top + lane_height - 42.0;
                         let ar = Rect::from_min_size(
                             Pos2::new(row_rect.left() + 32.0, y),
@@ -10822,68 +11143,11 @@ fn show_project(
                                     arrange_view_state.selected_track_ids.clear();
                                     arrange_view_state.selected_track_ids.insert(track.id);
                                     arrange_view_state.selection_anchor_track_id = Some(track.id);
-                                    channel_settings_window.channel_bus = None;
-                                    channel_settings_window.open = true;
-                                    channel_settings_window.focus_requested = true;
+                                    channel_settings_window.request_channel_settings(None);
                                     modified = true;
                                 }
                                 _ => {}
                             }
-                        }
-                    }
-                    if let Some(preview) = recording_preview {
-                        if let Some((_, route)) =
-                            preview.tracks.iter().find(|(id, _)| *id == track.id)
-                        {
-                            let duration = preview.waveform.duration_seconds();
-                            let left = canvas.min.x
-                                + lane_header_width
-                                + (preview.start_beats / beats_per_bar_f64) as f32 * bar_width;
-                            let width = (duration * project.tempo_bpm / 60.0 / beats_per_bar_f64)
-                                as f32
-                                * bar_width;
-                            let rect = Rect::from_min_size(
-                                Pos2::new(left, top),
-                                Vec2::new(width.max(1.0), lane_height),
-                            );
-                            grid_painter.rect_filled(rect, 2.0, theme::RECORD.gamma_multiply(0.24));
-                            grid_painter.rect_stroke(
-                                rect,
-                                2.0,
-                                Stroke::new(1.0, theme::RECORD),
-                                egui::StrokeKind::Inside,
-                            );
-                            let channels = if *route == AudioRecordRoute::Stereo {
-                                preview.waveform.channels as usize
-                            } else {
-                                1
-                            };
-                            waveform_view::draw(
-                                &grid_painter,
-                                rect,
-                                grid_clip,
-                                channels,
-                                duration,
-                                |a, b, n, c| {
-                                    preview.waveform.columns(
-                                        a,
-                                        b,
-                                        n,
-                                        if *route == AudioRecordRoute::Right {
-                                            1
-                                        } else {
-                                            c
-                                        },
-                                    )
-                                },
-                            );
-                            grid_painter.with_clip_rect(rect.intersect(grid_clip)).text(
-                                rect.left_top() + Vec2::new(4.0, 2.0),
-                                Align2::LEFT_TOP,
-                                "Recording...",
-                                FontId::proportional(10.0),
-                                theme::palette(ui).text,
-                            );
                         }
                     }
                     for part in &track.midi_parts {
@@ -10901,7 +11165,7 @@ fn show_project(
                         }
                         let part_rect = Rect::from_min_max(
                             Pos2::new(part_left, top + 6.0),
-                            Pos2::new(part_right, top + lane_height - 6.0),
+                            Pos2::new(part_right, top + media_lane_height - 6.0),
                         );
                         let part_color = track_color;
                         let part_response = ui.interact(
@@ -10953,7 +11217,7 @@ fn show_project(
                                 * bar_width)
                                 .max(2.0);
                             let pitch_fraction = (127 - note.pitch) as f32 / 127.0;
-                            let note_y = top + 4.0 + pitch_fraction * (lane_height - 12.0);
+                            let note_y = top + 4.0 + pitch_fraction * (media_lane_height - 12.0);
                             let note_rect = Rect::from_min_size(
                                 Pos2::new(note_x, note_y),
                                 Vec2::new(note_width, 3.0),
@@ -10985,12 +11249,31 @@ fn show_project(
                     audio: t.kind == TrackKind::Audio,
                     rect: Rect::from_min_size(
                         Pos2::new(grid_left, canvas.top() + ruler_height + row_offsets[row]),
-                        Vec2::new(grid_clip.width(), row_heights[row]),
+                        Vec2::new(grid_clip.width(), arrange_view_state.track_height(t.id)),
                     ),
+                    automation: arrange_view_state
+                        .automation_visible
+                        .contains(&t.id)
+                        .then(|| {
+                            let top = canvas.top()
+                                + ruler_height
+                                + row_offsets[row]
+                                + arrange_view_state.track_height(t.id);
+                            Rect::from_min_max(
+                                Pos2::new(grid_left, top),
+                                Pos2::new(
+                                    grid_clip.right(),
+                                    canvas.top()
+                                        + ruler_height
+                                        + row_offsets[row]
+                                        + row_heights[row],
+                                ),
+                            )
+                        }),
                     color: project_controls::track_color(t),
                 })
                 .collect::<Vec<_>>();
-            let outcome = audio_events::show(
+            let outcome = audio_events::show_with_tool(
                 ui,
                 project,
                 audio_sources,
@@ -10999,10 +11282,69 @@ fn show_project(
                 canvas.min.x + lane_header_width,
                 bar_width / beats_per_bar as f32,
                 snap_grid_beats,
+                arrange_view_state.track_scroll_y,
                 &mut arrange_view_state.audio_events,
                 can_remove,
+                edit_tool,
             );
             modified |= outcome.changed;
+            // Paint the live take after arranged clips so it remains the
+            // visible top layer while recording over existing material.
+            if let Some(preview) = recording_preview {
+                for (track_id, route) in &preview.tracks {
+                    let Some(lane) = event_lanes.iter().find(|lane| lane.id == *track_id) else {
+                        continue;
+                    };
+                    let duration = preview.waveform.duration_seconds();
+                    let left = canvas.min.x
+                        + lane_header_width
+                        + (preview.start_beats / beats_per_bar_f64) as f32 * bar_width;
+                    let width = (duration * project.tempo_bpm / 60.0 / beats_per_bar_f64) as f32
+                        * bar_width;
+                    let rect = Rect::from_min_size(
+                        Pos2::new(left, lane.rect.top()),
+                        Vec2::new(width.max(1.0), lane.rect.height()),
+                    );
+                    grid_painter.rect_filled(rect, 2.0, theme::RECORD.gamma_multiply(0.24));
+                    grid_painter.rect_stroke(
+                        rect,
+                        2.0,
+                        Stroke::new(1.0, theme::RECORD),
+                        egui::StrokeKind::Inside,
+                    );
+                    let channels = if *route == AudioRecordRoute::Stereo {
+                        preview.waveform.channels as usize
+                    } else {
+                        1
+                    };
+                    waveform_view::draw(
+                        &grid_painter,
+                        rect,
+                        grid_clip,
+                        channels,
+                        duration,
+                        |a, b, n, channel| {
+                            preview.waveform.columns(
+                                a,
+                                b,
+                                n,
+                                if *route == AudioRecordRoute::Right {
+                                    1
+                                } else {
+                                    channel
+                                },
+                            )
+                        },
+                    );
+                    grid_painter.with_clip_rect(rect.intersect(grid_clip)).text(
+                        rect.left_top() + Vec2::new(4.0, 2.0),
+                        Align2::LEFT_TOP,
+                        "Recording...",
+                        FontId::proportional(10.0),
+                        theme::palette(ui).text,
+                    );
+                }
+            }
             if outcome.scroll != 0.0 {
                 arrange_view_state.timeline_scroll_x =
                     (arrange_view_state.timeline_scroll_x + outcome.scroll).max(0.0);
@@ -11058,7 +11400,7 @@ fn show_project(
                     Pos2::new(playhead_x, canvas.min.y),
                     Pos2::new(playhead_x, viewport.bottom()),
                 ],
-                Stroke::new(2.0, theme::RECORD),
+                Stroke::new(1.0, theme::PLAYHEAD),
             );
             if pan_active
                 && ui.input(|input| input.pointer.button_down(egui::PointerButton::Middle))
@@ -11960,6 +12302,7 @@ fn show_mixer(
     ui: &mut egui::Ui,
     project: &mut Project,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    peak_holds: &mut HashMap<u64, metering::Hold>,
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     show_strips: bool,
@@ -11973,6 +12316,7 @@ fn show_mixer(
             ui,
             project,
             meter_levels,
+            peak_holds,
             input_meter_peaks,
             output_meter_peaks,
             channel_settings_window,
@@ -11982,6 +12326,7 @@ fn show_mixer(
             ui,
             project,
             meter_levels,
+            peak_holds,
             compressor_editor,
             channel_settings_ui,
             &mut channel_settings_window.channel_bus,
@@ -11997,6 +12342,7 @@ fn show_mixer_channels(
     ui: &mut egui::Ui,
     project: &mut Project,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    peak_holds: &mut HashMap<u64, metering::Hold>,
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     channel_settings_window: &mut NativeWindowState,
@@ -12005,6 +12351,7 @@ fn show_mixer_channels(
         ui,
         project,
         meter_levels,
+        peak_holds,
         input_meter_peaks,
         output_meter_peaks,
         channel_settings_window,
@@ -12012,6 +12359,9 @@ fn show_mixer_channels(
 }
 
 fn set_channel_view_item(state: &mut ChannelSettingsUiState, item: ChannelSettingsViewItem) {
+    if state.bus_context && !item.available_for_bus() {
+        return;
+    }
     if matches!(
         item,
         ChannelSettingsViewItem::Equalizers
@@ -12060,6 +12410,9 @@ fn show_channel_context_menu(response: &egui::Response, state: &mut ChannelSetti
         .show(|ui| {
             ui.menu_button("Customize View", |ui| {
                 for item in ChannelSettingsViewItem::ALL {
+                    if state.bus_context && !item.available_for_bus() {
+                        continue;
+                    }
                     let supported = item.implemented();
                     let selected = state.preferences.visible_items.contains(&item);
                     let label = if supported {
@@ -12668,7 +13021,7 @@ fn show_mixer_legacy(
                             meter_response.on_hover_text(meter_text);
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut track.gain, 0.0..=1.0)
+                                    egui::Slider::new(&mut track.gain, 0.0..=opentrack_core::project::MAX_CHANNEL_GAIN)
                                         .vertical()
                                         .show_value(false),
                                 )
@@ -13096,100 +13449,144 @@ fn show_mixer_legacy(
     modified
 }
 
+#[cfg(test)]
+fn retain_channel_peak(holds: &mut HashMap<u64, metering::Hold>, id: u64, peaks: [f32; 2]) {
+    let held = holds.entry(id).or_default();
+    for peak in peaks {
+        if peak.is_finite() {
+            held.maximum = held.maximum.max(peak);
+        }
+    }
+}
 fn meter_fill_fraction(peak: f32) -> f32 {
     if !peak.is_finite() || peak <= 0.0 {
         return 0.0;
     }
-    ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+    ((20.0 * peak.log10() + 60.0) / (60.0 + channel_gain::MAX_DB)).clamp(0.0, 1.0)
+}
+fn paint_peak_markers(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
+    let width = ((rect.width() - 1.0) * 0.5).max(1.0);
+    for (i, peak) in peaks.into_iter().enumerate() {
+        if peak <= 0.001 {
+            continue;
+        }
+        let y = (rect.bottom() - rect.height() * meter_fill_fraction(peak))
+            .clamp(rect.top() + 0.5, rect.bottom() - 0.5);
+        let x = rect.left() + i as f32 * (width + 1.0);
+        ui.painter().with_clip_rect(rect).line_segment(
+            [Pos2::new(x, y), Pos2::new(x + width, y)],
+            Stroke::new(
+                1.0,
+                if peak > 1.0 {
+                    theme::RECORD
+                } else {
+                    theme::palette(ui).text
+                },
+            ),
+        );
+    }
 }
 
 fn paint_track_meter(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
     let palette = theme::palette(ui);
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 0.0, palette.canvas);
-    let width = (rect.width() - 1.0) * 0.5;
+    let width = ((rect.width() - 1.0) * 0.5).max(1.0);
+    let zero_y = rect.bottom() - rect.height() * meter_fill_fraction(1.0);
     for (index, peak) in peaks.into_iter().enumerate() {
         let channel = Rect::from_min_size(
             rect.min + Vec2::new(index as f32 * (width + 1.0), 0.0),
             Vec2::new(width, rect.height()),
         );
-        let fill = meter_fill_fraction(peak);
-        if fill > 0.0 {
+        painter.rect_filled(
+            Rect::from_min_max(channel.min, Pos2::new(channel.right(), zero_y)),
+            0.0,
+            theme::RECORD.gamma_multiply(0.16),
+        );
+        let top = channel.bottom() - channel.height() * meter_fill_fraction(peak);
+        if top < channel.bottom() {
             painter.rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(channel.left(), channel.bottom() - channel.height() * fill),
-                    channel.max,
-                ),
+                Rect::from_min_max(Pos2::new(channel.left(), top.max(zero_y)), channel.max),
                 0.0,
                 palette.accent,
             );
+            if peak > 1.0 {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(channel.left(), top),
+                        Pos2::new(channel.right(), zero_y),
+                    ),
+                    0.0,
+                    theme::RECORD,
+                );
+            }
         }
-        if peak >= 1.0 {
-            painter.rect_filled(
-                Rect::from_min_size(channel.min, Vec2::new(channel.width(), 3.0)),
-                0.0,
-                theme::RECORD,
-            );
-        }
+        painter.line_segment(
+            [
+                Pos2::new(channel.left(), zero_y),
+                Pos2::new(channel.right(), zero_y),
+            ],
+            Stroke::new(0.6, palette.muted),
+        );
     }
 }
 
 #[cfg(test)]
 mod meter_tests {
-    use super::meter_fill_fraction;
-
+    use super::*;
     #[test]
-    fn mixer_meter_maps_a_sixty_dbfs_range() {
-        assert_eq!(meter_fill_fraction(0.0), 0.0);
-        assert_eq!(meter_fill_fraction(0.001), 0.0);
-        assert!((meter_fill_fraction(0.01) - 1.0 / 3.0).abs() < 1.0e-6);
-        assert_eq!(meter_fill_fraction(1.0), 1.0);
-        assert_eq!(meter_fill_fraction(4.0), 1.0);
-    }
-}
-
-fn show_media(ui: &mut egui::Ui, selected_media: &mut usize) -> bool {
-    let mut modified = false;
-    ui.horizontal(|ui| {
-        ui.heading("MediaBay");
-        ui.separator();
-        ui.label(
-            egui::RichText::new("LIBRARY")
-                .small()
-                .color(theme::palette(ui).muted),
-        );
-    });
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            for (index, item) in ["Files", "Loops", "Instruments", "Presets"]
-                .into_iter()
-                .enumerate()
-            {
-                if ui
-                    .selectable_label(*selected_media == index, item)
-                    .clicked()
-                {
-                    if *selected_media != index {
-                        *selected_media = index;
-                        modified = true;
-                    }
-                }
-            }
-        });
-        ui.separator();
-        ui.centered_and_justified(|ui| {
-            let location = ["Files", "Loops", "Instruments", "Presets"]
-                .get(*selected_media)
-                .copied()
-                .unwrap_or("Files");
-            ui.label(
-                egui::RichText::new(format!("{location}: choose a media location to browse"))
-                    .color(theme::palette(ui).muted),
+    fn stereo_meter_only_lights_red_above_unity() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_track_meter(
+                ui,
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(21.0, 100.0)),
+                [1.0, 2.0],
             );
         });
-    });
-    modified
+        let red: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == theme::RECORD => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(red.len(), 1);
+        assert!(red[0].left() > 10.0);
+        assert!((red[0].bottom() - 100.0 * (1.0 - meter_fill_fraction(1.0))).abs() < 0.01);
+        out.textures_delta.clear();
+    }
+    #[test]
+    fn peaks_hold_across_silence_and_isolate_channels_until_reset() {
+        let mut holds = HashMap::new();
+        retain_channel_peak(&mut holds, 1, [0.5, 1.25]);
+        retain_channel_peak(&mut holds, 1, [0.0, 0.0]);
+        retain_channel_peak(&mut holds, 2, [0.25, 0.1]);
+        assert_eq!(holds[&1].maximum, 1.25);
+        assert_eq!(holds[&2].maximum, 0.25);
+        retain_channel_peak(&mut holds, 1, [f32::NAN, f32::INFINITY]);
+        assert_eq!(holds[&1].maximum, 1.25);
+        *holds.get_mut(&1).unwrap() = metering::Hold::default();
+        retain_channel_peak(&mut holds, 1, [0.5, 0.0]);
+        assert_eq!(holds[&1].maximum, 0.5);
+        assert!(meter_fill_fraction(1.0) < meter_fill_fraction(1.25));
+    }
+
+    #[test]
+    fn mixer_meter_maps_minus_sixty_through_positive_headroom() {
+        assert_eq!(meter_fill_fraction(0.0), 0.0);
+        assert_eq!(meter_fill_fraction(0.001), 0.0);
+        assert!(
+            (meter_fill_fraction(0.01) - 20.0 / (60.0 + super::channel_gain::MAX_DB)).abs()
+                < 1.0e-6
+        );
+        assert!(
+            (meter_fill_fraction(1.0) - 60.0 / (60.0 + super::channel_gain::MAX_DB)).abs()
+                < 0.000001
+        );
+        assert_eq!(meter_fill_fraction(4.0), 1.0);
+    }
 }
 
 const MIDI_RECORD_MIN_NOTE_BEATS: f64 = 1.0 / 960.0;
@@ -13758,6 +14155,9 @@ fn unresolved_audio_source_paths(
 
 fn relink_audio_source_path(project: &mut Project, old_path: &Path, new_path: &Path) -> usize {
     let mut relinked = 0;
+    if project.media_pool.remove(old_path) {
+        project.media_pool.insert(new_path.to_path_buf());
+    }
     for clip in project
         .tracks
         .iter_mut()
@@ -14002,11 +14402,13 @@ mod ruler_interaction_tests {
                 |ui| {
                     modified = show_project(
                         ui,
+                        &mut EditTool::Select,
                         &mut self.project,
                         &mut self.position,
                         true,
                         4,
                         44_100,
+                        &HashMap::new(),
                         &HashMap::new(),
                         &HashMap::new(),
                         None,
@@ -14059,6 +14461,34 @@ mod ruler_interaction_tests {
                 },
             ])
         }
+    }
+
+    #[test]
+    fn automation_expansion_reserves_a_separate_area_and_rejects_audio_event_drop_there() {
+        let mut f = Fixture::new();
+        f.project.add_track(TrackKind::Audio);
+        f.project.add_track(TrackKind::Audio);
+        for id in f.project.tracks.iter().map(|t| t.id).collect::<Vec<_>>() {
+            f.view.set_track_height(id, 80.0);
+        }
+        f.view.automation_visible.insert(f.project.tracks[0].id);
+        f.view.timeline_zoom = 16.0;
+        f.view.grid_type = crate::timeline::GridType::UseQuantize;
+        f.project
+            .add_audio_clip(0, PathBuf::from("event.wav"), 1.0, 2.0)
+            .unwrap();
+        f.frame(vec![]);
+        f.frame(vec![]);
+        f.button(400.0, 60.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(590.0, 120.0))]);
+        f.button(590.0, 120.0, false);
+        assert_eq!(f.project.tracks[0].clips.len(), 1);
+        assert!(f.project.tracks[1].clips.is_empty());
+        f.button(400.0, 60.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(590.0, 180.0))]);
+        f.button(590.0, 180.0, false);
+        assert!(f.project.tracks[0].clips.is_empty());
+        assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
     }
 
     #[test]
@@ -14840,5 +15270,60 @@ mod project_open_error_tests {
         assert!(!output.shapes.is_empty());
         let _ = ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
         output.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
+mod channel_window_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn closing_bus_editor_then_reopening_other_channels_recreates_and_renders_editor() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.selected_track = Some(0);
+        let render = |app: &mut OpenTrackApp, close: bool| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 600.0))),
+                ..Default::default()
+            };
+            if close {
+                input
+                    .viewports
+                    .get_mut(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+            }
+            ctx.run_ui(input, |ui| app.show_channel_settings_window(ui.ctx()))
+        };
+        for bus in [Some(false), Some(true), None, Some(false), None] {
+            let epoch = app.channel_settings_window.epoch;
+            app.channel_settings_window.request_channel_settings(bus);
+            assert_ne!(app.channel_settings_window.epoch, epoch);
+            // An old close request must not cancel an explicit reopen.
+            render(&mut app, true);
+            assert!(app.channel_settings_window.open);
+            assert!(app.channel_settings_window.viewport_live);
+            render(&mut app, false);
+            let output = render(&mut app, false);
+            fn has_controls(shape: &egui::Shape) -> bool {
+                match shape {
+                    egui::Shape::Text(t) => t.galley.text() == "Post Inserts/EQ",
+                    egui::Shape::Vec(shapes) => shapes.iter().any(has_controls),
+                    _ => false,
+                }
+            }
+            assert!(
+                output.shapes.iter().any(|s| has_controls(&s.shape)),
+                "editor controls must render after window layout settles"
+            );
+            render(&mut app, true);
+            assert!(!app.channel_settings_window.open);
+            assert!(!app.channel_settings_window.viewport_live);
+        }
+        assert_eq!(app.data.project.selected_track, Some(0));
     }
 }

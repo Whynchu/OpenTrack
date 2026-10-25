@@ -508,7 +508,7 @@ impl OpenTrackApp {
             return;
         }
         let mut open = true;
-        let mut changed = false;
+        let mut requested = None;
         let recording = self.is_recording();
         egui::Window::new("Project Setup")
             .open(&mut open)
@@ -516,7 +516,7 @@ impl OpenTrackApp {
             .default_width(385.0)
             .show(ctx, |ui| {
                 compact(ui);
-                ui.add_enabled_ui(!recording, |ui| {
+                ui.add_enabled_ui(!recording && self.project_rate_change.is_none(), |ui| {
                     egui::Grid::new("project-audio-setup-grid")
                         .spacing([20.0, 10.0])
                         .show(ui, |ui| {
@@ -552,10 +552,8 @@ impl OpenTrackApp {
                                     }
                                 });
                             ui.end_row();
-                            changed = rate != self.data.project.sample_rate_hz
-                                || format != self.data.project.recording_format;
-                            self.data.project.sample_rate_hz = rate;
-                            self.data.project.recording_format = format;
+                            if rate!=self.data.project.sample_rate_hz || format!=self.data.project.recording_format {requested=Some((rate,format));}
+
                         });
                 });
                 ui.add_space(8.0);
@@ -563,7 +561,7 @@ impl OpenTrackApp {
                     ui.label("Stop recording to change these settings.");
                 } else {
                     ui.label(
-                        "Applies to new recordings. Existing audio files retain their format.",
+                        "Recording format applies to new recordings. Rate changes review existing media and conform playback.",
                     );
                 }
                 ui.separator();
@@ -577,8 +575,8 @@ impl OpenTrackApp {
                 });
             });
         self.project_setup_open &= open;
-        if changed {
-            self.mark_modified();
+        if let Some((rate, format)) = requested {
+            self.request_project_rate(rate, format);
         }
     }
 

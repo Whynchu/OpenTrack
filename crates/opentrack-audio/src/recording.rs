@@ -87,6 +87,9 @@ impl AudioMonitorBuffer {
     pub fn set_input_channel(&self, settings: &opentrack_core::project::Track) {
         self.bus.set(settings);
     }
+    pub fn meter_tap(&self) -> Arc<crate::StereoMeter> {
+        self.bus.meter_tap()
+    }
     pub fn take_bus_peaks(&self) -> [f32; 2] {
         self.bus.take_peaks()
     }
@@ -2556,6 +2559,7 @@ mod tests {
             120.0,
             vec![crate::PlaybackTrackSettings {
                 clips: vec![crate::PlaybackClip {
+                    source_fades: Vec::new(),
                     source: crate::PlaybackSource::Decoded(decoded),
                     start_beats: 0.0,
                     source_offset_seconds: 0.0,

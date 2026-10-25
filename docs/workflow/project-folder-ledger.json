@@ -33,6 +33,12 @@
       "location": "docs/workflow/tasks/T019-cleanup-and-project-open.md",
       "identity": "x64 local-asio EXE SHA-256 5AFF02C355A5260D2B575D54E961AB9E02BD269A49D6C9A212F645FCD4021A15; crates/opentrack-app/src/app.rs: 4F37B343A6C52F810227CB63CCD2CE058FEAEDE2C6DA9B862EBC3D0F94544BCA; crates/opentrack-app/src/project_file.rs: 5C0A7312FE8C8B23757503B09F8C8CBB6A9E68979EC804796BADB27A8C9B42A1; crates/opentrack-app/src/audio_events.rs: 48B81735834FC7B6B6DEAF5EEC3F48E804B49A45BD57FE82F386911E33499C48",
       "note": "119 tests pass; exact EXAMPLE read-only parse opens three tracks with unchanged bytes. Error window renders headlessly. No live folder/desktop acceptance."
+    },
+    "t020-open-feedback": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T020-automation-and-channel-gain.md",
+      "identity": "T019 EXE 5AFF02C355A5260D2B575D54E961AB9E02BD269A49D6C9A212F645FCD4021A15",
+      "note": "User reports the corrected EXAMPLE open worked wonderfully. Invalid-file error dialogs and other folder scenarios were not explicitly exercised."
     }
   },
   "requirements": [
@@ -231,7 +237,9 @@
       },
       "runtime": {
         "status": "pending",
-        "evidence": []
+        "evidence": [
+          "t020-open-feedback"
+        ]
       },
       "parity": "pending",
       "comparison_evidence": []

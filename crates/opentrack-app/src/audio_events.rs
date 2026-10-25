@@ -21,16 +21,76 @@ struct Gesture {
     candidate: AudioClip,
     target: Option<u64>,
 }
+#[derive(Clone, Debug)]
+struct GroupMember {
+    track: u64,
+    row: usize,
+    original: AudioClip,
+    candidate: AudioClip,
+    target: u64,
+}
+#[derive(Clone, Debug)]
+struct GroupGesture {
+    members: Vec<GroupMember>,
+    anchor_id: u64,
+    anchor_row: usize,
+    grab_beats: f64,
+    target_valid: bool,
+}
+#[derive(Clone, Debug)]
+struct MarqueeGesture {
+    press: Pos2,
+    anchor_beat: f64,
+    anchor_content_y: f32,
+    initial_primary: Option<u64>,
+    initial_extra: HashSet<u64>,
+    modifiers: egui::Modifiers,
+    active: bool,
+}
 #[derive(Clone, Debug, Default)]
 pub(crate) struct State {
     selected: Option<u64>,
+    pub row_focus: bool,
+    extra_selected: HashSet<u64>,
+    toolbox: Option<Pos2>,
+    pub open_editor: Option<(u64, u64)>,
+    pub message: Option<String>,
     gesture: Option<Gesture>,
+    group_gesture: Option<GroupGesture>,
+    marquee: Option<MarqueeGesture>,
 }
+impl State {
+    pub fn selected_ids(&self) -> Vec<u64> {
+        self.selected
+            .into_iter()
+            .chain(self.extra_selected.iter().copied())
+            .collect()
+    }
+    pub fn focus_row(&mut self) {
+        self.clear_selection();
+        self.row_focus = true;
+    }
+    pub fn clear_selection(&mut self) {
+        self.row_focus = false;
+        self.selected = None;
+        self.extra_selected.clear();
+        self.gesture = None;
+        self.group_gesture = None;
+        self.marquee = None;
+    }
+    pub fn select_one(&mut self, id: u64) {
+        self.row_focus = false;
+        self.selected = Some(id);
+        self.extra_selected.clear();
+    }
+}
+
 pub(super) struct Lane {
     pub id: u64,
     pub channels: u8,
     pub audio: bool,
     pub rect: Rect,
+    pub automation: Option<Rect>,
     pub color: Color32,
 }
 pub(super) struct Outcome {
@@ -221,6 +281,10 @@ fn paint(
                             c.fade_in_seconds,
                             c.fade_out_seconds,
                         )
+                        * c.source_fades
+                            .iter()
+                            .map(|f| f.gain_at(t + c.source_offset_seconds))
+                            .product::<f32>()
                         * alpha;
                     v[0] *= gain;
                     v[1] *= gain;
@@ -291,7 +355,7 @@ fn paint(
         }
     }
 }
-pub(super) fn show(
+pub(super) fn show_with_tool(
     ui: &mut egui::Ui,
     project: &mut Project,
     sources: &HashMap<PathBuf, AudioSource>,
@@ -300,9 +364,14 @@ pub(super) fn show(
     origin: f32,
     px: f32,
     grid: Option<f64>,
+    track_scroll_y: f32,
     state: &mut State,
     enabled: bool,
+    edit_tool: &mut EditTool,
 ) -> Outcome {
+    toolbox(ui, visible, &mut state.toolbox, edit_tool);
+    let mut split = None;
+    let mut cut_preview = None;
     let mut out = Outcome {
         changed: false,
         scroll: 0.0,
@@ -315,30 +384,128 @@ pub(super) fn show(
             i.pointer.primary_down(),
             i.pointer.button_released(egui::PointerButton::Primary),
             i.key_pressed(egui::Key::Escape),
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.modifiers,
         )
     });
-    if state.gesture.is_none()
-        && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+    if enabled
+        && *edit_tool == EditTool::Select
+        && state.gesture.is_none()
+        && state.group_gesture.is_none()
+        && state.marquee.is_none()
+        && input.4
+        && let Some(pos) = input.0.filter(|p| visible.contains(*p))
     {
-        if let Some(pos) = input.0.filter(|p| visible.contains(*p)) {
-            let over_event = lanes.iter().any(|lane| {
-                project
+        let over_content = lanes.iter().any(|lane| {
+            lane.automation.is_some_and(|r| r.contains(pos))
+                || project
                     .tracks
                     .iter()
                     .find(|t| t.id == lane.id)
-                    .is_some_and(|t| {
-                        t.clips
+                    .is_some_and(|track| {
+                        track
+                            .clips
                             .iter()
-                            .any(|c| event_rect(c, lane, origin, px, tempo).contains(pos))
+                            .any(|clip| event_rect(clip, lane, origin, px, tempo).contains(pos))
+                            || track.midi_parts.iter().any(|part| {
+                                Rect::from_min_size(
+                                    Pos2::new(
+                                        origin + part.start_beats as f32 * px,
+                                        lane.rect.top(),
+                                    ),
+                                    Vec2::new(part.duration_beats as f32 * px, lane.rect.height()),
+                                )
+                                .contains(pos)
+                            })
                     })
+        });
+        if !over_content {
+            state.marquee = Some(MarqueeGesture {
+                press: pos,
+                anchor_beat: ((pos.x - origin) / px) as f64,
+                anchor_content_y: pos.y + track_scroll_y,
+                initial_primary: state.selected,
+                initial_extra: state.extra_selected.clone(),
+                modifiers: input.5,
+                active: false,
             });
-            if !over_event {
-                state.selected = None;
-            }
         }
     }
     if !enabled {
         state.gesture = None;
+        state.group_gesture = None;
+        state.marquee = None;
+    }
+    if let Some(mut marquee) = state.marquee.take() {
+        if input.3 {
+            state.selected = marquee.initial_primary;
+            state.extra_selected = marquee.initial_extra;
+        } else if let Some(pos) = input.0 {
+            marquee.active |= pos.distance(marquee.press) >= 3.0;
+            if marquee.active {
+                let anchor = Pos2::new(
+                    origin + marquee.anchor_beat as f32 * px,
+                    marquee.anchor_content_y - track_scroll_y,
+                );
+                let rect = Rect::from_two_pos(anchor, pos).intersect(visible);
+                let mut hits = HashSet::new();
+                for lane in lanes.iter().filter(|lane| lane.audio) {
+                    if let Some(track) = project.tracks.iter().find(|track| track.id == lane.id) {
+                        for clip in &track.clips {
+                            if event_rect(clip, lane, origin, px, tempo).intersects(rect) {
+                                hits.insert(clip.id);
+                            }
+                        }
+                    }
+                }
+                let mut selected = HashSet::new();
+                if marquee.modifiers.shift || marquee.modifiers.ctrl {
+                    selected.extend(marquee.initial_primary);
+                    selected.extend(marquee.initial_extra.iter().copied());
+                }
+                if marquee.modifiers.ctrl {
+                    for id in hits {
+                        if !selected.insert(id) {
+                            selected.remove(&id);
+                        }
+                    }
+                } else {
+                    selected.extend(hits);
+                }
+                state.selected = selected.iter().next().copied();
+                state.extra_selected = selected;
+                if let Some(primary) = state.selected {
+                    state.extra_selected.remove(&primary);
+                }
+                let painter = ui.painter().with_clip_rect(visible);
+                painter.rect_filled(rect, 0.0, theme::palette(ui).accent.gamma_multiply(0.12));
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(1.0, theme::palette(ui).accent),
+                    egui::StrokeKind::Inside,
+                );
+                if input.1 {
+                    let edge = 32.0;
+                    let strength = if pos.x < visible.left() + edge {
+                        -((visible.left() + edge - pos.x) / edge).clamp(0.0, 1.0)
+                    } else if pos.x > visible.right() - edge {
+                        ((pos.x - visible.right() + edge) / edge).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    out.scroll = strength * 600.0 * ui.input(|i| i.stable_dt).clamp(0.001, 0.05);
+                }
+            } else if input.2 {
+                state.selected = None;
+                state.extra_selected.clear();
+                state.row_focus = false;
+            }
+            if input.1 {
+                state.marquee = Some(marquee);
+                ui.ctx().request_repaint();
+            }
+        }
     }
     if let Some(mut g) = state.gesture.take() {
         if input.3 {
@@ -405,15 +572,114 @@ pub(super) fn show(
             }
         }
     }
+    if let Some(mut group) = state.group_gesture.take() {
+        if input.3 {
+            // Group previews do not mutate the Project before release.
+        } else if let Some(pos) = input.0 {
+            let anchor = group
+                .members
+                .iter()
+                .find(|member| member.original.id == group.anchor_id)
+                .cloned();
+            if let Some(anchor) = anchor {
+                let pointer_beat = ((pos.x - origin) / px) as f64;
+                let snapped_start = snap(pointer_beat - group.grab_beats, grid);
+                let minimum_start = group
+                    .members
+                    .iter()
+                    .map(|member| member.original.start_beats)
+                    .fold(f64::INFINITY, f64::min);
+                let delta = (snapped_start - anchor.original.start_beats)
+                    .max(-minimum_start)
+                    .max(-anchor.original.start_beats);
+                let target_row = lanes
+                    .iter()
+                    .position(|lane| lane.rect.y_range().contains(pos.y));
+                let row_delta = target_row.map(|row| row as isize - group.anchor_row as isize);
+                group.target_valid = row_delta.is_some();
+                if let Some(row_delta) = row_delta {
+                    for member in &mut group.members {
+                        member.candidate = member.original.clone();
+                        member.candidate.start_beats = member.original.start_beats + delta;
+                        member.target = lanes
+                            .get(
+                                member
+                                    .row
+                                    .checked_add_signed(row_delta)
+                                    .unwrap_or(usize::MAX),
+                            )
+                            .filter(|lane| {
+                                lane.audio
+                                    && lane.channels
+                                        == project
+                                            .tracks
+                                            .iter()
+                                            .find(|track| track.id == member.track)
+                                            .map_or(0, |track| track.audio_channels)
+                            })
+                            .map(|lane| lane.id)
+                            .unwrap_or(0);
+                        group.target_valid &= member.target != 0;
+                    }
+                }
+            }
+            ui.ctx().set_cursor_icon(if group.target_valid {
+                egui::CursorIcon::Move
+            } else {
+                egui::CursorIcon::NotAllowed
+            });
+            if input.2 && group.target_valid {
+                let edits = group
+                    .members
+                    .iter()
+                    .map(|member| (member.track, member.target, member.candidate.clone()))
+                    .collect::<Vec<_>>();
+                out.changed |= project.move_audio_clips(&edits);
+                if out.changed {
+                    if let Some(anchor_member) = group
+                        .members
+                        .iter()
+                        .find(|member| member.original.id == group.anchor_id)
+                    {
+                        project.selected_track = project
+                            .tracks
+                            .iter()
+                            .position(|track| track.id == anchor_member.target)
+                            .and_then(|index| u32::try_from(index).ok());
+                    }
+                }
+            }
+            if input.1 {
+                let edge = 32.0;
+                let strength = if pos.x < visible.left() + edge {
+                    -((visible.left() + edge - pos.x) / edge).clamp(0.0, 1.0)
+                } else if pos.x > visible.right() - edge {
+                    ((pos.x - visible.right() + edge) / edge).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                out.scroll = strength * 600.0 * ui.input(|i| i.stable_dt).clamp(0.001, 0.05);
+                group.members.iter_mut().for_each(|member| {
+                    member.candidate.start_beats = member.original.start_beats
+                        + (member.candidate.start_beats - member.original.start_beats);
+                });
+                state.group_gesture = Some(group);
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     for lane in lanes.iter().filter(|l| l.audio) {
         let Some(track) = project.tracks.iter().find(|t| t.id == lane.id) else {
             continue;
         };
         for c in &track.clips {
-            let selected = state.selected == Some(c.id);
+            let selected = state.selected == Some(c.id) || state.extra_selected.contains(&c.id);
             let ghost = state.gesture.as_ref().is_some_and(|g| {
                 g.tool == Tool::Move && g.original.id == c.id && g.target.is_some()
-            });
+            }) || state
+                .group_gesture
+                .as_ref()
+                .is_some_and(|g| g.members.iter().any(|member| member.original.id == c.id));
             paint(
                 ui, c, lane, origin, px, tempo, visible, sources, selected, ghost,
             );
@@ -422,21 +688,45 @@ pub(super) fn show(
                 continue;
             }
             let response = ui.interact(r, Id::new(("audio-event", c.id)), Sense::click_and_drag());
-            if response.clicked() {
-                state.selected = Some(c.id);
+            if response.clicked_by(egui::PointerButton::Primary) {
+                state.row_focus = false;
+                if *edit_tool == EditTool::Split {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        split = Some((lane.id, c.id, snap(((pos.x - origin) / px) as f64, grid)));
+                    }
+                } else if ui.input(|i| i.modifiers.shift || i.modifiers.ctrl) {
+                    if state.selected != Some(c.id) && !state.extra_selected.insert(c.id) {
+                        state.extra_selected.remove(&c.id);
+                    }
+                } else {
+                    state.selected = Some(c.id);
+                    state.extra_selected.clear();
+                }
                 ui.ctx().request_repaint();
             }
-            if response.hovered() {
+            if response.hovered() && *edit_tool == EditTool::Split {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                 if let Some(pos) = response.hover_pos() {
-                    ui.ctx().set_cursor_icon(cursor(hit(
-                        c,
-                        event_rect(c, lane, origin, px, tempo),
-                        pos,
-                        selected,
-                    )));
+                    let beat = snap(((pos.x - origin) / px) as f64, grid);
+                    if let Some(seconds) = c.cut_offset_seconds(beat, tempo, project.sample_rate_hz)
+                    {
+                        cut_preview = Some(c.start_beats + seconds * tempo / 60.0);
+                    }
                 }
             }
+            if response.hovered() && *edit_tool != EditTool::Split {
+                if let Some(pos) = response.hover_pos() {
+                    let hovered = hit(c, event_rect(c, lane, origin, px, tempo), pos, selected);
+                    ui.ctx().set_cursor_icon(if hovered == Tool::Move {
+                        egui::CursorIcon::Default
+                    } else {
+                        cursor(hovered)
+                    });
+                }
+            }
+
             if response.double_clicked()
+                && *edit_tool == EditTool::Select
                 && input.0.is_some_and(|pos| {
                     hit(c, event_rect(c, lane, origin, px, tempo), pos, selected) == Tool::Gain
                 })
@@ -445,10 +735,65 @@ pub(super) fn show(
                 edited.gain = 1.0;
                 reset_gain = Some((lane.id, edited));
             }
-            if response.drag_started_by(egui::PointerButton::Primary) && state.gesture.is_none() {
+            if response.double_clicked()
+                && *edit_tool == EditTool::Select
+                && input.0.is_some_and(|pos| {
+                    hit(c, event_rect(c, lane, origin, px, tempo), pos, selected) != Tool::Gain
+                })
+            {
+                state.open_editor = Some((lane.id, c.id));
+            }
+            if *edit_tool == EditTool::Select
+                && response.drag_started_by(egui::PointerButton::Primary)
+                && state.gesture.is_none()
+                && state.group_gesture.is_none()
+            {
                 let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(r.center());
+                let was_selected =
+                    state.selected == Some(c.id) || state.extra_selected.contains(&c.id);
+                let modifiers = ui.input(|i| i.modifiers);
+                if !was_selected && !modifiers.shift && !modifiers.ctrl {
+                    state.select_one(c.id);
+                }
                 let tool = hit(c, event_rect(c, lane, origin, px, tempo), press, selected);
-                state.selected = Some(c.id);
+                let selected_ids = state.selected_ids();
+                let selected_members = project
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(row, track)| {
+                        let selected_ids = &selected_ids;
+                        let track_id = track.id;
+                        track.clips.iter().filter_map(move |clip| {
+                            selected_ids.contains(&clip.id).then(|| GroupMember {
+                                track: track_id,
+                                row,
+                                original: clip.clone(),
+                                candidate: clip.clone(),
+                                target: track_id,
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if tool == Tool::Move
+                    && was_selected
+                    && selected_members.len() > 1
+                    && let Some(anchor_row) =
+                        lanes.iter().position(|candidate| candidate.id == lane.id)
+                {
+                    state.group_gesture = Some(GroupGesture {
+                        members: selected_members,
+                        anchor_id: c.id,
+                        anchor_row,
+                        grab_beats: ((press.x - origin) / px) as f64 - c.start_beats,
+                        target_valid: true,
+                    });
+                    ui.ctx().request_repaint();
+                    continue;
+                }
+                if !was_selected {
+                    state.select_one(c.id);
+                }
                 let mut g = Gesture {
                     track: lane.id,
                     original: c.clone(),
@@ -479,6 +824,40 @@ pub(super) fn show(
             }
         }
     }
+    if let Some(beat) = cut_preview {
+        let x = origin + beat as f32 * px;
+        let pointer = ui
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| Pos2::new(x, p.y));
+        crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, pointer);
+        ui.painter().with_clip_rect(visible).line_segment(
+            [Pos2::new(x, visible.top()), Pos2::new(x, visible.bottom())],
+            Stroke::new(1.0, theme::PLAYHEAD),
+        );
+    }
+    if let Some((track, clip, at)) = split {
+        if let Some(id) = project.split_audio_clip(track, clip, at) {
+            state.selected = Some(id);
+            state.extra_selected.clear();
+            out.changed = true;
+        }
+    }
+    if enabled
+        && state.selected.is_some()
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.key_pressed(egui::Key::X) && !i.modifiers.ctrl && !i.modifiers.alt)
+    {
+        let ids = state
+            .selected
+            .into_iter()
+            .chain(state.extra_selected.iter().copied())
+            .collect::<Vec<_>>();
+        if ids.len() == 2 && project.crossfade_audio_clips(ids[0], ids[1]) {
+            out.changed = true;
+        } else {
+            state.message=Some("Crossfade needs two overlapping audio events on the same track (Shift-click to select).".into());
+        }
+    }
     if let Some((track, edited)) = reset_gain {
         out.changed |= project.edit_audio_clip(track, track, edited);
     }
@@ -498,7 +877,87 @@ pub(super) fn show(
             );
         }
     }
+    if let Some(group) = state.group_gesture.as_ref().filter(|g| g.target_valid) {
+        for member in &group.members {
+            if let Some(lane) = lanes.iter().find(|lane| lane.id == member.target) {
+                paint(
+                    ui,
+                    &member.candidate,
+                    lane,
+                    origin,
+                    px,
+                    tempo,
+                    visible,
+                    sources,
+                    true,
+                    false,
+                );
+            }
+        }
+    }
     out
+}
+
+/// Hold secondary button, hover a tool, release to dismiss. Selection updates the shared toolbar.
+pub(super) fn toolbox(
+    ui: &mut egui::Ui,
+    bounds: Rect,
+    anchor: &mut Option<Pos2>,
+    tool: &mut EditTool,
+) {
+    let (pos, pressed, down, released) = ui.input(|i| {
+        (
+            i.pointer.hover_pos(),
+            i.pointer.button_pressed(egui::PointerButton::Secondary),
+            i.pointer.secondary_down(),
+            i.pointer.button_released(egui::PointerButton::Secondary),
+        )
+    });
+    if pressed && pos.is_some_and(|p| bounds.contains(p)) {
+        *anchor = pos;
+    }
+    if let Some(origin) = *anchor {
+        let start = Pos2::new(
+            origin.x.min(ui.ctx().content_rect().right() - 94.0),
+            origin.y.min(ui.ctx().content_rect().bottom() - 38.0),
+        );
+        egui::Area::new(ui.id().with("held-toolbox"))
+            .fixed_pos(start)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (value, icon, label) in [
+                            (EditTool::Select, ToolbarIcon::Select, "Object Selection"),
+                            (EditTool::Split, ToolbarIcon::Split, "Scissors"),
+                        ] {
+                            let (r, response) =
+                                ui.allocate_exact_size(Vec2::new(36.0, 28.0), Sense::hover());
+                            let hover = pos.is_some_and(|p| r.contains(p));
+                            ui.painter().rect_filled(
+                                r,
+                                1.0,
+                                if *tool == value || hover {
+                                    theme::palette(ui).accent
+                                } else {
+                                    theme::palette(ui).surface_raised
+                                },
+                            );
+                            crate::icons::paint_toolbar(ui, r.shrink(5.0), icon, Color32::BLACK);
+                            response.on_hover_text(label);
+                            if hover && (down || released) {
+                                *tool = value;
+                            }
+                        }
+                    });
+                });
+            });
+        if released || !down {
+            *anchor = None;
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -510,6 +969,9 @@ mod tests {
         state: State,
         lanes: Vec<Lane>,
         grid: Option<f64>,
+        tool: EditTool,
+        time: f64,
+        guide: Option<f32>,
     }
     impl Fixture {
         fn new() -> Self {
@@ -533,6 +995,7 @@ mod tests {
                         Pos2::new(100.0, i as f32 * 70.0),
                         Vec2::new(1100.0, 70.0),
                     ),
+                    automation: None,
                     color: Color32::from_rgb(110, 80, 150),
                 })
                 .collect();
@@ -542,21 +1005,26 @@ mod tests {
                 state: State::default(),
                 lanes,
                 grid: Some(0.25),
+                tool: EditTool::Select,
+                time: 0.0,
+                guide: None,
             };
             f.frame(vec![]);
             f.frame(vec![]);
             f
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> bool {
+            self.time += 1.0 / 60.0;
             let mut changed = false;
             let mut out = self.ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 230.0))),
                     events,
+                    time: Some(self.time),
                     ..Default::default()
                 },
                 |ui| {
-                    changed = show(
+                    changed = show_with_tool(
                         ui,
                         &mut self.project,
                         &HashMap::new(),
@@ -565,12 +1033,24 @@ mod tests {
                         100.0,
                         100.0,
                         self.grid,
+                        0.0,
                         &mut self.state,
                         true,
+                        &mut self.tool,
                     )
                     .changed;
                 },
             );
+            self.guide = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == theme::PLAYHEAD
+                        && points[0].y == 0.0
+                        && points[1].y == 210.0 =>
+                {
+                    Some(points[0].x)
+                }
+                _ => None,
+            });
             let _ = self
                 .ctx
                 .tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
@@ -595,6 +1075,99 @@ mod tests {
         }
     }
     #[test]
+    fn scissors_cut_at_shared_grid_and_double_click_requests_editor() {
+        let mut f = Fixture::new();
+        f.tool = EditTool::Split;
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 30.0))]);
+        assert_eq!(f.guide, Some(450.0));
+        f.button(Pos2::new(445.0, 30.0), true);
+        assert!(f.button(Pos2::new(445.0, 30.0), false));
+        assert_eq!(f.project.tracks[0].clips.len(), 2);
+        assert_eq!(f.project.tracks[0].clips[1].start_beats, 3.5);
+        assert_eq!(f.project.tracks[0].clips[1].source_offset_seconds, 1.25);
+        f.tool = EditTool::Select;
+        f.time += 0.5;
+        f.frame(vec![]);
+        f.frame(vec![]);
+        for _ in 0..2 {
+            f.button(Pos2::new(650.0, 30.0), true);
+            f.button(Pos2::new(650.0, 30.0), false);
+        }
+        assert_eq!(
+            f.state.open_editor,
+            Some((f.project.tracks[0].id, f.project.tracks[0].clips[1].id))
+        );
+    }
+    #[test]
+    fn held_secondary_toolbox_changes_shared_tool_on_hover_and_dismisses() {
+        let mut f = Fixture::new();
+        let button = |pressed, pos| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let anchor = Pos2::new(110.0, 110.0);
+        f.frame(vec![
+            egui::Event::PointerMoved(anchor),
+            button(true, anchor),
+        ]);
+        f.frame(vec![]);
+        let cut = Pos2::new(174.0, 127.0);
+        f.frame(vec![egui::Event::PointerMoved(cut)]);
+        assert_eq!(f.tool, EditTool::Split);
+        f.frame(vec![button(false, cut)]);
+        assert!(f.state.toolbox.is_none());
+        f.frame(vec![
+            egui::Event::PointerMoved(anchor),
+            button(true, anchor),
+        ]);
+        f.frame(vec![]);
+        let select = Pos2::new(132.0, 127.0);
+        f.frame(vec![egui::Event::PointerMoved(select)]);
+        assert_eq!(f.tool, EditTool::Select);
+        f.frame(vec![button(false, select)]);
+    }
+    #[test]
+    fn shift_selection_and_x_apply_real_overlap_fades() {
+        let mut f = Fixture::new();
+        let second = f
+            .project
+            .add_audio_clip(0, "second.wav".into(), 7.0, 3.0)
+            .unwrap();
+        f.select();
+        let pos = Pos2::new(1100.0, 30.0);
+        let shift = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        for pressed in [true, false] {
+            f.frame(vec![
+                egui::Event::ModifiersChanged(shift),
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: shift,
+                },
+            ]);
+        }
+        assert!(f.state.extra_selected.contains(&second));
+        assert!(f.frame(vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+            egui::Event::Key {
+                key: egui::Key::X,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE
+            }
+        ]));
+        assert_eq!(f.project.tracks[0].clips[0].fade_out_seconds, 1.0);
+        assert_eq!(f.project.tracks[0].clips[1].fade_in_seconds, 1.0);
+    }
+    #[test]
     fn actual_left_drag_previews_without_mutating_then_moves_to_compatible_lane_using_snap() {
         let mut f = Fixture::new();
         f.button(Pos2::new(450.0, 30.0), true);
@@ -606,6 +1179,61 @@ mod tests {
         assert!(f.project.tracks[0].clips.is_empty());
         assert_eq!(f.project.tracks[1].clips[0].start_beats, 2.5);
         assert_eq!(f.project.tracks[1].clips[0].duration_seconds, 4.0);
+    }
+    #[test]
+    fn empty_space_drag_selects_intersecting_audio_events_without_dirtying_project() {
+        let mut f = Fixture::new();
+        let first = f.project.tracks[0].clips[0].id;
+        let second = f
+            .project
+            .add_audio_clip(1, "second.wav".into(), 1.0, 2.0)
+            .unwrap();
+        let before = f.project.clone();
+        f.button(Pos2::new(120.0, 20.0), true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(450.0, 100.0))]);
+        f.button(Pos2::new(450.0, 100.0), false);
+        let selected = f.state.selected_ids().into_iter().collect::<HashSet<_>>();
+        assert_eq!(selected, HashSet::from([first, second]));
+        assert_eq!(f.project, before);
+    }
+    #[test]
+    fn selected_events_move_as_one_snapped_group_to_compatible_lane() {
+        let mut f = Fixture::new();
+        let first = f.project.tracks[0].clips[0].id;
+        let second = f
+            .project
+            .add_audio_clip(0, "second.wav".into(), 7.0, 2.0)
+            .unwrap();
+        f.select();
+        let second_pos = Pos2::new(900.0, 30.0);
+        let shift = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        for pressed in [true, false] {
+            f.frame(vec![
+                egui::Event::ModifiersChanged(shift),
+                egui::Event::PointerMoved(second_pos),
+                egui::Event::PointerButton {
+                    pos: second_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: shift,
+                },
+            ]);
+        }
+        assert_eq!(f.state.selected_ids().len(), 2);
+        f.button(Pos2::new(450.0, 30.0), true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(550.0, 100.0))]);
+        assert_eq!(f.project.tracks[0].clips.len(), 2);
+        assert!(f.button(Pos2::new(550.0, 100.0), false));
+        assert!(f.project.tracks[0].clips.is_empty());
+        let moved_first = &f.project.tracks[1].clips[0];
+        let moved_second = &f.project.tracks[1].clips[1];
+        assert_eq!((moved_first.id, moved_second.id), (first, second));
+        assert_eq!(moved_first.start_beats, 2.0);
+        assert_eq!(moved_second.start_beats, 8.0);
+        assert_eq!(moved_second.start_beats - moved_first.start_beats, 6.0);
     }
     #[test]
     fn incompatible_lane_drop_is_rejected_and_snap_off_preserves_free_position() {

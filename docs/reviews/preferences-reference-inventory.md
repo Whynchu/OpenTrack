@@ -1,0 +1,52 @@
+# Preferences reference inventory - 2026-10-25
+
+Evidence: 32 user-supplied PNG window captures from 08:36:12 through 08:40:36. Primary copies, descriptive filenames, original paths, SHA-256 and dimensions are in `G:/dev/Opentrack/_analysis-tools/reports/preferences-2026-10-25/manifest.json`. Eight contact sheets are derivatives; named `NN-page-0.png` files are primary. Originals are preserved. Screen resolution/scaling and window position are unknown because these are cropped window captures. Theme is the reference light/blue preference dialog. No reference application was opened or clicked during this study.
+
+Observed structure: left scrollable hierarchy, right page heading/content, lower preference-preset strip, Help plus Defaults/Apply/OK/Cancel. Video and Scores are excluded from our product preference scope at the user's direction. Two supplied Video pages are archived, flagged excluded. Scores is visible in the tree but no dedicated Scores page was supplied. Record > Audio > Broadcast Wave is visible in the tree, but its page is not captured; contents remain unknown.
+
+Visible selected values are current captured values, not proven factory defaults. Static screenshots do not measure timing, control limits, dropdown alternatives, tooltips or hidden behavior. The implementation follows the hierarchy and our own palette. No whole-window visual parity is claimed.
+
+| ID / time | Named page | Observed controls/content to support | Current delivery / next dependency |
+| --- | --- | --- | --- |
+| PREF-01 / 083612 | Appearance | Root: Select an entry | Navigation only |
+| PREF-02 / 083623 | Appearance > General | Five-strip preview; saturation, brightness, button brightness | Planned; theme transforms/preview |
+| PREF-03 / 083631 | Appearance > Meters | Gradient preview, four color stops, color wheel and brightness strip | Planned; customizable meter stops |
+| PREF-04 / 083638 | Appearance > Work Area | Project work-area brightness/cycle/horizontal grid/vertical levels 1-3; edit-window grids; key-editor black-note grid; active drum-lane intensity | Planned; editor-specific palette parameters |
+| PREF-05 / 083646 | Editing | Musical default track time; auto select events, cycle follows range, delete overlaps, linked editors, parts inherit track name; locked event attributes; quick zoom; up/down selection; track follows event selection; automation follows events; 200 ms drag delay | Planned; central edit policy/commands |
+| PREF-06 / 083652 | Editing > Audio | Realtime stretch algorithm; muted events treated as deleted; wheel for event volume/fades; hitpoint Q-points; audio import policy/copy/convert/split; shared-clip processing policy; offline region removal; zero-cross snap | Planned; preserve current managed import/edit behavior until explicit choice is implemented |
+| PREF-07 / 083659 | Editing > Controls | Value-box/time mode; Linear knob mode; Jump (Control) slider mode | Planned; shared control gestures |
+| PREF-08 / 083706 | Editing > MIDI | Extended note context for controller selection; 0-tick legato overlap; selected-only legato; split events/controllers | Planned; MIDI editing commands |
+| PREF-09 / 083711 | Editing > Project & Mixer | Solo/edit-settings selection; scroll selected channel/track; auto color mode; synchronized selection; record/solo on selected track; deep folding; selected-track enlargement | Planned; shared selection/arming policies |
+| PREF-10 / 083717 | Editing > Tool Modifiers | Tool category list, Action/Modifiers table, modifier capture and Assign; shown AudioWarp Delete Tab = Shift | Planned; binding editor. Other category mappings not captured |
+| PREF-11 / 083725 | Editing > Tools | Extra info, time-domain warning, horizontal-only standard zoom, right-click toolbox; crosshair enable/colors/dotted line/mask width | Planned; tool feedback/preferences |
+| PREF-12 / 083740 | Editing > Video | Audio extraction and thumbnail cache | Excluded |
+| PREF-13 / 083746 | Event Display | Names, transparency, small-track data, colorized backgrounds | Planned; event rendering options |
+| PREF-14 / 083754 | Event Display > Audio | Interpolation; Solid and Framed style; always-visible volume curves; fade handles on top; thick fade lines; waveforms; background modulation | Planned; existing event functions do not yet expose these preferences |
+| PREF-15 / 083800 | Event Display > MIDI | Open Key Editor action; Lines part display; controllers; drum-map editing; MIDI note-name style | Planned; MIDI view/editor |
+| PREF-16 / 083818 | Event Display > Rulers | Use Strong Colors | Planned; ruler theme |
+| PREF-17 / 083825 | Event Display > Video | Thumbnails and 3 MB cache size | Excluded |
+| PREF-18 / 083833 | General | English; auto-save 15 min, max 10 backups; tips; unlimited undo (0); new-project setup; startup choice; usage profiling | Planned: auto-save/backups, tips and undo/startup settings. Keep user's blank startup. Vendor-specific profile/upload controls are not proposed for OpenTrack |
+| PREF-19 / 083840 | MIDI | Thru; reset on stop; -2 tick length; chase note/pressure/controller/program/aftertouch/pitchbend/SysEx and part limits; display resolution120 ticks, PPQ480; reset events after record; audition inserts/sends; 250 ms feedback | Planned; MIDI routing/chase settings, with existing fixed capabilities audited separately |
+| PREF-20 / 083846 | MIDI > MIDI File | Export patch/volume/pan/automation/inserts/sends/markers/type0/resolution480/locator range/delay; import first patch/volume-pan/controller automation/left locator/markers/dropped file/master merge/dissolve0/instrument tracks | Planned; MIDI file import/export |
+| PREF-21 / 083852 | MIDI > MIDI Filter | Record/Thru event types, channel buttons1-16, controller list Add/Remove; captured SysEx filters and AllNoteOff list entry | Planned; input filter pipeline |
+| PREF-22 / 083858 | MediaBay | 100000 maximum results; viewer editing; stop scan on close; file extensions | Planned; media indexing/search |
+| PREF-23 / 083906 | Record | Root: Select an entry | Navigation only |
+| PREF-24 / 083915 | Record > Audio | 1 second pre-record; Create Audio Images During Record; Create Events + Regions cycle mode | Planned preference controls; existing live waveform is functional, pre-roll/cycle takes not implied |
+| PREF-25 / 083928 | Record > MIDI | Snap parts to bars; solo record in editors; 100 ms catch; retrospective recording,10000-event buffer; replace mode None | Planned; MIDI recording engine |
+| PREF-26 / 083944 | Transport | Local preview toggle, locating zoom, cursor width2, return to start on stop, deactivate punch, punch-out stop, stop while winding; zoom/fixed wind, factor4; subframes, framerate60, stationary cursors, empty-space locate | Planned; transport policies. Existing combined scrub/zoom preserved |
+| PREF-27 / 083952 | Transport > Scrub | Speed response, scrub volume, CPU-saving mode | Planned; audible scrub distinct from present seek/zoom |
+| PREF-28 / 084004 | VST | Auto-connect sends; instrument automation modes; pre-send mute; group/source mute; recording delay-compensation threshold0ms; export-warning text; legacy EQ default; stereo balance panner; linked send pan; Manual auto monitoring; overload warnings | Planned; adapt legacy-specific choices to OpenTrack capabilities, no fake hosting/send/compensation toggles |
+| PREF-29 / 084009 | VST > Plug-ins | Warn modified effect removal; open loaded editor; instrument MIDI creation Always ask; silence suspension; sort vendor; editor Always on Top | Planned; real third-party hosting dependency. Existing internal editor topmost remains separate |
+| PREF-30 / 084019 | VST > Metering | Map Input Bus Metering to Audio Track (in Direct Monitoring), checked; peak hold3000ms; slow fallback20dB/s; fast fallback40dB/s | Immediate: persistent global meter timing, Apply/OK/Cancel/Defaults. Hardware direct-monitor map unavailable until hardware direct monitoring exists |
+| PREF-31 / 084028 | VST > Control Room | Transport volume; talkback disable; phones preview; talkback dim; signal indicators; multi-channel speaker solo; downmix presets; studio/control-room/phones metronome; reference display/-20dB; main dim-30dB | Planned; Control Room routing/DSP dependency |
+| PREF-32 / 084036 | VariAudio | Inhibit sample-data-change and offline-process warnings | Planned/deferred; pitch editing not implemented |
+
+## Immediate functional contract (T022)
+
+File > Preferences opens from both empty shell and a project, initially on VST > Metering. Video/Scores do not appear. Other retained pages show their documented purpose and clearly state they are planned; preset storage is unavailable, rather than a pretend working feature. Do not copy vendor upload behavior.
+
+Meter hold/slow/fast values persist as application preferences, outside .opr and project undo/dirty state. Defaults stages the captured3000ms/20dB/s/40dB/s values; Apply updates runtime without closing; OK applies/closes; Cancel/title close discards only edits after the last Apply. Numeric controls have explicit implementation bounds (hold0..10000ms, fallbacks1..120dB/s); reference bounds are unknown. Filled meters fall at slow rate; separate peak marker holds then falls at fast rate, bounded below by filled level. This assignment of slow/fast is an OpenTrack design pending measured reference behavior, not proof from the screenshot. The maximum numeric readout remains latched until manually reset, as the user separately requested in T021.
+
+Spectrum release smoothing is an OpenTrack addition, separated below the reference controls: immediate attack, exponential release in dB, default180ms,0ms raw, max2000ms. It changes display only, not buffers/audio latency. FFT cadence remains30ms minimum,2048-sample window, and callback capture remains bounded. Exact reference spectrum ballistics and hardware/display timing remain unmeasured. Direct-monitor mapping is visibly unavailable with explanation because hardware Direct Monitoring is not implemented; current software monitoring still meters actual track audio.
+
+Priority after meter acceptance: General auto-save/backups; Editing > Controls and Project & Mixer; audio event/recording display policies; transport. MIDI, indexing, plug-in hosting, Control Room and pitch features need their engines before settings can be advertised as operational. Appearance palette preferences are a separate bounded polish slice. No other page becomes functional solely from listing it here.

@@ -269,6 +269,7 @@ pub(super) fn show_channels(
     ui: &mut egui::Ui,
     project: &mut Project,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    peak_holds: &mut HashMap<u64, metering::Hold>,
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     settings: &mut NativeWindowState,
@@ -295,6 +296,9 @@ pub(super) fn show_channels(
             0,
             settings.channel_bus == Some(true),
             input_meter_peaks,
+            peak_holds
+                .entry(opentrack_core::project::INPUT_BUS_ID)
+                .or_default(),
             settings,
             view.hide_routing,
         )
@@ -330,6 +334,7 @@ pub(super) fn show_channels(
                             index,
                             selected == Some(index as u32) && settings.channel_bus.is_none(),
                             meter_levels.get(&track.id).copied().unwrap_or([0.0; 2]),
+                            peak_holds.entry(track.id).or_default(),
                             settings,
                             view.hide_routing,
                         );
@@ -356,6 +361,9 @@ pub(super) fn show_channels(
             0,
             settings.channel_bus == Some(false),
             output_meter_peaks,
+            peak_holds
+                .entry(opentrack_core::project::OUTPUT_BUS_ID)
+                .or_default(),
             settings,
             view.hide_routing,
         )
@@ -771,6 +779,7 @@ fn strip(
     index: usize,
     selected: bool,
     peak: [f32; 2],
+    held_peak: &mut metering::Hold,
     settings: &mut NativeWindowState,
     hide_routing: bool,
 ) -> (bool, bool, bool) {
@@ -967,10 +976,9 @@ fn strip(
         .clicked()
         {
             select = !is_bus;
-            settings.channel_bus =
-                is_bus.then_some(track.id == opentrack_core::project::INPUT_BUS_ID);
-            settings.open = true;
-            settings.focus_requested = true;
+            settings.request_channel_settings(
+                is_bus.then_some(track.id == opentrack_core::project::INPUT_BUS_ID),
+            );
         }
         let has_inserts = !track.inserts.is_empty();
         let inserts_active = track.inserts.iter().any(|i| i.enabled);
@@ -1067,7 +1075,7 @@ fn strip(
             track.armed = !track.armed;
             modified = true;
         }
-        modified |= fader(ui, r, &mut track.gain, peak, true);
+        modified |= fader(ui, r, &mut track.gain, peak, true, held_peak);
         let name_rect = Rect::from_min_size(
             Pos2::new(r.left(), r.bottom() - 29.0),
             Vec2::new(r.width(), 16.0),
@@ -1132,8 +1140,15 @@ fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>, color: 
     }
 }
 
-fn fader(ui: &mut egui::Ui, r: Rect, gain: &mut f32, peak: [f32; 2], enabled: bool) -> bool {
-    fader_impl(ui, r, gain, peak, enabled, "mixer-fader").0
+fn fader(
+    ui: &mut egui::Ui,
+    r: Rect,
+    gain: &mut f32,
+    peak: [f32; 2],
+    enabled: bool,
+    held_peak: &mut metering::Hold,
+) -> bool {
+    fader_impl(ui, r, gain, peak, enabled, "mixer-fader", held_peak).0
 }
 
 pub(super) fn channel_settings_fader(
@@ -1142,6 +1157,7 @@ pub(super) fn channel_settings_fader(
     gain: &mut f32,
     peak: [f32; 2],
     track_id: u64,
+    held_peak: &mut metering::Hold,
 ) -> (bool, egui::Response) {
     let (changed, response) = fader_impl(
         ui,
@@ -1150,6 +1166,7 @@ pub(super) fn channel_settings_fader(
         peak,
         true,
         ("channel-settings-fader", track_id),
+        held_peak,
     );
     (
         changed,
@@ -1164,6 +1181,7 @@ fn fader_impl(
     peaks: [f32; 2],
     enabled: bool,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
+    held_peak: &mut metering::Hold,
 ) -> (bool, Option<egui::Response>) {
     let p = theme::palette(ui);
     let top = r.top() + 104.0;
@@ -1195,43 +1213,17 @@ fn fader_impl(
             Stroke::new(0.6, p.surface_raised),
         );
     }
-    let channel_width = ((meter.width() - 1.0) * 0.5).max(1.0);
-    for (channel, peak) in peaks.into_iter().enumerate() {
-        let left = meter.left() + channel as f32 * (channel_width + 1.0);
-        let channel_meter = Rect::from_min_size(
-            Pos2::new(left, meter.top()),
-            Vec2::new(channel_width, meter.height()),
-        );
-        let fill = super::meter_fill_fraction(peak);
-        if fill <= 0.0 {
-            continue;
-        }
-        ui.painter().rect_filled(
-            Rect::from_min_max(
-                Pos2::new(
-                    channel_meter.left(),
-                    channel_meter.bottom() - channel_meter.height() * fill,
-                ),
-                channel_meter.max,
-            ),
-            0.0,
-            p.accent,
-        );
-    }
-    for step in 0..=8 {
-        let y = egui::lerp(rail.y_range(), step as f32 / 8.0);
+    super::paint_track_meter(ui, meter, peaks);
+    super::paint_peak_markers(ui, meter, held_peak.markers);
+    for db in [6.0206_f32, 0.0, -6.0, -12.0, -18.0, -24.0, -30.0] {
+        let fraction = channel_gain::gain_to_position(10.0_f32.powf(db / 20.0));
+        let y = egui::lerp(rail.y_range(), fraction);
         ui.painter().line_segment(
             [Pos2::new(r.left() + 42.0, y), Pos2::new(r.left() + 59.0, y)],
-            Stroke::new(0.7, p.surface),
+            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, p.surface),
         );
     }
-    // Only the observed unity position is calibrated. The current core gain range remains 0..1.
-    const UNITY: f32 = 0.245;
-    let fraction = if *gain <= 0.0 {
-        1.0
-    } else {
-        (UNITY + (1.0 - UNITY) * (-super::linear_gain_db(*gain) / 60.0)).clamp(UNITY, 1.0)
-    };
+    let fraction = channel_gain::gain_to_position(*gain);
     let center = Pos2::new(r.left() + 50.0, egui::lerp(rail.y_range(), fraction));
     let handle = Rect::from_center_size(center, Vec2::new(14.0, 31.0));
     ui.painter()
@@ -1264,15 +1256,35 @@ fn fader_impl(
             ui.id().with(id_salt),
             Sense::click_and_drag(),
         );
-        if response.clicked() || response.dragged() {
+        let drag_id = response.id.with("fader-drag-position");
+        if response.drag_started() {
+            ui.data_mut(|data| data.insert_temp(drag_id, channel_gain::gain_to_position(*gain)));
+        }
+        if response.dragged() {
+            let previous = ui
+                .data(|data| data.get_temp::<f32>(drag_id))
+                .unwrap_or_else(|| channel_gain::gain_to_position(*gain));
+            let delta = if response.drag_started() {
+                response.drag_delta().y
+            } else {
+                ui.input(|i| i.pointer.delta().y)
+            };
+            let fine = ui.input(|i| i.modifiers.shift);
+            let speed = if fine { 0.1 } else { 1.0 };
+            let position = (previous + delta / rail.height() * speed).clamp(0.0, 1.0);
+            ui.data_mut(|data| data.insert_temp(drag_id, position));
+            let value = if fine {
+                channel_gain::position_to_gain_fine(position)
+            } else {
+                channel_gain::position_to_gain(position)
+            };
+            changed |= *gain != value;
+            *gain = value;
+        } else if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
-                let frac = ((pos.y - rail.top()) / rail.height()).clamp(UNITY, 1.0);
-                let db = -(frac - UNITY) / (1.0 - UNITY) * 60.0;
-                let value = if frac >= 0.999 {
-                    0.0
-                } else {
-                    10.0_f32.powf(db / 20.0)
-                };
+                let value = channel_gain::position_to_gain(
+                    ((pos.y - rail.top()) / rail.height()).clamp(0.0, 1.0),
+                );
                 changed |= *gain != value;
                 *gain = value;
             }
@@ -1298,22 +1310,43 @@ fn fader_impl(
         Vec2::new(r.width() - 42.0, 29.0),
     );
     ui.painter().rect_filled(level, 2.0, p.canvas);
-    let has_peak = peaks.into_iter().any(|peak| peak > 0.0);
+    let peak_rect = Rect::from_min_size(level.min, Vec2::new(level.width() - 2.0, 11.0));
+    let peak_text = if held_peak.maximum <= 0.0 {
+        "\u{2212}\u{221e}".to_owned()
+    } else {
+        format!("{:+.2}", 20.0 * held_peak.maximum.log10())
+    };
     text(
         ui,
-        Rect::from_min_size(level.min, Vec2::new(level.width() - 2.0, 11.0)),
-        if has_peak { "" } else { "−∞" },
+        peak_rect,
+        &peak_text,
         8.0,
-        p.muted,
+        if held_peak.maximum > 1.0 {
+            theme::RECORD
+        } else {
+            p.muted
+        },
         Align2::RIGHT_CENTER,
     );
+    if ui
+        .interact(peak_rect, ui.id().with("peak-hold-reset"), Sense::click())
+        .on_hover_text("Peak Level (click to reset)")
+        .clicked()
+    {
+        *held_peak = metering::Hold::default();
+    }
+
     text(
         ui,
         Rect::from_min_size(
             level.min + Vec2::new(2.0, 11.0),
             Vec2::new(level.width() - 4.0, 17.0),
         ),
-        &format!("{:.2}", super::linear_gain_db(*gain)),
+        &if *gain <= 0.0 {
+            "\u{2212}\u{221e}".to_owned()
+        } else {
+            format!("{:.2}", super::linear_gain_db(*gain))
+        },
         11.0,
         p.text,
         Align2::LEFT_CENTER,
@@ -1326,6 +1359,78 @@ fn fader_impl(
 #[cfg(test)]
 mod bus_tests {
     use super::*;
+    #[test]
+    fn fader_click_endpoints_and_shift_drag_control_real_gain() {
+        fn drag(shift: bool, start_gain: f32, delta: f32) -> f32 {
+            let ctx = egui::Context::default();
+            let mut gain = start_gain;
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(84.0, 500.0));
+            let y = 109.0 + channel_gain::gain_to_position(gain) * 317.0;
+            for (i, events) in [
+                vec![],
+                vec![],
+                vec![
+                    egui::Event::PointerMoved(Pos2::new(50.0, y)),
+                    egui::Event::PointerButton {
+                        pos: Pos2::new(50.0, y),
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                vec![egui::Event::PointerMoved(Pos2::new(50.0, y + delta))],
+                vec![egui::Event::PointerButton {
+                    pos: Pos2::new(50.0, y + delta),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut events = events;
+                events.insert(
+                    0,
+                    egui::Event::ModifiersChanged(egui::Modifiers {
+                        shift,
+                        ..Default::default()
+                    }),
+                );
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 600.0))),
+                        time: Some(i as f64 / 60.0),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        fader_impl(
+                            ui,
+                            rect,
+                            &mut gain,
+                            [0.0; 2],
+                            true,
+                            "test-fader",
+                            &mut metering::Hold::default(),
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            gain
+        }
+        let normal = 20.0 * drag(false, 1.0, 20.0).log10();
+        let fine = 20.0 * drag(true, 1.0, 20.0).log10();
+        assert!(normal < -1.0 && fine < 0.0 && fine.abs() < normal.abs() * 0.15);
+        assert!(
+            drag(true, 0.0, -40.0) > 0.0,
+            "fine drag must be able to leave mute"
+        );
+        assert_eq!(drag(false, 1.0, 500.0), 0.0);
+        assert!(drag(false, 1.0, -500.0) > 1.99);
+    }
+
     #[test]
     fn both_bus_edit_buttons_target_their_own_editor_and_track_edit_returns_to_track() {
         let ctx = egui::Context::default();
@@ -1345,6 +1450,7 @@ mod bus_tests {
                         ui,
                         &mut project,
                         &meters,
+                        &mut HashMap::new(),
                         [0.1, 0.2],
                         [0.3, 0.4],
                         &mut settings,

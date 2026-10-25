@@ -134,6 +134,7 @@ pub(super) fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
     meters: &HashMap<u64, [f32; 2]>,
+    peak_holds: &mut HashMap<u64, metering::Hold>,
     compressor: &mut CompressorEditorState,
     state: &mut ChannelSettingsUiState,
     bus_target: &mut Option<bool>,
@@ -165,6 +166,7 @@ pub(super) fn show(
             }
         },
     };
+    state.bus_context = index >= count;
     let peak = if index == count {
         input_peaks
     } else if index == count + 1 {
@@ -187,6 +189,7 @@ pub(super) fn show(
     let has_fader = visible.contains(&ChannelSettingsViewItem::Fader);
     let items = visible
         .into_iter()
+        .filter(|item| !state.bus_context || item.available_for_bus())
         .filter(|item| {
             item.implemented() && !(*item == ChannelSettingsViewItem::ControlStrip && has_fader)
         })
@@ -243,7 +246,16 @@ pub(super) fn show(
             }
             ChannelSettingsViewItem::Fader | ChannelSettingsViewItem::ControlStrip => {
                 changed |= strip(
-                    &mut child, r, track, &names, index, &mut next, peak, has_fader, state,
+                    &mut child,
+                    r,
+                    track,
+                    &names,
+                    index,
+                    &mut next,
+                    peak,
+                    peak_holds.entry(track.id).or_default(),
+                    has_fader,
+                    state,
                 )
             }
             _ => {
@@ -688,10 +700,14 @@ fn equalizer(
         44.0
     };
     if curve {
+        state
+            .analyzer
+            .controls(ui, at(r, 0.0, 22.0, r.width(), 24.0));
         changed |= graph(
             ui,
-            at(r, 0.0, 44.0, r.width(), (bands_top - 48.0).max(80.0)),
+            at(r, 0.0, 50.0, r.width(), (bands_top - 54.0).max(80.0)),
             eq,
+            state,
         );
     }
     let width = (r.width() - 12.0) / 4.0;
@@ -864,7 +880,12 @@ fn node_position(plot: Rect, frequency: f32, gain: f32) -> Pos2 {
     )
 }
 
-fn graph(ui: &mut egui::Ui, r: Rect, eq: &mut ChannelEqualizer) -> bool {
+fn graph(
+    ui: &mut egui::Ui,
+    r: Rect,
+    eq: &mut ChannelEqualizer,
+    state: &mut ChannelSettingsUiState,
+) -> bool {
     let p = theme::palette(ui);
     let plot = r.shrink2(Vec2::new(30.0, 18.0));
     let response = ui.interact(r, ui.id().with("eq-graph"), Sense::click_and_drag());
@@ -974,11 +995,16 @@ fn graph(ui: &mut egui::Ui, r: Rect, eq: &mut ChannelEqualizer) -> bool {
             Align2::CENTER_CENTER,
         );
     }
+    state.analyzer.paint(ui, plot);
     let points = (0..=256)
         .map(|i| {
             let frequency = 20.0 * 1000.0_f32.powf(i as f32 / 256.0);
-            let gain = opentrack_audio::channel_equalizer_response_db(eq, frequency, 48000)
-                .clamp(-24.0, 24.0);
+            let gain = opentrack_audio::channel_equalizer_response_db(
+                eq,
+                frequency,
+                state.analyzer.rate(None),
+            )
+            .clamp(-24.0, 24.0);
             node_position(plot, frequency, gain)
         })
         .collect();
@@ -1029,6 +1055,7 @@ fn strip(
     index: usize,
     next: &mut Option<usize>,
     peak: [f32; 2],
+    held_peak: &mut metering::Hold,
     fader: bool,
     state: &mut ChannelSettingsUiState,
 ) -> bool {
@@ -1378,6 +1405,9 @@ fn strip(
         .into_iter()
         .enumerate()
     {
+        if is_bus && i == 2 {
+            continue;
+        }
         let response = mixer::control(
             ui,
             at(r, 9.0, 286.0 + i as f32 * 18.0, 21.0, 15.0),
@@ -1457,8 +1487,14 @@ fn strip(
             r.min + Vec2::new((r.width() - 82.0) / 2.0, 50.0),
             Pos2::new(r.center().x + 41.0, r.bottom() + 27.0),
         );
-        let (edit, response) =
-            mixer::channel_settings_fader(ui, virtual_rect, &mut track.gain, peak, track.id);
+        let (edit, response) = mixer::channel_settings_fader(
+            ui,
+            virtual_rect,
+            &mut track.gain,
+            peak,
+            track.id,
+            held_peak,
+        );
         changed |= edit;
         context(&response, state);
     }
@@ -1514,6 +1550,9 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                 .id_salt("visible-scroll")
                 .show(&mut list_ui, |ui| {
                     for (i, item) in state.preferences.visible_items.iter().enumerate() {
+                        if state.bus_context && !item.available_for_bus() {
+                            continue;
+                        }
                         if ui
                             .selectable_label(state.setup_selected_visible == Some(i), item.label())
                             .clicked()
@@ -1524,6 +1563,7 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                 });
             let hidden = ChannelSettingsViewItem::ALL
                 .into_iter()
+                .filter(|item| !state.bus_context || item.available_for_bus())
                 .filter(|item| !state.preferences.visible_items.contains(item))
                 .collect::<Vec<_>>();
             let mut list_ui = ui.new_child(
@@ -1554,9 +1594,11 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                         }
                     }
                 });
-            let selected = state
-                .setup_selected_visible
-                .filter(|i| *i < state.preferences.visible_items.len());
+            let selected = state.setup_selected_visible.filter(|i| {
+                *i < state.preferences.visible_items.len()
+                    && (!state.bus_context
+                        || state.preferences.visible_items[*i].available_for_bus())
+            });
             if ui
                 .put(
                     at(r, 284.0, 18.0, 80.0, 22.0),
@@ -1585,9 +1627,14 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                 .put(at(r, 284.0, 98.0, 80.0, 22.0), egui::Button::new("Move up"))
                 .clicked()
             {
-                if let Some(i) = selected.filter(|i| *i > 0) {
-                    state.preferences.visible_items.swap(i, i - 1);
-                    state.setup_selected_visible = Some(i - 1);
+                if let Some(i) = selected {
+                    if let Some(previous) = (0..i).rev().find(|j| {
+                        !state.bus_context
+                            || state.preferences.visible_items[*j].available_for_bus()
+                    }) {
+                        state.preferences.visible_items.swap(i, previous);
+                        state.setup_selected_visible = Some(previous);
+                    }
                 }
             }
             if ui
@@ -1597,10 +1644,14 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                 )
                 .clicked()
             {
-                if let Some(i) = selected.filter(|i| i + 1 < state.preferences.visible_items.len())
-                {
-                    state.preferences.visible_items.swap(i, i + 1);
-                    state.setup_selected_visible = Some(i + 1);
+                if let Some(i) = selected {
+                    if let Some(next) = (i + 1..state.preferences.visible_items.len()).find(|j| {
+                        !state.bus_context
+                            || state.preferences.visible_items[*j].available_for_bus()
+                    }) {
+                        state.preferences.visible_items.swap(i, next);
+                        state.setup_selected_visible = Some(next);
+                    }
                 }
             }
             text(
@@ -1751,6 +1802,7 @@ mod bus_tests {
                             ui,
                             &mut project,
                             &meters,
+                            &mut HashMap::new(),
                             &mut compressor,
                             &mut state,
                             &mut target,
@@ -1759,11 +1811,53 @@ mod bus_tests {
                         ));
                     },
                 );
+                assert!(
+                    !out.shapes.iter().any(
+                        |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="Sends")
+                    ),
+                    "device buses must not render a Sends rack"
+                );
+                assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Post Inserts/EQ")), "analyzer stage control is rendered in bus editor");
                 let _ = ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
                 out.textures_delta.clear();
             }
         }
-        assert!(project.tracks.is_empty());
+        assert!(
+            state
+                .preferences
+                .visible_items
+                .contains(&ChannelSettingsViewItem::Sends),
+            "bus filtering must preserve normal track preferences"
+        );
+        project.add_track(TrackKind::Audio);
+        let mut target = None;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(902.0, 430.0))),
+                ..Default::default()
+            },
+            |ui| {
+                show(
+                    ui,
+                    &mut project,
+                    &meters,
+                    &mut HashMap::new(),
+                    &mut compressor,
+                    &mut state,
+                    &mut target,
+                    [0.0; 2],
+                    [0.0; 2],
+                );
+            },
+        );
+        assert!(
+            out.shapes
+                .iter()
+                .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="Sends")),
+            "normal tracks retain Sends"
+        );
+        out.textures_delta.clear();
+        assert_eq!(project.tracks.len(), 1);
         assert!(project.validate().is_ok());
     }
 }

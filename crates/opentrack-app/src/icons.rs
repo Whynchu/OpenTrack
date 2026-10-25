@@ -1,4 +1,4 @@
-//! Original vector glyphs shared by Project and channel/effect controls.
+//! Shared toolbar artwork: Windows tool icons and original channel/control symbols.
 use crate::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
@@ -80,6 +80,9 @@ fn pointer(painter: &egui::Painter, center: Pos2) {
 }
 
 pub(crate) fn paint_toolbar(ui: &egui::Ui, rect: Rect, icon: ToolbarIcon, color: Color32) {
+    if crate::system_tool_icons::paint(ui, rect, icon, color) {
+        return;
+    }
     let painter = ui.painter();
     let p = theme::palette(ui);
     let stroke = Stroke::new(1.25, color);

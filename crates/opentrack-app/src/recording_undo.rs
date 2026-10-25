@@ -1,4 +1,4 @@
-//! Recording-owned media lifecycle. Imported/existing audio is never registered here.
+//! Recoverable file transfers: recording undo and explicit user Shift+Delete.
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -26,13 +26,14 @@ impl RecordingUndo {
         &mut self,
         restored: &opentrack_core::project::Project,
     ) -> Result<(), String> {
-        if self.paths.iter().any(|p| {
-            restored
-                .tracks
-                .iter()
-                .any(|t| t.clips.iter().any(|c| c.source_path == *p))
-        }) {
-            return Err("a recorded file is still referenced by the restored project".into());
+        if self
+            .paths
+            .iter()
+            .any(|p| restored.media_paths().contains(p))
+        {
+            return Err(
+                "an audio file is still referenced by the restored project or Media Pool".into(),
+            );
         }
         if self.cache.is_none() {
             std::fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;

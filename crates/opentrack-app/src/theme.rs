@@ -186,6 +186,7 @@ fn install_windows_font(ctx: &egui::Context) {
                 .entry(egui::FontFamily::Proportional)
                 .or_default()
                 .insert(0, "windows-ui".into());
+            crate::system_tool_icons::install(ctx, &mut fonts);
             ctx.set_fonts(fonts);
         }
     }
@@ -313,3 +314,6 @@ mod tests {
         }
     }
 }
+
+/// Shared transport and scissors preview, separate from recording/error red.
+pub(crate) const PLAYHEAD: Color32 = Color32::from_gray(205);

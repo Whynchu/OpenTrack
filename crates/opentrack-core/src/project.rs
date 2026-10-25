@@ -14,7 +14,9 @@ pub enum TrackKind {
     Midi,
 }
 
-/// Stable identities for the two device bus strips, separate from arrange tracks.
+/// Maximum persisted channel gain, approximately +6 dB.
+pub const MAX_CHANNEL_GAIN: f32 = 2.0;
+/// Stable identities for device buses, separate from arrange tracks.
 pub const INPUT_BUS_ID: u64 = u64::MAX - 1;
 pub const OUTPUT_BUS_ID: u64 = u64::MAX;
 
@@ -102,7 +104,7 @@ pub struct Track {
     /// Polarity switch for the channel input.
     #[serde(default)]
     pub input_phase_inverted: bool,
-    /// Linear gain in the range 0.0 to 1.0.
+    /// Linear channel gain in the range 0.0 to 2.0 (about +6 dB).
     pub gain: f32,
     /// Stereo balance: -1 left, 0 center, 1 right.
     #[serde(default)]
@@ -312,8 +314,37 @@ impl Default for InsertEffectKind {
 }
 
 /// One reference to external audio placed on an audio track.
+/// Source-anchored fades retained when an event is split. Original media stays intact.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceFade {
+    pub offset_seconds: f64,
+    pub duration_seconds: f64,
+    pub fade_in_seconds: f64,
+    pub fade_out_seconds: f64,
+}
+impl SourceFade {
+    pub fn gain_at(&self, source_seconds: f64) -> f32 {
+        let t = source_seconds - self.offset_seconds;
+        if t < 0.0 || t >= self.duration_seconds {
+            return 0.0;
+        }
+        let up = if self.fade_in_seconds > 0.0 {
+            (t / self.fade_in_seconds).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let down = if self.fade_out_seconds > 0.0 {
+            ((self.duration_seconds - t) / self.fade_out_seconds).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        (up * down) as f32
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioClip {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_fades: Vec<SourceFade>,
     pub id: u64,
     pub name: String,
     pub source_path: PathBuf,
@@ -377,6 +408,8 @@ pub struct MidiControllerEvent {
 pub struct Project {
     pub name: String,
     pub tracks: Vec<Track>,
+    #[serde(default)]
+    pub media_pool: BTreeSet<PathBuf>,
     #[serde(default = "BusChannel::input")]
     pub input_channel: BusChannel,
     #[serde(default = "BusChannel::output")]
@@ -477,6 +510,7 @@ impl Default for Project {
         Self {
             name: "Untitled Project".to_owned(),
             tracks: Vec::new(),
+            media_pool: BTreeSet::new(),
             input_channel: BusChannel::input(),
             output_channel: BusChannel::output(),
             selected_track: None,
@@ -689,6 +723,7 @@ impl Project {
         if track_index >= self.tracks.len() {
             return None;
         }
+        self.register_media();
         let selected_track_id = self
             .selected_track
             .and_then(|index| self.tracks.get(index as usize))
@@ -769,6 +804,169 @@ impl Project {
         true
     }
 
+    /// Move several audio events as one validated project mutation.
+    /// The batch is rejected in full if any identity, destination or edited clip is invalid.
+    pub fn move_audio_clips(&mut self, edits: &[(u64, u64, AudioClip)]) -> bool {
+        if edits.is_empty() {
+            return false;
+        }
+        let mut ids = BTreeSet::new();
+        let mut removals = Vec::with_capacity(edits.len());
+        for (source_track_id, target_track_id, edited) in edits {
+            if !ids.insert(edited.id) {
+                return false;
+            }
+            let Some(source) = self
+                .tracks
+                .iter()
+                .position(|track| track.id == *source_track_id)
+            else {
+                return false;
+            };
+            let Some(target) = self
+                .tracks
+                .iter()
+                .position(|track| track.id == *target_track_id)
+            else {
+                return false;
+            };
+            if self.tracks[source].kind != TrackKind::Audio
+                || self.tracks[target].kind != TrackKind::Audio
+                || self.tracks[source].audio_channels != self.tracks[target].audio_channels
+            {
+                return false;
+            }
+            let Some(index) = self.tracks[source]
+                .clips
+                .iter()
+                .position(|clip| clip.id == edited.id && clip.source_path == edited.source_path)
+            else {
+                return false;
+            };
+            removals.push((source, index));
+        }
+
+        let mut candidate = self.clone();
+        removals.sort_unstable_by(|a, b| b.cmp(a));
+        for (track_index, clip_index) in removals {
+            candidate.tracks[track_index].clips.remove(clip_index);
+        }
+        for (_, target_track_id, edited) in edits {
+            let Some(target) = candidate
+                .tracks
+                .iter()
+                .position(|track| track.id == *target_track_id)
+            else {
+                return false;
+            };
+            candidate.tracks[target].clips.push(edited.clone());
+        }
+        if candidate.validate().is_err() {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
+    /// Sample-aligned, non-destructive split; retains source identity, gain and original fades.
+    pub fn split_audio_clip(&mut self, track_id: u64, clip_id: u64, at_beats: f64) -> Option<u64> {
+        if !at_beats.is_finite() || self.next_clip_id == u64::MAX {
+            return None;
+        }
+        let track = self
+            .tracks
+            .iter()
+            .position(|t| t.id == track_id && t.kind == TrackKind::Audio)?;
+        let index = self.tracks[track]
+            .clips
+            .iter()
+            .position(|c| c.id == clip_id)?;
+        let original = &self.tracks[track].clips[index];
+        let cut = original.cut_offset_seconds(at_beats, self.tempo_bpm, self.sample_rate_hz)?;
+        let mut left = original.clone();
+        if left.fade_in_seconds > 0.0 || left.fade_out_seconds > 0.0 {
+            if left.source_fades.len() >= 32 {
+                return None;
+            }
+            left.source_fades.push(SourceFade {
+                offset_seconds: left.source_offset_seconds,
+                duration_seconds: left.duration_seconds,
+                fade_in_seconds: left.fade_in_seconds,
+                fade_out_seconds: left.fade_out_seconds,
+            });
+        }
+        left.fade_in_seconds = 0.0;
+        left.fade_out_seconds = 0.0;
+        let mut right = left.clone();
+        let id = self.next_clip_id;
+        right.id = id;
+        right.source_offset_seconds += cut;
+        right.start_beats += cut * self.tempo_bpm / 60.0;
+        right.duration_seconds -= cut;
+        left.duration_seconds = cut;
+        let mut candidate = self.clone();
+        candidate.next_clip_id += 1;
+        candidate.tracks[track].clips[index] = left;
+        candidate.tracks[track].clips.insert(index + 1, right);
+        if candidate.validate().is_err() {
+            return None;
+        }
+        *self = candidate;
+        Some(id)
+    }
+    /// Linear overlap crossfade. Does not extend events or alter source media.
+    pub fn crossfade_audio_clips(&mut self, first: u64, second: u64) -> bool {
+        if first == second {
+            return false;
+        }
+        let Some(t) = self.tracks.iter().position(|t| {
+            t.kind == TrackKind::Audio
+                && t.clips.iter().any(|c| c.id == first)
+                && t.clips.iter().any(|c| c.id == second)
+        }) else {
+            return false;
+        };
+        let mut indices = [
+            self.tracks[t]
+                .clips
+                .iter()
+                .position(|c| c.id == first)
+                .unwrap(),
+            self.tracks[t]
+                .clips
+                .iter()
+                .position(|c| c.id == second)
+                .unwrap(),
+        ];
+        indices.sort_by(|a, b| {
+            self.tracks[t].clips[*a]
+                .start_beats
+                .total_cmp(&self.tracks[t].clips[*b].start_beats)
+        });
+        let a = &self.tracks[t].clips[indices[0]];
+        let b = &self.tracks[t].clips[indices[1]];
+        let start_delta = (b.start_beats - a.start_beats) * 60.0 / self.tempo_bpm;
+        let overlap = a.duration_seconds - start_delta;
+        if start_delta <= 0.0
+            || overlap < 1.0 / self.sample_rate_hz.max(1) as f64
+            || overlap > b.duration_seconds
+        {
+            return false;
+        }
+        let mut candidate = self.clone();
+        let a = &mut candidate.tracks[t].clips[indices[0]];
+        a.fade_out_seconds = overlap;
+        a.fade_in_seconds = a.fade_in_seconds.min(a.duration_seconds - overlap);
+        let b = &mut candidate.tracks[t].clips[indices[1]];
+        b.fade_in_seconds = overlap;
+        b.fade_out_seconds = b.fade_out_seconds.min(b.duration_seconds - overlap);
+        if candidate == *self || candidate.validate().is_err() {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
     /// Adds an external audio file to an audio track at the given beat.
     pub fn add_audio_clip(
         &mut self,
@@ -798,7 +996,9 @@ impl Project {
             .map(|stem| stem.to_string_lossy().into_owned())
             .filter(|stem| !stem.is_empty())
             .unwrap_or_else(|| "Audio Clip".to_owned());
+        self.media_pool.insert(source_path.clone());
         track.clips.push(AudioClip {
+            source_fades: Vec::new(),
             id,
             name,
             source_path,
@@ -991,6 +1191,9 @@ impl Project {
 
     /// Validates project data loaded from a file before replacing live state.
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.media_pool.iter().any(|p| p.as_os_str().is_empty()) {
+            return Err("media pool contains an empty source path");
+        }
         if self.name.trim().is_empty() {
             return Err("project name is empty");
         }
@@ -1098,8 +1301,8 @@ impl Project {
             {
                 return Err("Track delay must be between -2000 and 2000 ms");
             }
-            if !track.gain.is_finite() || !(0.0..=1.0).contains(&track.gain) {
-                return Err("track gain must be between 0.0 and 1.0");
+            if !track.gain.is_finite() || !(0.0..=MAX_CHANNEL_GAIN).contains(&track.gain) {
+                return Err("channel gain must be between 0.0 and 2.0");
             }
             for (band_index, band) in track.equalizer.bands.iter().enumerate() {
                 if !band.frequency_hz.is_finite()
@@ -1259,6 +1462,21 @@ impl Project {
                 }
                 if !clip.duration_seconds.is_finite() || clip.duration_seconds <= 0.0 {
                     return Err("audio clip duration must be finite and positive");
+                }
+                if clip.source_fades.len() > 32
+                    || clip.source_fades.iter().any(|f| {
+                        !f.offset_seconds.is_finite()
+                            || f.offset_seconds < 0.0
+                            || !f.duration_seconds.is_finite()
+                            || f.duration_seconds <= 0.0
+                            || !f.fade_in_seconds.is_finite()
+                            || f.fade_in_seconds < 0.0
+                            || !f.fade_out_seconds.is_finite()
+                            || f.fade_out_seconds < 0.0
+                            || f.fade_in_seconds + f.fade_out_seconds > f.duration_seconds + 1e-8
+                    })
+                {
+                    return Err("source fade lineage is invalid");
                 }
                 if !clip.source_offset_seconds.is_finite()
                     || clip.source_offset_seconds < 0.0
@@ -1675,5 +1893,180 @@ mod audio_event_tests {
         c.fade_out_seconds = 10.0;
         assert!(!p.edit_audio_clip(ids[1], ids[1], c));
         assert_eq!(p, before);
+    }
+
+    #[test]
+    fn batch_event_move_is_atomic_and_preserves_relative_positions_and_media() {
+        let mut p = Project::default();
+        p.add_track(TrackKind::Audio);
+        p.add_track(TrackKind::Audio);
+        p.add_track_with_audio_channels(TrackKind::Audio, 1);
+        let first = p
+            .add_audio_clip(0, PathBuf::from("one.wav"), 1.0, 2.0)
+            .unwrap();
+        let second = p
+            .add_audio_clip(2, PathBuf::from("two.wav"), 5.0, 3.0)
+            .unwrap();
+        p.tracks[0].clips[0].source_offset_seconds = 0.25;
+        p.tracks[0].clips[0].fade_in_seconds = 0.1;
+        let before = p.clone();
+        let mut moved_first = p.tracks[0].clips[0].clone();
+        moved_first.start_beats += 2.0;
+        let mut moved_second = p.tracks[2].clips[0].clone();
+        moved_second.start_beats += 2.0;
+        assert!(p.move_audio_clips(&[
+            (p.tracks[0].id, p.tracks[0].id, moved_first.clone()),
+            (p.tracks[2].id, p.tracks[2].id, moved_second.clone()),
+        ]));
+        assert_eq!(p.tracks[0].clips[0], moved_first);
+        assert_eq!(p.tracks[2].clips[0], moved_second);
+        assert_eq!(
+            p.tracks[0].clips[0].start_beats - p.tracks[2].clips[0].start_beats,
+            -4.0
+        );
+        assert_eq!(p.media_pool, before.media_pool);
+
+        let committed = p.clone();
+        let mut invalid = p.tracks[2].clips[0].clone();
+        invalid.start_beats = f64::NAN;
+        assert!(!p.move_audio_clips(&[
+            (p.tracks[0].id, p.tracks[0].id, p.tracks[0].clips[0].clone()),
+            (p.tracks[2].id, p.tracks[2].id, invalid),
+        ]));
+        assert_eq!(p, committed);
+
+        let mut incompatible = moved_first;
+        incompatible.start_beats += 1.0;
+        assert!(!p.move_audio_clips(&[
+            (p.tracks[0].id, p.tracks[2].id, incompatible),
+            (p.tracks[2].id, p.tracks[2].id, p.tracks[2].clips[0].clone()),
+        ]));
+        assert_eq!(p, committed);
+        assert_ne!(first, second);
+    }
+}
+
+#[cfg(test)]
+mod channel_headroom_tests {
+    use super::*;
+    #[test]
+    fn track_and_bus_positive_gain_persists_and_excess_is_rejected() {
+        let mut p = Project::default();
+        p.add_track(TrackKind::Audio);
+        p.tracks[0].gain = 2.0;
+        p.input_channel.strip.gain = 2.0;
+        p.output_channel.strip.gain = 2.0;
+        assert!(p.validate().is_ok());
+        let restored: Project = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        assert_eq!(restored, p);
+        p.tracks[0].gain = 2.01;
+        assert!(p.validate().is_err());
+        p.tracks[0].gain = 0.001;
+        assert!(p.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod sample_edit_tests {
+    use super::*;
+    #[test]
+    fn cuts_keep_source_offsets_and_original_fades_even_inside_fades_and_repeated_cuts() {
+        let mut p = Project::default();
+        p.tempo_bpm = 120.0;
+        p.add_track(TrackKind::Audio);
+        let id = p.add_audio_clip(0, "source.wav".into(), 2.0, 4.0).unwrap();
+        let track = p.tracks[0].id;
+        p.tracks[0].clips[0].source_offset_seconds = 0.5;
+        p.tracks[0].clips[0].fade_in_seconds = 2.0;
+        p.tracks[0].clips[0].fade_out_seconds = 1.0;
+        let saved = p.clone();
+        let right = p.split_audio_clip(track, id, 3.0).unwrap();
+        assert_eq!(p.tracks[0].clips[0].duration_seconds, 0.5);
+        assert_eq!(p.tracks[0].clips[1].source_offset_seconds, 1.0);
+        assert_ne!(right, id);
+        assert!(p.split_audio_clip(track, right, 5.0).is_some());
+        for i in 0..4000 {
+            let t = i as f64 / 1000.0;
+            let beat = 2.0 + t * 2.0;
+            let c = p.tracks[0]
+                .clips
+                .iter()
+                .find(|c| beat >= c.start_beats && beat < c.start_beats + c.duration_seconds * 2.0)
+                .unwrap();
+            let source_time = c.source_offset_seconds + (beat - c.start_beats) / 2.0;
+            let actual = c
+                .source_fades
+                .iter()
+                .map(|f| f.gain_at(source_time))
+                .product::<f32>();
+            let expected = SourceFade {
+                offset_seconds: 0.5,
+                duration_seconds: 4.0,
+                fade_in_seconds: 2.0,
+                fade_out_seconds: 1.0,
+            }
+            .gain_at(t + 0.5);
+            assert!((actual - expected).abs() < 0.00001);
+        }
+        let before = p.clone();
+        assert_eq!(p.split_audio_clip(track, id, 2.0), None);
+        assert_eq!(p, before);
+        let encoded = serde_json::to_string(&p).unwrap();
+        let loaded: Project = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(loaded, p);
+        assert!(loaded.validate().is_ok());
+        assert_eq!(saved.tracks[0].clips.len(), 1);
+    }
+    #[test]
+    fn crossfade_uses_existing_overlap_and_rejects_disjoint_or_cross_track_events() {
+        let mut p = Project::default();
+        p.tempo_bpm = 120.0;
+        p.add_track(TrackKind::Audio);
+        p.add_track(TrackKind::Audio);
+        let a = p.add_audio_clip(0, "a.wav".into(), 0.0, 2.0).unwrap();
+        let b = p.add_audio_clip(0, "b.wav".into(), 3.0, 2.0).unwrap();
+        let other = p.add_audio_clip(1, "b.wav".into(), 3.0, 2.0).unwrap();
+        assert!(!p.crossfade_audio_clips(a, other));
+        assert!(p.crossfade_audio_clips(b, a));
+        assert_eq!(p.tracks[0].clips[0].fade_out_seconds, 0.5);
+        assert_eq!(p.tracks[0].clips[1].fade_in_seconds, 0.5);
+        assert!(!p.crossfade_audio_clips(a, b));
+        p.tracks[0].clips[1].start_beats = 6.0;
+        let before = p.clone();
+        assert!(!p.crossfade_audio_clips(a, b));
+        assert_eq!(p, before);
+    }
+}
+
+impl AudioClip {
+    /// Event-relative sample position used by preview and cut commit.
+    pub fn cut_offset_seconds(&self, beat: f64, tempo: f64, rate: u32) -> Option<f64> {
+        if !beat.is_finite() || !tempo.is_finite() || tempo <= 0.0 {
+            return None;
+        }
+        let rate = rate.max(1) as f64;
+        let seconds = (((beat - self.start_beats) * 60.0 / tempo) * rate).round() / rate;
+        if seconds < 1.0 / rate || self.duration_seconds - seconds < 1.0 / rate {
+            None
+        } else {
+            Some(seconds)
+        }
+    }
+}
+
+impl Project {
+    pub fn media_paths(&self) -> BTreeSet<PathBuf> {
+        self.media_pool
+            .iter()
+            .cloned()
+            .chain(
+                self.tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter().map(|c| c.source_path.clone())),
+            )
+            .collect()
+    }
+    pub fn register_media(&mut self) {
+        self.media_pool = self.media_paths();
     }
 }
