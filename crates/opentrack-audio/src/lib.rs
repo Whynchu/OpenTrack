@@ -187,6 +187,10 @@ fn make_waveform_peaks(samples: &[f32], channels: u16) -> Vec<f32> {
 pub struct PlaybackClip {
     pub source: PlaybackSource,
     pub start_beats: f64,
+    pub source_offset_seconds: f64,
+    pub duration_seconds: f64,
+    pub fade_in_seconds: f64,
+    pub fade_out_seconds: f64,
     pub gain: f32,
     pub muted: bool,
     pub solo: bool,
@@ -1861,6 +1865,24 @@ fn mix_frame(
     (left, right)
 }
 
+/// Linear event fades; the source media is never rewritten.
+pub fn event_envelope(time: f64, duration: f64, fade_in: f64, fade_out: f64) -> f32 {
+    if time < 0.0 || time >= duration {
+        return 0.0;
+    }
+    let up = if fade_in > 0.0 {
+        (time / fade_in).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let down = if fade_out > 0.0 {
+        ((duration - time) / fade_out).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    (up * down) as f32
+}
+
 fn mix_track_frame(
     plan: &PlaybackPlan,
     track: &PlaybackTrackRuntime,
@@ -1872,11 +1894,12 @@ fn mix_track_frame(
         if clip.muted {
             continue;
         }
-        let source_seconds = (timeline_beats - clip.start_beats) * 60.0 / plan.tempo_bpm;
-        if source_seconds < 0.0 {
+        let event_seconds = (timeline_beats - clip.start_beats) * 60.0 / plan.tempo_bpm;
+        if event_seconds < 0.0 || event_seconds >= clip.duration_seconds {
             continue;
         }
-        let source_frame = source_seconds * f64::from(clip.source.sample_rate());
+        let source_frame =
+            (event_seconds + clip.source_offset_seconds) * f64::from(clip.source.sample_rate());
         let source_frames = clip.source.frame_count();
         if source_frame >= source_frames as f64 {
             continue;
@@ -1890,8 +1913,14 @@ fn mix_track_frame(
         let Some((second_left, second_right)) = clip.source.sample_frame(second as u64) else {
             continue;
         };
-        left += (first_left * (1.0 - fraction) + second_left * fraction) * clip.gain;
-        right += (first_right * (1.0 - fraction) + second_right * fraction) * clip.gain;
+        let envelope = event_envelope(
+            event_seconds,
+            clip.duration_seconds,
+            clip.fade_in_seconds,
+            clip.fade_out_seconds,
+        ) * clip.gain;
+        left += (first_left * (1.0 - fraction) + second_left * fraction) * envelope;
+        right += (first_right * (1.0 - fraction) + second_right * fraction) * envelope;
     }
     (left, right)
 }
@@ -2455,6 +2484,63 @@ enum InsertProcessor {
 mod processing_tests {
     use super::*;
 
+    #[test]
+    fn audio_event_trim_gain_and_fades_change_rendered_samples_and_stop_at_event_end() {
+        let source = Arc::new(DecodedWav {
+            samples: vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7].into(),
+            waveform_peaks: Arc::new(vec![]),
+            waveform: Arc::new(Waveform::default()),
+            channels: 1,
+            sample_rate: 2,
+        });
+        let plan = PlaybackPlan::new(
+            120.0,
+            vec![PlaybackTrackSettings {
+                clips: vec![PlaybackClip {
+                    source: PlaybackSource::Decoded(source),
+                    start_beats: 1.0,
+                    source_offset_seconds: 1.0,
+                    duration_seconds: 2.0,
+                    fade_in_seconds: 0.5,
+                    fade_out_seconds: 0.5,
+                    gain: 2.0,
+                    muted: false,
+                    solo: false,
+                }],
+                midi_notes: vec![],
+                midi_controllers: vec![],
+                instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+                meter_peak: Arc::new(StereoMeter::default()),
+                gain: 1.0,
+                pan: 0.0,
+                track_delay_ms: 0.0,
+                muted: false,
+                solo: false,
+                solo_defeat: false,
+                equalizer: ChannelEqualizer::default(),
+                inserts: vec![],
+                inserts_bypassed: false,
+                monitor_input: None,
+                output_route: PlaybackOutputRoute::Stereo,
+            }],
+            1,
+            48000,
+            None,
+        );
+        for (seconds, expected) in [
+            (-0.25, 0.0),
+            (0.0, 0.0),
+            (0.25, 0.25),
+            (1.0, 0.8),
+            (1.75, 0.55),
+            (2.0, 0.0),
+            (3.0, 0.0),
+        ] {
+            let (l, r) = mix_track_frame(&plan, &plan.tracks[0], 1.0 + seconds * 2.0);
+            assert!((l - expected).abs() < 0.000001, "at {seconds}: {l}");
+            assert_eq!(l, r);
+        }
+    }
     #[test]
     fn cycle_boundaries_apply_inside_one_audio_block() {
         for (mode, expected) in [(CycleMode::Loop, 2), (CycleMode::Skip, 8)] {

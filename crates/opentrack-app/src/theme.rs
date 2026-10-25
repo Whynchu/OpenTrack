@@ -191,17 +191,23 @@ fn install_windows_font(ctx: &egui::Context) {
     }
 }
 
+pub fn menu_bar_fill() -> Color32 {
+    egui::Visuals::dark().panel_fill
+}
 pub fn menu_bar_style(style: &mut egui::Style) {
-    let background = toolbar_button_fill(&style.visuals);
+    let background = menu_bar_fill();
     style.visuals.panel_fill = background;
-    style.visuals.widgets.inactive.bg_fill = background;
-    style.visuals.widgets.inactive.weak_bg_fill = background;
-    set_hover_style(style);
-    if style.visuals.dark_mode {
-        let foreground = Color32::from_gray(24);
-        style.visuals.widgets.noninteractive.fg_stroke.color = foreground;
-        style.visuals.widgets.inactive.fg_stroke.color = foreground;
-        style.visuals.widgets.hovered.fg_stroke.color = foreground;
+    style.visuals.override_text_color = Some(Color32::WHITE);
+    for widget in [
+        &mut style.visuals.widgets.noninteractive,
+        &mut style.visuals.widgets.inactive,
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+        &mut style.visuals.widgets.open,
+    ] {
+        widget.bg_fill = background;
+        widget.weak_bg_fill = background;
+        widget.fg_stroke.color = Color32::WHITE;
     }
     set_hover_style(style);
     style.spacing.item_spacing = Vec2::ZERO;
@@ -211,6 +217,14 @@ pub fn menu_bar_style(style: &mut egui::Style) {
 }
 
 pub fn menu_popup_style(style: &mut egui::Style) {
+    style.visuals.override_text_color = None;
+    let base = if style.visuals.dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    style.visuals.widgets = base.widgets;
+
     set_hover_style(style);
     style.spacing.item_spacing = Vec2::ZERO;
     style.spacing.button_padding = Vec2::new(spacing::MENU_POPUP_ITEM_PADDING_X, 1.0);
@@ -247,14 +261,7 @@ mod tests {
             };
             menu_bar_style(&mut bar_style);
             assert_eq!(bar_style.visuals.dark_mode, visuals.dark_mode);
-            assert_eq!(
-                bar_style.visuals.text_color(),
-                if visuals.dark_mode {
-                    Color32::from_gray(24)
-                } else {
-                    palette.text
-                }
-            );
+            assert_eq!(bar_style.visuals.text_color(), Color32::WHITE);
 
             // Popups use the normal surface and keep the theme's regular ink;
             // the lighter menu-bar surface has its own dark ink in dark mode.

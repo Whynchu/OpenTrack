@@ -1,33 +1,25 @@
 # Current assignment
 
-Updated: 2026-10-24. Actual implementer: GPT-6.1 Sol.
+Updated: 2026-10-25. Implementer: Codex current session; no model switch performed.
 
 ## Active stage
 
-T017 full-height waveforms and Discard recording cleanup, implemented and awaiting user runtime review. Current accumulated source publication was explicitly authorized. T016 waveform appearance received positive user feedback with a full-height correction. The user requested recording undo remove the actual take files, then requested waveforms during capture and higher detail. The user closed OpenTrack before this build; a final process check found OpenTrack running again after the build. The agent did not launch or interact with it.
+T019 cleanup and EXAMPLE open compatibility correction is complete and authorized for publication, carrying the preceding T018 event-editing slice. The user's actual C:/Users/Samue/Documents/EXAMPLE/EXAMPLE.opr is version 20; the v21 reader accidentally omitted versions 19/20 and hid its failure in the empty shell's status. The interval is restored; failed opens now display an error window. A read-only test loads all three tracks from the exact EXAMPLE and confirms unchanged bytes. Live desktop open still needs user review.
 
-Undo now removes newly recorded WAV filenames together with their events; redo restores exact files from Metadata/Undo. Only successfully placed recorder-created takes are owned by the history entry. Imported/existing media is preserved. Multi-take operations preflight, do not replace another file, and retain the history step/recovery on failure. Saved-project Discard restores recordings referenced by the saved document, including after a redo branch was discarded. Automatic post-crash recovery is not implemented; path manifests remain available. Redo/saved-document recovery temporarily retains disk data.
+T018 has full lane-color bounds, black selected event name bands, compatible mono/stereo Audio event moves using shared Grid/Quantize/Snap, ghost original/opaque candidate, white trim/fade/gain handles, audible non-destructive source bounds/fades/gain, and OPR v21 persistence. The menu strip uses the dark panel fill and white text. Release GUI-subsystem/framebuffer/native-erase changes address startup flashing in source; live startup acceptance remains pending.
 
-Waveforms are signed per-channel envelopes in 64-frame blocks with connected filled drawing at pixel density, replacing the 256-peak sparse comb. Decoded files use individual samples at close zoom; streamed-file sample-level zoom remains a gap. The recording writer publishes growing waveform snapshots about every 33 ms, outside the audio callback, and Project draws a route-correct growing event from captured frames. Desktop cadence, visual/audio acceptance and long-take resource qualification remain pending. See [T016](tasks/T016-recording-undo-and-waveforms.md).
+## Build / cleanup
 
-T015 bus controls and compact Device Setup remain in the build and await hardware/visual review. Sends DSP, automation, Listen/control-room processing, independent bus Solo, extra buses and arbitrary physical maps remain incomplete. Third-party VST hosting remains separate.
+Current x64 local-asio EXE SHA-256: 5AFF02C355A5260D2B575D54E961AB9E02BD269A49D6C9A212F645FCD4021A15. Artifact: builds/x64/OpenTrack.exe. 119 workspace tests pass (67 app, 40 audio, 12 core), default WASAPI workspace check passes, release build succeeded. All tests/builds completed before cache removal. The exact EXAMPLE was loaded read-only, three tracks; SHA-256 54E4BDCF45BBA5D0D21DE5EB6008619AC9FB8673303FE89F0B5F8DD4C03CEDF4; no save/edit was performed.
 
-Waveform drawing now uses the full event height with a small border margin, retaining true signal amplitude. Discard removes recorder-created WAVs since the last save, even after history trimming, and preserves imported/saved media. New take filenames avoid undo/recovery reservations. See [T017](tasks/T017-waveform-height-and-discard.md).
+Deleted 8,757,268,963 bytes (8.156 GiB) of disposable build/test/recovery artifacts. .build-cache is absent. Preserved its 1.12 MB of review/export evidence in G:/dev/Opentrack/_analysis-tools/reports/opentrack-cache-archive/2026-10-25-001410, with a cleanup manifest. The review EXE was hash-verified unchanged by cleanup; source/vendor dependencies, saved projects/audio, x86 deliverables and reference captures remain intact. Do not rebuild merely to recheck this cleanup; a new build recreates the cache.
 
-## Build and evidence
+The user authorized Git push while reviewing. This publication includes T018/T019 source and notes, not executables, audio takes or private project documents. See [T019](tasks/T019-cleanup-and-project-open.md) and [T018](tasks/T018-audio-event-editing.md). Prior published checkpoint: a4a7773.
 
-Current x64 local-asio release SHA-256: 88482EEE7B248AF7F32A36D7CBD69CF7921484B101976324A0900BE23BD3666F. Artifact: `builds/x64/OpenTrack.exe`. 108 workspace tests pass (58 app, 39 audio, 11 core); standard WASAPI cargo check passes. All seven targeted recording-history tests pass, including unsaved Discard cleanup and reserved take names. Offline tests cover file undo/redo, import preservation, branch cleanup, saved/discard recovery, collision handling, live writer publication, signed stereo detail, sample-level decoded zoom, and clipped dense mesh drawing. These do not establish desktop/hardware acceptance.
+## Review boundary
 
-No OpenTrack instance was launched. EXAMPLE.opr was not opened or modified. Keep one instance, close through the UI before building, and leave closed after review. The build script refuses to replace a running executable.
+Open the exact EXAMPLE in the corrected build. Check white flash/menu, selected/unselected event name bands and colored bounds, drag to matching tracks with grid settings/Snap off, ghost preview, incompatible target rejection, both trims/fades, white gain handle/unity snap, audible edits, Escape/Undo/Redo and disposable save/reopen. Keep EXAMPLE intact. No desktop screenshot, live audio/gesture or startup acceptance is claimed. Stop here for user feedback.
 
-Previous crash-fix release was 5E3A608D; its navigation layout panic was reproduced and corrected. ASIO support remains optional (`build.ps1 -Architecture x64 -LocalAsio`); WASAPI remains standard. The read-only Mackie driver query remains valid hardware inventory, not a verified audio stream: first Analog 1/2 pair, preferred 128 frames, supported 44.1..192 kHz. Streaming, control panel, recovery and coexistence still need user/hardware qualification.
+Remaining gaps: exact reference curves/ranges, live edge-scroll hold and long-gesture performance; multi-event/copy/stretch/crossfade/editor dialogs; additional bus/physical maps, automation/sends/control-room and third-party hosting. Accepted Mixer layout and existing ruler/recording lifecycle are protected. One instance only; close through UI before future builds. Agent did not launch OpenTrack.
 
-Audio metrics use **audio-workflow-v6**: retain v5's 25 requirements/weights and add recording cleanup on Discard. Baseline remains incomplete and implementation percentage suppressed. Runtime/reference acceptance is pending or stale; no whole-DAW score is inferred. Earlier transport and project-folder metrics stay separate.
-
-## Next review
-
-Record a short take on a disposable project and inspect waveform growth before Stop. Check mono/stereo separation, full-height amplitude drawing and zoomed detail. Close and Discard unsaved takes: their files should be removed; saved recordings/imports should remain. Stop, Undo (events and original WAV names disappear), Redo (both return); confirm unrelated imports remain. Check saved/reopened audio and prior T015 bus controls. Do not overwrite EXAMPLE for destructive recording checks. Stop for user feedback before expanding to another milestone.
-
-Preserve accepted Mixer geometry, working Project/ruler/transport, startup without a project, managed project folders and unchanged-project close behavior. Accepted Mixer baseline: `ac758cc`; published development checkpoint: `cbd9835`. Existing uncommitted work is preserved.
-
-Publication: current accumulated development checkpoint is authorized for origin/main. T017 release built; 108 tests pass. The app was not launched by the agent. No saved projects, audio takes or build artifacts are staged.
+Metrics: event-edit-v1, managed-project-folders-v3, audio-workflow-v6 and transport-v4 remain separate. Parser tests do not establish full project-folder/desktop acceptance; no whole-DAW percentage is inferred.

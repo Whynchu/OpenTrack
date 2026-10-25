@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 20;
+const FORMAT_VERSION: u32 = 21;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -70,6 +70,8 @@ pub(crate) struct ProjectFile {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ArrangeViewState {
+    #[serde(skip)]
+    pub(crate) audio_events: crate::app::audio_events::State,
     #[serde(default = "default_project_dock_fraction")]
     pub(crate) project_dock_fraction: f32,
     #[serde(default = "default_timeline_zoom")]
@@ -123,6 +125,7 @@ pub(crate) struct ArrangeViewState {
 impl Default for ArrangeViewState {
     fn default() -> Self {
         Self {
+            audio_events: Default::default(),
             project_dock_fraction: default_project_dock_fraction(),
             timeline_zoom: default_timeline_zoom(),
             timeline_scroll_x: 0.0,
@@ -314,27 +317,9 @@ impl ProjectFile {
                 legacy.version = FORMAT_VERSION;
                 legacy
             }
-            14 => {
-                let mut legacy: Self = serde_json::from_slice(&bytes)?;
-                legacy.version = FORMAT_VERSION;
-                legacy
-            }
-            15 => {
-                let mut legacy: Self = serde_json::from_slice(&bytes)?;
-                legacy.version = FORMAT_VERSION;
-                legacy
-            }
-            16 => {
-                let mut legacy: Self = serde_json::from_slice(&bytes)?;
-                legacy.version = FORMAT_VERSION;
-                legacy
-            }
-            17 => {
-                let mut legacy: Self = serde_json::from_slice(&bytes)?;
-                legacy.version = FORMAT_VERSION;
-                legacy
-            }
-            18 => {
+            // Versions 14 onward add serde-defaulted fields. Keep the full
+            // interval readable when the current version advances.
+            version if (14..FORMAT_VERSION).contains(&version) => {
                 let mut legacy: Self = serde_json::from_slice(&bytes)?;
                 legacy.version = FORMAT_VERSION;
                 legacy
@@ -885,6 +870,75 @@ mod tests {
             ARRANGE_VIEW_STATE_KEY.to_owned(),
             serde_json::to_string(view).expect("view state should encode"),
         );
+    }
+
+    #[test]
+    fn every_default_compatible_project_version_through_current_opens_without_rewriting_source() {
+        for version in 14..=FORMAT_VERSION {
+            let mut project = Project::default();
+            project.add_track(TrackKind::Audio);
+            project
+                .add_audio_clip(0, PathBuf::from("example.wav"), 0.0, 1.0)
+                .unwrap();
+            let dock = finite_test_dock_state();
+            let workspace = initial_workspace_state(&dock).unwrap();
+            let mut value =
+                serde_json::to_value(ProjectFile::new(project, workspace, dock, true, 0, false))
+                    .unwrap();
+            value["version"] = version.into();
+            if version < 20 {
+                value["project"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("input_channel");
+                value["project"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("output_channel");
+            }
+            if version < 21 {
+                for field in [
+                    "source_offset_seconds",
+                    "fade_in_seconds",
+                    "fade_out_seconds",
+                ] {
+                    value["project"]["tracks"][0]["clips"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(field);
+                }
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "opentrack-open-version-{version}-{}-{}.opr",
+                std::process::id(),
+                TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::write(&path, &bytes).unwrap();
+            let result = ProjectFile::read(&path);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            fs::remove_file(&path).unwrap();
+            let loaded = result.unwrap_or_else(|e| panic!("version {version} failed: {e}"));
+            assert_eq!(loaded.version, FORMAT_VERSION);
+            assert_eq!(loaded.project.tracks.len(), 1);
+            assert_eq!(loaded.project.tracks[0].clips[0].source_offset_seconds, 0.0);
+        }
+        // Optional real-project compatibility probe: strictly read-only.
+        if let Some(path) = std::env::var_os("OPENTRACK_READ_ONLY_PROJECT") {
+            let path = PathBuf::from(path);
+            let before = fs::read(&path).unwrap();
+            let loaded = ProjectFile::read(&path).expect("supplied project should open");
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                before,
+                "compatibility probe must not rewrite the saved project"
+            );
+            println!(
+                "Read-only project load passed: {} ({} tracks)",
+                path.display(),
+                loaded.project.tracks.len()
+            );
+        }
     }
 
     #[test]

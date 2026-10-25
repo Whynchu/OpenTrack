@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "version": "event-edit-v1",
+    "description": "T018 single audio-event bounds, selection, movement, trimming, fades and gain plus requested menu/startup presentation. No whole-DAW score.",
+    "baseline_complete": false,
+    "change_reason": "New bounded inventory from five user-supplied event captures and explicit behavior/style overrides; exact reference curve/ranges and live acceptance remain incomplete."
+  },
+  "evidence": {
+    "t018-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T018-audio-event-editing.md",
+      "note": "User requests full-height colored event bounds, compatible-track drag with transport snap, ghost/opaque preview, trim/fade/gain controls, white handles, dark menu/white text and startup flash correction."
+    },
+    "t018-reference": {
+      "kind": "reference",
+      "location": "docs/workflow/tasks/T018-audio-event-editing.md#reference-coverage",
+      "note": "All five cropped user captures directly viewed. Full display resolution, scaling and window positions unknown. Exact gain ranges/fade laws not inferred."
+    },
+    "t018-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T018-audio-event-editing.md",
+      "identity": "x64 local-asio EXE SHA-256 579AB98888B4A151B5EDA62E82F2615E05B90A41B94003C34EEAAB4B108B6262; crates/opentrack-app/src/audio_events.rs: 48B81735834FC7B6B6DEAF5EEC3F48E804B49A45BD57FE82F386911E33499C48; crates/opentrack-app/src/app.rs: F7413FEE4F4D9B3768D47AB5ECC60CB5DA8C0DF32F8766AA7BE34681A8DC11E8; crates/opentrack-app/src/main.rs: 0B80617CE97181D46666A34C5942982B319AFAF4990FEA7268A5CAB77F4F5942; crates/opentrack-app/src/native_keys.rs: 583B1340D2EAAB187C72F8ADEC7C89E3D5659D291C5D47D088F56606D1F9A0A5; crates/opentrack-app/src/theme.rs: 3CA86A8836531EB7E1D7642C6BC20F0BC0EE070F160318CC8E37475374502571; crates/opentrack-app/src/project_file.rs: 506A9F197750F2FF2C3320194871D038F0276F42DC5D13C95C192DE0D841B1C8; crates/opentrack-core/src/project.rs: 87A5B7078439DD8605D51BC3D0A56AC71BEF4BA536F071DEFF5C3D066E344784; crates/opentrack-audio/src/lib.rs: FE3F463F4A26ECFD8C999EF06DC7D057C4E57E1E34D6CB7F569F396FBE71D97A",
+      "note": "117 tests pass; default WASAPI check and x64 local-asio release pass. No live GUI launch, screenshot, hardware playback or startup-flash acceptance."
+    }
+  },
+  "requirements": [
+    {
+      "id": "event-bounds-selection",
+      "weight": 2,
+      "outcome": "Colored event fills lane bounds; lower name band turns black on selection.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "event-drag-snap",
+      "weight": 3,
+      "outcome": "Left drag moves events to matching Audio widths with transport snap settings and ghost/opaque preview.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "event-trim",
+      "weight": 3,
+      "outcome": "White lower edge handles trim non-destructively and update audible source bounds.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "event-fades",
+      "weight": 3,
+      "outcome": "White fade handles at both ends produce visible and audible fades.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "event-gain",
+      "weight": 3,
+      "outcome": "White gain handle changes event amplitude with dB feedback and easy unity snap.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "event-persistence-history",
+      "weight": 3,
+      "outcome": "Event changes save/reopen and undo/redo without modifying source media.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "menu-strip-style",
+      "weight": 1,
+      "outcome": "Dark menu strip matches current dark panel background with white text.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "startup-flash",
+      "weight": 2,
+      "outcome": "Release startup avoids white/console flashing before the app frame.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t018-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t018-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    }
+  ],
+  "gates": {
+    "event-ui": {
+      "description": "User demonstrates single-event editing/selection/preview on current release.",
+      "status": "pending",
+      "evidence": []
+    },
+    "event-audio": {
+      "description": "User verifies audible trims/fades/gain and persistence on disposable audio.",
+      "status": "pending",
+      "evidence": []
+    },
+    "startup-visual": {
+      "description": "User observes startup without white flash and requested menu appearance.",
+      "status": "pending",
+      "evidence": []
+    }
+  },
+  "workflows": [
+    {
+      "id": "single-event-editing",
+      "weight": 3,
+      "requirements": [
+        "event-bounds-selection",
+        "event-drag-snap",
+        "event-trim",
+        "event-fades",
+        "event-gain",
+        "event-persistence-history"
+      ],
+      "gates": [
+        "event-ui",
+        "event-audio"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "startup-and-menu",
+      "weight": 2,
+      "requirements": [
+        "menu-strip-style",
+        "startup-flash"
+      ],
+      "gates": [
+        "startup-visual"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 #[path = "audio_configuration.rs"]
 mod audio_configuration;
+#[path = "audio_events.rs"]
+pub(crate) mod audio_events;
 #[path = "channel_settings.rs"]
 mod channel_settings;
 #[path = "mixer.rs"]
@@ -697,6 +699,7 @@ pub struct OpenTrackApp {
     about_open: bool,
     confirmed_close_request: bool,
     status_message: String,
+    project_open_error: Option<String>,
 }
 
 struct RecordingSession {
@@ -1816,6 +1819,7 @@ impl OpenTrackApp {
             about_open: false,
             confirmed_close_request: false,
             status_message,
+            project_open_error: None,
         };
         if app
             .selected_output_device
@@ -2328,6 +2332,10 @@ impl OpenTrackApp {
                                 clip.source_path.clone(),
                                 clip.start_beats,
                                 clip.gain,
+                                clip.source_offset_seconds,
+                                clip.duration_seconds,
+                                clip.fade_in_seconds,
+                                clip.fade_out_seconds,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -2400,7 +2408,17 @@ impl OpenTrackApp {
         ) in track_descriptors
         {
             let mut playback_clips = Vec::with_capacity(clips.len());
-            for (clip_id, source_path, start_beats, clip_gain) in clips {
+            for (
+                clip_id,
+                source_path,
+                start_beats,
+                clip_gain,
+                source_offset_seconds,
+                duration_seconds,
+                fade_in_seconds,
+                fade_out_seconds,
+            ) in clips
+            {
                 active_audio_paths.insert(source_path.clone());
                 let source = if let Some(source) = self.data.audio_sources.get(&source_path) {
                     Some(source.clone())
@@ -2455,6 +2473,10 @@ impl OpenTrackApp {
                         source: playback_source,
                         start_beats,
                         gain: clip_gain,
+                        source_offset_seconds,
+                        duration_seconds,
+                        fade_in_seconds,
+                        fade_out_seconds,
                         muted: false,
                         solo: false,
                     });
@@ -2780,7 +2802,31 @@ impl OpenTrackApp {
         }
     }
 
+    fn show_project_open_error(&mut self, ctx: &egui::Context) {
+        let Some(message) = self.project_open_error.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut dismissed = false;
+        egui::Window::new("Could not open project")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(500.0);
+                ui.label(message);
+                if ui.button("OK").clicked() {
+                    dismissed = true;
+                }
+            });
+        if !open || dismissed {
+            self.project_open_error = None;
+        }
+    }
+
     fn load_project(&mut self, path: std::path::PathBuf) {
+        self.project_open_error = None;
         match ProjectFile::read(&path) {
             Ok(document) => {
                 let project_folder_managed =
@@ -2902,6 +2948,7 @@ impl OpenTrackApp {
             }
             Err(error) => {
                 self.status_message = format!("Could not open project: {error}");
+                self.project_open_error = Some(format!("{}\n\n{error}", path.display()));
             }
         }
     }
@@ -5972,7 +6019,7 @@ impl OpenTrackApp {
 
         ui.set_min_height(theme::spacing::MENU_BAR_HEIGHT);
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, theme::toolbar_button_fill(ui.visuals()));
+            .rect_filled(ui.max_rect(), 0.0, theme::menu_bar_fill());
         egui::MenuBar::new()
             .style(theme::menu_bar_style)
             .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
@@ -6747,7 +6794,7 @@ impl OpenTrackApp {
     fn show_empty_project_menu(&mut self, ui: &mut egui::Ui) {
         ui.set_min_height(theme::spacing::MENU_BAR_HEIGHT);
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, theme::toolbar_button_fill(ui.visuals()));
+            .rect_filled(ui.max_rect(), 0.0, theme::menu_bar_fill());
         egui::MenuBar::new()
             .style(theme::menu_bar_style)
             .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
@@ -8710,8 +8757,13 @@ impl OpenTrackApp {
 }
 
 impl eframe::App for OpenTrackApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::from(visuals.panel_fill).to_array()
+    }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, theme::palette(ui).surface);
         let title = self.project_window_title();
         if self.native_window_title.as_deref() != Some(title.as_str()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -8834,6 +8886,7 @@ impl eframe::App for OpenTrackApp {
         }
         self.show_key_commands_window(&ctx);
         self.show_unsaved_prompt(&ctx);
+        self.show_project_open_error(&ctx);
         self.show_project_folder_setup(&ctx);
         self.show_about_window(&ctx);
         self.show_audio_device_setup(&ctx);
@@ -10778,57 +10831,6 @@ fn show_project(
                             }
                         }
                     }
-                    for clip in &track.clips {
-                        let start_bar = clip.start_beats / beats_per_bar_f64;
-                        let duration_beats = clip.duration_seconds * project.tempo_bpm / 60.0;
-                        let duration_bars = duration_beats / beats_per_bar_f64;
-                        if !start_bar.is_finite() || start_bar > content_bars as f64 {
-                            continue;
-                        }
-                        let clip_left =
-                            canvas.min.x + lane_header_width + start_bar as f32 * bar_width;
-                        let clip_right = clip_left + (duration_bars as f32 * bar_width).max(8.0);
-                        if clip_right <= clip_left {
-                            continue;
-                        }
-                        let clip_rect = Rect::from_min_max(
-                            Pos2::new(clip_left, top + 6.0),
-                            Pos2::new(clip_right, top + lane_height - 6.0),
-                        );
-                        let clip_color = track_color;
-                        grid_painter.rect_filled(
-                            clip_rect,
-                            egui::CornerRadius::same(4),
-                            clip_color.gamma_multiply(0.24),
-                        );
-                        grid_painter.rect_stroke(
-                            clip_rect,
-                            egui::CornerRadius::same(4),
-                            Stroke::new(1.0, clip_color),
-                            egui::StrokeKind::Inside,
-                        );
-
-                        if let Some(source) = audio_sources.get(&clip.source_path) {
-                            let channels = source.waveform().channels as usize;
-                            waveform_view::draw(
-                                &grid_painter,
-                                clip_rect,
-                                grid_clip,
-                                channels,
-                                clip.duration_seconds,
-                                |start, end, count, channel| {
-                                    source.waveform_columns(start, end, count, channel)
-                                },
-                            );
-                        }
-                        grid_painter.with_clip_rect(clip_rect.shrink(5.0)).text(
-                            Pos2::new(clip_rect.left() + 5.0, clip_rect.top() + 3.0),
-                            Align2::LEFT_TOP,
-                            &clip.name,
-                            FontId::proportional(theme::type_size::LABEL),
-                            theme::palette(ui).text,
-                        );
-                    }
                     if let Some(preview) = recording_preview {
                         if let Some((_, route)) =
                             preview.tracks.iter().find(|(id, _)| *id == track.id)
@@ -10841,8 +10843,8 @@ fn show_project(
                                 as f32
                                 * bar_width;
                             let rect = Rect::from_min_size(
-                                Pos2::new(left, top + 2.0),
-                                Vec2::new(width.max(1.0), (lane_height - 4.0).max(4.0)),
+                                Pos2::new(left, top),
+                                Vec2::new(width.max(1.0), lane_height),
                             );
                             grid_painter.rect_filled(rect, 2.0, theme::RECORD.gamma_multiply(0.24));
                             grid_painter.rect_stroke(
@@ -10971,6 +10973,43 @@ fn show_project(
                         );
                     }
                 }
+            }
+
+            let event_lanes = project
+                .tracks
+                .iter()
+                .enumerate()
+                .map(|(row, t)| audio_events::Lane {
+                    id: t.id,
+                    channels: t.audio_channels,
+                    audio: t.kind == TrackKind::Audio,
+                    rect: Rect::from_min_size(
+                        Pos2::new(grid_left, canvas.top() + ruler_height + row_offsets[row]),
+                        Vec2::new(grid_clip.width(), row_heights[row]),
+                    ),
+                    color: project_controls::track_color(t),
+                })
+                .collect::<Vec<_>>();
+            let outcome = audio_events::show(
+                ui,
+                project,
+                audio_sources,
+                &event_lanes,
+                grid_clip,
+                canvas.min.x + lane_header_width,
+                bar_width / beats_per_bar as f32,
+                snap_grid_beats,
+                &mut arrange_view_state.audio_events,
+                can_remove,
+            );
+            modified |= outcome.changed;
+            if outcome.scroll != 0.0 {
+                arrange_view_state.timeline_scroll_x =
+                    (arrange_view_state.timeline_scroll_x + outcome.scroll).max(0.0);
+                custom_scroll_offset = Some(Vec2::new(
+                    arrange_view_state.timeline_scroll_x,
+                    arrange_view_state.track_scroll_y,
+                ));
             }
 
             if let Some(insertion) = reorder_indicator {
@@ -14023,6 +14062,32 @@ mod ruler_interaction_tests {
     }
 
     #[test]
+    fn full_project_grid_captures_audio_event_drag_without_seeking_or_scrolling() {
+        let mut f = Fixture::new();
+        f.project.add_track(TrackKind::Audio);
+        f.project.add_track(TrackKind::Audio);
+        for id in f.project.tracks.iter().map(|t| t.id).collect::<Vec<_>>() {
+            f.view.set_track_height(id, 80.0);
+        }
+        f.view.timeline_zoom = 16.0;
+        f.view.grid_type = crate::timeline::GridType::UseQuantize;
+        f.project
+            .add_audio_clip(0, PathBuf::from("event.wav"), 1.0, 2.0)
+            .unwrap();
+        f.frame(vec![]);
+        f.frame(vec![]);
+        f.button(400.0, 60.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(590.0, 140.0))]);
+        f.frame(vec![]);
+        f.button(590.0, 140.0, false);
+        assert!(f.project.tracks[0].clips.is_empty());
+        assert_eq!(f.project.tracks[1].clips.len(), 1);
+        assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
+        assert_eq!(f.position, 0.0);
+        assert_eq!(f.view.timeline_scroll_x, 0.0);
+    }
+
+    #[test]
     fn actual_ruler_drag_snaps_to_bar_on_release_and_snap_off_leaves_it_continuous() {
         let mut f = Fixture::new();
         f.frame(vec![]);
@@ -14745,5 +14810,35 @@ mod recording_history_tests {
         f.project = f.history.undo(&f.project).unwrap();
         assert!(f.imported.exists());
         assert!(f.paths.iter().all(|p| p.exists()));
+    }
+}
+
+#[cfg(test)]
+mod project_open_error_tests {
+    use super::*;
+    #[test]
+    fn rejected_project_open_is_visible_from_empty_shell_and_preserves_current_state() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        let before = app.data.project.clone();
+        let path =
+            std::env::temp_dir().join(format!("opentrack-invalid-open-{}.opr", std::process::id()));
+        std::fs::write(&path, br#"{"format":"opentrack-project","version":999}"#).unwrap();
+        app.load_project(path.clone());
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(app.data.project, before);
+        assert!(!app.project_open);
+        assert!(app.project_open_error.as_ref().unwrap().contains("999"));
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 600.0))),
+                ..Default::default()
+            },
+            |_| app.show_project_open_error(&ctx),
+        );
+        assert!(!output.shapes.is_empty());
+        let _ = ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        output.textures_delta.clear();
     }
 }

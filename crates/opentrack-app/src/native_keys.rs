@@ -20,13 +20,14 @@ mod platform {
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::{BLACK_BRUSH, FillRect, GetStockObject},
         UI::{
             Input::KeyboardAndMouse::{
                 GetKeyState, VK_CONTROL, VK_MENU, VK_NUMPAD0, VK_NUMPAD9, VK_SHIFT,
             },
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-            WindowsAndMessaging::{WM_KEYDOWN, WM_SYSKEYDOWN},
+            WindowsAndMessaging::{GetClientRect, WM_ERASEBKGND, WM_KEYDOWN, WM_SYSKEYDOWN},
         },
     };
 
@@ -91,6 +92,17 @@ mod platform {
         _subclass_id: usize,
         reference_data: usize,
     ) -> LRESULT {
+        if message == WM_ERASEBKGND {
+            // SAFETY: live UI-thread HWND and Windows-supplied erase HDC;
+            // the stock brush remains OS-owned. Never expose a white erase frame.
+            unsafe {
+                let mut rect = RECT::default();
+                if GetClientRect(hwnd, &mut rect) != 0 {
+                    FillRect(wparam as _, &rect, GetStockObject(BLACK_BRUSH) as _);
+                    return 1;
+                }
+            }
+        }
         if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
             let virtual_key = wparam as u16;
             let is_repeat = (lparam as u64 & (1 << 30)) != 0;

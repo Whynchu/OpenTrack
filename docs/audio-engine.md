@@ -77,3 +77,6 @@ The recording writer publishes growing signed per-channel envelopes about every 
 Recording-created takes carry file effects with the undo entry. Undo removes their original filenames; redo uses Metadata/Undo recovery. Recovery is discarded when no longer needed by redo or the saved document. Only recorder-created files are registered. Saved-project Discard restores saved references, and file conflicts fail without replacing another file. Crash recovery has a path manifest but no automated replay. See T016.
 
 T017: waveform drawing uses full event height with a small border margin. Discard tracks and removes unsaved recorder-created takes independently of undo-history trimming, restores saved recording references, and preserves imports. Take naming reserves undo/saved-recovery paths to prevent collisions. Filesystem regressions pass; live user checks remain pending.
+
+
+T018 audio events: playback stops at each event duration, reads from its persisted source offset, and applies linear event fade-in/out and event gain before track processing. The Project waveform uses the same envelope. New pointer/domain/sample tests pass; desktop/hardware and exact reference fade laws remain unverified. See T018 for migration and bounds.

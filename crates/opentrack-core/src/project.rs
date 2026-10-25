@@ -319,7 +319,14 @@ pub struct AudioClip {
     pub source_path: PathBuf,
     pub start_beats: f64,
     pub duration_seconds: f64,
-    /// Linear clip gain in the range 0.0 to 1.0.
+    /// Non-destructive source trim and linear amplitude fades, in seconds.
+    #[serde(default)]
+    pub source_offset_seconds: f64,
+    #[serde(default)]
+    pub fade_in_seconds: f64,
+    #[serde(default)]
+    pub fade_out_seconds: f64,
+    /// Linear event gain, 0.0 through 4.0 (approximately +12 dB).
     pub gain: f32,
 }
 
@@ -723,6 +730,45 @@ impl Project {
         true
     }
 
+    /// Commit an event edit without changing source identity or audio-track width.
+    pub fn edit_audio_clip(
+        &mut self,
+        source_track_id: u64,
+        target_track_id: u64,
+        edited: AudioClip,
+    ) -> bool {
+        let Some(source) = self.tracks.iter().position(|t| t.id == source_track_id) else {
+            return false;
+        };
+        let Some(target) = self.tracks.iter().position(|t| t.id == target_track_id) else {
+            return false;
+        };
+        if self.tracks[source].kind != TrackKind::Audio
+            || self.tracks[target].kind != TrackKind::Audio
+            || self.tracks[source].audio_channels != self.tracks[target].audio_channels
+        {
+            return false;
+        }
+        let Some(index) = self.tracks[source]
+            .clips
+            .iter()
+            .position(|c| c.id == edited.id && c.source_path == edited.source_path)
+        else {
+            return false;
+        };
+        if self.tracks[source].clips[index] == edited && source == target {
+            return false;
+        }
+        let mut candidate = self.clone();
+        candidate.tracks[source].clips.remove(index);
+        candidate.tracks[target].clips.push(edited);
+        if candidate.validate().is_err() {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
     /// Adds an external audio file to an audio track at the given beat.
     pub fn add_audio_clip(
         &mut self,
@@ -758,6 +804,9 @@ impl Project {
             source_path,
             start_beats,
             duration_seconds,
+            source_offset_seconds: 0.0,
+            fade_in_seconds: 0.0,
+            fade_out_seconds: 0.0,
             gain: 1.0,
         });
         Some(id)
@@ -1211,8 +1260,18 @@ impl Project {
                 if !clip.duration_seconds.is_finite() || clip.duration_seconds <= 0.0 {
                     return Err("audio clip duration must be finite and positive");
                 }
-                if !clip.gain.is_finite() || !(0.0..=1.0).contains(&clip.gain) {
-                    return Err("audio clip gain must be between 0.0 and 1.0");
+                if !clip.source_offset_seconds.is_finite()
+                    || clip.source_offset_seconds < 0.0
+                    || !clip.fade_in_seconds.is_finite()
+                    || clip.fade_in_seconds < 0.0
+                    || !clip.fade_out_seconds.is_finite()
+                    || clip.fade_out_seconds < 0.0
+                    || clip.fade_in_seconds + clip.fade_out_seconds > clip.duration_seconds + 1e-8
+                {
+                    return Err("audio event trim/fade timing is invalid");
+                }
+                if !clip.gain.is_finite() || !(0.0..=4.0).contains(&clip.gain) {
+                    return Err("audio event gain must be between 0.0 and 4.0");
                 }
             }
         }
@@ -1569,5 +1628,52 @@ mod bus_tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].id = INPUT_BUS_ID;
         assert!(project.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod audio_event_tests {
+    use super::*;
+    #[test]
+    fn event_edits_move_only_between_matching_audio_widths_and_persist_non_destructive_settings() {
+        let mut p = Project::default();
+        p.add_track(TrackKind::Audio);
+        p.add_track(TrackKind::Audio);
+        p.add_track_with_audio_channels(TrackKind::Audio, 1);
+        p.add_audio_clip(0, PathBuf::from("original.wav"), 0.0, 4.0)
+            .unwrap();
+        let mut c = p.tracks[0].clips[0].clone();
+        c.start_beats = 4.0;
+        c.source_offset_seconds = 0.5;
+        c.duration_seconds = 3.0;
+        c.fade_in_seconds = 0.25;
+        c.fade_out_seconds = 0.5;
+        c.gain = 2.0;
+        let ids = p.tracks.iter().map(|t| t.id).collect::<Vec<_>>();
+        assert!(!p.edit_audio_clip(ids[0], ids[2], c.clone()));
+        assert!(p.edit_audio_clip(ids[0], ids[1], c.clone()));
+        assert_eq!(p.tracks[1].clips[0], c);
+        assert!(p.tracks[0].clips.is_empty());
+        let encoded = serde_json::to_value(&p).unwrap();
+        let decoded: Project = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(p, decoded);
+        let mut legacy = encoded;
+        for field in [
+            "source_offset_seconds",
+            "fade_in_seconds",
+            "fade_out_seconds",
+        ] {
+            legacy["tracks"][1]["clips"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+        let old: Project = serde_json::from_value(legacy).unwrap();
+        assert_eq!(old.tracks[1].clips[0].source_offset_seconds, 0.0);
+        assert_eq!(old.tracks[1].clips[0].fade_in_seconds, 0.0);
+        let before = p.clone();
+        c.fade_out_seconds = 10.0;
+        assert!(!p.edit_audio_clip(ids[1], ids[1], c));
+        assert_eq!(p, before);
     }
 }

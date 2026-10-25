@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "managed-project-folders-v2",
+    "version": "managed-project-folders-v3",
     "description": "Empty startup shell, native directory selection, project-folder creation/migration, filename title, imported WAV containment, automatic recording paths, and unchanged-project close behavior.",
     "baseline_complete": true,
-    "change_reason": "T013 scope v2 adds the user's startup-with-no-project and native Windows folder-picker requirements. Kept separate from transport-v4 and audio-interface-v1; weights remain frozen at core workflow 3, common requirement 2, polish 1."
+    "change_reason": "Retains all v2 requirements/weights; adds explicit native-version compatibility and visible open errors after the actual version-20 EXAMPLE failed to open. Full folder/desktop review remains pending."
   },
   "evidence": {
     "t013-source-review": {
@@ -16,17 +16,44 @@
       "kind": "user",
       "location": "T013 requirements recorded from the user request on 2026-10-24 and docs/workflow/README.md",
       "note": "Desired project-folder, file-name, media-containment and unchanged-close behavior; not a Cubase observation."
+    },
+    "t019-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T019-cleanup-and-project-open.md",
+      "note": "Actual EXAMPLE returned to blank startup shell with no visible error; user requests correction and publishing after cleanup."
+    },
+    "t019-failure": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T019-cleanup-and-project-open.md",
+      "identity": "T018 EXE 579AB98888B4A151B5EDA62E82F2615E05B90A41B94003C34EEAAB4B108B6262",
+      "note": "User reports version-20 EXAMPLE fails to open and returns to empty shell. Regression confirms unsupported-version rejection."
+    },
+    "t019-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T019-cleanup-and-project-open.md",
+      "identity": "x64 local-asio EXE SHA-256 5AFF02C355A5260D2B575D54E961AB9E02BD269A49D6C9A212F645FCD4021A15; crates/opentrack-app/src/app.rs: 4F37B343A6C52F810227CB63CCD2CE058FEAEDE2C6DA9B862EBC3D0F94544BCA; crates/opentrack-app/src/project_file.rs: 5C0A7312FE8C8B23757503B09F8C8CBB6A9E68979EC804796BADB27A8C9B42A1; crates/opentrack-app/src/audio_events.rs: 48B81735834FC7B6B6DEAF5EEC3F48E804B49A45BD57FE82F386911E33499C48",
+      "note": "119 tests pass; exact EXAMPLE read-only parse opens three tracks with unchanged bytes. Error window renders headlessly. No live folder/desktop acceptance."
     }
   },
   "requirements": [
     {
       "id": "new-project-folder",
       "weight": 3,
-      "outcome": "File → New creates a named project directory, organized child folders, and an initial .opr inside it.",
+      "outcome": "File \u2192 New creates a named project directory, organized child folders, and an initial .opr inside it.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "The dialog creates Audio/Recordings, Audio/Imports, and Metadata, and rejects an existing project directory."
@@ -36,9 +63,19 @@
       "weight": 3,
       "outcome": "OpenTrack starts with only its menu bar and no project, Project window, Mixer, transport, or status panel.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "The app starts with project_open=false and gates project content/windows until a managed project is created or opened."
@@ -48,21 +85,44 @@
       "weight": 3,
       "outcome": "New and legacy-project folder flows use the native Windows folder picker and offer creation of a new project folder.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
-      "implementation_note": "File → New picks a parent using rfd's Windows folder dialog; migration offers current, beside, new-child, and selected existing-folder destinations."
+      "implementation_note": "File \u2192 New picks a parent using rfd's Windows folder dialog; migration offers current, beside, new-child, and selected existing-folder destinations."
     },
     {
       "id": "legacy-folder-migration",
       "weight": 3,
       "outcome": "Older projects prompt to use the current folder or choose/create another folder without silently replacing the source project.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review",
+        "t019-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "stale",
+        "evidence": [
+          "t019-failure"
+        ]
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "Projects with missing version metadata or missing expected directories trigger migration choices; moving or importing legacy formats writes a new .opr. Selecting the same folder for an old .opr explicitly upgrades that file in place."
@@ -72,9 +132,19 @@
       "weight": 2,
       "outcome": "The application title is Project- followed by the current .opr filename stem.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "The native viewport title updates when the current project path changes."
@@ -84,9 +154,19 @@
       "weight": 3,
       "outcome": "Record writes numbered audio takes inside Audio/Recordings without asking for a file destination.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "Numbered take names avoid existing files; multi-track takes have per-track names."
@@ -96,9 +176,19 @@
       "weight": 2,
       "outcome": "External WAV imports are copied under Audio/Imports without overwriting same-named media.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "Copying runs on a worker thread to a unique temporary path and renames into a unique destination after copying."
@@ -108,26 +198,169 @@
       "weight": 2,
       "outcome": "A newly saved/opened project with no edits closes without an unsaved-changes prompt.",
       "implementation": "complete",
-      "source_evidence": ["t013-source-review"],
-      "reference": {"status": "user_specified", "evidence": ["t013-user-intent"]},
-      "runtime": {"status": "pending", "evidence": []},
+      "source_evidence": [
+        "t013-source-review"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t013-user-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "Existing saved fingerprints govern the close prompt; folder creation writes and marks the initial project saved."
+    },
+    {
+      "id": "native-version-open",
+      "weight": 3,
+      "outcome": "Older supported OPR versions open without rewriting the saved source, and failed opens show a visible error from the empty shell.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t019-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t019-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
     }
   ],
   "gates": {
-    "new-project-workflow": {"description": "New project creation yields the expected folder, file, title, and no-overwrite behavior.", "status": "pending", "evidence": []},
-    "startup-shell": {"description": "A fresh launch shows the menu bar with no project content or child panels open.", "status": "pending", "evidence": []},
-    "native-folder-dialogs": {"description": "New and legacy-project flows open the Windows folder picker and create/select the requested destination.", "status": "pending", "evidence": []},
-    "migration-safety": {"description": "A disposable old project can migrate, reopen, and retain the source when copied elsewhere.", "status": "pending", "evidence": []},
-    "media-containment": {"description": "Imported WAVs and recorded takes land in the expected managed subfolders and reopen correctly.", "status": "pending", "evidence": []},
-    "clean-close": {"description": "An unchanged managed project closes without a save prompt.", "status": "pending", "evidence": []}
+    "new-project-workflow": {
+      "description": "New project creation yields the expected folder, file, title, and no-overwrite behavior.",
+      "status": "pending",
+      "evidence": []
+    },
+    "startup-shell": {
+      "description": "A fresh launch shows the menu bar with no project content or child panels open.",
+      "status": "pending",
+      "evidence": []
+    },
+    "native-folder-dialogs": {
+      "description": "New and legacy-project flows open the Windows folder picker and create/select the requested destination.",
+      "status": "pending",
+      "evidence": []
+    },
+    "migration-safety": {
+      "description": "A disposable old project can migrate, reopen, and retain the source when copied elsewhere.",
+      "status": "pending",
+      "evidence": []
+    },
+    "media-containment": {
+      "description": "Imported WAVs and recorded takes land in the expected managed subfolders and reopen correctly.",
+      "status": "pending",
+      "evidence": []
+    },
+    "clean-close": {
+      "description": "An unchanged managed project closes without a save prompt.",
+      "status": "pending",
+      "evidence": []
+    },
+    "native-compatibility": {
+      "description": "User opens actual saved EXAMPLE and sees its project/media; invalid files show visible errors without replacing the current project.",
+      "status": "pending",
+      "evidence": []
+    }
   },
   "workflows": [
-    {"id": "empty-startup", "weight": 3, "requirements": ["empty-startup-shell"], "gates": ["startup-shell"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []},
-    {"id": "create-and-close", "weight": 3, "requirements": ["new-project-folder", "filename-window-title", "unchanged-close"], "gates": ["new-project-workflow", "native-folder-dialogs", "clean-close"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []},
-    {"id": "migrate-old-project", "weight": 3, "requirements": ["legacy-folder-migration", "native-folder-picker"], "gates": ["migration-safety", "native-folder-dialogs"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []},
-    {"id": "import-and-record-media", "weight": 3, "requirements": ["automatic-record-path", "contained-wav-imports"], "gates": ["media-containment"], "scenario": {"status": "pending", "evidence": []}, "user_accepted": false, "acceptance_evidence": []}
+    {
+      "id": "empty-startup",
+      "weight": 3,
+      "requirements": [
+        "empty-startup-shell"
+      ],
+      "gates": [
+        "startup-shell"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "create-and-close",
+      "weight": 3,
+      "requirements": [
+        "new-project-folder",
+        "filename-window-title",
+        "unchanged-close"
+      ],
+      "gates": [
+        "new-project-workflow",
+        "native-folder-dialogs",
+        "clean-close"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "migrate-old-project",
+      "weight": 3,
+      "requirements": [
+        "legacy-folder-migration",
+        "native-folder-picker"
+      ],
+      "gates": [
+        "migration-safety",
+        "native-folder-dialogs"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "import-and-record-media",
+      "weight": 3,
+      "requirements": [
+        "automatic-record-path",
+        "contained-wav-imports"
+      ],
+      "gates": [
+        "media-containment"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "native-version-open",
+      "weight": 3,
+      "requirements": [
+        "native-version-open"
+      ],
+      "gates": [
+        "native-compatibility"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    }
   ]
 }

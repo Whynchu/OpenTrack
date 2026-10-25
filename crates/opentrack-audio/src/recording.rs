@@ -2558,6 +2558,10 @@ mod tests {
                 clips: vec![crate::PlaybackClip {
                     source: crate::PlaybackSource::Decoded(decoded),
                     start_beats: 0.0,
+                    source_offset_seconds: 0.0,
+                    duration_seconds: f64::MAX,
+                    fade_in_seconds: 0.0,
+                    fade_out_seconds: 0.0,
                     gain: 1.0,
                     muted: false,
                     solo: false,
