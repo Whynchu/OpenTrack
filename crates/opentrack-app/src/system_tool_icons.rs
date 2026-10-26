@@ -68,7 +68,23 @@ pub(crate) fn tool_cursor(ui: &egui::Ui, icon: ToolbarIcon) {
     tool_cursor_at(ui, icon, ui.input(|i| i.pointer.hover_pos()));
 }
 pub(crate) fn tool_cursor_at(ui: &egui::Ui, icon: ToolbarIcon, hotspot: Option<Pos2>) {
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    ui.ctx()
+        .set_cursor_icon(if matches!(icon, ToolbarIcon::Draw) {
+            egui::CursorIcon::None
+        } else {
+            egui::CursorIcon::Crosshair
+        });
+    paint_tool_glyph(ui, icon, hotspot);
+}
+
+/// Draws only the tool glyph and hides the native pointer. Used when Snap is
+/// off, where a crosshair-plus-glyph would ambiguously suggest a snapped guide.
+pub(crate) fn tool_cursor_only_at(ui: &egui::Ui, icon: ToolbarIcon, hotspot: Option<Pos2>) {
+    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+    paint_tool_glyph(ui, icon, hotspot);
+}
+
+fn paint_tool_glyph(ui: &egui::Ui, icon: ToolbarIcon, hotspot: Option<Pos2>) {
     if let (Some(glyph), Some(pointer)) = (glyph(icon).filter(|_| available(ui.ctx())), hotspot) {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Tooltip,
@@ -282,5 +298,25 @@ mod tests {
         );
         out.textures_delta.clear();
         assert_eq!(out.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
+    }
+
+    #[test]
+    fn snap_off_tool_cursor_hides_the_native_pointer() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(100.0))),
+                ..Default::default()
+            },
+            |ui| {
+                super::tool_cursor_only_at(
+                    ui,
+                    crate::icons::ToolbarIcon::Split,
+                    Some(Pos2::new(45.0, 50.0)),
+                )
+            },
+        );
+        out.textures_delta.clear();
+        assert_eq!(out.platform_output.cursor_icon, egui::CursorIcon::None);
     }
 }

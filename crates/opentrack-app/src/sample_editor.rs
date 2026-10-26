@@ -706,6 +706,11 @@ pub(super) fn show(
             Sense::click_and_drag()
         },
     );
+    if let Some(crate::view_controls::WheelAction::HorizontalPan(delta)) = wheel_action {
+        let span = end - start;
+        start = (start - delta as f64 / wave.width().max(1.0) as f64 * span).max(minimum_start);
+        end = start + span;
+    }
     if let Some(crate::view_controls::WheelAction::TimeZoom(delta)) = wheel_action {
         let anchor = ui
             .input(|i| i.pointer.hover_pos())
@@ -1174,15 +1179,23 @@ pub(super) fn show(
                 original.cut_offset_seconds(beat, project.tempo_bpm, project.sample_rate_hz)
             {
                 let x = wave.left() + ((local - start) / (end - start)) as f32 * wave.width();
-                crate::system_tool_icons::tool_cursor_at(
-                    ui,
-                    ToolbarIcon::Split,
-                    Some(Pos2::new(x, pos.y)),
-                );
-                ui.painter().with_clip_rect(wave.union(ruler)).line_segment(
-                    [Pos2::new(x, ruler.top()), Pos2::new(x, wave.bottom())],
-                    Stroke::new(1.0, theme::PLAYHEAD),
-                );
+                if grid.is_some() {
+                    crate::system_tool_icons::tool_cursor_at(
+                        ui,
+                        ToolbarIcon::Split,
+                        Some(Pos2::new(x, pos.y)),
+                    );
+                    ui.painter().with_clip_rect(wave.union(ruler)).line_segment(
+                        [Pos2::new(x, ruler.top()), Pos2::new(x, wave.bottom())],
+                        Stroke::new(1.0, theme::PLAYHEAD),
+                    );
+                } else {
+                    crate::system_tool_icons::tool_cursor_only_at(
+                        ui,
+                        ToolbarIcon::Split,
+                        Some(pos),
+                    );
+                }
             }
         }
     }

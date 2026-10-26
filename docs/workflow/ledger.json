@@ -393,6 +393,12 @@
       "location": "crates/opentrack-app/src/project_controls.rs; app.rs; mixer.rs; channel_settings.rs; analyzer_view.rs",
       "identity": "x64 local-ASIO EXE sha256:AE2E6CCCA4DC6ACD70BF0842A00F23CE849E5C12BF73A26682751C758C677845; app suite 131 pass",
       "note": "Track color reaches Project/Mixer/Channel Settings meters, EQ parameter bars, curve/nodes and owned spectrum; Stereo In/Out default to blue and expose the palette selector in the Mixer footer. Red clipping and the orange comparison trace remain."
+    },
+    "batch3-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/audio_events.rs; view_controls.rs; system_tool_icons.rs; mixer.rs; app.rs",
+      "identity": "x64 local-ASIO EXE sha256:0D8ED3CC5052109B003E55EE6E3A15660A69534EB48F0EF9A3ACE814B7615140; app suite 135 pass",
+      "note": "Select tool exposes a contextual cut band directly above the event name strip and previews/commits the same snapped cut. Snap-off split uses a scissors-only cursor and no guide; Draw uses pencil-only. Ctrl+wheel is HorizontalPan in Project and Sample Editor. Mixer caps are rectangular and channel selection returns a shared selection request that syncs arrange/Inspector selection."
     }
   },
   "requirements": [
@@ -1532,8 +1538,10 @@
       "id": "project-event-contextual-scissors",
       "weight": 2,
       "outcome": "Project event hover above the black name strip exposes a contextual cut zone that splits at the actual snapped guide.",
-      "implementation": "absent",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "batch3-source"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -1551,10 +1559,11 @@
       "id": "snap-aware-scissor-cursor",
       "weight": 2,
       "outcome": "Project and Sample Editor show scissors alone when Snap is off and pencil alone for loop/skip drawing; snapped cut cursor follows the committed guide.",
-      "implementation": "partial",
+      "implementation": "complete",
       "source_evidence": [
         "t039-source",
-        "t040-source"
+        "t040-source",
+        "batch3-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1573,10 +1582,11 @@
       "id": "shared-view-wheel-map",
       "weight": 2,
       "outcome": "Project and Sample Editor share plain-wheel time zoom, Ctrl+wheel horizontal scroll, Shift+wheel vertical scroll and Ctrl+Shift+wheel vertical zoom.",
-      "implementation": "partial",
+      "implementation": "complete",
       "source_evidence": [
         "t037-source",
-        "t036-source"
+        "t036-source",
+        "batch3-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1595,9 +1605,10 @@
       "id": "mixer-fader-and-track-selection",
       "weight": 2,
       "outcome": "Mixer fader caps are rectangular and clicking a Mixer channel selects the same shared track in Project and Inspector.",
-      "implementation": "partial",
+      "implementation": "complete",
       "source_evidence": [
-        "t039-source"
+        "t039-source",
+        "batch3-source"
       ],
       "reference": {
         "status": "user_specified",

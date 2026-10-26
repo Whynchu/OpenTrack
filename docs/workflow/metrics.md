@@ -8,7 +8,7 @@ These are documented results for this scope, not a whole-DAW percentage. Zero ve
 
 | Metric | Result |
 | --- | --- |
-| Implementation coverage | 86.2% |
+| Implementation coverage | 90.0% |
 | Unassessed implementation weight | 0.0% |
 | Runtime validation | 12.3% |
 | Workflow readiness for review | 0.0% |
@@ -68,10 +68,10 @@ These are documented results for this scope, not a whole-DAW percentage. Zero ve
 | pitch-edit-opr-roundtrip | 3 | complete | user_specified | pass | pending |
 | pitch-processing-quality | 3 | partial | user_specified | pending | pending |
 | pitch-note-transition-blend | 3 | partial | user_specified | pending | pending |
-| project-event-contextual-scissors | 2 | absent | user_specified | pending | pending |
-| snap-aware-scissor-cursor | 2 | partial | user_specified | pending | pending |
-| shared-view-wheel-map | 2 | partial | user_specified | pending | pending |
-| mixer-fader-and-track-selection | 2 | partial | user_specified | pending | pending |
+| project-event-contextual-scissors | 2 | complete | user_specified | pending | pending |
+| snap-aware-scissor-cursor | 2 | complete | user_specified | pending | pending |
+| shared-view-wheel-map | 2 | complete | user_specified | pending | pending |
+| mixer-fader-and-track-selection | 2 | complete | user_specified | pending | pending |
 | pitch-note-semitone-colors | 2 | complete | user_specified | pending | pending |
 | track-color-cohesion | 2 | complete | user_specified | pending | pending |
 

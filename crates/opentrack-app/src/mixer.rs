@@ -273,7 +273,7 @@ pub(super) fn show_channels(
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     settings: &mut NativeWindowState,
-) -> bool {
+) -> (bool, bool) {
     let state_id = ui.id().with("measured-mixer-view");
     let mut view = ui
         .data_mut(|data| data.get_temp::<MixerView>(state_id))
@@ -281,6 +281,7 @@ pub(super) fn show_channels(
     let area = ui.available_rect_before_wrap();
     let height = (area.height() - 22.0).max(300.0);
     let mut modified = false;
+    let mut selection_requested = false;
     let mut selected = project.selected_track;
     let mut exclusive = None;
     let palette = theme::palette(ui);
@@ -342,6 +343,7 @@ pub(super) fn show_channels(
                         if select {
                             settings.channel_bus = None;
                             selected = Some(index as u32);
+                            selection_requested = true;
                         }
                         if solo {
                             exclusive = Some(track.id);
@@ -381,7 +383,7 @@ pub(super) fn show_channels(
         }
     }
     ui.data_mut(|data| data.insert_temp(state_id, view));
-    modified
+    (modified, selection_requested)
 }
 
 fn sidebar(
@@ -1255,16 +1257,16 @@ fn fader_impl(
     let center = Pos2::new(r.left() + 50.0, egui::lerp(rail.y_range(), fraction));
     let handle = Rect::from_center_size(center, Vec2::new(14.0, 31.0));
     ui.painter()
-        .rect_filled(handle, 6.0, Color32::from_gray(229));
+        .rect_filled(handle, 0.0, Color32::from_gray(229));
     ui.painter().rect_stroke(
         handle,
-        6.0,
+        0.0,
         Stroke::new(1.0, Color32::from_gray(110)),
         egui::StrokeKind::Inside,
     );
     ui.painter().rect_filled(
         handle.shrink2(Vec2::new(2.0, 5.0)),
-        4.0,
+        0.0,
         Color32::from_gray(197),
     );
     ui.painter().line_segment(

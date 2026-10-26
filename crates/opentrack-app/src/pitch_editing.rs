@@ -508,18 +508,26 @@ impl NoteEditor {
                 }
                 if t > note.start + 0.02 && t < note.end - 0.02 {
                     let guide = x(t);
-                    painter.line_segment(
-                        [
-                            Pos2::new(guide, rect.top()),
-                            Pos2::new(guide, rect.bottom()),
-                        ],
-                        Stroke::new(1.0, Color32::WHITE),
-                    );
-                    crate::system_tool_icons::tool_cursor_at(
-                        ui,
-                        ToolbarIcon::Split,
-                        Some(Pos2::new(guide, pos.y)),
-                    );
+                    if grid.is_some() {
+                        painter.line_segment(
+                            [
+                                Pos2::new(guide, rect.top()),
+                                Pos2::new(guide, rect.bottom()),
+                            ],
+                            Stroke::new(1.0, Color32::WHITE),
+                        );
+                        crate::system_tool_icons::tool_cursor_at(
+                            ui,
+                            ToolbarIcon::Split,
+                            Some(Pos2::new(guide, pos.y)),
+                        );
+                    } else {
+                        crate::system_tool_icons::tool_cursor_only_at(
+                            ui,
+                            ToolbarIcon::Split,
+                            Some(pos),
+                        );
+                    }
                 }
             }
             if hovered && !cut_active {

@@ -2040,6 +2040,29 @@ impl OpenTrackApp {
         self.status_message = "Modified".to_owned();
     }
 
+    fn sync_arrange_track_selection(&mut self) {
+        let Some(track_id) = self
+            .data
+            .project
+            .selected_track
+            .and_then(|index| self.data.project.tracks.get(index as usize))
+            .map(|track| track.id)
+        else {
+            return;
+        };
+        if self.arrange_view_state.selected_track_ids.len() == 1
+            && self
+                .arrange_view_state
+                .selected_track_ids
+                .contains(&track_id)
+        {
+            return;
+        }
+        self.arrange_view_state.selected_track_ids.clear();
+        self.arrange_view_state.selected_track_ids.insert(track_id);
+        self.arrange_view_state.selection_anchor_track_id = Some(track_id);
+    }
+
     fn mark_saved(&mut self) {
         self.modified = false;
         self.saved_project_fingerprint = serde_json::to_vec(&self.data.project).unwrap_or_default();
@@ -7163,6 +7186,8 @@ impl OpenTrackApp {
             Pos2::new(panel_rect.right() - 5.0, panel_rect.bottom() - 3.0),
         );
         let position_before = self.data.transport.position_beats;
+        let selection_before = self.data.project.selected_track;
+        let mut mixer_selection_requested = false;
         let sample_grid = self
             .arrange_view_state
             .snap_grid_beats(self.data.project.beats_per_bar);
@@ -7194,7 +7219,7 @@ impl OpenTrackApp {
                             self.data.transport.playing,
                         )
                     } else {
-                        show_mixer(
+                        let (changed, selection_requested) = show_mixer(
                             ui,
                             &mut self.data.project,
                             &self.data.track_meter_levels,
@@ -7206,11 +7231,16 @@ impl OpenTrackApp {
                             &mut self.channel_settings_window,
                             &mut self.compressor_editor,
                             &mut self.channel_settings_ui,
-                        )
+                        );
+                        mixer_selection_requested |= selection_requested;
+                        changed
                     }
                 },
             )
             .inner;
+        if mixer_selection_requested || self.data.project.selected_track != selection_before {
+            self.sync_arrange_track_selection();
+        }
         self.update_note_audition(ui.ctx());
         ui.painter().rect_stroke(
             panel_rect,
@@ -7431,6 +7461,8 @@ impl OpenTrackApp {
         let mut modified = false;
         let mut bounds = None;
         let mut rendered = false;
+        let selection_before = self.data.project.selected_track;
+        let mut mixer_selection_requested = false;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             rendered = true;
             if focus_requested {
@@ -7445,7 +7477,7 @@ impl OpenTrackApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
-                    modified |= show_mixer(
+                    let (changed, selection_requested) = show_mixer(
                         ui,
                         &mut self.data.project,
                         &self.data.track_meter_levels,
@@ -7458,12 +7490,17 @@ impl OpenTrackApp {
                         &mut self.compressor_editor,
                         &mut self.channel_settings_ui,
                     );
+                    modified |= changed;
+                    mixer_selection_requested |= selection_requested;
                 });
             channel_settings::setup(window_ctx, &mut self.channel_settings_ui);
             bounds = native_window_bounds(window_ctx);
         });
         if let Some(action) = self.channel_settings_ui.pending_action.take() {
             modified |= self.apply_channel_settings_action(action);
+        }
+        if mixer_selection_requested || self.data.project.selected_track != selection_before {
+            self.sync_arrange_track_selection();
         }
         if !rendered {
             open = false;
@@ -9660,6 +9697,10 @@ fn show_project(
                     / previous
                     - anchor)
                     .max(0.0);
+            }
+            WheelAction::HorizontalPan(amount) => {
+                arrange_view_state.timeline_scroll_x =
+                    (arrange_view_state.timeline_scroll_x - amount).max(0.0);
             }
             WheelAction::VerticalPan(amount) => {
                 arrange_view_state.track_scroll_y =
@@ -12182,7 +12223,7 @@ fn show_mixer(
     channel_settings_window: &mut NativeWindowState,
     compressor_editor: &mut CompressorEditorState,
     channel_settings_ui: &mut ChannelSettingsUiState,
-) -> bool {
+) -> (bool, bool) {
     if show_strips {
         show_mixer_channels(
             ui,
@@ -12194,19 +12235,22 @@ fn show_mixer(
             channel_settings_window,
         )
     } else if show_settings {
-        channel_settings::show(
-            ui,
-            project,
-            meter_levels,
-            peak_holds,
-            compressor_editor,
-            channel_settings_ui,
-            &mut channel_settings_window.channel_bus,
-            input_meter_peaks,
-            output_meter_peaks,
+        (
+            channel_settings::show(
+                ui,
+                project,
+                meter_levels,
+                peak_holds,
+                compressor_editor,
+                channel_settings_ui,
+                &mut channel_settings_window.channel_bus,
+                input_meter_peaks,
+                output_meter_peaks,
+            ),
+            false,
         )
     } else {
-        false
+        (false, false)
     }
 }
 
@@ -12218,7 +12262,7 @@ fn show_mixer_channels(
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     channel_settings_window: &mut NativeWindowState,
-) -> bool {
+) -> (bool, bool) {
     mixer::show_channels(
         ui,
         project,
@@ -15197,6 +15241,28 @@ mod project_open_error_tests {
 #[cfg(test)]
 mod channel_window_lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn mixer_track_selection_updates_the_shared_project_selection() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.selected_track = Some(1);
+        app.arrange_view_state.selected_track_ids.clear();
+        app.sync_arrange_track_selection();
+        let expected = app.data.project.tracks[1].id;
+        assert_eq!(app.data.project.selected_track, Some(1));
+        assert_eq!(
+            app.arrange_view_state.selected_track_ids,
+            std::collections::BTreeSet::from([expected])
+        );
+        assert_eq!(
+            app.arrange_view_state.selection_anchor_track_id,
+            Some(expected)
+        );
+    }
 
     #[test]
     fn closing_bus_editor_then_reopening_other_channels_recreates_and_renders_editor() {

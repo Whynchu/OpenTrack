@@ -22,7 +22,9 @@ This checkpoint also adds semitone-row note colors, track-color cohesion for met
 
 ## User review checkpoint - pending
 
-The user will open the current x64 app and check the pitch transitions and shortened notes using their own audio. Also review note colors, track-color cohesion (including blue default Stereo In/Out and the Mixer color picker), and note-drag audition. Do not start Batch 3 until this Batch 2 review is accepted. Keep the app closed until the user chooses to open it.
+The user will review pitch quality with Astra while tuning. The current build also adds note colors, track-color cohesion (including blue default Stereo In/Out and the Mixer color picker), note-drag audition, and Batch 3.
+
+Batch 3 implementation is complete in source: contextual Project cut band, snap-aware cursor/guides, Ctrl+wheel horizontal pan, rectangular Mixer fader caps, and shared Mixer/Project track selection. Its x64 build and live interaction/visual review are pending. Keep the app closed until the user chooses to open it.
 
 ## VST3 lane - foundation only
 

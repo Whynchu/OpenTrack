@@ -222,8 +222,8 @@ and `analyzer_view.rs` are otherwise independent of the pitch/note-color lane.
 
 ## Workstream C — Batch 3
 
-Start only after Batch 2 is accepted. These requirements already exist in the
-ledger; no new scope is needed unless implementation discovers a gap.
+The user authorized Batch 3 on 2026-10-25. Source implementation is complete;
+the x64 build and live interaction/visual review are pending.
 
 ### C1. Contextual Project event scissors
 
@@ -255,6 +255,9 @@ selection is shared, not duplicated; no audio mutation from selection.
 
 Format, build local ASIO, update ledger/current, run parity report, stop for the
 user’s interaction/visual review.
+
+Status: all five source requirements are implemented. App suite is 135 passing.
+Build/review remains.
 
 ## Workstream D — VST3 audio integration
 

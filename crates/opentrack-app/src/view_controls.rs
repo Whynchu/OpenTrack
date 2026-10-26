@@ -4,6 +4,7 @@ use eframe::egui::{self, Id, Pos2, Rect, Sense, Stroke, Vec2};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum WheelAction {
     TimeZoom(f32),
+    HorizontalPan(f32),
     VerticalPan(f32),
     VerticalZoom(f32),
 }
@@ -44,6 +45,8 @@ pub(crate) fn wheel(ui: &egui::Ui, bounds: Rect) -> Option<WheelAction> {
             Some(WheelAction::VerticalZoom(amount))
         } else if modifiers.shift {
             Some(WheelAction::VerticalPan(amount))
+        } else if modifiers.ctrl {
+            Some(WheelAction::HorizontalPan(amount))
         } else {
             Some(WheelAction::TimeZoom(amount))
         }
@@ -153,6 +156,13 @@ mod tests {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
         for (modifiers, expected) in [
             (egui::Modifiers::NONE, WheelAction::TimeZoom(40.0)),
+            (
+                egui::Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                WheelAction::HorizontalPan(40.0),
+            ),
             (egui::Modifiers::SHIFT, WheelAction::VerticalPan(40.0)),
             (
                 egui::Modifiers {

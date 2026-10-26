@@ -881,6 +881,15 @@ pub(super) fn show_with_tool(
                 continue;
             }
             let response = ui.interact(r, Id::new(("audio-event", c.id)), Sense::click_and_drag());
+            // Contextual cut band sits directly above the lower name strip.
+            let cut_band = Rect::from_min_max(
+                Pos2::new(r.left(), (r.bottom() - 26.0).max(r.top() + 1.0)),
+                Pos2::new(r.right(), (r.bottom() - 13.0).max(r.top() + 2.0)),
+            );
+            let contextual_cut = *edit_tool == EditTool::Select
+                && response
+                    .hover_pos()
+                    .is_some_and(|pos| cut_band.contains(pos));
             if let Some((track, id, text, focus)) = &mut state.rename
                 && *id == c.id
             {
@@ -936,6 +945,10 @@ pub(super) fn show_with_tool(
                     if let Some(pos) = response.interact_pointer_pos() {
                         split = Some((lane.id, c.id, snap(((pos.x - origin) / px) as f64, grid)));
                     }
+                } else if contextual_cut {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        split = Some((lane.id, c.id, snap(((pos.x - origin) / px) as f64, grid)));
+                    }
                 } else if ui.input(|i| i.modifiers.shift || i.modifiers.ctrl) {
                     if state.selected != Some(c.id) && !state.extra_selected.insert(c.id) {
                         state.extra_selected.remove(&c.id);
@@ -946,7 +959,7 @@ pub(super) fn show_with_tool(
                 }
                 ui.ctx().request_repaint();
             }
-            if response.hovered() && *edit_tool == EditTool::Split {
+            if response.hovered() && (*edit_tool == EditTool::Split || contextual_cut) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                 if let Some(pos) = response.hover_pos() {
                     let beat = snap(((pos.x - origin) / px) as f64, grid);
@@ -956,7 +969,7 @@ pub(super) fn show_with_tool(
                     }
                 }
             }
-            if response.hovered() && *edit_tool != EditTool::Split {
+            if response.hovered() && *edit_tool != EditTool::Split && !contextual_cut {
                 if let Some(pos) = response.hover_pos() {
                     let hovered = hit(c, event_rect(c, lane, origin, px, tempo), pos, selected);
                     ui.ctx().set_cursor_icon(if hovered == Tool::Move {
@@ -990,6 +1003,7 @@ pub(super) fn show_with_tool(
             }
             if response.double_clicked()
                 && *edit_tool == EditTool::Select
+                && !contextual_cut
                 && input.0.is_some_and(|pos| {
                     hit(c, event_rect(c, lane, origin, px, tempo), pos, selected) != Tool::Gain
                 })
@@ -1002,6 +1016,7 @@ pub(super) fn show_with_tool(
                 }
             }
             if *edit_tool == EditTool::Select
+                && !contextual_cut
                 && response.drag_started_by(egui::PointerButton::Primary)
                 && state.gesture.is_none()
                 && state.group_gesture.is_none()
@@ -1098,11 +1113,19 @@ pub(super) fn show_with_tool(
         let pointer = ui
             .input(|i| i.pointer.hover_pos())
             .map(|p| Pos2::new(x, p.y));
-        crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, pointer);
-        ui.painter().with_clip_rect(visible).line_segment(
-            [Pos2::new(x, visible.top()), Pos2::new(x, visible.bottom())],
-            Stroke::new(1.0, theme::PLAYHEAD),
-        );
+        if grid.is_some() {
+            crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, pointer);
+            ui.painter().with_clip_rect(visible).line_segment(
+                [Pos2::new(x, visible.top()), Pos2::new(x, visible.bottom())],
+                Stroke::new(1.0, theme::PLAYHEAD),
+            );
+        } else {
+            crate::system_tool_icons::tool_cursor_only_at(
+                ui,
+                ToolbarIcon::Split,
+                ui.input(|i| i.pointer.hover_pos()),
+            );
+        }
     }
     if let Some(request) = rename_done {
         state.rename = None;
@@ -1379,6 +1402,30 @@ mod tests {
             Some((f.project.tracks[0].id, f.project.tracks[0].clips[1].id))
         );
     }
+    #[test]
+    fn select_tool_contextual_cut_band_splits_at_the_snapped_guide() {
+        let mut f = Fixture::new();
+        f.tool = EditTool::Select;
+        // The event body spans y=0..70; the cut band is directly above the
+        // lower 13 px name strip.
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 50.0))]);
+        assert_eq!(f.guide, Some(450.0));
+        f.button(Pos2::new(445.0, 50.0), true);
+        assert!(f.button(Pos2::new(445.0, 50.0), false));
+        assert_eq!(f.project.tracks[0].clips.len(), 2);
+        assert_eq!(f.project.tracks[0].clips[1].start_beats, 3.5);
+        assert_eq!(f.project.tracks[0].clips[1].source_offset_seconds, 1.25);
+    }
+
+    #[test]
+    fn snap_off_cut_preview_has_scissors_without_a_guide() {
+        let mut f = Fixture::new();
+        f.tool = EditTool::Split;
+        f.grid = None;
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 30.0))]);
+        assert_eq!(f.guide, None, "Snap off must not draw a snapped guide line");
+    }
+
     #[test]
     fn held_secondary_toolbox_changes_shared_tool_on_hover_and_dismisses() {
         let mut f = Fixture::new();
