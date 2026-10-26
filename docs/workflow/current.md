@@ -22,7 +22,11 @@ This checkpoint also adds semitone-row note colors, track-color cohesion for met
 
 ## User review checkpoint - pending
 
-The user will open the current x64 app and check the pitch transitions and shortened notes using their own audio. Do not start Batch 3 until this Batch 2 review is accepted. Keep the app closed until the user chooses to open it.
+The user will open the current x64 app and check the pitch transitions and shortened notes using their own audio. Also review note colors, track-color cohesion (including blue default Stereo In/Out and the Mixer color picker), and note-drag audition. Do not start Batch 3 until this Batch 2 review is accepted. Keep the app closed until the user chooses to open it.
+
+## VST3 lane - foundation only
+
+VST3 class enumeration is implemented and committed as `8ce842c`, outside the transport ledger. The scanner enumerated 11 x64 modules and 28 unique classes, including 19 WaveShell child classes. This is not audio hosting: component/controller creation, bus/parameter/latency introspection, block processing, PDC, editors, state, and per-module timeout isolation remain pending. See [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
 
 ## Preserved direction
 
