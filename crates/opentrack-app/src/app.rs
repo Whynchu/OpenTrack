@@ -69,6 +69,7 @@ use opentrack_core::workspaces::{
     ProjectWorkspaceState, WindowBounds, WindowClass, Workspace, WorkspaceId, WorkspacePreferences,
     WorkspacePreset,
 };
+use opentrack_plugins::{PluginCategory, PluginDescriptor};
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 
@@ -269,8 +270,6 @@ struct ChannelSettingsUiState {
     setup_selected_hidden: Option<ChannelSettingsViewItem>,
     // Per-slot Send activation is currently UI state only; the track/audio model has no Send DSP.
     enabled_sends: HashSet<(u64, usize)>,
-    /// Insert slot waiting for a VST3 module/class choice.
-    vst3_pick_slot: Option<(u64, usize)>,
     /// Insert slot whose VST3 parameters/editor should be shown.
     vst3_parameter_slot: Option<(u64, usize)>,
 }
@@ -673,9 +672,15 @@ pub struct OpenTrackApp {
     active_note_audition: Option<sample_editor::NoteAuditionRequest>,
     note_audition_stop_at: Option<Instant>,
     vst3_runtime: vst3_host::Runtime,
+    vst3_plugin_folders: Vec<PathBuf>,
+    vst3_plugin_catalog: Vec<PluginDescriptor>,
+    plugin_information_open: bool,
+    plugin_scan_task: Option<PluginScanTask>,
+    plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
+    plugin_scan_status: String,
+    plugin_scan_error: Option<String>,
     root_window_handle: Option<isize>,
     vst3_parameter_window: Option<(u64, usize)>,
-    vst3_module_prompt: Option<(u64, usize)>,
     vst3_editor_window: Option<(u64, usize)>,
     vst3_editor_host: Option<vst3_host::EditorWindow>,
     main_window_bounds: Option<WindowBounds>,
@@ -785,6 +790,10 @@ struct RecordingPreview {
 
 struct AudioImportTask {
     result: Receiver<Result<(PathBuf, AudioSource, bool), String>>,
+}
+
+struct PluginScanTask {
+    result: Receiver<Result<opentrack_plugin_scan::ScanReport, String>>,
 }
 
 struct MidiRecordingSession {
@@ -1753,6 +1762,27 @@ impl OpenTrackApp {
                 )
             })
             .unwrap_or_default();
+        let vst3_plugin_folders = creation
+            .storage
+            .and_then(|storage| {
+                eframe::get_value::<Vec<PathBuf>>(storage, "vst3-plugin-folders-v1")
+            })
+            .unwrap_or_else(default_vst3_plugin_folders);
+        let mut vst3_plugin_catalog = creation
+            .storage
+            .and_then(|storage| {
+                eframe::get_value::<Vec<PluginDescriptor>>(storage, "vst3-plugin-catalog-v1")
+            })
+            .unwrap_or_default();
+        sort_vst3_plugin_catalog(&mut vst3_plugin_catalog);
+        let plugin_scan_status = if vst3_plugin_catalog.is_empty() {
+            "No VST3 plug-ins are cached. Add a folder and scan.".to_owned()
+        } else {
+            format!(
+                "{} cached VST3 plug-in(s). Rescan to refresh the catalog.",
+                vst3_plugin_catalog.len()
+            )
+        };
 
         let mut app = Self {
             dock_state,
@@ -1791,9 +1821,15 @@ impl OpenTrackApp {
             active_note_audition: None,
             note_audition_stop_at: None,
             vst3_runtime: vst3_host::Runtime::default(),
+            vst3_plugin_folders,
+            vst3_plugin_catalog,
+            plugin_information_open: false,
+            plugin_scan_task: None,
+            plugin_scan_report: None,
+            plugin_scan_status,
+            plugin_scan_error: None,
             root_window_handle: crate::native_windows::creation_root(creation),
             vst3_parameter_window: None,
-            vst3_module_prompt: None,
             vst3_editor_window: None,
             vst3_editor_host: None,
             main_window_bounds: None,
@@ -3533,107 +3569,6 @@ impl OpenTrackApp {
             }
             self.vst3_editor_host = None;
         }
-        if let Some(target) = self.channel_settings_ui.vst3_pick_slot.take() {
-            self.vst3_module_prompt = Some(target);
-        }
-        if let Some((track_id, slot)) = self.vst3_module_prompt {
-            let mut action = None;
-            let mut cancel = false;
-            egui::Window::new("Add VST3 Plug-in")
-                .id(Id::new("vst3-module-prompt"))
-                .resizable(false)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.label("Choose a single-file .vst3 module or a .vst3 bundle folder.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Plug-in file...").clicked() {
-                            action = Some(false);
-                        }
-                        if ui.button("Bundle folder...").clicked() {
-                            action = Some(true);
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
-                        }
-                    });
-                });
-            if let Some(folder) = action {
-                let selected = if folder {
-                    FileDialog::new().pick_folder()
-                } else {
-                    FileDialog::new()
-                        .add_filter("VST3 plug-in", &["vst3"])
-                        .pick_file()
-                };
-                if let Some(path) = selected {
-                    match vst3_host::resolve_module_selection(&path) {
-                        Ok(module) => self.vst3_runtime.browse_module(track_id, slot, &module),
-                        Err(error) => self.status_message = error,
-                    }
-                }
-                self.vst3_module_prompt = None;
-            } else if cancel {
-                self.vst3_module_prompt = None;
-            }
-        }
-
-        let mut choice = None;
-        let mut close_browser = false;
-        if let Some(browser) = &self.vst3_runtime.browser {
-            let mut open = true;
-            egui::Window::new("Choose VST3 Plug-in")
-                .id(Id::new("vst3-class-browser"))
-                .open(&mut open)
-                .resizable(true)
-                .default_width(520.0)
-                .show(ctx, |ui| {
-                    ui.label(browser.module_path.display().to_string());
-                    if let Some(error) = &browser.error {
-                        ui.colored_label(theme::RECORD, error);
-                    }
-                    if browser.classes.is_empty() && browser.error.is_none() {
-                        ui.label("No VST3 effects or analyzers were found in this module.");
-                    }
-                    for class in &browser.classes {
-                        let label = if class.vendor.is_empty() {
-                            class.name.clone()
-                        } else {
-                            format!("{}  \u{2014}  {}", class.name, class.vendor)
-                        };
-                        if ui.button(label).clicked() {
-                            choice = Some((
-                                browser.track_id,
-                                browser.slot,
-                                browser.module_path.clone(),
-                                class.clone(),
-                            ));
-                        }
-                    }
-                });
-            close_browser = !open;
-        }
-        if let Some((track_id, slot, module_path, class)) = choice
-            && self.vst3_runtime.choose_class(
-                &mut self.data.project,
-                track_id,
-                slot,
-                &module_path,
-                &class,
-            )
-        {
-            self.rebuild_audio_plan();
-            self.mark_modified();
-            if let Some(failure) = self.vst3_runtime.failure(track_id, slot) {
-                self.status_message = format!("VST3 load failed: {failure}");
-            } else {
-                self.status_message = format!("Loaded VST3: {}", class.name);
-                self.vst3_parameter_window = Some((track_id, slot));
-            }
-        }
-        if close_browser {
-            self.vst3_runtime.browser = None;
-        }
-
         if let Some(target) = self.channel_settings_ui.vst3_parameter_slot.take() {
             self.vst3_parameter_window = Some(target);
         }
@@ -7233,6 +7168,10 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.separator();
+                    if menu_command(ui, "Plug-in Information", "", true).clicked() {
+                        self.plugin_information_open = true;
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -7252,7 +7191,6 @@ impl OpenTrackApp {
                         &[
                             ("Mixer 2", ""),
                             ("Mixer 3", ""),
-                            ("Plug-in Information", ""),
                             ("Remaining Record Time Display", ""),
                             ("Time Display", ""),
                             ("VST Instruments", "F11"),
@@ -7542,6 +7480,7 @@ impl OpenTrackApp {
                             &mut self.channel_settings_window,
                             &mut self.compressor_editor,
                             &mut self.channel_settings_ui,
+                            &self.vst3_plugin_catalog,
                         );
                         mixer_selection_requested |= selection_requested;
                         changed
@@ -7800,6 +7739,7 @@ impl OpenTrackApp {
                         &mut self.channel_settings_window,
                         &mut self.compressor_editor,
                         &mut self.channel_settings_ui,
+                        &self.vst3_plugin_catalog,
                     );
                     modified |= changed;
                     mixer_selection_requested |= selection_requested;
@@ -9254,6 +9194,7 @@ impl eframe::App for OpenTrackApp {
         if self.audio_import_task.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        self.poll_vst3_plugin_scan(&ctx);
         let (pointer_event, pointer_released, key_pressed, pointer_down) =
             viewport_interaction(&ctx);
         if pointer_event || key_pressed {
@@ -9349,6 +9290,7 @@ impl eframe::App for OpenTrackApp {
             self.metering_preferences.spectrum_release_ms;
         self.show_audio_device_setup(&ctx);
         self.show_vst_connections(&ctx);
+        self.show_plugin_information(&ctx);
         if self.project_open {
             self.show_vst3_windows(&ctx);
         }
@@ -9436,6 +9378,8 @@ impl eframe::App for OpenTrackApp {
             &self.midi_length_quantize_beats,
         );
         eframe::set_value(storage, "midi-insert-velocity", &self.midi_insert_velocity);
+        eframe::set_value(storage, "vst3-plugin-folders-v1", &self.vst3_plugin_folders);
+        eframe::set_value(storage, "vst3-plugin-catalog-v1", &self.vst3_plugin_catalog);
     }
 }
 
@@ -12537,6 +12481,7 @@ fn show_mixer(
     channel_settings_window: &mut NativeWindowState,
     compressor_editor: &mut CompressorEditorState,
     channel_settings_ui: &mut ChannelSettingsUiState,
+    vst3_plugin_catalog: &[PluginDescriptor],
 ) -> (bool, bool) {
     if show_strips {
         show_mixer_channels(
@@ -12560,6 +12505,7 @@ fn show_mixer(
                 &mut channel_settings_window.channel_bus,
                 input_meter_peaks,
                 output_meter_peaks,
+                vst3_plugin_catalog,
             ),
             false,
         )
@@ -12718,10 +12664,257 @@ fn show_channel_context_menu(response: &egui::Response, state: &mut ChannelSetti
 pub(super) enum InsertSelection {
     Add(InsertEffectKind),
     Remove,
-    Vst3,
 }
 
-fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<InsertSelection>) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InsertMenuCategory {
+    Dynamics,
+    Eq,
+    Delay,
+    Distortion,
+    Filter,
+    Mastering,
+    Modulation,
+    PitchShift,
+    Restoration,
+    Reverb,
+    Spatial,
+    Tools,
+    Vocoder,
+    Analyzer,
+    Other,
+}
+
+impl InsertMenuCategory {
+    const ALL: [Self; 15] = [
+        Self::Dynamics,
+        Self::Eq,
+        Self::Delay,
+        Self::Distortion,
+        Self::Filter,
+        Self::Mastering,
+        Self::Modulation,
+        Self::PitchShift,
+        Self::Restoration,
+        Self::Reverb,
+        Self::Spatial,
+        Self::Tools,
+        Self::Vocoder,
+        Self::Analyzer,
+        Self::Other,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Dynamics => "Dynamics",
+            Self::Eq => "EQ",
+            Self::Delay => "Delay",
+            Self::Distortion => "Distortion",
+            Self::Filter => "Filter",
+            Self::Mastering => "Mastering",
+            Self::Modulation => "Modulation",
+            Self::PitchShift => "Pitch Shift",
+            Self::Restoration => "Restoration",
+            Self::Reverb => "Reverb",
+            Self::Spatial => "Spatial",
+            Self::Tools => "Tools",
+            Self::Vocoder => "Vocoder",
+            Self::Analyzer => "Analyzer",
+            Self::Other => "Other",
+        }
+    }
+
+    const fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::Dynamics => &[
+                "dynamics",
+                "compressor",
+                "limiter",
+                "gate",
+                "expander",
+                "maximizer",
+                "deesser",
+                "multibandcompressor",
+                "vintagedynamics",
+                "vstdynamics",
+            ],
+            Self::Eq => &["eq", "equalizer", "equaliser", "parametric"],
+            Self::Delay => &["delay", "echo", "pingpong", "stereodelay"],
+            Self::Distortion => &[
+                "distortion",
+                "saturation",
+                "overdrive",
+                "fuzz",
+                "bitcrusher",
+                "drive",
+            ],
+            Self::Filter => &["filter", "lowpass", "highpass", "bandpass", "notch", "comb"],
+            Self::Mastering => &["mastering", "master"],
+            Self::Modulation => &[
+                "modulation",
+                "chorus",
+                "flanger",
+                "phaser",
+                "tremolo",
+                "vibrato",
+                "rotary",
+                "ringmod",
+                "autopan",
+            ],
+            Self::PitchShift => &[
+                "pitch",
+                "pitchshift",
+                "harmony",
+                "harmonizer",
+                "octaver",
+                "transpose",
+            ],
+            Self::Restoration => &[
+                "restoration",
+                "noisereduction",
+                "denoise",
+                "declick",
+                "decrackle",
+                "dehum",
+                "declipper",
+            ],
+            Self::Reverb => &["reverb", "convolution", "room", "hall", "plate", "spring"],
+            Self::Spatial => &[
+                "spatial",
+                "surround",
+                "3d",
+                "ambisonic",
+                "immersive",
+                "binaural",
+            ],
+            Self::Tools => &["tools", "tool", "utility", "helper", "diagnostic", "test"],
+            Self::Vocoder => &["vocoder"],
+            Self::Analyzer => &[
+                "analyzer", "analyser", "meter", "analysis", "spectrum", "scope",
+            ],
+            Self::Other => &[],
+        }
+    }
+}
+
+fn normalized_insert_subcategory(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
+fn insert_category_from_subcategories<'a>(
+    subcategories: impl IntoIterator<Item = &'a str>,
+) -> InsertMenuCategory {
+    let normalized = subcategories
+        .into_iter()
+        .map(normalized_insert_subcategory)
+        .filter(|subcategory| !subcategory.is_empty())
+        .collect::<Vec<_>>();
+    for category in InsertMenuCategory::ALL {
+        if normalized
+            .iter()
+            .any(|subcategory| category.aliases().contains(&subcategory.as_str()))
+        {
+            return category;
+        }
+    }
+    InsertMenuCategory::Other
+}
+
+fn vst3_insert_category(plugin: &PluginDescriptor) -> InsertMenuCategory {
+    let mapped =
+        insert_category_from_subcategories(plugin.subcategories.iter().map(String::as_str));
+    if mapped == InsertMenuCategory::Other && plugin.category == PluginCategory::Analyzer {
+        InsertMenuCategory::Analyzer
+    } else {
+        mapped
+    }
+}
+
+fn is_insert_catalog_plugin(plugin: &PluginDescriptor) -> bool {
+    plugin.is_usable() && !matches!(plugin.category, PluginCategory::Instrument)
+}
+
+fn default_vst3_plugin_folders() -> Vec<PathBuf> {
+    opentrack_plugin_scan::default_vst3_folders()
+        .into_iter()
+        .filter(|folder| folder.is_dir())
+        .collect()
+}
+
+fn sort_vst3_plugin_catalog(catalog: &mut [PluginDescriptor]) {
+    catalog.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.vendor.to_lowercase().cmp(&right.vendor.to_lowercase()))
+            .then_with(|| left.class_id.cmp(&right.class_id))
+    });
+}
+
+fn catalog_plugins_for_category<'a>(
+    catalog: &'a [PluginDescriptor],
+    category: InsertMenuCategory,
+) -> Vec<&'a PluginDescriptor> {
+    let mut plugins = catalog
+        .iter()
+        .filter(|plugin| {
+            is_insert_catalog_plugin(plugin) && vst3_insert_category(plugin) == category
+        })
+        .collect::<Vec<_>>();
+    plugins.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.vendor.to_lowercase().cmp(&right.vendor.to_lowercase()))
+            .then_with(|| left.class_id.cmp(&right.class_id))
+    });
+    plugins
+}
+
+fn vst3_insert_effect(plugin: &PluginDescriptor) -> InsertEffectKind {
+    InsertEffectKind::Vst3 {
+        class_id: plugin.class_id.to_hex(),
+        module_path: plugin.module_path.clone(),
+        name: plugin.name.clone(),
+        vendor: plugin.vendor.clone(),
+        component_state: Vec::new(),
+        controller_state: Vec::new(),
+    }
+}
+
+fn show_catalog_insert_items(
+    ui: &mut egui::Ui,
+    catalog: &[PluginDescriptor],
+    category: InsertMenuCategory,
+    added: &mut Option<InsertSelection>,
+) {
+    let plugins = catalog_plugins_for_category(catalog, category);
+    if plugins.is_empty() {
+        return;
+    }
+    ui.separator();
+    for plugin in plugins {
+        let hover = if plugin.vendor.is_empty() {
+            plugin.module_path.display().to_string()
+        } else {
+            format!("{}\n{}", plugin.vendor, plugin.module_path.display())
+        };
+        if ui.button(&plugin.name).on_hover_text(hover).clicked() {
+            *added = Some(InsertSelection::Add(vst3_insert_effect(plugin)));
+            ui.close();
+        }
+    }
+}
+
+fn show_insert_effect_picker(
+    ui: &mut egui::Ui,
+    added: &mut Option<InsertSelection>,
+    catalog: &[PluginDescriptor],
+) {
     if ui.button("No Effect").clicked() {
         *added = Some(InsertSelection::Remove);
         ui.close();
@@ -12741,8 +12934,14 @@ fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<InsertSelecti
             *added = Some(InsertSelection::Add(InsertEffectKind::default()));
             ui.close();
         }
+        show_catalog_insert_items(ui, catalog, InsertMenuCategory::Delay, added);
     });
-    ui.menu_button("Distortion", |ui| show_unimplemented_effect_group(ui));
+    ui.menu_button("Distortion", |ui| {
+        if catalog_plugins_for_category(catalog, InsertMenuCategory::Distortion).is_empty() {
+            show_unimplemented_effect_group(ui);
+        }
+        show_catalog_insert_items(ui, catalog, InsertMenuCategory::Distortion, added);
+    });
     ui.menu_button("Dynamics", |ui| {
         if ui.button("Compressor").clicked() {
             *added = Some(InsertSelection::Add(InsertEffectKind::Compressor {
@@ -12775,27 +12974,44 @@ fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<InsertSelecti
         ] {
             ui.add_enabled(false, egui::Button::new(name));
         }
+        show_catalog_insert_items(ui, catalog, InsertMenuCategory::Dynamics, added);
     });
     ui.menu_button("EQ", |ui| {
         for name in ["GEQ-10", "GEQ-30", "StudioEQ"] {
             ui.add_enabled(false, egui::Button::new(name));
         }
+        show_catalog_insert_items(ui, catalog, InsertMenuCategory::Eq, added);
     });
     for category in [
-        "Filter",
-        "Mastering",
-        "Modulation",
-        "Other",
-        "Pitch Shift - Pitch Correct",
-        "Restoration",
-        "Reverb",
-        "Spatial",
-        "Surround",
-        "SurroundDither",
-        "Tools",
-        "Vocoder",
+        InsertMenuCategory::Filter,
+        InsertMenuCategory::Mastering,
+        InsertMenuCategory::Modulation,
+        InsertMenuCategory::Other,
+        InsertMenuCategory::PitchShift,
+        InsertMenuCategory::Restoration,
+        InsertMenuCategory::Reverb,
+        InsertMenuCategory::Spatial,
     ] {
-        ui.menu_button(category, |ui| show_unimplemented_effect_group(ui));
+        ui.menu_button(category.label(), |ui| {
+            if catalog_plugins_for_category(catalog, category).is_empty() {
+                show_unimplemented_effect_group(ui);
+            }
+            show_catalog_insert_items(ui, catalog, category, added);
+        });
+    }
+    ui.menu_button("Surround", |ui| show_unimplemented_effect_group(ui));
+    ui.menu_button("SurroundDither", |ui| show_unimplemented_effect_group(ui));
+    for category in [
+        InsertMenuCategory::Tools,
+        InsertMenuCategory::Vocoder,
+        InsertMenuCategory::Analyzer,
+    ] {
+        ui.menu_button(category.label(), |ui| {
+            if catalog_plugins_for_category(catalog, category).is_empty() {
+                show_unimplemented_effect_group(ui);
+            }
+            show_catalog_insert_items(ui, catalog, category, added);
+        });
     }
     ui.separator();
     ui.menu_button("OpenTrack Effects", |ui| {
@@ -12808,11 +13024,6 @@ fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<InsertSelecti
             ui.close();
         }
     });
-    ui.separator();
-    if ui.button("VST3 Plug-in...").clicked() {
-        *added = Some(InsertSelection::Vst3);
-        ui.close();
-    }
 }
 
 fn show_unimplemented_effect_group(ui: &mut egui::Ui) {
@@ -15384,6 +15595,212 @@ mod bus_persistence_tests {
         assert_eq!(project.input_channel.strip.gain, 1.0);
         project = history.redo(&project).expect("bus edit redo");
         assert_eq!(project.input_channel.strip.gain, 0.25);
+    }
+}
+
+#[cfg(test)]
+mod plugin_catalog_tests {
+    use super::*;
+    use opentrack_plugins::{PluginArchitecture, PluginClassId, PluginFormat, PluginScanStatus};
+
+    fn vst3_descriptor(
+        seed: u8,
+        name: &str,
+        category: PluginCategory,
+        subcategories: &[&str],
+    ) -> PluginDescriptor {
+        PluginDescriptor {
+            format: PluginFormat::Vst3,
+            class_id: PluginClassId::from_bytes([seed; 16]),
+            name: name.to_owned(),
+            vendor: "Example Audio".to_owned(),
+            version: "1.0".to_owned(),
+            category,
+            subcategories: subcategories
+                .iter()
+                .map(|subcategory| (*subcategory).to_owned())
+                .collect(),
+            module_path: PathBuf::from(format!(r"C:\VST3\{name}.vst3")),
+            architecture: PluginArchitecture::X64,
+            buses: Vec::new(),
+            parameter_count: 0,
+            parameters: Vec::new(),
+            has_editor: false,
+            latency_samples: 0,
+            tail_samples: 0,
+            scan_status: PluginScanStatus::Enumerated,
+            scanned_at_unix_ms: 1_700_000_000_000,
+            diagnostics: None,
+        }
+    }
+
+    #[test]
+    fn vst3_subcategories_map_to_normal_insert_categories() {
+        assert_eq!(
+            insert_category_from_subcategories(["Fx", "Dynamics", "Compressor"]),
+            InsertMenuCategory::Dynamics
+        );
+        assert_eq!(
+            insert_category_from_subcategories(["Fx", "Delay", "Modulation"]),
+            InsertMenuCategory::Delay
+        );
+        assert_eq!(
+            insert_category_from_subcategories(["Fx", "Pitch Shift"]),
+            InsertMenuCategory::PitchShift
+        );
+        assert_eq!(
+            insert_category_from_subcategories(["Fx", "Analyzer"]),
+            InsertMenuCategory::Analyzer
+        );
+        assert_eq!(
+            insert_category_from_subcategories(["Fx", "NoSuchCategory"]),
+            InsertMenuCategory::Other
+        );
+
+        let analyzer = vst3_descriptor(1, "Scope", PluginCategory::Analyzer, &["Fx"]);
+        assert_eq!(
+            vst3_insert_category(&analyzer),
+            InsertMenuCategory::Analyzer
+        );
+        let effect = vst3_descriptor(2, "Mystery", PluginCategory::Effect, &["Fx"]);
+        assert_eq!(vst3_insert_category(&effect), InsertMenuCategory::Other);
+    }
+
+    #[test]
+    fn insert_picker_uses_normal_categories_without_a_vst3_root() {
+        let ctx = egui::Context::default();
+        let catalog = vec![vst3_descriptor(
+            1,
+            "Studio Compressor",
+            PluginCategory::Effect,
+            &["Fx", "Dynamics"],
+        )];
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut selected = None;
+            show_insert_effect_picker(ui, &mut selected, &catalog);
+            assert!(selected.is_none());
+        });
+        let labels = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "Dynamics"));
+        assert!(labels.iter().any(|label| label == "Analyzer"));
+        assert!(!labels.iter().any(|label| label.contains("VST3 Plug-in")));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn catalog_groups_plugins_and_creates_a_vst3_insert() {
+        let catalog = vec![
+            vst3_descriptor(
+                1,
+                "Studio Compressor",
+                PluginCategory::Effect,
+                &["Fx", "Dynamics", "Compressor"],
+            ),
+            vst3_descriptor(2, "Graphic EQ", PluginCategory::Effect, &["Fx", "EQ"]),
+            vst3_descriptor(3, "Mystery", PluginCategory::Effect, &["Fx", "Weird"]),
+            vst3_descriptor(4, "Synth", PluginCategory::Instrument, &["Instrument"]),
+        ];
+
+        let dynamics = catalog_plugins_for_category(&catalog, InsertMenuCategory::Dynamics);
+        assert_eq!(
+            dynamics
+                .iter()
+                .map(|plugin| plugin.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Studio Compressor"]
+        );
+        let eq = catalog_plugins_for_category(&catalog, InsertMenuCategory::Eq);
+        assert_eq!(eq.len(), 1);
+        assert_eq!(eq[0].name, "Graphic EQ");
+        let other = catalog_plugins_for_category(&catalog, InsertMenuCategory::Other);
+        assert_eq!(
+            other
+                .iter()
+                .map(|plugin| plugin.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Mystery"]
+        );
+        assert!(
+            catalog_plugins_for_category(&catalog, InsertMenuCategory::Tools).is_empty(),
+            "instruments and unassigned categories must not appear under Tools"
+        );
+
+        let kind = vst3_insert_effect(dynamics[0]);
+        match kind {
+            InsertEffectKind::Vst3 {
+                class_id,
+                module_path,
+                name,
+                vendor,
+                component_state,
+                controller_state,
+            } => {
+                assert_eq!(class_id, "01010101010101010101010101010101");
+                assert_eq!(
+                    module_path,
+                    PathBuf::from(r"C:\VST3\Studio Compressor.vst3")
+                );
+                assert_eq!(name, "Studio Compressor");
+                assert_eq!(vendor, "Example Audio");
+                assert!(component_state.is_empty());
+                assert!(controller_state.is_empty());
+            }
+            other => panic!("expected a VST3 insert, got {other:?}"),
+        }
+    }
+
+    #[derive(Default)]
+    struct TestStorage {
+        values: HashMap<String, String>,
+    }
+
+    impl eframe::Storage for TestStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.values.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.values.insert(key.to_owned(), value);
+        }
+
+        fn remove_string(&mut self, key: &str) {
+            self.values.remove(key);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn plugin_folders_and_catalog_round_trip_through_eframe_storage() {
+        let folders = vec![
+            PathBuf::from(r"C:\Program Files\Common Files\VST3"),
+            PathBuf::from(r"C:\Users\Example\AppData\Local\Programs\Common\VST3"),
+        ];
+        let catalog = vec![vst3_descriptor(
+            7,
+            "Cached Compressor",
+            PluginCategory::Effect,
+            &["Fx", "Dynamics"],
+        )];
+        let mut storage = TestStorage::default();
+        eframe::set_value(&mut storage, "vst3-plugin-folders-v1", &folders);
+        eframe::set_value(&mut storage, "vst3-plugin-catalog-v1", &catalog);
+
+        let restored_folders =
+            eframe::get_value::<Vec<PathBuf>>(&storage, "vst3-plugin-folders-v1")
+                .expect("folders round-trip");
+        let restored_catalog =
+            eframe::get_value::<Vec<PluginDescriptor>>(&storage, "vst3-plugin-catalog-v1")
+                .expect("catalog round-trip");
+        assert_eq!(restored_folders, folders);
+        assert_eq!(restored_catalog, catalog);
     }
 }
 

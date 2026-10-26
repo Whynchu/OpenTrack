@@ -50,8 +50,11 @@ process working directory.
   plans in 64-frame blocks and applies per-track PDC. Plans without VSTs retain
   the original per-sample path.
 - The app registry keeps instances alive across playback-plan rebuilds, captures
-  state before saving, and exposes `VST3 Plug-in...` in the existing insert
-  picker plus a parameter/editor window.
+  state before saving, and exposes scanned VST3s in the normal insert category
+  menus plus a parameter/editor window.
+- `Devices > Plug-in Information` now manages VST3 folders, scans in a
+  background thread, persists folders/catalog, shows failed modules, and feeds
+  the insert library. There is no separate VST3 effect picker.
 - TDR Nova 2.1.6 smoke test passed in the VST3 crate and app registry: 75
   parameters, 184-sample latency, 184-sample tail, native editor available,
   finite processed audio, 3,608-byte component state, and restore into a fresh

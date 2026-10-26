@@ -354,7 +354,7 @@ pub fn build_report(
                 }
                 retained.insert(class.class_id, path.clone());
                 class_ids.push(class.class_id);
-                plugins.push(class_descriptor(
+                plugins.push(descriptor_with_class_subcategories(
                     &path,
                     module.architecture,
                     &class,
@@ -457,6 +457,26 @@ pub fn scan_folders(folders: &[PathBuf], limits: DiscoveryLimits) -> ScanReport 
 /// Discovers folders and performs factory class enumeration in this process.
 pub fn scan_folders_enumerating(folders: &[PathBuf], limits: DiscoveryLimits) -> ScanReport {
     build_report(folders, limits, crate::unix_time_ms(), true)
+}
+
+/// Builds a descriptor and copies the VST3 class subcategory text into the
+/// format-neutral catalog field. Keeping this in the scanner means
+/// `opentrack-plugins` stays independent of the VST3 ABI.
+fn descriptor_with_class_subcategories(
+    module_path: &Path,
+    architecture: PluginArchitecture,
+    class: &opentrack_vst3::Vst3ClassInfo,
+    scanned_at_unix_ms: u64,
+) -> PluginDescriptor {
+    let mut descriptor = class_descriptor(module_path, architecture, class, scanned_at_unix_ms);
+    descriptor.subcategories = class
+        .subcategories
+        .split('|')
+        .map(str::trim)
+        .filter(|subcategory| !subcategory.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    descriptor
 }
 
 fn append_diagnostic(module: &mut ModuleReport, diagnostic: String) {
@@ -631,6 +651,35 @@ mod tests {
         assert!(json.contains("\"ready_for_enumeration\": 1"));
         let parsed: ScanReport = serde_json::from_str(&json).expect("report deserializes");
         assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn class_subcategories_are_split_and_trimmed_for_the_catalog() {
+        let class = opentrack_vst3::Vst3ClassInfo {
+            class_id: PluginClassId::ZERO,
+            name: "Example Compressor".to_owned(),
+            vendor: "Example Audio".to_owned(),
+            version: "1.0".to_owned(),
+            category: "Audio Module Class".to_owned(),
+            subcategories: "Fx| Dynamics | Compressor|".to_owned(),
+            cardinality: 0,
+            class_flags: 0,
+        };
+        let descriptor = descriptor_with_class_subcategories(
+            Path::new("Example.vst3"),
+            PluginArchitecture::X64,
+            &class,
+            7,
+        );
+        assert_eq!(
+            descriptor.subcategories,
+            vec![
+                "Fx".to_owned(),
+                "Dynamics".to_owned(),
+                "Compressor".to_owned()
+            ]
+        );
+        assert_eq!(descriptor.scanned_at_unix_ms, 7);
     }
 
     #[test]

@@ -236,6 +236,7 @@ mod tests {
             vendor: "Example Audio".to_owned(),
             version: "1.2.3".to_owned(),
             category: PluginCategory::Effect,
+            subcategories: vec!["Fx".to_owned(), "Dynamics".to_owned()],
             module_path: PathBuf::from(path),
             architecture: PluginArchitecture::X64,
             buses: vec![PluginBusSummary {

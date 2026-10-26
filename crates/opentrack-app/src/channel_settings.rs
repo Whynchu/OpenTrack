@@ -140,6 +140,7 @@ pub(super) fn show(
     bus_target: &mut Option<bool>,
     input_peaks: [f32; 2],
     output_peaks: [f32; 2],
+    vst3_plugin_catalog: &[PluginDescriptor],
 ) -> bool {
     let mut names = project
         .tracks
@@ -234,7 +235,7 @@ pub(super) fn show(
         child.spacing_mut().item_spacing = Vec2::ZERO;
         match item {
             ChannelSettingsViewItem::Inserts => {
-                changed |= inserts(&mut child, r, track, compressor, state)
+                changed |= inserts(&mut child, r, track, compressor, state, vst3_plugin_catalog)
             }
             ChannelSettingsViewItem::Sends | ChannelSettingsViewItem::SendRouting => {
                 if track.id >= opentrack_core::project::INPUT_BUS_ID {
@@ -371,6 +372,7 @@ fn inserts(
     track: &mut Track,
     compressor: &mut CompressorEditorState,
     state: &mut ChannelSettingsUiState,
+    vst3_plugin_catalog: &[PluginDescriptor],
 ) -> bool {
     let mut changed = false;
     if header(
@@ -450,12 +452,16 @@ fn inserts(
             }
             let mut selected = None;
             menu(&type_selector, 200.0, |ui| {
-                show_insert_effect_picker(ui, &mut selected)
+                show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
             });
             match selected {
                 Some(InsertSelection::Add(kind)) => {
                     if let Some(effect) = track.inserts.get_mut(i) {
+                        let enable = matches!(kind, InsertEffectKind::Vst3 { .. });
                         effect.kind = kind;
+                        if enable {
+                            effect.enabled = true;
+                        }
                         changed = true;
                     }
                 }
@@ -463,18 +469,15 @@ fn inserts(
                     track.inserts.remove(i);
                     changed = true;
                 }
-                Some(InsertSelection::Vst3) => {
-                    state.vst3_pick_slot = Some((track.id, i));
-                }
                 None => {}
             }
         } else {
             let mut selected = None;
             menu(&type_selector, 200.0, |ui| {
-                show_insert_effect_picker(ui, &mut selected)
+                show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
             });
             menu(&response, 200.0, |ui| {
-                show_insert_effect_picker(ui, &mut selected)
+                show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
             });
             match selected {
                 Some(InsertSelection::Add(kind)) => {
@@ -486,9 +489,6 @@ fn inserts(
                         },
                     );
                     changed = true;
-                }
-                Some(InsertSelection::Vst3) => {
-                    state.vst3_pick_slot = Some((track.id, i.min(track.inserts.len())));
                 }
                 Some(InsertSelection::Remove) | None => {}
             }
@@ -1833,7 +1833,8 @@ mod bus_tests {
                             &mut state,
                             &mut target,
                             [0.1, 0.2],
-                            [0.3, 0.4]
+                            [0.3, 0.4],
+                            &[],
                         ));
                     },
                 );
@@ -1873,6 +1874,7 @@ mod bus_tests {
                     &mut target,
                     [0.0; 2],
                     [0.0; 2],
+                    &[],
                 );
             },
         );

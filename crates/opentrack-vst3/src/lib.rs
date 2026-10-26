@@ -59,6 +59,8 @@ pub fn class_descriptor(
         vendor: class.vendor.clone(),
         version: class.version.clone(),
         category: class.plugin_category(),
+        // Populated by the scanner after this format-specific mapping.
+        subcategories: Vec::new(),
         module_path: module_path.to_path_buf(),
         architecture,
         buses: Vec::new(),

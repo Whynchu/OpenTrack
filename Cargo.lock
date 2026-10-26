@@ -1675,6 +1675,7 @@ dependencies = [
  "egui_dock",
  "opentrack-audio",
  "opentrack-core",
+ "opentrack-plugin-scan",
  "opentrack-plugins",
  "opentrack-vst3",
  "raw-window-handle",

@@ -303,12 +303,11 @@ T042 or Batch 3.
   block processed, 3,608-byte component state, editor available. The app still
   needs its final build and live review; VST instruments/multi-out/sandboxing
   remain follow-up.
-- Next UI integration (2026-10-26): put scanned external effects into the normal
-  insert category menus, remove the separate VST3 picker dropdown, and make
-  Devices > Plug-in Information a real folder/catalog manager. Persist assigned
-  folders and the scanned catalog; show module/vendor/category/status and scan
-  failures. The folder scanner still loads modules in the app process until the
-  isolated scanner manager is wired.
+- UI integration implemented: scanned external effects appear in the normal
+  insert category menus, the separate VST3 picker dropdown is gone, and
+  Devices > Plug-in Information manages folders/catalog/scan failures. Folders
+  and catalog persist. The folder scanner still loads modules in the app process
+  until the isolated scanner manager is wired.
 
 ### Probe findings to carry forward
 

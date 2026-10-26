@@ -284,6 +284,13 @@ pub struct PluginDescriptor {
     pub version: String,
     /// Broad category.
     pub category: PluginCategory,
+    /// Vendor subcategories split from the format's category text.
+    ///
+    /// For VST3 this is the `subCategories` field split on `|`. The values are
+    /// kept format-neutral because the scanner and picker only use them as
+    /// display/facet hints.
+    #[serde(default)]
+    pub subcategories: Vec<String>,
     /// Path of the module that exposed this class.
     pub module_path: PathBuf,
     /// Architecture of that module image.
@@ -342,6 +349,29 @@ mod tests {
         assert!(!PluginScanStatus::NotScanned.is_rejected());
     }
 
+    fn descriptor() -> PluginDescriptor {
+        PluginDescriptor {
+            format: PluginFormat::Vst3,
+            class_id: PluginClassId::ZERO,
+            name: "Example".to_owned(),
+            vendor: "Vendor".to_owned(),
+            version: "1.0".to_owned(),
+            category: PluginCategory::Effect,
+            subcategories: vec!["Fx".to_owned(), "Dynamics".to_owned()],
+            module_path: PathBuf::from("Example.vst3"),
+            architecture: PluginArchitecture::X64,
+            buses: Vec::new(),
+            parameter_count: 0,
+            parameters: Vec::new(),
+            has_editor: false,
+            latency_samples: 0,
+            tail_samples: 0,
+            scan_status: PluginScanStatus::Enumerated,
+            scanned_at_unix_ms: 0,
+            diagnostics: None,
+        }
+    }
+
     #[test]
     fn main_output_is_selected_without_aux() {
         let bus = |direction, kind, name: &str| PluginBusSummary {
@@ -351,37 +381,39 @@ mod tests {
             channel_count: 2,
             default_active: true,
         };
-        let descriptor = PluginDescriptor {
-            format: PluginFormat::Vst3,
-            class_id: PluginClassId::ZERO,
-            name: "Example".to_owned(),
-            vendor: "Vendor".to_owned(),
-            version: "1.0".to_owned(),
-            category: PluginCategory::Effect,
-            module_path: PathBuf::from("Example.vst3"),
-            architecture: PluginArchitecture::X64,
-            buses: vec![
-                bus(PluginBusDirection::Input, PluginBusKind::Main, "stereo in"),
-                bus(PluginBusDirection::Input, PluginBusKind::Aux, "sidechain"),
-                bus(
-                    PluginBusDirection::Output,
-                    PluginBusKind::Main,
-                    "stereo out",
-                ),
-            ],
-            parameter_count: 0,
-            parameters: Vec::new(),
-            has_editor: false,
-            latency_samples: 0,
-            tail_samples: 0,
-            scan_status: PluginScanStatus::Enumerated,
-            scanned_at_unix_ms: 0,
-            diagnostics: None,
-        };
+        let mut descriptor = descriptor();
+        descriptor.buses = vec![
+            bus(PluginBusDirection::Input, PluginBusKind::Main, "stereo in"),
+            bus(PluginBusDirection::Input, PluginBusKind::Aux, "sidechain"),
+            bus(
+                PluginBusDirection::Output,
+                PluginBusKind::Main,
+                "stereo out",
+            ),
+        ];
         assert_eq!(
             descriptor.main_output().map(|bus| bus.name.as_str()),
             Some("stereo out")
         );
         assert!(descriptor.is_usable());
+    }
+
+    #[test]
+    fn subcategories_round_trip_and_default_to_empty() {
+        let descriptor = descriptor();
+        let json = serde_json::to_string(&descriptor).expect("descriptor serializes");
+        assert!(json.contains("\"subcategories\":[\"Fx\",\"Dynamics\"]"));
+        let parsed: PluginDescriptor =
+            serde_json::from_str(&json).expect("descriptor deserializes");
+        assert_eq!(parsed.subcategories, descriptor.subcategories);
+
+        let mut legacy = serde_json::to_value(&descriptor).expect("descriptor serializes");
+        legacy
+            .as_object_mut()
+            .expect("descriptor is an object")
+            .remove("subcategories");
+        let parsed: PluginDescriptor =
+            serde_json::from_value(legacy).expect("descriptor without subcategories deserializes");
+        assert!(parsed.subcategories.is_empty());
     }
 }

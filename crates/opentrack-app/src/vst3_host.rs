@@ -9,18 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use opentrack_audio::HostedInsert;
-use opentrack_core::project::{InsertEffect, InsertEffectKind, Project, Track};
-use opentrack_plugins::{HostedProcessor, PluginCategory, PluginClassId};
-use opentrack_vst3::{Vst3ClassInfo, Vst3Effect, Vst3Module, Vst3ParameterInfo, Vst3State};
-
-#[derive(Clone, Debug)]
-pub struct Browser {
-    pub track_id: u64,
-    pub slot: usize,
-    pub module_path: PathBuf,
-    pub classes: Vec<Vst3ClassInfo>,
-    pub error: Option<String>,
-}
+use opentrack_core::project::{InsertEffectKind, Project, Track};
+use opentrack_plugins::{HostedProcessor, PluginClassId};
+use opentrack_vst3::{Vst3Effect, Vst3ParameterInfo, Vst3State};
 
 struct Instance {
     class_id: String,
@@ -69,7 +60,6 @@ pub struct Runtime {
     instances: HashMap<(u64, usize), Instance>,
     failures: HashMap<(u64, usize), String>,
     failed_class: HashMap<(u64, usize), String>,
-    pub browser: Option<Browser>,
 }
 
 /// Owner-lifetime native window used as the parent of a VST3 editor view.
@@ -185,89 +175,6 @@ impl Runtime {
         self.instances.clear();
         self.failures.clear();
         self.failed_class.clear();
-        true
-    }
-
-    pub fn browse_module(&mut self, track_id: u64, slot: usize, module_path: &Path) {
-        let mut classes = match Vst3Module::open(module_path) {
-            Ok(module) => match module.enumerate() {
-                Ok(enumeration) => enumeration
-                    .classes
-                    .into_iter()
-                    .filter(|class| {
-                        matches!(
-                            class.plugin_category(),
-                            PluginCategory::Effect | PluginCategory::Analyzer
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-                Err(error) => {
-                    self.browser = Some(Browser {
-                        track_id,
-                        slot,
-                        module_path: module_path.to_path_buf(),
-                        classes: Vec::new(),
-                        error: Some(error.to_string()),
-                    });
-                    return;
-                }
-            },
-            Err(error) => {
-                self.browser = Some(Browser {
-                    track_id,
-                    slot,
-                    module_path: module_path.to_path_buf(),
-                    classes: Vec::new(),
-                    error: Some(error.to_string()),
-                });
-                return;
-            }
-        };
-        classes.sort_by(|left, right| left.name.cmp(&right.name));
-        self.browser = Some(Browser {
-            track_id,
-            slot,
-            module_path: module_path.to_path_buf(),
-            error: None,
-            classes,
-        });
-    }
-
-    pub fn choose_class(
-        &mut self,
-        project: &mut Project,
-        track_id: u64,
-        slot: usize,
-        module_path: &Path,
-        class: &Vst3ClassInfo,
-    ) -> bool {
-        let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id) else {
-            return false;
-        };
-        if !class.is_audio_module() {
-            return false;
-        }
-        let kind = InsertEffectKind::Vst3 {
-            class_id: class.class_id.to_hex(),
-            module_path: module_path.to_path_buf(),
-            name: class.name.clone(),
-            vendor: class.vendor.clone(),
-            component_state: Vec::new(),
-            controller_state: Vec::new(),
-        };
-        if let Some(insert) = track.inserts.get_mut(slot) {
-            insert.kind = kind;
-            insert.enabled = true;
-        } else {
-            track.inserts.push(InsertEffect {
-                enabled: true,
-                kind,
-            });
-        }
-        self.instances.remove(&(track_id, slot));
-        self.failures.remove(&(track_id, slot));
-        self.failed_class.remove(&(track_id, slot));
-        self.browser = None;
         true
     }
 
@@ -454,7 +361,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentrack_core::project::TrackKind;
+    use opentrack_core::project::{InsertEffect, TrackKind};
 
     #[test]
     fn module_selection_accepts_a_single_module_file() {

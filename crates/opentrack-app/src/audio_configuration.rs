@@ -801,6 +801,402 @@ impl OpenTrackApp {
             });
         self.vst_connections_open = open;
     }
+
+    pub(super) fn poll_vst3_plugin_scan(&mut self, ctx: &egui::Context) {
+        let result = match self.plugin_scan_task.as_ref() {
+            Some(task) => match task.result.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(150));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err(
+                    "the VST3 scan worker stopped before returning a result".to_owned(),
+                )),
+            },
+            None => return,
+        };
+        let Some(result) = result else {
+            return;
+        };
+        self.plugin_scan_task = None;
+        match result {
+            Ok(report) => {
+                let new_plugins = report.plugins.len();
+                let available_plugins = report
+                    .plugins
+                    .iter()
+                    .filter(|plugin| plugin.is_usable())
+                    .count();
+                let failed_modules = report.totals.rejected;
+                let unavailable_folders = report
+                    .folders
+                    .iter()
+                    .filter(|folder| folder.status != opentrack_plugin_scan::FolderStatus::Scanned)
+                    .count();
+                self.merge_vst3_plugin_catalog(report.plugins.clone());
+                self.apply_vst3_scan_failures(&report);
+                self.plugin_scan_status = format!(
+                    "Scanned {} folder(s): {new_plugins} plug-in class(es) found, {available_plugins} available for inserts. {failed_modules} module(s) failed; {unavailable_folders} folder(s) unavailable.",
+                    report.folders.len()
+                );
+                self.plugin_scan_error = None;
+                self.plugin_scan_report = Some(report);
+            }
+            Err(error) => {
+                self.plugin_scan_status = "VST3 plug-in scan failed".to_owned();
+                self.plugin_scan_error = Some(error);
+            }
+        }
+    }
+
+    fn merge_vst3_plugin_catalog(&mut self, plugins: Vec<PluginDescriptor>) {
+        for plugin in plugins {
+            if let Some(existing) = self.vst3_plugin_catalog.iter_mut().find(|existing| {
+                existing.format == plugin.format && existing.class_id == plugin.class_id
+            }) {
+                *existing = plugin;
+            } else {
+                self.vst3_plugin_catalog.push(plugin);
+            }
+        }
+        sort_vst3_plugin_catalog(&mut self.vst3_plugin_catalog);
+    }
+
+    fn apply_vst3_scan_failures(&mut self, report: &opentrack_plugin_scan::ScanReport) {
+        for module in report
+            .modules
+            .iter()
+            .filter(|module| module.status.is_rejected())
+        {
+            let path = PathBuf::from(&module.path);
+            for plugin in &mut self.vst3_plugin_catalog {
+                if plugin.module_path == path {
+                    plugin.scan_status = module.status;
+                    if let Some(diagnostics) = &module.diagnostics {
+                        plugin.diagnostics = Some(diagnostics.clone());
+                    }
+                }
+            }
+        }
+        sort_vst3_plugin_catalog(&mut self.vst3_plugin_catalog);
+    }
+
+    fn start_vst3_plugin_scan(&mut self) {
+        if self.plugin_scan_task.is_some() {
+            return;
+        }
+        if self.vst3_plugin_folders.is_empty() {
+            self.plugin_scan_status =
+                "Add at least one VST3 plug-in folder before scanning.".to_owned();
+            self.plugin_scan_error = Some("No VST3 plug-in folders are configured.".to_owned());
+            return;
+        }
+        let folders = self.vst3_plugin_folders.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.plugin_scan_task = Some(PluginScanTask { result: receiver });
+        self.plugin_scan_report = None;
+        self.plugin_scan_error = None;
+        self.plugin_scan_status = format!(
+            "Scanning {} VST3 folder(s) in the background\u{2026}",
+            folders.len()
+        );
+        match std::thread::Builder::new()
+            .name("opentrack-vst3-scan".to_owned())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    opentrack_plugin_scan::scan_folders_enumerating(
+                        &folders,
+                        opentrack_plugin_scan::DiscoveryLimits::default(),
+                    )
+                }))
+                .map_err(|_| "the VST3 scan worker panicked".to_owned());
+                let _ = sender.send(result);
+            }) {
+            Ok(_) => {}
+            Err(error) => {
+                self.plugin_scan_task = None;
+                self.plugin_scan_status = "VST3 plug-in scan could not start".to_owned();
+                self.plugin_scan_error = Some(error.to_string());
+            }
+        }
+    }
+
+    fn add_vst3_plugin_folder(&mut self, folder: PathBuf) {
+        if self.vst3_plugin_folders.iter().any(|existing| {
+            existing
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&folder.to_string_lossy())
+        }) {
+            return;
+        }
+        self.vst3_plugin_folders.push(folder);
+        self.plugin_scan_status =
+            "Folder added. Click Scan or Rescan to update the catalog.".to_owned();
+        self.plugin_scan_error = None;
+    }
+
+    fn remove_vst3_plugin_folder(&mut self, index: usize) {
+        if index < self.vst3_plugin_folders.len() {
+            self.vst3_plugin_folders.remove(index);
+            self.plugin_scan_status =
+                "Folder removed. Existing catalog entries are kept until a later scan replaces them."
+                    .to_owned();
+            self.plugin_scan_error = None;
+        }
+    }
+
+    pub(super) fn show_plugin_information(&mut self, ctx: &egui::Context) {
+        if !self.plugin_information_open {
+            return;
+        }
+        let mut open = true;
+        let mut add_folder = false;
+        let mut add_module_file = false;
+        let mut scan_requested = false;
+        let mut remove_folder = None;
+        egui::Window::new("Plug-in Information")
+            .id(egui::Id::new("plugin-information-window"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(Vec2::new(940.0, 560.0))
+            .min_size(Vec2::new(720.0, 420.0))
+            .show(ctx, |ui| {
+                compact(ui);
+                ui.label(egui::RichText::new("VST3 Plug-in Folders").strong());
+                ui.label(
+                    "OpenTrack scans these folders for VST3 effects and keeps the result in the reusable insert catalog.",
+                );
+                egui::Frame::group(ui.style())
+                    .inner_margin(4.0)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::both()
+                            .id_salt("vst3-plugin-folders")
+                            .max_height(108.0)
+                            .show(ui, |ui| {
+                                if self.vst3_plugin_folders.is_empty() {
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Button::new("No plug-in folders configured"),
+                                    );
+                                }
+                                for (index, folder) in
+                                    self.vst3_plugin_folders.iter().enumerate()
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.label(folder.display().to_string());
+                                        let folder_report =
+                                            self.plugin_scan_report.as_ref().and_then(|report| {
+                                                report.folders.iter().find(|entry| {
+                                                    Path::new(&entry.path) == folder.as_path()
+                                                })
+                                            });
+                                        if let Some(report) = folder_report {
+                                            let (label, color) = match report.status {
+                                                opentrack_plugin_scan::FolderStatus::Scanned => (
+                                                    format!("{} module(s)", report.modules_found),
+                                                    theme::palette(ui).muted,
+                                                ),
+                                                opentrack_plugin_scan::FolderStatus::Missing => {
+                                                    ("missing".to_owned(), theme::WARNING)
+                                                }
+                                                opentrack_plugin_scan::FolderStatus::NotDirectory => {
+                                                    ("not a directory".to_owned(), theme::WARNING)
+                                                }
+                                                opentrack_plugin_scan::FolderStatus::Error => {
+                                                    ("error".to_owned(), theme::RECORD)
+                                                }
+                                            };
+                                            let response = ui.colored_label(color, label);
+                                            if let Some(diagnostics) = &report.diagnostics {
+                                                response.on_hover_text(diagnostics);
+                                            }
+                                        } else if folder.is_dir() {
+                                            ui.label("not scanned");
+                                        } else {
+                                            ui.colored_label(theme::WARNING, "missing");
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .small_button("Remove")
+                                                    .on_hover_text(
+                                                        "Remove this folder from scanning. Existing catalog entries are kept.",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    remove_folder = Some(index);
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                            });
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Add Folder\u{2026}").clicked() {
+                        add_folder = true;
+                    }
+                    if ui
+                        .button("Add Plug-in File\u{2026}")
+                        .on_hover_text(
+                            "Adds the folder containing a .vst3 module. Scanning remains folder-based.",
+                        )
+                        .clicked()
+                    {
+                        add_module_file = true;
+                    }
+                    let scan_label = if self.vst3_plugin_catalog.is_empty() {
+                        "Scan"
+                    } else {
+                        "Rescan"
+                    };
+                    if ui
+                        .add_enabled(
+                            self.plugin_scan_task.is_none() && !self.vst3_plugin_folders.is_empty(),
+                            egui::Button::new(scan_label),
+                        )
+                        .clicked()
+                    {
+                        scan_requested = true;
+                    }
+                    if self.plugin_scan_task.is_some() {
+                        ui.spinner();
+                    }
+                });
+                if let Some(error) = &self.plugin_scan_error {
+                    ui.colored_label(theme::RECORD, error);
+                }
+                ui.label(&self.plugin_scan_status);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Plug-in Catalog").strong());
+                    ui.label(format!(
+                        "{} class(es) reusable by the insert picker",
+                        self.vst3_plugin_catalog.len()
+                    ));
+                });
+                if self.vst3_plugin_catalog.is_empty() {
+                    ui.label("No plug-ins are in the catalog yet. Add a folder and scan.");
+                } else {
+                    egui::ScrollArea::both()
+                        .id_salt("vst3-plugin-catalog-table")
+                        .max_height(270.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("vst3-plugin-catalog-grid")
+                                .striped(true)
+                                .num_columns(5)
+                                .spacing(Vec2::new(12.0, 3.0))
+                                .show(ui, |ui| {
+                                    for heading in
+                                        ["Name", "Vendor", "Category / Subcategory", "Module", "Status"]
+                                    {
+                                        ui.label(egui::RichText::new(heading).strong());
+                                    }
+                                    ui.end_row();
+                                    for plugin in &self.vst3_plugin_catalog {
+                                        ui.label(plugin.name.clone());
+                                        ui.label(if plugin.vendor.is_empty() {
+                                            "\u{2014}".to_owned()
+                                        } else {
+                                            plugin.vendor.clone()
+                                        });
+                                        let category = vst3_insert_category(plugin).label();
+                                        ui.label(if plugin.subcategories.is_empty() {
+                                            category.to_owned()
+                                        } else {
+                                            format!("{category} / {}", plugin.subcategories.join(", "))
+                                        });
+                                        let module = plugin.module_path.display().to_string();
+                                        ui.add(egui::Label::new(module.clone()).truncate())
+                                            .on_hover_text(module);
+                                        let (status, color) = if plugin.is_usable() {
+                                            (
+                                                format!(
+                                                    "{} \u{00b7} available",
+                                                    plugin_scan_status_label(plugin.scan_status)
+                                                ),
+                                                theme::palette(ui).text,
+                                            )
+                                        } else {
+                                            (
+                                                format!(
+                                                    "{} \u{00b7} unavailable",
+                                                    plugin_scan_status_label(plugin.scan_status)
+                                                ),
+                                                theme::WARNING,
+                                            )
+                                        };
+                                        ui.colored_label(color, status);
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                }
+                if let Some(report) = &self.plugin_scan_report {
+                    let failed = report
+                        .modules
+                        .iter()
+                        .filter(|module| module.status.is_rejected())
+                        .collect::<Vec<_>>();
+                    if !failed.is_empty() {
+                        ui.separator();
+                        egui::CollapsingHeader::new(format!(
+                            "Failed modules from the last scan ({})",
+                            failed.len()
+                        ))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("vst3-plugin-scan-failures")
+                                .max_height(120.0)
+                                .show(ui, |ui| {
+                                    for module in failed {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.colored_label(
+                                                theme::WARNING,
+                                                plugin_scan_status_label(module.status),
+                                            );
+                                            ui.label(&module.path);
+                                            if let Some(diagnostics) = &module.diagnostics {
+                                                ui.label(diagnostics);
+                                            }
+                                        });
+                                    }
+                                });
+                        });
+                    }
+                }
+            });
+        self.plugin_information_open = open;
+        if let Some(index) = remove_folder {
+            self.remove_vst3_plugin_folder(index);
+        }
+        if add_folder && let Some(folder) = FileDialog::new().pick_folder() {
+            self.add_vst3_plugin_folder(folder);
+        }
+        if add_module_file
+            && let Some(path) = FileDialog::new()
+                .add_filter("VST3 plug-in", &["vst3"])
+                .pick_file()
+        {
+            match vst3_host::resolve_module_selection(&path) {
+                Ok(module) => {
+                    if let Some(folder) = module.parent() {
+                        self.add_vst3_plugin_folder(folder.to_path_buf());
+                    }
+                }
+                Err(error) => {
+                    self.plugin_scan_status = "Could not add the plug-in file".to_owned();
+                    self.plugin_scan_error = Some(error);
+                }
+            }
+        }
+        if scan_requested {
+            self.start_vst3_plugin_scan();
+        }
+    }
 }
 
 fn mode_label(mode: AudioDeviceMode) -> &'static str {
@@ -808,6 +1204,23 @@ fn mode_label(mode: AudioDeviceMode) -> &'static str {
         AudioDeviceMode::SharedLowLatency => "Shared - Low Latency",
         AudioDeviceMode::SharedCompatible => "Shared - Compatible",
         AudioDeviceMode::Exclusive => "Exclusive",
+    }
+}
+
+fn plugin_scan_status_label(status: opentrack_plugins::PluginScanStatus) -> &'static str {
+    use opentrack_plugins::PluginScanStatus;
+    match status {
+        PluginScanStatus::NotScanned => "not scanned",
+        PluginScanStatus::ReadyForEnumeration => "ready to enumerate",
+        PluginScanStatus::Enumerated => "enumerated",
+        PluginScanStatus::UnsupportedArchitecture => "unsupported architecture",
+        PluginScanStatus::InvalidModule => "invalid module",
+        PluginScanStatus::Unreadable => "unreadable",
+        PluginScanStatus::LoadFailed => "load failed",
+        PluginScanStatus::TimedOut => "timed out",
+        PluginScanStatus::Crashed => "crashed",
+        PluginScanStatus::NeedsAuthorization => "needs authorization",
+        PluginScanStatus::Quarantined => "quarantined",
     }
 }
 
