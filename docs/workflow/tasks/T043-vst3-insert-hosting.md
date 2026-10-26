@@ -54,6 +54,19 @@ Project event behavior, local ASIO and WASAPI remain protected.
 7. Undo/redo insert add/remove/bypass and parameter gestures predictably.
 8. A missing module shows an explicit failure and preserves the slot/state.
 
+## Verification status 2026-10-26
+
+- Source/compile: app, VST3, hosted audio and core paths compile.
+- App suite: 136 passed, 2 ignored installed-plugin tests.
+- VST3 suite: 13 passed, 2 ignored installed-plugin tests.
+- Hosted block/PDC suite: 6 passed.
+- TDR Nova: 75 parameters, 184-sample latency/tail, native editor reported,
+  3,608-byte component state, finite block output, fresh-instance restore.
+- WaveShell CLA-76 Stereo: loads, enumerates parameters and processes a block.
+- x64 local-ASIO build: `EFAA96C0E4BE778F70DAE29C5E7C45DBD45C9602BFE8E251C4730F259C403A58`.
+- Not yet accepted: live listening, editor visual/interaction review, multi-track
+  PDC by ear, save/reopen in the desktop app, and the ignored-plugin slot tests.
+
 ## Verification checklist
 
 - `cargo fmt --all`

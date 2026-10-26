@@ -52,8 +52,18 @@ process working directory.
 - The app registry keeps instances alive across playback-plan rebuilds, captures
   state before saving, and exposes `VST3 Plug-in...` in the existing insert
   picker plus a parameter/editor window.
-- Real installed-plugin smoke testing and release verification are still
-  pending. The source path now exists; it is not yet accepted audio hosting.
+- TDR Nova 2.1.6 smoke test passed in the VST3 crate and app registry: 75
+  parameters, 184-sample latency, 184-sample tail, native editor available,
+  finite processed audio, 3,608-byte component state, and restore into a fresh
+  instance. The app registry reloaded the saved state and enumerated the same
+  parameters.
+- WaveShell1 CLA-76 Stereo also loads through the same path with a live
+  parameter list and finite block output.
+- Current x64 local-ASIO build: `EFAA96C0E4BE778F70DAE29C5E7C45DBD45C9602BFE8E251C4730F259C403A58`.
+  App suite: 136 passed, 2 ignored installed-plugin tests. VST3 suite: 13
+  passed, 2 ignored installed-plugin tests. Hosted audio: 6 passed. Live
+  listening/visual review remains pending; the full audio suite still has
+  unrelated in-progress pitch-quality failures owned by Codex.
 
 ## Not implemented
 

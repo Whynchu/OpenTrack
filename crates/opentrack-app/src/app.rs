@@ -3623,6 +3623,12 @@ impl OpenTrackApp {
         {
             self.rebuild_audio_plan();
             self.mark_modified();
+            if let Some(failure) = self.vst3_runtime.failure(track_id, slot) {
+                self.status_message = format!("VST3 load failed: {failure}");
+            } else {
+                self.status_message = format!("Loaded VST3: {}", class.name);
+                self.vst3_parameter_window = Some((track_id, slot));
+            }
         }
         if close_browser {
             self.vst3_runtime.browser = None;
@@ -3657,6 +3663,7 @@ impl OpenTrackApp {
         let mut set_parameter = None;
         let mut toggle_enabled = false;
         let mut remove = false;
+        let mut retry = false;
         let mut open_editor = false;
         let mut close_editor = false;
         let mut open = true;
@@ -3668,6 +3675,9 @@ impl OpenTrackApp {
             .show(ctx, |ui| {
                 if let Some(failure) = &failure {
                     ui.colored_label(theme::RECORD, failure);
+                    if ui.button("Retry Load").clicked() {
+                        retry = true;
+                    }
                 }
                 if let Some(engine) = &self.audio_engine {
                     let diagnostic = engine.hosted_processing_diagnostic();
@@ -3730,6 +3740,10 @@ impl OpenTrackApp {
             self.vst3_runtime.capture_states(&mut self.data.project);
             self.mark_modified();
         }
+        if retry {
+            self.vst3_runtime.retry(track_id, slot);
+            self.rebuild_audio_plan();
+        }
         if toggle_enabled
             && let Some(track) = self
                 .data
@@ -3746,10 +3760,7 @@ impl OpenTrackApp {
         if open_editor {
             let root = self.root_window_handle.unwrap_or_default();
             match vst3_host::EditorWindow::create(&title, root) {
-                Ok(window) => match self
-                    .vst3_runtime
-                    .open_editor(track_id, slot, window.hwnd())
-                {
+                Ok(window) => match self.vst3_runtime.open_editor(track_id, slot, window.hwnd()) {
                     Ok(()) => {
                         self.vst3_editor_host = Some(window);
                         self.vst3_editor_window = Some((track_id, slot));

@@ -38,9 +38,7 @@ use std::path::Path;
 
 use opentrack_plugins::{PluginArchitecture, PluginDescriptor, PluginFormat, PluginScanStatus};
 
-pub use effect::{
-    MAX_BLOCK_FRAMES, MAX_PARAMETERS, Vst3Effect, Vst3ParameterInfo, Vst3State,
-};
+pub use effect::{MAX_BLOCK_FRAMES, MAX_PARAMETERS, Vst3Effect, Vst3ParameterInfo, Vst3State};
 pub use host::{HostContext, HostMessage};
 pub use module::{ModuleEnumeration, Vst3ClassInfo, Vst3LoadError, Vst3Module};
 

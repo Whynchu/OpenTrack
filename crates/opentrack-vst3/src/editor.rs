@@ -12,11 +12,11 @@
 
 use std::ffi::c_void;
 
+use vst3::ComPtr;
 use vst3::Steinberg::Vst::{IEditController, IEditControllerTrait};
 use vst3::Steinberg::{
     FIDString, IPlugFrame, IPlugView, IPlugViewTrait, ViewRect, kPlatformTypeHWND, kResultOk,
 };
-use vst3::ComPtr;
 
 /// One live editor view.
 pub(crate) struct EditorSession {

@@ -17,18 +17,24 @@ use std::sync::{Arc, Mutex};
 use opentrack_plugins::{HostedProcessor, PluginClassId};
 use vst3::Steinberg::Vst::BusTypes_::kMain;
 use vst3::Steinberg::Vst::{
-    AudioBusBuffers, AudioBusBuffers__type0, BusDirections_::{kInput, kOutput}, BusInfo,
-    IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentHandler, IComponentTrait,
+    AudioBusBuffers, AudioBusBuffers__type0,
+    BusDirections_::{kInput, kOutput},
+    BusInfo, IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentHandler, IComponentTrait,
     IConnectionPoint, IConnectionPointTrait, IEditController, IEditControllerTrait,
-    IParameterChanges, MediaTypes_::kAudio, ParameterInfo, ProcessContext,
-    ProcessContext_::StatesAndFlags_::kPlaying, ProcessData, ProcessModes_::kRealtime,
-    ProcessSetup, RestartFlags_::kLatencyChanged, SpeakerArr, SpeakerArrangement, String128,
+    IParameterChanges,
+    MediaTypes_::kAudio,
+    ParameterInfo, ProcessContext,
+    ProcessContext_::StatesAndFlags_::kPlaying,
+    ProcessData,
+    ProcessModes_::kRealtime,
+    ProcessSetup,
+    RestartFlags_::kLatencyChanged,
+    SpeakerArr, SpeakerArrangement, String128,
     SymbolicSampleSizes_::kSample32,
 };
 use vst3::Steinberg::{
-    FIDString, IBStream, IPlugFrame, IPlugView, IPluginBaseTrait, IPluginFactory,
-    IPluginFactory3, IPluginFactory3Trait, IPluginFactoryTrait, int32, kNotImplemented,
-    kResultFalse, kResultOk,
+    FIDString, IBStream, IPlugFrame, IPlugView, IPluginBaseTrait, IPluginFactory, IPluginFactory3,
+    IPluginFactory3Trait, IPluginFactoryTrait, int32, kNotImplemented, kResultFalse, kResultOk,
 };
 use vst3::{ComPtr, ComWrapper, Interface};
 
@@ -203,30 +209,6 @@ impl Vst3Effect {
             }
         }
 
-        let component = create_component(&factory, class_id)?;
-
-        let mut controller_cid = [0 as c_char; 16];
-        let controller_result = unsafe { component.getControllerClassId(&mut controller_cid) };
-        let (controller, separate_controller) = if controller_result == kResultOk {
-            (
-                create_controller(&factory, &controller_cid)?,
-                true,
-            )
-        } else {
-            // A single-component plug-in implements IEditController itself.
-            (
-                component.cast::<IEditController>().ok_or_else(|| {
-                    format!(
-                        "component does not provide a controller class and does not implement IEditController (getControllerClassId returned 0x{controller_result:08x})"
-                    )
-                })?,
-                false,
-            )
-        };
-        let processor = component.cast::<IAudioProcessor>().ok_or_else(|| {
-            String::from("component does not implement IAudioProcessor; it is not a VST3 audio effect")
-        })?;
-
         let shared = Arc::new(HostShared::default());
         let services = HostServices::new(Arc::clone(&shared));
         let handler = services
@@ -240,6 +222,48 @@ impl Vst3Effect {
             .to_com_ptr::<IParameterChanges>()
             .ok_or_else(|| String::from("could not create input parameter changes"))?;
 
+        let component = create_component(&factory, class_id)?;
+        // Some WaveShell-style single-component wrappers only expose
+        // IEditController after initialize; initialize before resolving the
+        // controller. The component already owns the host context.
+        let result = unsafe { component.initialize(host_context.as_funknown()) };
+        if result != kResultOk {
+            return Err(format!("component initialize failed with 0x{result:08x}"));
+        }
+
+        let mut controller_cid = [0 as c_char; 16];
+        let controller_result = unsafe { component.getControllerClassId(&mut controller_cid) };
+        let (controller, separate_controller) = if controller_result == kResultOk {
+            match create_controller(&factory, &controller_cid) {
+                Ok(controller) => (controller, true),
+                Err(error) => {
+                    unsafe {
+                        let _ = component.terminate();
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            // A single-component plug-in implements IEditController itself.
+            let Some(controller) = component.cast::<IEditController>() else {
+                unsafe {
+                    let _ = component.terminate();
+                }
+                return Err(format!(
+                    "component does not provide a controller class and does not implement IEditController (getControllerClassId returned 0x{controller_result:08x})"
+                ));
+            };
+            (controller, false)
+        };
+        let Some(processor) = component.cast::<IAudioProcessor>() else {
+            unsafe {
+                let _ = component.terminate();
+            }
+            return Err(String::from(
+                "component does not implement IAudioProcessor; it is not a VST3 audio effect",
+            ));
+        };
+
         let mut effect = Self {
             editor: Mutex::new(None),
             shared,
@@ -250,7 +274,7 @@ impl Vst3Effect {
             controller,
             separate_controller,
             connection: None,
-            component_initialized: false,
+            component_initialized: true,
             controller_initialized: false,
             active: false,
             processing: false,
@@ -290,20 +314,18 @@ impl Vst3Effect {
     /// Negotiates buses, queries latency/tail and activates the plug-in.
     fn initialize_host(&mut self) -> Result<(), String> {
         let context = self.host_context.as_funknown();
-        let result = unsafe { self.component.initialize(context) };
-        if result != kResultOk {
-            return Err(format!(
-                "component initialize failed with 0x{result:08x}"
-            ));
+        if !self.component_initialized {
+            let result = unsafe { self.component.initialize(context) };
+            if result != kResultOk {
+                return Err(format!("component initialize failed with 0x{result:08x}"));
+            }
+            self.component_initialized = true;
         }
-        self.component_initialized = true;
 
         if self.separate_controller {
             let result = unsafe { self.controller.initialize(context) };
             if result != kResultOk {
-                return Err(format!(
-                    "controller initialize failed with 0x{result:08x}"
-                ));
+                return Err(format!("controller initialize failed with 0x{result:08x}"));
             }
             self.controller_initialized = true;
         }
@@ -573,9 +595,15 @@ impl Vst3Effect {
             .to_com_ptr::<IBStream>()
             .ok_or_else(|| String::from("could not create the controller state stream"))?;
         let result = unsafe { self.controller.getState(controller_ptr.as_ptr()) };
-        let controller = if result == kResultOk {
+        let controller = if !self.separate_controller {
+            // A single-component plug-in is the same object as its controller;
+            // the component chunk is authoritative and must not be applied
+            // twice on load. We still call `getState` as the host contract
+            // requires.
+            Vec::new()
+        } else if result == kResultOk {
             controller_stream.contents()
-        } else if result == kNotImplemented || !self.separate_controller {
+        } else if result == kNotImplemented {
             // `IEditController::getState` is optional. Some plug-ins (including
             // TDR Nova) keep all state in the component chunk and return
             // kNotImplemented here; the component state remains authoritative.
@@ -608,15 +636,15 @@ impl Vst3Effect {
                 return Err(format!("component setState failed with 0x{result:08x}"));
             }
 
+            // A single-component plug-in is its own controller; applying the
+            // component chunk through setComponentState as well would restore
+            // the same state twice.
             if self.separate_controller {
                 let controller_stream = MemoryStream::from_slice(&state.component);
                 let controller_ptr = controller_stream
                     .to_com_ptr::<IBStream>()
                     .ok_or_else(|| String::from("could not create the controller state stream"))?;
-                let result = unsafe {
-                    self.controller
-                        .setComponentState(controller_ptr.as_ptr())
-                };
+                let result = unsafe { self.controller.setComponentState(controller_ptr.as_ptr()) };
                 if result != kResultOk && result != kNotImplemented {
                     return Err(format!(
                         "controller setComponentState failed with 0x{result:08x}"
@@ -730,8 +758,12 @@ impl Vst3Effect {
         }
         if let Some(connection) = self.connection.take() {
             unsafe {
-                let _ = connection.component.disconnect(connection.controller.as_ptr());
-                let _ = connection.controller.disconnect(connection.component.as_ptr());
+                let _ = connection
+                    .component
+                    .disconnect(connection.controller.as_ptr());
+                let _ = connection
+                    .controller
+                    .disconnect(connection.component.as_ptr());
             }
         }
         if self.controller_initialized {
@@ -811,21 +843,22 @@ impl Vst3Effect {
             buffers.output_right.as_mut_ptr(),
         ];
 
-        {
-            let bus = &mut buffers.input_buses[self.layout.input_index];
-            bus.numChannels = input_channels as int32;
-            bus.silenceFlags = 0;
-            // The pointer array lives on this stack frame for the duration of
-            // `process`. Writing a union field is safe in Rust.
-            bus.__field0.channelBuffers32 = input_pointers.as_mut_ptr();
-        }
-        {
-            let bus = &mut buffers.output_buses[self.layout.output_index];
-            bus.numChannels = self.layout.output_channels as int32;
-            bus.silenceFlags = 0;
-            // As above for the output channel pointer array.
-            bus.__field0.channelBuffers32 = output_pointers.as_mut_ptr();
-        }
+        let Some(input_bus) = buffers.input_buses.get_mut(self.layout.input_index) else {
+            return Err(String::from("prepared VST3 input bus index is invalid"));
+        };
+        input_bus.numChannels = input_channels as int32;
+        input_bus.silenceFlags = 0;
+        // The pointer array lives on this stack frame for the duration of
+        // `process`. Writing a union field is safe in Rust.
+        input_bus.__field0.channelBuffers32 = input_pointers.as_mut_ptr();
+
+        let Some(output_bus) = buffers.output_buses.get_mut(self.layout.output_index) else {
+            return Err(String::from("prepared VST3 output bus index is invalid"));
+        };
+        output_bus.numChannels = self.layout.output_channels as int32;
+        output_bus.silenceFlags = 0;
+        // As above for the output channel pointer array.
+        output_bus.__field0.channelBuffers32 = output_pointers.as_mut_ptr();
 
         let current_frame = buffers.frames_processed as i64;
         buffers.context.sampleRate = self.sample_rate;
@@ -850,7 +883,9 @@ impl Vst3Effect {
 
         let result = unsafe { self.processor.process(&mut data) };
         if result != kResultOk && result != kResultFalse {
-            return Err(format!("IAudioProcessor::process failed with 0x{result:08x}"));
+            return Err(format!(
+                "IAudioProcessor::process failed with 0x{result:08x}"
+            ));
         }
 
         left.copy_from_slice(&buffers.output_left[..frames]);
@@ -960,7 +995,10 @@ fn empty_parameter_info() -> ParameterInfo {
 }
 
 fn string128(value: &String128) -> String {
-    let end = value.iter().position(|unit| *unit == 0).unwrap_or(value.len());
+    let end = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
     String::from_utf16_lossy(&value[..end])
 }
 
@@ -984,11 +1022,7 @@ fn arrangement_channels(arrangement: SpeakerArrangement) -> Option<i32> {
     }
 }
 
-fn bus_info(
-    component: &ComPtr<IComponent>,
-    direction: i32,
-    index: i32,
-) -> Result<BusInfo, String> {
+fn bus_info(component: &ComPtr<IComponent>, direction: i32, index: i32) -> Result<BusInfo, String> {
     let mut info = BusInfo {
         mediaType: kAudio,
         direction,
@@ -1093,18 +1127,10 @@ fn negotiate_buses(
         };
     }
 
-    let input_channels = negotiated_channel_count(
-        processor,
-        kInput,
-        *input_index,
-        input_info.channelCount,
-    )?;
-    let output_channels = negotiated_channel_count(
-        processor,
-        kOutput,
-        *output_index,
-        output_info.channelCount,
-    )?;
+    let input_channels =
+        negotiated_channel_count(processor, kInput, *input_index, input_info.channelCount)?;
+    let output_channels =
+        negotiated_channel_count(processor, kOutput, *output_index, output_info.channelCount)?;
 
     if !(1..=2).contains(&input_channels) {
         return Err(format!(

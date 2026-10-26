@@ -235,19 +235,17 @@ mod tests {
 
         let mut seek_result = -1;
         // SAFETY: the out pointer is valid.
-        assert_eq!(unsafe { ibstream.seek(0, kIBSeekSet, &mut seek_result) }, kResultOk);
+        assert_eq!(
+            unsafe { ibstream.seek(0, kIBSeekSet, &mut seek_result) },
+            kResultOk
+        );
         assert_eq!(seek_result, 0);
 
         let mut buffer = [0u8; 32];
         let mut read = 0;
         // SAFETY: the buffer is valid for 32 bytes.
-        let read_result = unsafe {
-            ibstream.read(
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as int32,
-                &mut read,
-            )
-        };
+        let read_result =
+            unsafe { ibstream.read(buffer.as_mut_ptr().cast(), buffer.len() as int32, &mut read) };
         assert_eq!(read_result, kResultOk);
         assert_eq!(&buffer[..read as usize], payload);
 
@@ -290,12 +288,21 @@ mod tests {
         // SAFETY: the buffer is valid for its length; VST3 permits a null
         // numBytesWritten pointer.
         assert_eq!(
-            unsafe { ibstream.write(payload.as_ptr().cast_mut().cast(), payload.len() as i32, std::ptr::null_mut()) },
+            unsafe {
+                ibstream.write(
+                    payload.as_ptr().cast_mut().cast(),
+                    payload.len() as i32,
+                    std::ptr::null_mut(),
+                )
+            },
             kResultOk
         );
         let mut seek_result = 0;
         // SAFETY: out pointer is valid.
-        assert_eq!(unsafe { ibstream.seek(0, kIBSeekSet, &mut seek_result) }, kResultOk);
+        assert_eq!(
+            unsafe { ibstream.seek(0, kIBSeekSet, &mut seek_result) },
+            kResultOk
+        );
         let mut buffer = [0u8; 8];
         let mut read = 0;
         // SAFETY: the buffer is valid for 8 bytes; VST3 permits a null

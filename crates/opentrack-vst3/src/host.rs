@@ -16,10 +16,10 @@ use vst3::Steinberg::Vst::{
     IMessageTrait, String128, TChar,
 };
 use vst3::Steinberg::{
-    FIDString, FUnknown, TUID, int64, kInvalidArgument, kNotImplemented, kResultFalse, kResultOk,
+    FIDString, FUnknown, TUID, int64, kInternalError, kInvalidArgument, kResultFalse, kResultOk,
     tresult, uint32,
 };
-use vst3::{Class, ComPtr, ComRef, ComWrapper};
+use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
 
 const HOST_NAME: &str = "OpenTrack";
 
@@ -266,14 +266,43 @@ impl IHostApplicationTrait for HostApplication {
 
     unsafe fn createInstance(
         &self,
-        _cid: *mut TUID,
-        _iid: *mut TUID,
-        _obj: *mut *mut c_void,
+        cid: *mut TUID,
+        iid: *mut TUID,
+        obj: *mut *mut c_void,
     ) -> tresult {
-        // VST3 defines this for host-supplied classes. OpenTrack does not expose
-        // any yet; components must not be initialized with an unsupported
-        // expectation.
-        kNotImplemented
+        // Host services are selected by the requested interface only. This
+        // matches the SDK's HostApplication implementation and the behaviour
+        // WaveShell children rely on; their class ID does not necessarily equal
+        // the host object's interface ID. `cid` is intentionally ignored.
+        let _ = cid;
+        if iid.is_null() || obj.is_null() {
+            return kInvalidArgument;
+        }
+        // SAFETY: validated non-null; the caller passed a 16-byte TUID.
+        unsafe { *obj = std::ptr::null_mut() };
+        // SAFETY: `iid` points to a 16-byte TUID by the VST3 contract.
+        let interface_id = unsafe { std::slice::from_raw_parts(iid.cast::<u8>(), 16) };
+
+        if interface_id == IMessage::IID.as_slice() {
+            let message = HostMessage::new();
+            let Some(message) = message.to_com_ptr::<IMessage>() else {
+                return kInternalError;
+            };
+            // SAFETY: `into_raw` transfers the reference owned by ComPtr to the
+            // caller, which releases it through COM.
+            unsafe { *obj = message.into_raw().cast() };
+            return kResultOk;
+        }
+        if interface_id == IAttributeList::IID.as_slice() {
+            let attributes = ComWrapper::new(AttributeList::default());
+            let Some(attributes) = attributes.to_com_ptr::<IAttributeList>() else {
+                return kInternalError;
+            };
+            // SAFETY: as above; ownership is transferred to the caller.
+            unsafe { *obj = attributes.into_raw().cast() };
+            return kResultOk;
+        }
+        kResultFalse
     }
 }
 
@@ -348,6 +377,44 @@ mod tests {
             "OpenTrack",
             "host name must be visible to components"
         );
+
+        let mut raw_message = std::ptr::null_mut();
+        // WaveShell-style plug-ins request host objects by interface ID and may
+        // pass an unrelated class ID; a null class ID proves we ignore it.
+        let result = unsafe {
+            application.createInstance(
+                std::ptr::null_mut(),
+                IMessage::IID.as_ptr() as *mut TUID,
+                &mut raw_message,
+            )
+        };
+        assert_eq!(result, kResultOk);
+        let host_message =
+            unsafe { ComPtr::<IMessage>::from_raw(raw_message.cast()) }.expect("host message");
+        let mut raw_attributes = std::ptr::null_mut();
+        let result = unsafe {
+            application.createInstance(
+                std::ptr::null_mut(),
+                IAttributeList::IID.as_ptr() as *mut TUID,
+                &mut raw_attributes,
+            )
+        };
+        assert_eq!(result, kResultOk);
+        let host_attributes = unsafe { ComPtr::<IAttributeList>::from_raw(raw_attributes.cast()) }
+            .expect("host attributes");
+        let key = c"host-created".as_ptr();
+        unsafe {
+            assert_eq!(host_attributes.setInt(key, 7), kResultOk);
+            let mut value = 0;
+            assert_eq!(host_attributes.getInt(key, &mut value), kResultOk);
+            assert_eq!(value, 7);
+            assert!(
+                CStr::from_ptr(host_message.getMessageID())
+                    .to_bytes()
+                    .is_empty(),
+                "a new host message starts with an empty ID"
+            );
+        }
 
         let message = HostMessage::new();
         let reference = message_ref(&message).expect("message interface");

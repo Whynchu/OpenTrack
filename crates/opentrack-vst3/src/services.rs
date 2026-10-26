@@ -67,9 +67,7 @@ impl IComponentHandlerTrait for HostServices {
     }
 
     unsafe fn restartComponent(&self, flags: i32) -> tresult {
-        self.shared
-            .restart_flags
-            .fetch_or(flags, Ordering::AcqRel);
+        self.shared.restart_flags.fetch_or(flags, Ordering::AcqRel);
         kResultOk
     }
 }

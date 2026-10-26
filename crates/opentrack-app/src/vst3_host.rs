@@ -57,10 +57,7 @@ pub fn resolve_module_selection(selection: &Path) -> Result<PathBuf, String> {
                 return Ok(module);
             }
         }
-        return Err(format!(
-            "No x64 module found under {}",
-            selection.display()
-        ));
+        return Err(format!("No x64 module found under {}", selection.display()));
     }
     Err(format!("{} does not exist", selection.display()))
 }
@@ -85,10 +82,10 @@ pub struct EditorWindow {
 impl EditorWindow {
     pub fn create(title: &str, owner: isize) -> Result<Self, String> {
         use windows_sys::Win32::{
-            Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS},
+            Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError},
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, RegisterClassW, CW_USEDEFAULT, WNDCLASSW,
+                CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, RegisterClassW, WNDCLASSW,
                 WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             },
         };
@@ -402,6 +399,11 @@ impl Runtime {
         self.failures.get(&(track_id, slot)).map(String::as_str)
     }
 
+    pub fn retry(&mut self, track_id: u64, slot: usize) {
+        self.failures.remove(&(track_id, slot));
+        self.failed_class.remove(&(track_id, slot));
+    }
+
     pub fn open_editor(&self, track_id: u64, slot: usize, parent: isize) -> Result<(), String> {
         let effect = self
             .instance(track_id, slot)
@@ -447,7 +449,6 @@ impl Runtime {
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -461,6 +462,43 @@ mod tests {
         std::fs::write(&path, b"not loaded by this test").unwrap();
         assert_eq!(resolve_module_selection(&path).unwrap(), path);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    #[ignore]
+    fn installed_waveshell_child_loads_as_an_insert() {
+        let module = Path::new(r"C:\Program Files\Common Files\VST3\WaveShell1-VST3 15.0_x64.vst3");
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].inserts.push(InsertEffect {
+            enabled: true,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "37545356433663536c612d3736207374".to_owned(),
+                module_path: module.to_path_buf(),
+                name: "CLA-76 Stereo".to_owned(),
+                vendor: "Waves".to_owned(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        });
+        let mut runtime = Runtime::default();
+        runtime.set_format(48_000, 64);
+        runtime.sync(&project);
+        assert_eq!(runtime.failure(project.tracks[0].id, 0), None);
+        assert!(
+            !runtime
+                .parameters(project.tracks[0].id, 0)
+                .unwrap()
+                .is_empty()
+        );
+        let hosted = runtime.hosted_inserts(&project.tracks[0]);
+        let mut left = vec![0.1; 64];
+        let mut right = vec![0.1; 64];
+        hosted[0]
+            .processor
+            .process(&mut left, &mut right)
+            .expect("WaveShell child processes a block");
+        assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
     }
 
     #[test]
@@ -491,7 +529,12 @@ mod tests {
         let hosted = runtime.hosted_inserts(&project.tracks[0]);
         assert_eq!(hosted.len(), 1);
         assert_eq!(hosted[0].processor.latency_samples(), 184);
-        assert!(!runtime.parameters(project.tracks[0].id, 0).unwrap().is_empty());
+        assert!(
+            !runtime
+                .parameters(project.tracks[0].id, 0)
+                .unwrap()
+                .is_empty()
+        );
         assert!(runtime.has_editor(project.tracks[0].id, 0));
         let mut left = (0..64)
             .map(|frame| (std::f32::consts::TAU * 220.0 * frame as f32 / 48_000.0).sin() * 0.1)
@@ -523,5 +566,22 @@ mod tests {
             panic!("VST3 insert changed kind");
         };
         assert!(!component_state.is_empty() || !controller_state.is_empty());
+
+        let mut reopened = Runtime::default();
+        reopened.set_format(48_000, 64);
+        reopened.sync(&project);
+        assert_eq!(reopened.failure(project.tracks[0].id, 0), None);
+        assert!(
+            !reopened
+                .parameters(project.tracks[0].id, 0)
+                .unwrap()
+                .is_empty()
+        );
+        let restored = reopened
+            .instance(project.tracks[0].id, 0)
+            .unwrap()
+            .save_state()
+            .expect("restored state saves");
+        assert!(!restored.component.is_empty());
     }
 }

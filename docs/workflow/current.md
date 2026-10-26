@@ -30,7 +30,7 @@ Batch 3 implementation is complete in source: contextual Project cut band, snap-
 
 VST3 class enumeration is committed as `8ce842c`. T043 now wires real VST3 effects into the existing eight insert slots: component/controller lifecycle, stereo main buses, 64-frame hosted processing, PDC, parameter changes, opaque state, generic sliders and a native editor window. Plans without hosted inserts retain the original per-sample path; built-in effects remain alternative insert choices.
 
-TDR Nova is the first end-to-end smoke target: 75 parameters, 184-sample latency, editor available, audio processed, and 3,608 bytes of state. VST3 instruments, multi-out/sidechain, sandboxing, catalog UI and per-module scanner timeout remain pending. See [T043](tasks/T043-vst3-insert-hosting.md), [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
+TDR Nova is the first end-to-end smoke target: 75 parameters, 184-sample latency, editor available, audio processed, and 3,608 bytes of state. A WaveShell CLA-76 Stereo child also loads and processes. Current x64 local-ASIO build: `EFAA96C0E4BE778F70DAE29C5E7C45DBD45C9602BFE8E251C4730F259C403A58`. VST3 instruments, multi-out/sidechain, sandboxing, catalog UI and per-module scanner timeout remain pending. See [T043](tasks/T043-vst3-insert-hosting.md), [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
 
 ## Preserved direction
 

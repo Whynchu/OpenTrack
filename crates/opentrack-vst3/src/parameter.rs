@@ -19,7 +19,7 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vst3::Steinberg::Vst::{
-    IParameterChanges, IParameterChangesTrait, IParamValueQueue, IParamValueQueueTrait, ParamID,
+    IParamValueQueue, IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait, ParamID,
     ParamValue,
 };
 use vst3::Steinberg::{int32, kInvalidArgument, kResultFalse, kResultOk, tresult};
@@ -139,7 +139,6 @@ impl PendingParameters {
             }
         }
     }
-
 }
 
 #[derive(Clone, Copy, Default)]
@@ -200,7 +199,10 @@ impl IParamValueQueueTrait for ParameterValueQueue {
         }
         // SAFETY: audio-thread-only access contract documented above.
         let data = unsafe { &*self.data.get() };
-        let Some(point) = data.points.get(index as usize).filter(|_| (index as usize) < data.count)
+        let Some(point) = data
+            .points
+            .get(index as usize)
+            .filter(|_| (index as usize) < data.count)
         else {
             return kResultFalse;
         };
@@ -212,7 +214,12 @@ impl IParamValueQueueTrait for ParameterValueQueue {
         kResultOk
     }
 
-    unsafe fn addPoint(&self, _sample_offset: int32, _value: ParamValue, index: *mut int32) -> tresult {
+    unsafe fn addPoint(
+        &self,
+        _sample_offset: int32,
+        _value: ParamValue,
+        index: *mut int32,
+    ) -> tresult {
         if !index.is_null() {
             // SAFETY: validated non-null above.
             unsafe { *index = 0 };
@@ -300,7 +307,6 @@ impl ParameterChanges {
             }
         }
     }
-
 }
 
 impl Class for ParameterChanges {
@@ -319,7 +325,10 @@ impl IParameterChangesTrait for ParameterChanges {
         }
         // SAFETY: audio-thread-only access contract documented above.
         let active = unsafe { *self.active.get() };
-        let Some(queues) = self.queues.get(index as usize).filter(|_| (index as usize) < active)
+        let Some(queues) = self
+            .queues
+            .get(index as usize)
+            .filter(|_| (index as usize) < active)
         else {
             return std::ptr::null_mut();
         };
