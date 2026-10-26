@@ -61,14 +61,16 @@ The missing behavior is audition. When the transport is stopped, the callback
 deliberately renders no event audio and there is no note preview voice. With the
 transport running but the playhead outside the event, the edit is also inaudible.
 
-Preferred fix: a dedicated note-audition voice prepared on the control thread
-from the dragged note range, looped for the gesture and stopped on release. It
-must not move the project playhead, must not rebuild the whole project plan per
-frame, and must not allocate in the callback.
+Implemented: a dedicated note-audition voice is prepared on the control
+thread from the dragged note range, looped for the gesture and stopped on
+release. It lives beside the playback plan, fades the previous preview out over
+5 ms when the edit changes, and does not move the project playhead, rebuild the
+whole project plan per frame, or allocate in the callback. The editor publishes
+the held note, and Sample Editor tests assert that a stopped transport still
+requests audition and release clears it.
 
-Fallback: start/seek the transport to the dragged note and restore it on release.
-This is smaller but changes shared transport/playhead state, so it needs explicit
-user approval before adoption.
+The transport-start fallback was not adopted because it would move shared
+transport/playhead state.
 
 Acceptance: with the transport stopped, body/edge dragging auditions the note
 continuously with the same pitch/timing contour as the trace; releasing stops
@@ -82,7 +84,10 @@ Files: `pitch_synthesis.rs:350-465` (`make_grains`), `:266-277` (mix).
 
 Current mechanism selects the nearest positive source mark for each output
 grain. A mark-index switch can jump grain source phase by about one period.
-This is the leading hypothesis for persistent crackle on whole-step shifts.
+The 2026-10-25 synthesis audit did not reproduce a +2-specific defect on a
+stationary harmonic source, so this is no longer the leading explanation for the
+reported crackle; the two-voice transition and edge-only endpoint defects were
+more concrete. Keep this as a real-vocal follow-up, not an assumed cause.
 
 Investigate with a synthetic sustained vowel and a real-vocal fragment:
 
@@ -124,14 +129,18 @@ Check:
 Files: `pitch_time.rs:63-110`, `:171-186`, `pitch_synthesis.rs` transitions,
 `sample_editor.rs:1021-1023`.
 
-The latest correction must be validated, not assumed:
+The 2026-10-25 correction is implemented and needs listening validation:
 
-- actual source-tail anchoring;
-- neighboring unedited notes participate only at the edge;
-- one-sixteenth-note maximum at project tempo;
-- shorter spans on short notes;
-- genuine gaps remain separate;
-- trace and audio share `PitchTimeEdit::pitch_midi_at`;
+- the audio handoff is now a 5 ms crossfade at the boundary instead of blending
+  two independently synthesized voices across the whole pitch ramp;
+- a one-edited/one-unchanged pair resolves to the unchanged note's edge pitch,
+  while two edited notes still meet at their midpoint;
+- unedited neighbor edges fade wet-to-dry at the processed-region endpoints;
+- sample-continuity tests cover both transition orientations and prove a single
+  voice away from the boundary;
+- actual source-tail anchoring, one-sixteenth-note maximum at project tempo,
+  shorter spans on short notes, genuine gaps, and shared trace/audio contour
+  still require the user's listening review.
 - crossfade is bounded and does not double-process;
 - no vertical trace jump at the boundary.
 
@@ -199,6 +208,13 @@ Scope:
 - **Tests/visual review:** track color reaches every meter/EQ/spectrum call site;
   red clipping remains; bus defaults are blue; changing bus color persists and
   does not dirty audio state.
+
+Status 2026-10-25: implemented. Project, Mixer and Channel Settings meters use
+the channel color while retaining the red over-unity indicator; EQ parameter
+bars, graph curve, band nodes and the owned spectrum trace use it; the comparison
+trace stays orange; Stereo In/Out default to blue and expose the palette select-
+or in the Mixer footer. Tests cover bus defaults/explicit colors and meter/EQ
+color use. Live visual review is still required.
 
 Collision note: `mixer.rs` and `app.rs` are shared with Batch 3's fader/selection
 work. Do track-color cohesion first, or serialize it with Batch 3. `channel_settings.rs`

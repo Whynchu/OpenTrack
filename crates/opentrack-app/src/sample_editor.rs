@@ -48,6 +48,13 @@ impl SnapSettings {
             .then(|| self.grid.step_beats(beats_per_bar, self.quantize))
     }
 }
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct NoteAuditionRequest {
+    pub track_id: u64,
+    pub clip_id: u64,
+    pub note: opentrack_core::pitch_time::PitchNote,
+}
+
 pub(super) struct State {
     pub target: Option<(u64, u64)>,
     view: Option<(f64, f64)>,
@@ -65,6 +72,7 @@ pub(super) struct State {
     pub pitch_view: PitchViewport,
     notes: editing::NoteEditor,
     pub analysis_attached: Option<(u64, u64)>,
+    pub note_audition: Option<NoteAuditionRequest>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -85,6 +93,7 @@ impl Default for State {
             pitch_view: PitchViewport::default(),
             notes: editing::NoteEditor::default(),
             analysis_attached: None,
+            note_audition: None,
         }
     }
 }
@@ -151,6 +160,7 @@ pub(super) fn show(
     transport: &mut f64,
     playing: bool,
 ) -> bool {
+    state.note_audition = None;
     let Some((track_id, clip_id)) = state.target else {
         ui.label("Double-click an audio event to open it in the Sample Editor.");
         return false;
@@ -998,6 +1008,21 @@ pub(super) fn show(
             enabled,
             Some(color),
         );
+        state.note_audition = state.notes.audition_note.and_then(|id| {
+            let note = state
+                .notes
+                .draft
+                .as_ref()?
+                .notes
+                .iter()
+                .find(|note| note.id == id)?
+                .clone();
+            Some(NoteAuditionRequest {
+                track_id,
+                clip_id,
+                note,
+            })
+        });
         let result = state.pitch_result.as_ref().expect("visible analysis");
         let edit = state.notes.draft.as_ref().expect("visible pitch edits");
         let pitch_painter = ui.painter().with_clip_rect(wave);
@@ -1322,6 +1347,13 @@ pub(super) mod tests {
             .notes[0]
             .clone();
         frame(button(press, true), &mut project, &mut state, &mut history);
+        assert!(
+            state
+                .note_audition
+                .as_ref()
+                .is_some_and(|audition| audition.note.id == before_drag.id),
+            "a held note must request audition even when transport is stopped"
+        );
         let moved = press - Vec2::new(0.0, wave.height() / state.pitch_view.span);
         frame(
             vec![egui::Event::PointerMoved(moved)],
@@ -1345,7 +1377,15 @@ pub(super) mod tests {
             (changed.start, changed.end),
             (before_drag.start, before_drag.end)
         );
+        assert!(
+            state.note_audition.is_some(),
+            "the audition must continue while the note is held"
+        );
         frame(button(moved, false), &mut project, &mut state, &mut history);
+        assert!(
+            state.note_audition.is_none(),
+            "releasing the note must stop audition"
+        );
         let undone = history.undo(&project).unwrap();
         assert_eq!(
             undone.tracks[0].clips[0].pitch_time.as_ref().unwrap().notes[0].shift,

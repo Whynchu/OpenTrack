@@ -230,6 +230,7 @@ pub(super) struct NoteEditor {
     marquee: Option<MarqueeGesture>,
     pub directory: Option<PathBuf>,
     pub message: String,
+    pub audition_note: Option<u64>,
 }
 
 pub(crate) fn playback_path(clip: &AudioClip) -> &Path {
@@ -383,6 +384,7 @@ impl NoteEditor {
         enabled: bool,
         track_color: Option<Color32>,
     ) {
+        self.audition_note = None;
         let Some(edit) = &mut self.draft else {
             return;
         };
@@ -579,6 +581,9 @@ impl NoteEditor {
                 self.drag_pitch_active = false;
                 self.drag_pitch_base_shifts = edit.notes.iter().map(|note| note.shift).collect();
                 self.drag = Some((note.id, mode, edit.notes.clone()));
+            }
+            if dragging && self.drag.as_ref().is_some_and(|(id, _, _)| *id == note.id) {
+                self.audition_note = Some(note.id);
             }
             // Shift can enter at any point during a held body drag. Latch fine
             // pitch mode at that position so switching modes never jumps.

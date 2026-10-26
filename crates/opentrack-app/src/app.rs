@@ -42,7 +42,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, Vec2};
@@ -664,6 +664,8 @@ pub struct OpenTrackApp {
     preferences_ui: preferences::Window,
     sample_editor: sample_editor::State,
     sample_editor_active: bool,
+    active_note_audition: Option<sample_editor::NoteAuditionRequest>,
+    note_audition_stop_at: Option<Instant>,
     main_window_bounds: Option<WindowBounds>,
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
@@ -1774,6 +1776,8 @@ impl OpenTrackApp {
                 state
             },
             sample_editor_active: false,
+            active_note_audition: None,
+            note_audition_stop_at: None,
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
@@ -7207,6 +7211,7 @@ impl OpenTrackApp {
                 },
             )
             .inner;
+        self.update_note_audition(ui.ctx());
         ui.painter().rect_stroke(
             panel_rect,
             0.0,
@@ -7242,6 +7247,91 @@ impl OpenTrackApp {
             self.rebuild_audio_plan();
             self.mark_modified();
         }
+    }
+
+    fn update_note_audition(&mut self, ctx: &egui::Context) {
+        let request = if self.sample_editor_active {
+            self.sample_editor.note_audition.clone()
+        } else {
+            None
+        };
+        let Some(request) = request else {
+            if self.active_note_audition.is_some() {
+                if let Some(engine) = &self.audio_engine {
+                    engine.stop_note_audition();
+                }
+                self.active_note_audition = None;
+                self.note_audition_stop_at = Some(Instant::now() + Duration::from_millis(40));
+            }
+            if self
+                .note_audition_stop_at
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                if let Some(engine) = &self.audio_engine {
+                    engine.clear_note_audition();
+                }
+                self.note_audition_stop_at = None;
+            } else if let Some(deadline) = self.note_audition_stop_at {
+                ctx.request_repaint_after(deadline.saturating_duration_since(Instant::now()));
+            }
+            return;
+        };
+        if self.active_note_audition.as_ref() == Some(&request) {
+            return;
+        }
+        let Some(track) = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == request.track_id)
+        else {
+            return;
+        };
+        let Some(clip) = track.clips.iter().find(|clip| clip.id == request.clip_id) else {
+            return;
+        };
+        let Some(asset) = self
+            .data
+            .audio_sources
+            .get(sample_editor::playback_path(clip))
+        else {
+            return;
+        };
+        let Ok(playback) = opentrack_audio::PlaybackSource::from_asset(asset, None) else {
+            return;
+        };
+        let playback = match &clip.pitch_time {
+            Some(edit) => playback
+                .clone()
+                .with_pitch_time(edit, self.data.project.tempo_bpm)
+                .unwrap_or(playback),
+            None => playback,
+        };
+        let source_offset = clip
+            .pitch_time
+            .as_ref()
+            .map_or(clip.source_offset_seconds, |edit| {
+                edit.analysis.source_start_seconds
+            });
+        let duration = (request.note.end - request.note.start).max(0.01);
+        let preview_length = duration.min(0.35);
+        let preview_start = request.note.start + (duration - preview_length) * 0.5;
+        let level = (clip.gain * track.gain).clamp(0.0, 1.0).max(0.2);
+        let Ok(audition) = opentrack_audio::NoteAudition::new(
+            playback,
+            source_offset,
+            preview_start,
+            preview_start + preview_length,
+            level,
+        ) else {
+            return;
+        };
+        if let Some(engine) = &self.audio_engine {
+            engine.set_note_audition(audition);
+        }
+        self.active_note_audition = Some(request);
+        self.note_audition_stop_at = None;
     }
 
     fn update_channel_analyzer(&mut self) {
@@ -10685,6 +10775,7 @@ fn show_project(
                         ui,
                         meter_rect,
                         meter_levels.get(&track.id).copied().unwrap_or([0.0; 2]),
+                        track_color,
                     );
                     if let Some(hold) = peak_holds.get(&track.id) {
                         paint_peak_markers(ui, meter_rect, hold.markers);
@@ -12784,7 +12875,7 @@ fn show_mixer_legacy(
                                         Vec2::new(meter.width(), meter_height * meter_fraction),
                                     ),
                                     egui::CornerRadius::same(3),
-                                    theme::palette(ui).accent,
+                                    project_controls::track_color(track),
                                 );
                             }
                             if peak >= 1.0 {
@@ -13268,7 +13359,7 @@ fn paint_peak_markers(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
     }
 }
 
-fn paint_track_meter(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
+fn paint_track_meter(ui: &egui::Ui, rect: Rect, peaks: [f32; 2], color: Color32) {
     let palette = theme::palette(ui);
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 0.0, palette.canvas);
@@ -13289,7 +13380,7 @@ fn paint_track_meter(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
             painter.rect_filled(
                 Rect::from_min_max(Pos2::new(channel.left(), top.max(zero_y)), channel.max),
                 0.0,
-                palette.accent,
+                color,
             );
             if peak > 1.0 {
                 painter.rect_filled(
@@ -13318,13 +13409,22 @@ mod meter_tests {
     #[test]
     fn stereo_meter_only_lights_red_above_unity() {
         let ctx = egui::Context::default();
+        let color = Color32::from_rgb(76, 142, 210);
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             paint_track_meter(
                 ui,
                 Rect::from_min_size(Pos2::ZERO, Vec2::new(21.0, 100.0)),
                 [1.0, 2.0],
+                color,
             );
         });
+        assert!(
+            out.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == color
+            )),
+            "the meter fill must use the channel color"
+        );
         let red: Vec<_> = out
             .shapes
             .iter()

@@ -5,6 +5,7 @@
 
 #[cfg(all(windows, feature = "local-asio"))]
 mod asio_backend;
+mod audition;
 mod bus;
 mod devices;
 mod live_pitch;
@@ -13,6 +14,7 @@ mod midi;
 mod pitch_analysis;
 mod pitch_render;
 mod pitch_synthesis;
+pub use audition::NoteAudition;
 pub use metronome::MetronomeSettings;
 pub use pitch_analysis::{PitchAnalysis, PitchPoint, analyze_pitch_file, segment_notes};
 pub use pitch_render::{
@@ -430,6 +432,7 @@ pub struct PlaybackPlan {
     transition_from: ArcSwapOption<PlaybackPlan>,
     transition_position: AtomicU32,
     transition_frames: u32,
+    note_audition: Arc<ArcSwapOption<NoteAudition>>,
 }
 
 impl PlaybackPlan {
@@ -452,6 +455,7 @@ impl PlaybackPlan {
             transition_from: ArcSwapOption::empty(),
             transition_position: AtomicU32::new(0),
             transition_frames: 0,
+            note_audition: Arc::new(ArcSwapOption::empty()),
         }
     }
 
@@ -516,6 +520,7 @@ impl PlaybackPlan {
             transition_position: AtomicU32::new(0),
             transition_frames: (sample_rate.saturating_mul(PLAYBACK_PARAMETER_FADE_MS) / 1000)
                 .max(1),
+            note_audition: Arc::new(ArcSwapOption::empty()),
         }
     }
 
@@ -1108,6 +1113,7 @@ impl AudioEngine {
         new_plan.metronome = metronome;
         new_plan.metronome_downbeat_frequency = metronome.downbeat_frequency();
         new_plan.output_bus = bus::BusRuntime::new(output_channel, self.sample_rate);
+        new_plan.note_audition = Arc::clone(&previous.note_audition);
         new_plan.begin_parameter_transition(previous);
         self.retired_plans.push(self.plan.swap(Arc::new(new_plan)));
         self.reclaim_retired_plans();
@@ -1146,6 +1152,27 @@ impl AudioEngine {
 
     pub fn set_playing(&self, playing: bool) {
         self.playing.store(playing, Ordering::Relaxed);
+    }
+
+    /// Starts or updates a note-drag preview without starting transport or
+    /// rebuilding the playback plan. The previous preview fades out.
+    pub fn set_note_audition(&self, audition: NoteAudition) {
+        let plan = self.plan.load_full();
+        if let Some(existing) = plan.note_audition.load_full() {
+            existing.replace_with(audition);
+        } else {
+            plan.note_audition.store(Some(Arc::new(audition)));
+        }
+    }
+
+    pub fn stop_note_audition(&self) {
+        if let Some(audition) = self.plan.load_full().note_audition.load_full() {
+            audition.stop();
+        }
+    }
+
+    pub fn clear_note_audition(&self) {
+        self.plan.load_full().note_audition.store(None);
     }
 
     /// Connects or disconnects the lock-free live input-monitor buffer.
@@ -1828,6 +1855,7 @@ fn render_frames<T>(
     }
     let plan_snapshot = plan.load_full();
     let monitor_snapshot = input_monitor.load_full();
+    let audition_snapshot = plan_snapshot.note_audition.load_full();
     let generation = plan_snapshot.generation;
     let playing = playing.load(Ordering::Relaxed);
     let mut output_frame = wrap_playhead_frame(
@@ -1875,10 +1903,14 @@ fn render_frames<T>(
             &plan_snapshot.monitor_mute_mask,
             true,
         );
-        // The metronome is a direct monitor/output feed. It bypasses Stereo Out
-        // channel processing and its meter, while remaining audible on device output.
-        let left = bus_left + click;
-        let right = bus_right + click;
+        // The metronome and note audition are direct monitor/output feeds. They
+        // bypass Stereo Out channel processing and its meter while remaining
+        // audible even when the transport is stopped.
+        let (audition_left, audition_right) = audition_snapshot
+            .as_ref()
+            .map_or((0.0, 0.0), |audition| audition.next_frame(sample_rate));
+        let left = bus_left + click + audition_left;
+        let right = bus_right + click + audition_right;
         output_peaks[0] = output_peaks[0].max(bus_left.abs());
         output_peaks[1] = output_peaks[1].max(bus_right.abs());
         for (channel, sample) in frame.iter_mut().enumerate() {
@@ -3681,6 +3713,48 @@ mod processing_tests {
         for (actual, expected) in samples.iter().zip([0.25, -0.25, 0.5, -0.5]) {
             assert!((actual - expected).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn note_audition_is_audible_with_stopped_transport_and_leaves_the_playhead_alone() {
+        let source = PlaybackSource::Decoded(Arc::new(DecodedWav {
+            samples: vec![0.5; 48_000].into(),
+            waveform_peaks: Arc::new(Vec::new()),
+            waveform: Arc::new(Waveform::default()),
+            channels: 1,
+            sample_rate: 48_000,
+        }));
+        let audition = NoteAudition::new(source, 0.0, 0.0, 1.0, 1.0).unwrap();
+        let plan = ArcSwap::from_pointee(PlaybackPlan::new(120.0, Vec::new(), 1, 48_000, None));
+        plan.load().note_audition.store(Some(Arc::new(audition)));
+        let tone = AtomicBool::new(false);
+        let playing = AtomicBool::new(false);
+        let playhead = AtomicU64::new(0);
+        let callback_generation = AtomicU64::new(0);
+        let callback_active = AtomicBool::new(false);
+        let input_monitor = Arc::new(ArcSwapOption::empty());
+        let mut monitor_reader = AudioMonitorReader::default();
+        let mut phase = 0.0;
+        let mut samples = [0.0_f32; 960];
+        render_f32(
+            &mut samples,
+            1,
+            48_000,
+            &tone,
+            &playing,
+            &playhead,
+            &plan,
+            &callback_generation,
+            &callback_active,
+            &input_monitor,
+            &mut monitor_reader,
+            &mut phase,
+        );
+        assert!(
+            samples.iter().any(|sample| sample.abs() > 0.2),
+            "the preview must reach the device while transport is stopped"
+        );
+        assert_eq!(playhead.load(Ordering::Relaxed), 0);
     }
 
     #[test]

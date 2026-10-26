@@ -182,7 +182,11 @@ fn boundary_pitch(edit: &PitchTimeEdit, left: &PitchNote, right: &PitchNote) -> 
     );
     let left_target = left.pitch(left_midi);
     let right_target = right.pitch(right_midi);
-    (left_target + right_target) * 0.5
+    match (note_has_pitch_edit(left), note_has_pitch_edit(right)) {
+        (false, true) => left_target,
+        (true, false) => right_target,
+        _ => (left_target + right_target) * 0.5,
+    }
 }
 
 fn analyzed_midi_at(analysis: &PitchAnalysis, source_local_time: f64, fallback: f32) -> f32 {
@@ -236,4 +240,59 @@ fn voiced_edge_point(
 
 fn smooth_pitch_blend(value: f32) -> f32 {
     value * value * (3.0 - 2.0 * value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(id: u64, start: f64, end: f64, shift: f32) -> PitchNote {
+        PitchNote {
+            id,
+            source_start: start,
+            source_end: end,
+            start,
+            end,
+            detected_midi: 57.0,
+            shift,
+            straighten: 0.0,
+        }
+    }
+
+    fn edit(notes: Vec<PitchNote>) -> PitchTimeEdit {
+        PitchTimeEdit {
+            detector_version: DETECTOR_VERSION,
+            source_bytes: 0,
+            source_modified_ns: 0,
+            analysis: PitchAnalysis {
+                sample_rate_hz: 16_000,
+                source_start_seconds: 0.0,
+                source_duration_seconds: 1.0,
+                points: (0..=60)
+                    .map(|index| PitchPoint {
+                        source_time_seconds: index as f64 * 0.01,
+                        frequency_hz: Some(220.0),
+                        confidence: 1.0,
+                    })
+                    .collect(),
+            },
+            notes,
+            rendered_source: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn boundary_pitch_prefers_the_unchanged_neighbor() {
+        let unchanged_left = edit(vec![note(1, 0.1, 0.3, 0.0), note(2, 0.3, 0.6, 2.0)]);
+        assert!((unchanged_left.pitch_midi_at(1, 57.0, 0.3, 120.0) - 57.0).abs() < 1e-5);
+        assert!((unchanged_left.pitch_midi_at(1, 57.0, 0.425, 120.0) - 59.0).abs() < 1e-3);
+
+        let unchanged_right = edit(vec![note(1, 0.1, 0.3, 2.0), note(2, 0.3, 0.6, 0.0)]);
+        assert!((unchanged_right.pitch_midi_at(0, 57.0, 0.3, 120.0) - 57.0).abs() < 1e-5);
+        assert!((unchanged_right.pitch_midi_at(0, 57.0, 0.175, 120.0) - 59.0).abs() < 1e-3);
+
+        let both_edited = edit(vec![note(1, 0.1, 0.3, 2.0), note(2, 0.3, 0.6, 4.0)]);
+        assert!((both_edited.pitch_midi_at(1, 57.0, 0.3, 120.0) - 60.0).abs() < 1e-5);
+    }
 }

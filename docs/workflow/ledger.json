@@ -375,6 +375,24 @@
       "location": "crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-core/src/pitch_time.rs; live_pitch.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
       "identity": "read-only audit of t042-source-r4 at git:81227f5",
       "note": "Found a provable hard wet-to-dry switch at the inner endpoints of edge_only unedited-neighbor regions, plus a full-level two-pitch crossfade across the long pitch ramp and a midpoint boundary rule for one-edited/one-unedited pairs. No render or listening measurement."
+    },
+    "t042-crackle-fix-source": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-core/src/pitch_time.rs",
+      "identity": "x64 local-ASIO EXE sha256:AE2E6CCCA4DC6ACD70BF0842A00F23CE849E5C12BF73A26682751C758C677845; workspace app131/audio63/core17/plugin15+11",
+      "note": "Edge-only transition endpoints now fade wet-to-dry over 5 ms, audio handoff is a 5 ms boundary crossfade rather than a whole-ramp two-voice blend, and one-edited/one-unchanged pairs resolve to the unchanged edge pitch. New sample-continuity, single-voice and boundary tests pass; listening remains pending."
+    },
+    "t042-note-audition-source": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/audition.rs; crates/opentrack-audio/src/lib.rs; crates/opentrack-app/src/sample_editor.rs; pitch_editing.rs; app.rs",
+      "identity": "x64 local-ASIO EXE sha256:AE2E6CCCA4DC6ACD70BF0842A00F23CE849E5C12BF73A26682751C758C677845; workspace app131/audio63/core17/plugin15+11",
+      "note": "Dedicated loopable note preview with 5 ms source and replacement crossfades; mixed directly to device output even while transport is stopped. The editor requests the held note and release stops/clears it. Tests prove audible preview, replacement continuity, stopped-transport output, untouched playhead and editor request lifecycle."
+    },
+    "t042-track-color-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/project_controls.rs; app.rs; mixer.rs; channel_settings.rs; analyzer_view.rs",
+      "identity": "x64 local-ASIO EXE sha256:AE2E6CCCA4DC6ACD70BF0842A00F23CE849E5C12BF73A26682751C758C677845; app suite 131 pass",
+      "note": "Track color reaches Project/Mixer/Channel Settings meters, EQ parameter bars, curve/nodes and owned spectrum; Stereo In/Out default to blue and expose the palette selector in the Mixer footer. Red clipping and the orange comparison trace remain."
     }
   },
   "requirements": [
@@ -1163,10 +1181,11 @@
       "id": "live-note-audition",
       "weight": 3,
       "outcome": "Pitch/time movement immediately updates original-source playback without Apply or creating output audio files; source samples remain intact.",
-      "implementation": "partial",
+      "implementation": "complete",
       "source_evidence": [
         "t039-source",
-        "t042-drag-audit"
+        "t042-drag-audit",
+        "t042-note-audition-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1180,7 +1199,7 @@
       },
       "parity": "pending",
       "comparison_evidence": [],
-      "implementation_note": "Draft edits publish during a held gesture and the playback plan is rebuilt from the current edit, but no audition starts when the transport is stopped and a running transport is not seeked to the dragged note. Dedicated drag-audition voice remains unimplemented; transport-start fallback requires user approval."
+      "implementation_note": "A dedicated preview voice loops the held note's current pitch/time source directly to device output with a 5 ms fade-in and source-change crossfade. It works with the transport stopped and does not move the playhead or rebuild the project plan. Release stops the voice and the control thread clears it after the fade. Live listening is pending."
     },
     {
       "id": "note-gesture-history",
@@ -1467,7 +1486,8 @@
         "t042-source-r2",
         "t042-source-r3",
         "t042-source-r4",
-        "t042-synthesis-audit"
+        "t042-synthesis-audit",
+        "t042-crackle-fix-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1481,7 +1501,7 @@
       },
       "parity": "pending",
       "comparison_evidence": [],
-      "implementation_note": "Current largest evidence-backed defect is a hard wet-to-dry switch at the inner endpoint of edge_only unedited-neighbor regions. A sample-continuity test and short endpoint crossfade are the next correction. The long two-pitch transition crossfade and midpoint boundary rule are secondary candidates; grain-phase and confidence-mix hypotheses remain unproven."
+      "implementation_note": "The audited hard wet-to-dry switch at edge-only endpoints now crossfades over 5 ms. Audio handoff is a 5 ms boundary crossfade instead of a full-ramp two-voice blend, and one-unchanged-note pairs use the unchanged edge pitch. Sample-continuity and single-voice tests pass. Grain-phase and confidence-mix hypotheses remain unproven; user listening is pending."
     },
     {
       "id": "pitch-note-transition-blend",
@@ -1491,7 +1511,8 @@
       "source_evidence": [
         "t042-source-r2",
         "t042-source-r3",
-        "t042-source-r4"
+        "t042-source-r4",
+        "t042-crackle-fix-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1504,7 +1525,8 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "The audio handoff is now 5 ms around the boundary while pitch ramps still reach at most one sixteenth-note. One-unchanged-note pairs meet at the unchanged edge pitch. Endpoint and single-voice tests pass; live listening is pending."
     },
     {
       "id": "project-event-contextual-scissors",
@@ -1616,8 +1638,10 @@
       "id": "track-color-cohesion",
       "weight": 2,
       "outcome": "Project/Mixer meters, Channel Settings EQ parameters and response graph, and the channel spectrum inherit the channel's track color; Stereo In/Out default to blue and are color-selectable without audio-plan changes.",
-      "implementation": "absent",
-      "source_evidence": [],
+      "implementation": "complete",
+      "source_evidence": [
+        "t042-track-color-source"
+      ],
       "reference": {
         "status": "user_specified",
         "evidence": [
@@ -1629,7 +1653,8 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Meters, EQ parameter bars, response curve/nodes and the owned spectrum use the channel color; red over-unity and the orange comparison trace remain. Stereo In/Out use a blue default and expose the palette selector in the Mixer footer. Live visual review is pending."
     }
   ],
   "gates": {

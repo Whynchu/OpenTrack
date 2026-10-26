@@ -4,13 +4,21 @@ use super::*;
 
 // Shared starting palette for the Event Colors selector and track strips.
 pub(super) const COLORS: [[u8; 3]; 16] = crate::project_file::DEFAULT_EVENT_COLORS;
+/// Stereo In/Out use a blue identity until the user picks another color.
+pub(super) const BUS_DEFAULT_COLOR: Color32 = Color32::from_rgb(76, 142, 210);
 
 pub(super) fn track_color(track: &Track) -> Color32 {
     track
         .color_index
         .and_then(|i| COLORS.get(usize::from(i)))
         .map(|c| Color32::from_rgb(c[0], c[1], c[2]))
-        .unwrap_or_else(|| Color32::from_gray(160))
+        .unwrap_or_else(|| {
+            if track.id >= opentrack_core::project::INPUT_BUS_ID {
+                BUS_DEFAULT_COLOR
+            } else {
+                Color32::from_gray(160)
+            }
+        })
 }
 
 pub(super) fn has_track_color(track: &Track) -> bool {
@@ -464,4 +472,28 @@ pub(super) fn track_zoom_control(ui: &mut egui::Ui, rect: Rect, value: &mut f32)
         1.0,
         true,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stereo_buses_default_to_blue_and_accept_palette_colors() {
+        let project = opentrack_core::project::Project::default();
+        let input = &project.input_channel.strip;
+        assert!(input.color_index.is_none());
+        assert_eq!(track_color(input), BUS_DEFAULT_COLOR);
+        assert_eq!(
+            track_color(&project.output_channel.strip),
+            BUS_DEFAULT_COLOR
+        );
+
+        let mut chosen = input.clone();
+        chosen.color_index = Some(3);
+        assert_eq!(
+            track_color(&chosen),
+            Color32::from_rgb(COLORS[3][0], COLORS[3][1], COLORS[3][2])
+        );
+    }
 }

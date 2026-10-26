@@ -1860,7 +1860,9 @@ mod bus_tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.input_channel.strip.gain = 0.25;
+        project.input_channel.strip.color_index = Some(5);
         project.output_channel.strip.equalizer.bands[0].enabled = true;
+        project.output_channel.strip.color_index = Some(8);
         let value = serde_json::to_value(&project).unwrap();
         let loaded: Project = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(loaded, project);

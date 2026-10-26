@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const MIN_VOICED_CONFIDENCE: f32 = 0.15;
 const MAX_PITCH_GAP_SECONDS: f64 = 0.025;
 const NOTE_SEAM_BLEND_SECONDS: f64 = 0.005;
+const NOTE_TRANSITION_CROSSFADE_SECONDS: f64 = 0.005;
 const UNCONNECTED_EDGE_BLEND_SECONDS: f64 = 0.005;
 const GRAIN_SEARCH_LIMIT: usize = 64;
 
@@ -196,11 +197,41 @@ impl PitchSynthesis {
         {
             let left = self.note_at(samples, transition.left, frame, false);
             let right = self.note_at(samples, transition.right, frame, false);
-            let position = ((frame - transition.start_frame)
-                / (transition.end_frame - transition.start_frame).max(1.0))
-            .clamp(0.0, 1.0) as f32;
+            // Keep the long pitch ramps, but hand audio over only near the
+            // boundary. Blending two independently synthesized voices across
+            // the whole pitch ramp leaves a full-level two-pitch interval.
+            let boundary_frame = self.plans.get(transition.left).map_or(
+                (transition.start_frame + transition.end_frame) * 0.5,
+                |plan| (offset + plan.note.end) * self.sample_rate,
+            );
+            let crossfade_frames = (NOTE_TRANSITION_CROSSFADE_SECONDS * self.sample_rate).max(1.0);
+            let position = ((frame - (boundary_frame - crossfade_frames))
+                / (crossfade_frames * 2.0))
+                .clamp(0.0, 1.0) as f32;
             let blend = smoothstep(position);
-            return Some(mix(left, right, blend));
+            let mut result = mix(left, right, blend);
+            // An unedited neighbor is synthesized only to supply its side of the
+            // pitch transition. Outside the transition its body returns to the
+            // dry source, so fade the synthesized edge into that body instead of
+            // switching at the processed-region boundary.
+            let fade_frames = (UNCONNECTED_EDGE_BLEND_SECONDS * self.sample_rate).max(1.0);
+            if self
+                .plans
+                .get(transition.left)
+                .is_some_and(|plan| plan.edge_only)
+            {
+                let fade = ((frame - transition.start_frame) / fade_frames).clamp(0.0, 1.0) as f32;
+                result = mix(base, result, smoothstep(fade));
+            }
+            if self
+                .plans
+                .get(transition.right)
+                .is_some_and(|plan| plan.edge_only)
+            {
+                let fade = ((transition.end_frame - frame) / fade_frames).clamp(0.0, 1.0) as f32;
+                result = mix(base, result, smoothstep(fade));
+            }
+            return Some(result);
         }
 
         let note_index = self
@@ -688,6 +719,128 @@ mod tests {
         )
         .unwrap();
         assert!(separated.transitions.is_empty());
+    }
+
+    #[test]
+    fn edge_only_transition_endpoints_do_not_step_from_wet_to_dry() {
+        let rate = 16_000;
+        let samples: Vec<f32> = (0..rate)
+            .map(|frame| 0.4 * (std::f32::consts::TAU * 220.0 * frame as f32 / rate as f32).sin())
+            .collect();
+        let source_step = samples
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        let note = |id, start, end, shift| PitchNote {
+            id,
+            source_start: start,
+            source_end: end,
+            start,
+            end,
+            detected_midi: 57.0,
+            shift,
+            straighten: 0.0,
+        };
+        for (left_shift, right_shift) in [(0.0, 2.0), (2.0, 0.0)] {
+            let edit = PitchTimeEdit {
+                detector_version: 2,
+                source_bytes: 0,
+                source_modified_ns: 0,
+                analysis: PitchAnalysis {
+                    sample_rate_hz: rate,
+                    source_start_seconds: 0.0,
+                    source_duration_seconds: 1.0,
+                    points: (0..=70)
+                        .map(|index| PitchPoint {
+                            source_time_seconds: index as f64 * 0.01,
+                            frequency_hz: Some(220.0),
+                            confidence: 1.0,
+                        })
+                        .collect(),
+                },
+                notes: vec![
+                    note(1, 0.1, 0.3, left_shift),
+                    note(2, 0.3, 0.6, right_shift),
+                ],
+                rendered_source: None,
+                enabled: true,
+            };
+            let synth =
+                PitchSynthesis::new(&samples, rate, 1, &edit, 120.0, &AtomicBool::new(false))
+                    .unwrap();
+            let transition = synth.transitions[0];
+            let mut stepped = Vec::new();
+            for boundary in [transition.start_frame, transition.end_frame] {
+                let boundary = boundary as u64;
+                let mut previous = synth.sample_frame(&samples, boundary - 1).unwrap().0;
+                for frame in boundary..=boundary + 1 {
+                    let current = synth.sample_frame(&samples, frame).unwrap().0;
+                    stepped.push((frame, (current - previous).abs()));
+                    previous = current;
+                }
+            }
+            let (frame, step) = stepped
+                .into_iter()
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            assert!(
+                step <= source_step * 3.0,
+                "wet/dry step at frame {frame} is {step}, source step is {source_step}"
+            );
+        }
+    }
+
+    #[test]
+    fn pitch_ramp_does_not_blend_two_voices_away_from_the_boundary() {
+        let rate = 16_000;
+        let samples: Vec<f32> = (0..rate)
+            .map(|frame| 0.4 * (std::f32::consts::TAU * 220.0 * frame as f32 / rate as f32).sin())
+            .collect();
+        let note = |id, start, end, shift| PitchNote {
+            id,
+            source_start: start,
+            source_end: end,
+            start,
+            end,
+            detected_midi: 57.0,
+            shift,
+            straighten: 0.0,
+        };
+        let edit = PitchTimeEdit {
+            detector_version: 2,
+            source_bytes: 0,
+            source_modified_ns: 0,
+            analysis: PitchAnalysis {
+                sample_rate_hz: rate,
+                source_start_seconds: 0.0,
+                source_duration_seconds: 1.0,
+                points: (0..=70)
+                    .map(|index| PitchPoint {
+                        source_time_seconds: index as f64 * 0.01,
+                        frequency_hz: Some(220.0),
+                        confidence: 1.0,
+                    })
+                    .collect(),
+            },
+            notes: vec![note(1, 0.1, 0.3, 2.0), note(2, 0.3, 0.6, 0.0)],
+            rendered_source: None,
+            enabled: true,
+        };
+        let synth =
+            PitchSynthesis::new(&samples, rate, 1, &edit, 120.0, &AtomicBool::new(false)).unwrap();
+        let transition = synth.transitions[0];
+        let boundary = 0.3 * f64::from(rate);
+        for (index, probe) in [
+            (0, boundary - (boundary - transition.start_frame) * 0.5),
+            (1, boundary + (transition.end_frame - boundary) * 0.5),
+        ] {
+            let expected = synth.note_at(&samples, index, probe, false).0;
+            let actual = synth.sample_frame(&samples, probe as u64).unwrap().0;
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "probe {probe} should carry one note voice, got {actual} instead of {expected}"
+            );
+        }
     }
 
     #[test]

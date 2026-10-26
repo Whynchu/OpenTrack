@@ -1075,7 +1075,8 @@ fn strip(
             track.armed = !track.armed;
             modified = true;
         }
-        modified |= fader(ui, r, &mut track.gain, peak, true, held_peak);
+        let fader_color = project_controls::track_color(track);
+        modified |= fader(ui, r, &mut track.gain, peak, true, held_peak, fader_color);
         let name_rect = Rect::from_min_size(
             Pos2::new(r.left(), r.bottom() - 29.0),
             Vec2::new(r.width(), 16.0),
@@ -1087,18 +1088,32 @@ fn strip(
             settings.channel_bus = Some(track.id == opentrack_core::project::INPUT_BUS_ID);
             select = false;
         }
-        footer(
+        let footer_color = if is_bus {
+            Some(project_controls::track_color(track))
+        } else {
+            project_controls::has_track_color(track).then(|| project_controls::track_color(track))
+        };
+        let name = track.name.clone();
+        modified |= footer(
             ui,
             r,
-            &track.name,
+            &name,
             (!is_bus).then_some(index + 1),
-            project_controls::has_track_color(track).then(|| project_controls::track_color(track)),
+            footer_color,
+            is_bus.then_some(track),
         );
     }
     (modified, select, exclusive)
 }
 
-fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>, color: Option<Color32>) {
+fn footer(
+    ui: &mut egui::Ui,
+    r: Rect,
+    name: &str,
+    number: Option<usize>,
+    color: Option<Color32>,
+    bus_track: Option<&mut Track>,
+) -> bool {
     let p = theme::palette(ui);
     let name_rect = Rect::from_min_size(
         Pos2::new(r.left(), r.bottom() - 29.0),
@@ -1114,6 +1129,14 @@ fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>, color: 
         color.map(project_controls::label_ink).unwrap_or(p.text),
         Align2::LEFT_CENTER,
     );
+    let mut changed = false;
+    if let Some(track) = bus_track {
+        let swatch = Rect::from_min_max(
+            Pos2::new(name_rect.right() - 9.0, name_rect.top()),
+            name_rect.right_bottom(),
+        );
+        changed |= project_controls::color_strip(ui, swatch, track, true);
+    }
     let lower = Rect::from_min_size(
         Pos2::new(r.left(), r.bottom() - 12.0),
         Vec2::new(r.width() - 1.0, 12.0),
@@ -1138,6 +1161,7 @@ fn footer(ui: &mut egui::Ui, r: Rect, name: &str, number: Option<usize>, color: 
             p.muted,
         );
     }
+    changed
 }
 
 fn fader(
@@ -1147,8 +1171,9 @@ fn fader(
     peak: [f32; 2],
     enabled: bool,
     held_peak: &mut metering::Hold,
+    color: Color32,
 ) -> bool {
-    fader_impl(ui, r, gain, peak, enabled, "mixer-fader", held_peak).0
+    fader_impl(ui, r, gain, peak, enabled, "mixer-fader", held_peak, color).0
 }
 
 pub(super) fn channel_settings_fader(
@@ -1158,6 +1183,7 @@ pub(super) fn channel_settings_fader(
     peak: [f32; 2],
     track_id: u64,
     held_peak: &mut metering::Hold,
+    color: Color32,
 ) -> (bool, egui::Response) {
     let (changed, response) = fader_impl(
         ui,
@@ -1167,6 +1193,7 @@ pub(super) fn channel_settings_fader(
         true,
         ("channel-settings-fader", track_id),
         held_peak,
+        color,
     );
     (
         changed,
@@ -1182,6 +1209,7 @@ fn fader_impl(
     enabled: bool,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     held_peak: &mut metering::Hold,
+    color: Color32,
 ) -> (bool, Option<egui::Response>) {
     let p = theme::palette(ui);
     let top = r.top() + 104.0;
@@ -1213,7 +1241,7 @@ fn fader_impl(
             Stroke::new(0.6, p.surface_raised),
         );
     }
-    super::paint_track_meter(ui, meter, peaks);
+    super::paint_track_meter(ui, meter, peaks, color);
     super::paint_peak_markers(ui, meter, held_peak.markers);
     for db in [6.0206_f32, 0.0, -6.0, -12.0, -18.0, -24.0, -30.0] {
         let fraction = channel_gain::gain_to_position(10.0_f32.powf(db / 20.0));
@@ -1413,6 +1441,7 @@ mod bus_tests {
                             true,
                             "test-fader",
                             &mut metering::Hold::default(),
+                            Color32::from_rgb(76, 142, 210),
                         );
                     },
                 );

@@ -184,6 +184,7 @@ pub(super) fn show(
     } else {
         &mut project.tracks[index]
     };
+    let color = project_controls::track_color(track);
     let area = ui.available_rect_before_wrap();
     let visible = state.preferences.visible_items.clone();
     let has_fader = visible.contains(&ChannelSettingsViewItem::Fader);
@@ -266,6 +267,7 @@ pub(super) fn show(
                     item != ChannelSettingsViewItem::Equalizers,
                     item == ChannelSettingsViewItem::EqualizersCurveDials,
                     state,
+                    color,
                 )
             }
         }
@@ -606,6 +608,7 @@ fn parameter_bar(
     logarithmic: bool,
     centered: bool,
     enabled: bool,
+    color: Color32,
 ) -> bool {
     let response = ui.interact(
         r,
@@ -650,9 +653,9 @@ fn parameter_bar(
     };
     let hovered = enabled && response.hovered();
     let ink = if hovered {
-        theme::hover_button_fill(p.accent, ui.visuals())
+        theme::hover_button_fill(color, ui.visuals())
     } else if enabled {
-        p.accent
+        color
     } else {
         p.muted
     };
@@ -678,6 +681,7 @@ fn equalizer(
     curve: bool,
     dials: bool,
     state: &mut ChannelSettingsUiState,
+    color: Color32,
 ) -> bool {
     let mut changed = false;
     if header(
@@ -708,6 +712,7 @@ fn equalizer(
             at(r, 0.0, 50.0, r.width(), (bands_top - 54.0).max(80.0)),
             eq,
             state,
+            color,
         );
     }
     let width = (r.width() - 12.0) / 4.0;
@@ -763,6 +768,7 @@ fn equalizer(
             false,
             true,
             band.enabled && !eq.bypassed,
+            color,
         );
         changed |= number(
             ui,
@@ -784,6 +790,7 @@ fn equalizer(
             true,
             false,
             band.enabled && !eq.bypassed,
+            color,
         );
         let filter_rect = at(cell, 1.0, 70.0, width * 0.66, 18.0);
         let response = ui.interact(
@@ -841,6 +848,7 @@ fn equalizer(
             true,
             false,
             band.enabled && !eq.bypassed,
+            color,
         );
         if dials {
             ui.scope_builder(
@@ -885,6 +893,7 @@ fn graph(
     r: Rect,
     eq: &mut ChannelEqualizer,
     state: &mut ChannelSettingsUiState,
+    color: Color32,
 ) -> bool {
     let p = theme::palette(ui);
     let plot = r.shrink2(Vec2::new(30.0, 18.0));
@@ -995,7 +1004,7 @@ fn graph(
             Align2::CENTER_CENTER,
         );
     }
-    state.analyzer.paint(ui, plot);
+    state.analyzer.paint(ui, plot, color);
     let points = (0..=256)
         .map(|i| {
             let frequency = 20.0 * 1000.0_f32.powf(i as f32 / 256.0);
@@ -1009,7 +1018,7 @@ fn graph(
         })
         .collect();
     ui.painter()
-        .add(egui::Shape::line(points, Stroke::new(1.5, p.accent)));
+        .add(egui::Shape::line(points, Stroke::new(1.5, color)));
     if response.hovered() {
         ui.painter().rect_stroke(
             r.shrink(0.5),
@@ -1023,9 +1032,9 @@ fn graph(
         let active = band.enabled && !eq.bypassed;
         let hovered = hover_position.is_some_and(|pointer| pos.distance(pointer) <= 9.0);
         let node_fill = if hovered {
-            theme::hover_button_fill(p.accent, ui.visuals())
+            theme::hover_button_fill(color, ui.visuals())
         } else if active {
-            p.accent
+            color
         } else {
             p.surface_raised
         };
@@ -1034,7 +1043,7 @@ fn graph(
         ui.painter().circle_stroke(
             pos,
             if hovered { 6.0 } else { 5.0 },
-            Stroke::new(1.0, if hovered || active { p.accent } else { p.muted }),
+            Stroke::new(1.0, if hovered || active { color } else { p.muted }),
         );
         text(
             ui,
@@ -1487,6 +1496,7 @@ fn strip(
             r.min + Vec2::new((r.width() - 82.0) / 2.0, 50.0),
             Pos2::new(r.center().x + 41.0, r.bottom() + 27.0),
         );
+        let fader_color = project_controls::track_color(track);
         let (edit, response) = mixer::channel_settings_fader(
             ui,
             virtual_rect,
@@ -1494,6 +1504,7 @@ fn strip(
             peak,
             track.id,
             held_peak,
+            fader_color,
         );
         changed |= edit;
         context(&response, state);
@@ -1859,5 +1870,34 @@ mod bus_tests {
         out.textures_delta.clear();
         assert_eq!(project.tracks.len(), 1);
         assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn eq_parameter_bar_uses_the_channel_color() {
+        let color = Color32::from_rgb(76, 142, 210);
+        let ctx = egui::Context::default();
+        let mut value = 0.0_f32;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(!parameter_bar(
+                ui,
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 6.0)),
+                "color-test",
+                &mut value,
+                -24.0,
+                24.0,
+                false,
+                true,
+                true,
+                color,
+            ));
+        });
+        assert!(
+            out.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == color
+            )),
+            "enabled EQ parameter bars must draw in the channel color"
+        );
+        out.textures_delta.clear();
     }
 }

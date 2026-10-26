@@ -1,6 +1,7 @@
 # T042 - Vocal pitch quality and touching-note transitions
 
 - Status: awaiting_user_review. Batch 1 accepted by the user on 2026-10-25. The user reported that the previous build still showed harsh pitch spikes; the latest correction is built but not yet reviewed. Actual implementer: GPT-6.1 Sol; no delegated or independent review.
+- 2026-10-25 follow-up: a source audit localized a hard wet-to-dry step at edge-only transition endpoints. The endpoint crossfade, short audio handoff and one-unchanged-note boundary rule are implemented with sample-continuity tests. A dedicated note-drag audition voice and track-color cohesion were also added to this checkpoint; their listening/visual review is pending.
 - Scope version: `transport-v16-pitch-time-editing-workflows`; requirements: `pitch-processing-quality`, `pitch-note-transition-blend`.
 - Desired outcome: reduce reported bubbly/poppy pitch artifacts and blend touching edited note regions automatically, while retaining live nondestructive editing, musical pitch, timing, stereo behavior, original media, bounded callback work and no real-time allocation/I/O. Leave genuine gaps alone and keep Project event structure unchanged.
 - Reference evidence: no Cubase resynthesis or transition details are inferred from the SE-02–SE-06 stills. Audio quality and adjacent-note blending are user-specified. No Cubase interaction or new reference capture was performed.
@@ -17,9 +18,19 @@
 
 - The user-provided OpenTrack screenshots `Screenshot 2026-10-25 213249.png`, `213304.png` and `213317.png` showed abrupt pitch-trace jumps at adjacent note bounds. The later `edit.png`, `should not be to note center- should be to the actual note tails.png` and `unedited.png` screenshots identify that boundary pitch must follow actual trace tails and neighboring notes should share the slide. These are current-app evidence, not Cubase reference captures.
 - Pitch targets now ease inside each pitch-edited note toward a shared target for its touching neighbor. The ramp reaches no farther than one sixteenth-note at the current project tempo, and is shortened on short notes so its two edges do not overlap. If both notes are pitch-edited, they meet at the midpoint of their edge targets; if one is unchanged, the changed note eases to the unchanged note's pitch.
-- The Sample Editor pitch trace now uses the same neighbor-aware contour as playback instead of applying each note's pitch shift independently. The audio handoff crossfade now spans the pitch ramp on both sides of the boundary, rather than only 5 ms. During time-compressed notes, grain windows expand adaptively to keep adjacent grains overlapping, and the renderer favors voiced grains over the faster, pitch-raised dry signal. These are source-level corrections only; audible improvement is not yet verified.
+- The Sample Editor pitch trace now uses the same neighbor-aware contour as playback instead of applying each note's pitch shift independently. During time-compressed notes, grain windows expand adaptively to keep adjacent grains overlapping, and the renderer favors voiced grains over the faster, pitch-raised dry signal. These are source-level corrections only; audible improvement is not yet verified.
 - The shared boundary pitch now comes from analysis near the actual source tails instead of `detected_midi` note centers. An unedited note beside a pitch-edited note now renders only its edge ramp, so both notes meet at the same pitch while the unedited body remains source audio.
 - Live processing and the optional offline renderer receive project tempo so the sixteenth-note limit follows the session tempo. The legacy offline API keeps a 120 BPM default; a tempo-aware API is also available.
+
+## 2026-10-25 crackle correction and audition
+
+- Audit finding: with one edited note touching an unedited neighbor, the unedited side was synthesized only for its pitch-transition edge, then switched to dry audio with no interpolation at the inner endpoint. A synthetic 220 Hz test produced a 0.55 sample step against a 0.035 natural source step.
+- Correction: edge-only transition endpoints now crossfade wet-to-dry over 5 ms. The audio handoff itself is a 5 ms crossfade around the boundary while the long pitch ramps remain; the previous implementation mixed two independently synthesized voices across the whole ramp, leaving a full-level two-pitch interval.
+- Boundary rule: when one note is unchanged, both sides resolve to the unchanged note's edge pitch; two edited notes still meet at their midpoint, matching the documented behavior.
+- Tests: `edge_only_transition_endpoints_do_not_step_from_wet_to_dry` covers both orientations and was added before the fix so it failed at 0.55 then passed. `pitch_ramp_does_not_blend_two_voices_away_from_the_boundary` proves a single voice away from the boundary. `boundary_pitch_prefers_the_unchanged_neighbor` covers both unchanged-side cases and the both-edited midpoint.
+- Drag audition: a dedicated `NoteAudition` voice loops the held note's current pitch/time source directly to device output, with 5 ms fade-in and source-replacement crossfades. It works with transport stopped, does not move the playhead, and does not rebuild the playback plan. Editor and audio tests cover the request lifecycle, audible stopped-transport output, and replacement continuity.
+- Note colors: unselected notes now use the rounded current semitone row; selected notes use the track color. The Sample Editor and editing suites pass.
+- Track-color cohesion: Project/Mixer/Channel Settings meters, EQ parameter bars, curve/nodes and owned spectrum inherit channel color; Stereo In/Out default to blue and expose the palette selector in the Mixer footer.
 
 ## Historical first-pass comparison findings
 
@@ -35,8 +46,8 @@ Baseline and candidate used the same Vocal 01 source, saved analysis, 48 kHz sam
 ## Verification and review gate
 
 - `cargo fmt --all` completed successfully.
-- The current x64 local-ASIO release build completed successfully with WASAPI retained. Executable SHA-256: `F21F417145B6590D19270EA5BAD3F242D78B9727ADF1FF038B6C31CD395B98C4`. OpenTrack was checked closed before building and remains closed.
-- No tests, generated-audio comparison or live listening check was run for this iteration. The user will review with their own audio. Audio quality and the updated note transitions remain unverified; the previous renderer's tests and comparison metrics do not establish the current behavior.
+- The current x64 local-ASIO release build completed successfully with WASAPI retained. Executable SHA-256: `AE2E6CCCA4DC6ACD70BF0842A00F23CE849E5C12BF73A26682751C758C677845`. OpenTrack was checked closed before building and remains closed.
+- Full workspace tests pass: app 131, audio 63 (1 ignored manual comparison), core 17, plugin foundation 15+11. No generated-audio comparison or live listening check was run for this iteration. The user will review with their own audio. Audio quality and the updated note transitions remain unverified; the previous renderer's comparison metrics do not establish the current behavior.
 
 ## Handoff
 

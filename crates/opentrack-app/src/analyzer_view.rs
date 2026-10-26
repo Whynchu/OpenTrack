@@ -183,9 +183,8 @@ impl State {
             .map(|f| f.sample_rate)
             .unwrap_or(self.default_rate.max(1))
     }
-    pub fn paint(&self, ui: &egui::Ui, plot: Rect) {
+    pub fn paint(&self, ui: &egui::Ui, plot: Rect, own: Color32) {
         let painter = ui.painter().with_clip_rect(plot);
-        let own = theme::palette(ui).accent;
         for (id, color, fill) in [
             (self.owner, own, true),
             (self.compare, Color32::from_rgb(245, 155, 55), false),

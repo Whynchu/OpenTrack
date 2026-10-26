@@ -30,8 +30,15 @@ foreach ($arch in $architectures) {
     }
     $audioFeatures = if ($useLocalAsio) { @('--features', 'local-asio') } else { @() }
     Write-Output "Building $arch with local ASIO support: $useLocalAsio (WASAPI remains available)"
+    # Windows PowerShell promotes native stderr to ErrorRecord; cargo writes
+    # normal progress to stderr, so keep Stop preference from aborting the build
+    # before the exit code is checked.
+    $buildErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & cargo build @audioFeatures --release -p opentrack --manifest-path $manifest --target $triple --target-dir $cache
-    if ($LASTEXITCODE -ne 0) { throw "Build failed for $arch." }
+    $buildExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $buildErrorPreference
+    if ($buildExitCode -ne 0) { throw "Build failed for $arch." }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $cache "$triple\release\opentrack.exe") -Destination (Join-Path $destination 'OpenTrack.exe') -Force
     if ($useLocalAsio) {
