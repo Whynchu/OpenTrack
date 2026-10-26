@@ -15,7 +15,7 @@ This checkpoint also adds semitone-row note colors, track-color cohesion for met
 ## Build and checks
 
 - x64 release build with local ASIO succeeded; WASAPI remains available. OpenCode's completed Batch 3 and VST3 work is included.
-- Executable SHA-256: `ECB1A99A63297037933EED125AD2FECE0CBA449BFCE6502FF9CFB2C14FE707AC`.
+- Executable SHA-256: `BF6C0F8615F8EDC0F63EA8BED252D21568E0D077D715B8F476451FC713CD7E3C`.
 - Full Windows x64 workspace tests pass: app 136, audio 78, core 18, plug-in scan 16, plug-ins 11, VST3 13; hardware/manual VST smoke tests remain ignored.
 - Headless production-renderer suite: 6 passed; 1 explicit-source test ignored in the ordinary run. Read-only Vocal 01 matrix passed separately. Details and artifacts are in T042.
 - OpenTrack was checked closed before the build and was not launched afterward. No desktop, device, or user-listening review has been performed.
@@ -30,7 +30,7 @@ Batch 3 implementation is complete in source: contextual Project cut band, snap-
 
 VST3 class enumeration is committed as `8ce842c`. T043 now wires real VST3 effects into the existing eight insert slots: component/controller lifecycle, stereo main buses, 64-frame hosted processing, PDC, parameter changes, opaque state, generic sliders and a native editor window. Plans without hosted inserts retain the original per-sample path; built-in effects remain alternative insert choices.
 
-TDR Nova and a WaveShell CLA-76 Stereo child load and process in the smoke checks. External VST3s now appear in the normal insert category menus, and Devices > Plug-in Information is a real folder/catalog manager with persisted plugin folders and background scanning. VST3 instruments, multi-out/sidechain, sandboxing, isolated scanner process and per-module scanner timeout remain pending. The updated x64 build is pending because OpenTrack is open; the previous executable is `ECB1A99A63297037933EED125AD2FECE0CBA449BFCE6502FF9CFB2C14FE707AC`. See [T043](tasks/T043-vst3-insert-hosting.md), [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
+TDR Nova and a WaveShell CLA-76 Stereo child load and process in the smoke checks. External VST3s now appear in the normal insert category menus, and Devices > Plug-in Information is a real folder/catalog manager with persisted plugin folders and background scanning. VST3 instruments, multi-out/sidechain, sandboxing, isolated scanner process and per-module scanner timeout remain pending. The updated x64 local-ASIO executable is `BF6C0F8615F8EDC0F63EA8BED252D21568E0D077D715B8F476451FC713CD7E3C`. See [T043](tasks/T043-vst3-insert-hosting.md), [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
 
 ## Preserved direction
 

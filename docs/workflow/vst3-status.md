@@ -62,7 +62,7 @@ process working directory.
   parameters.
 - WaveShell1 CLA-76 Stereo also loads through the same path with a live
   parameter list and finite block output.
-- Current x64 local-ASIO build: `648C87A72ED7730882F7CE7703FEB0C06426F554A19FA2EFA6FBABA9B2A60FC2`.
+- Current x64 local-ASIO build: `BF6C0F8615F8EDC0F63EA8BED252D21568E0D077D715B8F476451FC713CD7E3C`.
   App suite: 136 passed, 2 ignored installed-plugin tests. VST3 suite: 13
   passed, 2 ignored installed-plugin tests. Hosted audio: 6 passed. Live
   listening/visual review remains pending; the full audio suite still has

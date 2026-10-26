@@ -63,7 +63,7 @@ Project event behavior, local ASIO and WASAPI remain protected.
 - TDR Nova: 75 parameters, 184-sample latency/tail, native editor reported,
   3,608-byte component state, finite block output, fresh-instance restore.
 - WaveShell CLA-76 Stereo: loads, enumerates parameters and processes a block.
-- x64 local-ASIO build: `648C87A72ED7730882F7CE7703FEB0C06426F554A19FA2EFA6FBABA9B2A60FC2`.
+- x64 local-ASIO build: `BF6C0F8615F8EDC0F63EA8BED252D21568E0D077D715B8F476451FC713CD7E3C`.
 - Not yet accepted: live listening, editor visual/interaction review, multi-track
   PDC by ear, save/reopen in the desktop app, and the ignored-plugin slot tests.
 
