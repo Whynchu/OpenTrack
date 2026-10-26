@@ -381,6 +381,11 @@ fn update(
         .min((c.duration_seconds - c.fade_in_seconds).max(0.0));
     g.candidate = c;
 }
+/// Project event waveforms use a slightly hotter display scale so typical
+/// recorded peaks fill more of the lane. It never changes gain, envelopes,
+/// analysis, or the source media.
+const TRACK_WAVEFORM_DISPLAY_GAIN: f32 = 1.75;
+
 fn paint(
     ui: &egui::Ui,
     c: &AudioClip,
@@ -442,8 +447,8 @@ fn paint(
                             .map(|f| f.gain_at(t + c.source_offset_seconds))
                             .product::<f32>()
                         * alpha;
-                    v[0] *= gain;
-                    v[1] *= gain;
+                    v[0] = (v[0] * gain * TRACK_WAVEFORM_DISPLAY_GAIN).clamp(-1.0, 1.0);
+                    v[1] = (v[1] * gain * TRACK_WAVEFORM_DISPLAY_GAIN).clamp(-1.0, 1.0);
                 }
                 values
             },
@@ -881,12 +886,22 @@ pub(super) fn show_with_tool(
                 continue;
             }
             let response = ui.interact(r, Id::new(("audio-event", c.id)), Sense::click_and_drag());
-            // Contextual cut band sits directly above the lower name strip.
+            // Contextual cutting lives in the lower fifth of the waveform body,
+            // above the black name strip, and only for the selected track.
+            let wave = wave_rect(r);
             let cut_band = Rect::from_min_max(
-                Pos2::new(r.left(), (r.bottom() - 26.0).max(r.top() + 1.0)),
-                Pos2::new(r.right(), (r.bottom() - 13.0).max(r.top() + 2.0)),
+                Pos2::new(
+                    wave.left(),
+                    (wave.bottom() - wave.height() * 0.20).max(wave.top() + 1.0),
+                ),
+                Pos2::new(wave.right(), wave.bottom().max(wave.top() + 2.0)),
             );
+            let track_selected = project
+                .selected_track
+                .and_then(|row| project.tracks.get(row as usize))
+                .is_some_and(|track| track.id == lane.id);
             let contextual_cut = *edit_tool == EditTool::Select
+                && track_selected
                 && response
                     .hover_pos()
                     .is_some_and(|pos| cut_band.contains(pos));
@@ -1117,7 +1132,7 @@ pub(super) fn show_with_tool(
             crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, pointer);
             ui.painter().with_clip_rect(visible).line_segment(
                 [Pos2::new(x, visible.top()), Pos2::new(x, visible.bottom())],
-                Stroke::new(1.0, theme::PLAYHEAD),
+                Stroke::new(1.0, Color32::WHITE),
             );
         } else {
             crate::system_tool_icons::tool_cursor_only_at(
@@ -1347,7 +1362,7 @@ mod tests {
             );
             self.guide = out.shapes.iter().find_map(|s| match &s.shape {
                 egui::Shape::LineSegment { points, stroke }
-                    if stroke.color == theme::PLAYHEAD
+                    if stroke.color == Color32::WHITE
                         && points[0].y == 0.0
                         && points[1].y == 210.0 =>
                 {
@@ -1406,15 +1421,27 @@ mod tests {
     fn select_tool_contextual_cut_band_splits_at_the_snapped_guide() {
         let mut f = Fixture::new();
         f.tool = EditTool::Select;
-        // The event body spans y=0..70; the cut band is directly above the
-        // lower 13 px name strip.
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 50.0))]);
+        f.project.selected_track = Some(0);
+        // The waveform body ends at y=57; the cut band is its lower fifth.
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 52.0))]);
         assert_eq!(f.guide, Some(450.0));
-        f.button(Pos2::new(445.0, 50.0), true);
-        assert!(f.button(Pos2::new(445.0, 50.0), false));
+        f.button(Pos2::new(445.0, 52.0), true);
+        assert!(f.button(Pos2::new(445.0, 52.0), false));
         assert_eq!(f.project.tracks[0].clips.len(), 2);
         assert_eq!(f.project.tracks[0].clips[1].start_beats, 3.5);
         assert_eq!(f.project.tracks[0].clips[1].source_offset_seconds, 1.25);
+    }
+
+    #[test]
+    fn contextual_cut_is_hidden_for_an_unselected_track() {
+        let mut f = Fixture::new();
+        f.tool = EditTool::Select;
+        f.project.selected_track = None;
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 52.0))]);
+        assert_eq!(f.guide, None);
+        f.button(Pos2::new(445.0, 52.0), true);
+        assert!(!f.button(Pos2::new(445.0, 52.0), false));
+        assert_eq!(f.project.tracks[0].clips.len(), 1);
     }
 
     #[test]
