@@ -99,6 +99,14 @@ Investigate with a synthetic sustained vowel and a real-vocal fragment:
 
 Do not tune seam-fade lengths as a substitute for fixing phase continuity.
 
+### A3b. Residual pitch-correction garble
+
+The user still hears intermittent garble in some corrections. Codex is actively
+working on the resynthesis path, so do not make speculative DSP edits here.
+Long-term acceptance needs the exact source clip, note edit, sample rate,
+playhead position and a before/after render for each case. Keep this separate
+from the VST/insert work and from the T042 listening review.
+
 ### A4. Dry/processed mixing, voicing, and transients
 
 Files: `pitch_synthesis.rs:266-277`, `estimate_pitch`, `voicing`.
@@ -294,7 +302,13 @@ T042 or Batch 3.
 - TDR Nova smoke verification passed: 75 parameters, 184-sample latency, audio
   block processed, 3,608-byte component state, editor available. The app still
   needs its final build and live review; VST instruments/multi-out/sandboxing
-  and the catalog manager remain follow-up.
+  remain follow-up.
+- Next UI integration (2026-10-26): put scanned external effects into the normal
+  insert category menus, remove the separate VST3 picker dropdown, and make
+  Devices > Plug-in Information a real folder/catalog manager. Persist assigned
+  folders and the scanned catalog; show module/vendor/category/status and scan
+  failures. The folder scanner still loads modules in the app process until the
+  isolated scanner manager is wired.
 
 ### Probe findings to carry forward
 
