@@ -65,6 +65,7 @@ pub struct Runtime {
 /// Owner-lifetime native window used as the parent of a VST3 editor view.
 #[cfg(windows)]
 pub struct EditorWindow {
+    frame: isize,
     hwnd: isize,
 }
 
@@ -76,7 +77,7 @@ impl EditorWindow {
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{
                 CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, RegisterClassW, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             },
         };
         static REGISTERED: OnceLock<()> = OnceLock::new();
@@ -101,6 +102,7 @@ impl EditorWindow {
             }
         });
         let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+        let static_class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
@@ -123,8 +125,36 @@ impl EditorWindow {
                 unsafe { GetLastError() }
             ));
         }
+        // VST3 hosts normally attach the view to a child of their frame, not
+        // directly to the top-level window. Waves editors are sensitive to this.
+        let child = unsafe {
+            CreateWindowExW(
+                0,
+                static_class.as_ptr(),
+                std::ptr::null(),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                900,
+                600,
+                hwnd,
+                std::ptr::null_mut(),
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null_mut(),
+            )
+        };
+        if child.is_null() {
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+            }
+            return Err(format!(
+                "could not create the VST3 editor child window (error {})",
+                unsafe { GetLastError() }
+            ));
+        }
         Ok(Self {
-            hwnd: hwnd as isize,
+            frame: hwnd as isize,
+            hwnd: child as isize,
         })
     }
 
@@ -133,7 +163,7 @@ impl EditorWindow {
     }
 
     pub fn is_alive(&self) -> bool {
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.hwnd as _) != 0 }
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.frame as _) != 0 }
     }
 }
 
@@ -141,7 +171,7 @@ impl EditorWindow {
 impl Drop for EditorWindow {
     fn drop(&mut self) {
         unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd as _);
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.frame as _);
         }
     }
 }
@@ -406,6 +436,129 @@ mod tests {
             .process(&mut left, &mut right)
             .expect("WaveShell child processes a block");
         assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    #[ignore]
+    fn installed_gateway_loads_despite_optional_host_context_failure() {
+        let module = Path::new(
+            r"C:\Program Files\Common Files\VST3\Gateway.vst3\Contents\x86_64-win\Gateway.vst3",
+        );
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].inserts.push(InsertEffect {
+            enabled: true,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "0de7aef2de004e4f41414d6137325247".to_owned(),
+                module_path: module.to_path_buf(),
+                name: "Gateway".to_owned(),
+                vendor: String::new(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        });
+        let mut runtime = Runtime::default();
+        runtime.set_format(48_000, 64);
+        runtime.sync(&project);
+        assert_eq!(runtime.failure(project.tracks[0].id, 0), None);
+        let hosted = runtime.hosted_inserts(&project.tracks[0]);
+        let mut left = vec![0.1; 64];
+        let mut right = vec![0.1; 64];
+        hosted[0]
+            .processor
+            .process(&mut left, &mut right)
+            .expect("Gateway block");
+        assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    #[ignore]
+    fn installed_waveshell_editor_opens_without_crashing() {
+        let module = Path::new(r"C:\Program Files\Common Files\VST3\WaveShell1-VST3 15.0_x64.vst3");
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].inserts.push(InsertEffect {
+            enabled: true,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "37545356433663536c612d3736207374".to_owned(),
+                module_path: module.to_path_buf(),
+                name: "CLA-76 Stereo".to_owned(),
+                vendor: "Waves".to_owned(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        });
+        let track_id = project.tracks[0].id;
+        let mut runtime = Runtime::default();
+        runtime.set_format(48_000, 64);
+        runtime.sync(&project);
+        assert_eq!(runtime.failure(track_id, 0), None);
+        let window = EditorWindow::create("OpenTrack VST3 editor test", 0).expect("editor host");
+        runtime
+            .open_editor(track_id, 0, window.hwnd())
+            .expect("CLA-76 editor opens");
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+            };
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_millis(500) {
+                let mut message = MSG::default();
+                while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) }
+                    != 0
+                {
+                    unsafe {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        runtime.close_editor(track_id, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn installed_waveshell_processes_on_a_separate_audio_thread() {
+        let module = Path::new(r"C:\Program Files\Common Files\VST3\WaveShell1-VST3 15.0_x64.vst3");
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].inserts.push(InsertEffect {
+            enabled: true,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "37545356433663536c612d3736207374".to_owned(),
+                module_path: module.to_path_buf(),
+                name: "CLA-76 Stereo".to_owned(),
+                vendor: "Waves".to_owned(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        });
+        let mut runtime = Runtime::default();
+        runtime.set_format(48_000, 64);
+        runtime.sync(&project);
+        assert_eq!(runtime.failure(project.tracks[0].id, 0), None);
+        let hosted = runtime.hosted_inserts(&project.tracks[0]);
+        std::thread::spawn(move || {
+            for block in 0..256 {
+                let mut left = (0..64)
+                    .map(|frame| {
+                        (std::f32::consts::TAU * 220.0 * (frame + block * 64) as f32 / 48_000.0)
+                            .sin()
+                            * 0.1
+                    })
+                    .collect::<Vec<_>>();
+                let mut right = left.clone();
+                hosted[0]
+                    .processor
+                    .process(&mut left, &mut right)
+                    .expect("audio-thread block");
+            }
+        })
+        .join()
+        .expect("audio thread");
     }
 
     #[test]

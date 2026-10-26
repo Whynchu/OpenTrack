@@ -57,13 +57,15 @@ Project event behavior, local ASIO and WASAPI remain protected.
 ## Verification status 2026-10-26
 
 - Source/compile: app, VST3, hosted audio and core paths compile.
-- App suite: 136 passed, 2 ignored installed-plugin tests.
+- App suite: 141 passed, 5 ignored installed-plugin tests.
 - VST3 suite: 13 passed, 2 ignored installed-plugin tests.
 - Hosted block/PDC suite: 6 passed.
 - TDR Nova: 75 parameters, 184-sample latency/tail, native editor reported,
   3,608-byte component state, finite block output, fresh-instance restore.
 - WaveShell CLA-76 Stereo: loads, enumerates parameters and processes a block.
-- x64 local-ASIO build: `BF6C0F8615F8EDC0F63EA8BED252D21568E0D077D715B8F476451FC713CD7E3C`.
+- Gateway loads despite its optional `setHostContext` returning `kNotImplemented`.
+- WaveShell CLA-76 Stereo passes load, audio-thread processing and native-editor open/close.
+- x64 local-ASIO build: `BE2E7B5A80D374DE2C535D683D288DA516E78C8A8A6EF6289163E63353CD2BA2`.
 - Not yet accepted: live listening, editor visual/interaction review, multi-track
   PDC by ear, save/reopen in the desktop app, and the ignored-plugin slot tests.
 

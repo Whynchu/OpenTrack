@@ -317,10 +317,13 @@ struct ComApartment {
 #[cfg(windows)]
 impl ComApartment {
     fn new() -> Self {
+        // The module is loaded on the control/UI thread. VST3 editors expect
+        // the conventional STA there; an MTA initialized by the loader prevents
+        // the editor apartment from being established later.
         let result = unsafe {
             windows::Win32::System::Com::CoInitializeEx(
                 None,
-                windows::Win32::System::Com::COINIT_MULTITHREADED,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
             )
         };
         Self {

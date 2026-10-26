@@ -201,12 +201,10 @@ impl Vst3Effect {
         // alive for the component/controller lifetime.
         let host_context = HostContext::new();
         if let Some(factory3) = factory.cast::<IPluginFactory3>() {
-            let result = unsafe { factory3.setHostContext(host_context.as_funknown()) };
-            if result != kResultOk {
-                return Err(format!(
-                    "plugin factory rejected the host context with 0x{result:08x}"
-                ));
-            }
+            // Host context is optional for IPluginFactory3. The SDK host
+            // ignores this result; some factories return kNotImplemented even
+            // though component creation works normally (for example Gateway).
+            let _ = unsafe { factory3.setHostContext(host_context.as_funknown()) };
         }
 
         let shared = Arc::new(HostShared::default());
