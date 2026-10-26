@@ -1,25 +1,25 @@
 # Current assignment
 
-Updated: 2026-10-25. Implementer: GPT-6.1 Sol; no subagents or independent review.
+Updated: 2026-10-25. Actual implementer/reviewer: GPT-6.1 Sol; no delegated or independent review.
 
-## Current review - T028
+## Current review - T042 Batch 2
 
-[T028](tasks/T028-channel-window-lifecycle.md) hardens shared Channel Settings close/reopen and restores hidden/minimized editors on Edit. All Mixer/Inspector/Project/menu entry points use the same request. Closed editors get a fresh viewport identity; stale close events cannot cancel an explicit reopen. The exact cause of the user-reported Stereo Out disappearance remains unconfirmed without live reproduction.
+Batch 1 T041 was accepted by the user. After listening to the first T042 iteration, the user asked for pitch targets to blend toward adjacent notes inside the notes themselves, with a maximum reach of one sixteenth note, and reported bubbly/choppy sound when shortening notes.
 
-Always on Top now means a normal Windows window owned by the main OpenTrack window. It can be covered by external programs. Root dialogs suspend ownership; confirmations disable editor interaction. Live dialog/focus/external-app review is pending.
+The latest source iteration uses one tempo-aware pitch contour in playback and the Sample Editor trace. It measures pitch at each source tail rather than using note-center pitch. Edited and adjacent unedited notes ease toward a shared boundary pitch for up to one sixteenth-note on each side; unedited note bodies continue to use the source audio. Time-compressed notes get adaptive grain overlap and favor voiced grains over the faster dry signal. Audible improvement is unverified.
 
-Pitch & Time activation and persistence are now explicit in AGENTS.md and sample-editor-study.md: analyze only on the user's Pitch & Time click for the selected audio, retain valid results and editable intent across save/reopen, and explicitly re-analyze invalidated sources. Pitch detection and audible correction remain absent; no analysis engine or enabled placeholder was added.
+## Build and checks
 
-## Verification and build
+- x64 release build with local ASIO support succeeded; WASAPI remains available.
+- Executable SHA-256: `F21F417145B6590D19270EA5BAD3F242D78B9727ADF1FF038B6C31CD395B98C4`.
+- `cargo fmt --all` succeeded. No tests or generated-audio comparisons were run for this iteration because the user will review with their own audio.
+- The earlier workspace suite, controlled renders and seam metrics refer to the first renderer and are historical only. They do not validate the current source.
+- OpenTrack was checked closed before rebuilding and remains closed. No live desktop or audio-device check was performed.
 
-97 ASIO-enabled release app tests pass, including repeated Output/Input/track close/reopen with stale close input, and Windows owner/global-topmost/confirmation checks on hidden synthetic windows. x64 local-ASIO release succeeds; build-info.json records local_asio=true. Prior audio tests (47) and core checks remain recorded in T027/T026. No OpenTrack GUI, Cubase, hardware stream or EXAMPLE project was opened. OpenTrack was absent before build and remains closed. No live visual or hardware acceptance claimed.
+## User review checkpoint - pending
 
-Current builds/x64/OpenTrack.exe SHA-256: 3A682D584BD9FFAC78BFAB885599BC96752CF7B31569CD1219F715C6CC947C5C.
+The user will open the current x64 app and check the pitch transitions and shortened notes using their own audio. Do not start Batch 3 until this Batch 2 review is accepted. Keep the app closed until the user chooses to open it.
 
-## Prior work and next review
+## Preserved direction
 
-T020-T028 are included in the user-authorized publication checkpoint. The user reported the latest changes looked clean; detailed runtime gates below remain pending. T027 monitoring-exclusive playback, parameter crossfade and topmost take changes still need audible review; the accidental WASAPI-only T027 build was corrected and ASIO is retained by the build script. T026 group editing/shared editor loop and T025 media lifecycle/rate conformity remain available for review. Source preservation, reversible deletion, Rust-first architecture and no AudioWarp remain standing direction.
-
-Check T028: Stereo Out then Stereo In/track editors, repeated close/reopen, minimized/hidden editor, Always on Top, quit/save/discard, Preferences/Device Setup/native file dialogs, and another application. Stop for feedback before a new substantial milestone. Exact native disappearance cause, live ordering and focus remain pending.
-
-Metrics: audio-workflow-v12 adds the two window requirements; event-edit-v7 refines the existing absent pitch-analysis contract. Baselines remain incomplete; no whole-DAW percentage or parity acceptance inferred from tests/builds. User authorized committing and pushing this checkpoint; publication does not resolve the remaining runtime gates.
+Keep pitch analysis/editing/processing in Rust, preserve original audio and the accepted Mixer, and maintain the gated sequence: Batch 1 accepted; Batch 2 listening review now; Batch 3 Project scissors/wheel behavior and Mixer fader/selection only after Batch 2 acceptance. Scope remains `transport-v16-pitch-time-editing-workflows`; workflow readiness and reference parity remain separate from implementation and build success. See [metrics](metrics.md) and [T042](tasks/T042-vocal-quality-and-note-transitions.md).

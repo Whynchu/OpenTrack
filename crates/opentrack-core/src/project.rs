@@ -343,6 +343,8 @@ impl SourceFade {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioClip {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch_time: Option<crate::pitch_time::PitchTimeEdit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_fades: Vec<SourceFade>,
     pub id: u64,
@@ -998,6 +1000,7 @@ impl Project {
             .unwrap_or_else(|| "Audio Clip".to_owned());
         self.media_pool.insert(source_path.clone());
         track.clips.push(AudioClip {
+            pitch_time: None,
             source_fades: Vec::new(),
             id,
             name,
@@ -1010,6 +1013,38 @@ impl Project {
             gain: 1.0,
         });
         Some(id)
+    }
+
+    /// Pastes cloned audio events into the supplied audio-track indices.
+    /// Event IDs are reassigned and source media is retained in the pool.
+    /// The operation is atomic: invalid destinations or clips leave the project unchanged.
+    pub fn paste_audio_clips(&mut self, clips: &[(usize, AudioClip)]) -> Option<Vec<u64>> {
+        if clips.is_empty() {
+            return None;
+        }
+        let mut candidate = self.clone();
+        let mut new_ids = Vec::with_capacity(clips.len());
+        for (track_index, source) in clips {
+            if source.source_path.as_os_str().is_empty() {
+                return None;
+            }
+            let track = candidate.tracks.get(*track_index)?;
+            if track.kind != TrackKind::Audio || track.audio_channels == 0 {
+                return None;
+            }
+            let id = candidate.next_clip_id;
+            candidate.next_clip_id = candidate.next_clip_id.checked_add(1)?;
+            let mut clip = source.clone();
+            clip.id = id;
+            candidate.media_pool.insert(clip.source_path.clone());
+            candidate.tracks[*track_index].clips.push(clip);
+            new_ids.push(id);
+        }
+        if candidate.validate().is_err() {
+            return None;
+        }
+        *self = candidate;
+        Some(new_ids)
     }
 
     /// Adds a MIDI part to a MIDI or instrument track.
@@ -1490,6 +1525,11 @@ impl Project {
                 }
                 if !clip.gain.is_finite() || !(0.0..=4.0).contains(&clip.gain) {
                     return Err("audio event gain must be between 0.0 and 4.0");
+                }
+                if let Some(edit) = &clip.pitch_time {
+                    if !edit.validate(edit.analysis.source_duration_seconds) {
+                        return Err("pitch/time note data is invalid");
+                    }
                 }
             }
         }

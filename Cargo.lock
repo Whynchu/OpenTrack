@@ -1685,6 +1685,7 @@ dependencies = [
  "hound",
  "maolan-asio",
  "opentrack-core",
+ "serde_json",
  "wasapi",
  "windows",
  "windows-sys 0.61.2",

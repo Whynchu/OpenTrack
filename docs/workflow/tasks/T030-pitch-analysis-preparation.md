@@ -1,0 +1,33 @@
+# T030 — Pitch & Time analysis preparation
+
+- Status: analysis contract prepared; first transient detector/trace slice implemented in [T033](T033-pitch-analysis-preview.md). Persistence, editing, resynthesis and runtime evaluation remain absent or pending.
+- Implementer/spec author: GPT-6.1 Sol. Rust first-party architecture, existing Sample Editor style and on-demand analysis are standing user requirements.
+- Evidence: all six requested originals inspected: 090538/090553/090612/090626/090649 and 091144 on 2026-10-25. Existing archived originals/manifest and SE-02..SE-07 mapping are in sample-editor-study.md. No new reference session/capture.
+- Scope: prepare interfaces, persistent intent, job/caching rules and acceptance measures. Do not enable a visual-only Pitch & Time button or introduce detector/model dependencies before evaluation.
+
+## What the screenshots establish
+
+SE-02..SE-04 show piano/note axis, waveform behind a continuous pitch trace, colored/hatched note regions, an orange selection and different selected boundaries. SE-05 shows changed note placement and a notice that the processing algorithm switched to Solo. SE-06 shows local time anchors/ratios; user excludes a separate AudioWarp feature, so timing correction belongs in Pitch & Time. SE-07 is the Project scissors/event split view, not evidence for a hidden pitch function. Exact gesture targets, modifiers, algorithms and audible quality remain unknown.
+
+## First integration contract
+
+1. Import, playback, project open and ordinary Sample Editor open perform no pitch analysis. Pitch & Time click starts a job for the selected audio event's audible source range. UI shows real progress/cancel/error. Initial quality fixtures should cover monophonic vocals and single-note instruments; chords/polyphonic separation are a separate unqualified scope.
+2. Rust owns immutable request identity: project/session generation, stable event/source IDs, source content identity, source-relative range, decoded rate/channel policy, detector/version/settings and request generation. A worker reads/decodes outside the callback. Event deletion, source replacement, new requests or project close invalidate publication. Cancellation acknowledgement target is 250 ms during ordinary CPU jobs; measure before adoption.
+3. Analysis output is source-relative timestamp, optional voiced F0, confidence/periodicity and level with declared hop/time units. Preserve unvoiced/breath regions. Note segmentation is a distinct deterministic pass producing stable editable regions and the underlying pitch curve. Pitch shift, vibrato, drift, formants and audible resynthesis remain separate consumers.
+4. Cache analysis under managed Metadata/Analysis by source/range/detector identity. Persist event analysis attachment and editable musical intent in a backward-compatible project schema. Canceled/failed/stale work never dirties the project. Attaching the first usable analysis/region set is one explicit project command and undo entry; subsequent region edits use ordinary one-gesture Undo. Save/reopen retains valid editable state without a new analysis job.
+5. Cache files are derived artifacts; musical edits belong in the .opr. Missing/incompatible cache leaves durable edits intact and offers explicit re-analysis. No automatic job on reopen. Source trims can reuse the overlapping valid result; extending into unanalyzed audio requires explicit analysis. Keep analysis results separate from source replacement and never rewrite recordings for detection.
+6. Presentation follows the supplied sidebar/overview/ruler/piano grid/trace/region organization. Existing global transport, loop/skip, independent editor snap and source-range fields remain. Region selection/boundary repair can be enabled with real analysis. Pitch/time changes become available only with an audible renderer, retaining original/corrected audition. No fake traces or controls that silently have no audio effect.
+
+## Evaluation and staged work
+
+Evaluate one Rust-native baseline and a neural candidate using the same fixtures/output contract. Before adopting any code, model or runtime, record capabilities, code/weight licenses, distribution terms, CPU support, model size, memory, cancellation and offline availability. Existing PitchNet/HachiTune/CREPE/DDSP research are candidates for study, not selected dependencies. Keep Rust application/editing/job ownership; no replacement C++/JUCE host.
+
+Stage A: source/range identity, cancellable worker, result schema and deterministic synthetic fixtures. Stage B: detector/voicing evaluation, honest confidence display and cache reuse. Stage C: real trace/region display and repair, Undo/save/reopen/source-invalidating scenarios. Audible pitch/time rendering has its own processing milestone: worker-rendered derived audio, original preservation, audition, stale-result protection and Project/Mixer/export consistency. Existing processor-state reset/parameter smoothing concerns from T027 need explicit qualification before demanding real-time preview.
+
+Freeze detector gates before evaluating candidates: clean sustained 80..1000 Hz fixtures, excluding documented onset/release windows, median absolute pitch error <=10 cents, 95th percentile <=25 cents and no octave errors; report voiced/unvoiced mistakes separately, including silence/noise/breath fixtures. These are proposed synthetic acceptance targets, not measured performance. Real voice/instrument listening fixtures need documented source identities and annotations; no accuracy percentage until that dataset exists. Report time/RAM per audio minute on the target PC before setting throughput budgets. Time mapping must agree within one analysis hop, with sample-accurate source/project mapping tested separately.
+
+Required workflow checks: on-demand start/cancel/retry; no eager jobs; duplicate request coalescing; source range/rate/channel interpretation; stale result rejection; repair segmentation; Undo/Redo; save/reopen without recomputation; absent/corrupt cache and source replacement; switch project/editor during a job; edits survive missing derived files. Pitch correction additionally requires identity/bypass, tuning/duration/seam/transient/formant/stereo and documented listening checks. Detection, region editing and audible transformation retain separate implementation/runtime metrics.
+
+## Original next action (superseded by T033)
+
+The original next action was deferred when the user explicitly asked to begin Pitch & Time implementation. Detector/model comparisons, confidence calibration, real-voice corpus and final visual/interaction acceptance remain unresolved. The T033 transient preview does not change project audio or source files and does not persist its result.

@@ -7,7 +7,17 @@
 mod asio_backend;
 mod bus;
 mod devices;
+mod live_pitch;
+mod metronome;
 mod midi;
+mod pitch_analysis;
+mod pitch_render;
+mod pitch_synthesis;
+pub use metronome::MetronomeSettings;
+pub use pitch_analysis::{PitchAnalysis, PitchPoint, analyze_pitch_file, segment_notes};
+pub use pitch_render::{
+    pitch_source_identity, render_pitch_time_file, render_pitch_time_file_at_tempo,
+};
 pub mod plugins;
 mod recording;
 mod spectrum;
@@ -406,6 +416,8 @@ unsafe impl Sync for PlaybackTrackRuntime {}
 
 /// Immutable audio state read by the device callback.
 pub struct PlaybackPlan {
+    metronome: MetronomeSettings,
+    metronome_downbeat_frequency: f64,
     output_bus: bus::BusRuntime,
     output_meter: Arc<StereoMeter>,
     tempo_bpm: f64,
@@ -423,6 +435,8 @@ pub struct PlaybackPlan {
 impl PlaybackPlan {
     fn empty() -> Self {
         Self {
+            metronome: MetronomeSettings::default(),
+            metronome_downbeat_frequency: MetronomeSettings::default().downbeat_frequency(),
             output_bus: bus::BusRuntime::new(
                 &opentrack_core::project::BusChannel::output().strip,
                 44100,
@@ -487,6 +501,8 @@ impl PlaybackPlan {
             ),
             output_meter: Arc::new(StereoMeter::default()),
             tempo_bpm,
+            metronome: MetronomeSettings::default(),
+            metronome_downbeat_frequency: MetronomeSettings::default().downbeat_frequency(),
             tracks: tracks
                 .into_iter()
                 .map(|track| PlaybackTrackRuntime::new(track, tempo_bpm, sample_rate))
@@ -1059,6 +1075,25 @@ impl AudioEngine {
         cycle_mode: CycleMode,
         output_channel: &opentrack_core::project::Track,
     ) {
+        self.set_playback_plan_with_metronome(
+            tempo_bpm,
+            tracks,
+            loop_range_beats,
+            cycle_mode,
+            output_channel,
+            MetronomeSettings::default(),
+        );
+    }
+
+    pub fn set_playback_plan_with_metronome(
+        &mut self,
+        tempo_bpm: f64,
+        tracks: Vec<PlaybackTrackSettings>,
+        loop_range_beats: Option<(f64, f64)>,
+        cycle_mode: CycleMode,
+        output_channel: &opentrack_core::project::Track,
+        metronome: MetronomeSettings,
+    ) {
         self.current_generation = self.current_generation.wrapping_add(1).max(1);
         let previous = self.plan.load_full();
         let mut new_plan = PlaybackPlan::new(
@@ -1070,6 +1105,8 @@ impl AudioEngine {
         );
         new_plan.output_meter = Arc::clone(&self.plan.load().output_meter);
         new_plan.cycle_mode = cycle_mode;
+        new_plan.metronome = metronome;
+        new_plan.metronome_downbeat_frequency = metronome.downbeat_frequency();
         new_plan.output_bus = bus::BusRuntime::new(output_channel, self.sample_rate);
         new_plan.begin_parameter_transition(previous);
         self.retired_plans.push(self.plan.swap(Arc::new(new_plan)));
@@ -1806,7 +1843,14 @@ fn render_frames<T>(
             monitor_reader.reset();
             (0.0, 0.0)
         };
-        let mut external_input = (0.0_f32, 0.0_f32);
+        let click = plan_snapshot.metronome.sample_with_frequency(
+            output_frame,
+            sample_rate,
+            plan_snapshot.tempo_bpm,
+            playing,
+            plan_snapshot.metronome_downbeat_frequency,
+        );
+        let mut external_input = (0.0, 0.0);
         if tone.load(Ordering::Relaxed) {
             let tone_sample = (*phase * std::f32::consts::TAU).sin() * TEST_TONE_LEVEL;
             external_input.0 += tone_sample;
@@ -1821,7 +1865,7 @@ fn render_frames<T>(
             external_input.0 += midi_left;
             external_input.1 += midi_right;
         }
-        let (left, right) = render_plan_frame(
+        let (bus_left, bus_right) = render_plan_frame(
             &plan_snapshot,
             output_frame,
             sample_rate,
@@ -1831,8 +1875,12 @@ fn render_frames<T>(
             &plan_snapshot.monitor_mute_mask,
             true,
         );
-        output_peaks[0] = output_peaks[0].max(left.abs());
-        output_peaks[1] = output_peaks[1].max(right.abs());
+        // The metronome is a direct monitor/output feed. It bypasses Stereo Out
+        // channel processing and its meter, while remaining audible on device output.
+        let left = bus_left + click;
+        let right = bus_right + click;
+        output_peaks[0] = output_peaks[0].max(bus_left.abs());
+        output_peaks[1] = output_peaks[1].max(bus_right.abs());
         for (channel, sample) in frame.iter_mut().enumerate() {
             write_sample(sample, channel, left, right);
         }
@@ -3041,6 +3089,63 @@ mod processing_tests {
             assert_eq!(l, r);
         }
     }
+    #[test]
+    fn metronome_is_block_independent_through_cycle_wrap_and_master_gain() {
+        fn render(gain: f32, enabled: bool, playing: bool, block: usize) -> (Vec<f32>, [f32; 2]) {
+            let mut p = PlaybackPlan::new(120.0, Vec::new(), 1, 48_000, Some((0.0, 2.0)));
+            p.metronome = MetronomeSettings {
+                enabled,
+                ..Default::default()
+            };
+            let mut bus = opentrack_core::project::BusChannel::output().strip;
+            bus.gain = gain;
+            p.output_bus = bus::BusRuntime::new(&bus, 48_000);
+            let plan = ArcSwap::from(Arc::new(p));
+            let tone = AtomicBool::new(false);
+            let playing = AtomicBool::new(playing);
+            let playhead = AtomicU64::new(47_980);
+            let generation = AtomicU64::new(0);
+            let active = AtomicBool::new(false);
+            let monitor = Arc::new(ArcSwapOption::empty());
+            let mut reader = AudioMonitorReader::default();
+            let mut phase = 0.0;
+            let mut samples = vec![0.0; 4096];
+            for chunk in samples.chunks_mut(block * 2) {
+                render_f32(
+                    chunk,
+                    2,
+                    48_000,
+                    &tone,
+                    &playing,
+                    &playhead,
+                    &plan,
+                    &generation,
+                    &active,
+                    &monitor,
+                    &mut reader,
+                    &mut phase,
+                );
+            }
+            let stereo_out_peak = plan.load().output_meter.take();
+            (samples, stereo_out_peak)
+        }
+        let (full, meter) = render(1.0, true, true, 2048);
+        assert!(full[..40].iter().all(|v| *v == 0.0));
+        assert!(full[42..2000].iter().any(|v| v.abs() > 0.01));
+        assert_eq!(meter, [0.0; 2], "click must bypass Stereo Out metering");
+        for block in [7, 64, 127, 512] {
+            assert_eq!(full, render(1.0, true, true, block).0);
+        }
+        assert_eq!(full, render(0.5, true, true, 127).0);
+        assert_eq!(full, render(0.0, true, true, 127).0);
+        for silent in [
+            render(1.0, false, true, 127).0,
+            render(1.0, true, false, 127).0,
+        ] {
+            assert!(silent.iter().all(|v| *v == 0.0));
+        }
+    }
+
     #[test]
     fn cycle_boundaries_apply_inside_one_audio_block() {
         for (mode, expected) in [(CycleMode::Loop, 2), (CycleMode::Skip, 8)] {

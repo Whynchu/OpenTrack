@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 24;
+const FORMAT_VERSION: u32 = 26;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -76,6 +76,10 @@ pub(crate) struct ArrangeViewState {
     pub(crate) project_dock_fraction: f32,
     #[serde(default = "default_timeline_zoom")]
     pub(crate) timeline_zoom: f32,
+    /// Global scale for arrange track lanes. Individual lane sizes remain
+    /// stored separately so vertical zoom preserves user resized proportions.
+    #[serde(default = "default_track_vertical_zoom")]
+    pub(crate) track_vertical_zoom: f32,
     /// Horizontal scroll position in content pixels, used to keep the ruler and
     /// track headers pinned while the arrange grid moves beneath them.
     #[serde(default)]
@@ -128,6 +132,7 @@ impl Default for ArrangeViewState {
             audio_events: Default::default(),
             project_dock_fraction: default_project_dock_fraction(),
             timeline_zoom: default_timeline_zoom(),
+            track_vertical_zoom: default_track_vertical_zoom(),
             timeline_scroll_x: 0.0,
             track_scroll_y: 0.0,
             show_info_line: true,
@@ -168,24 +173,33 @@ fn default_true() -> bool {
     true
 }
 
+fn default_track_vertical_zoom() -> f32 {
+    1.0
+}
+
 fn default_event_colors() -> [[u8; 3]; 16] {
     DEFAULT_EVENT_COLORS
 }
 
 impl ArrangeViewState {
     pub(crate) fn track_height(&self, track_id: u64) -> f32 {
-        self.track_heights
+        (self
+            .track_heights
             .get(&track_id)
             .copied()
             .filter(|height| height.is_finite())
             .unwrap_or(42.0)
-            .clamp(36.0, 240.0)
+            * self.track_vertical_zoom.clamp(0.5, 4.0))
+        .clamp(36.0, 240.0)
     }
 
     pub(crate) fn set_track_height(&mut self, track_id: u64, height: f32) {
         if height.is_finite() {
-            self.track_heights
-                .insert(track_id, height.clamp(36.0, 240.0));
+            self.track_heights.insert(
+                track_id,
+                (height.clamp(36.0, 240.0) / self.track_vertical_zoom.clamp(0.5, 4.0))
+                    .clamp(36.0, 240.0),
+            );
         }
     }
 
@@ -198,6 +212,10 @@ impl ArrangeViewState {
 
     fn normalize(&mut self) {
         self.ruler_format = self.ruler_format.min(4);
+        if !self.track_vertical_zoom.is_finite() {
+            self.track_vertical_zoom = default_track_vertical_zoom();
+        }
+        self.track_vertical_zoom = self.track_vertical_zoom.clamp(0.5, 4.0);
         self.track_heights.retain(|_, height| height.is_finite());
         for height in self.track_heights.values_mut() {
             *height = height.clamp(36.0, 240.0);
@@ -342,6 +360,8 @@ impl ProjectFile {
         document.project.register_media();
         document.format = FILE_FORMAT.to_owned();
         document.validate()?;
+        crate::app::media_names::recover(path, &document.project)
+            .map_err(ProjectFileError::InvalidData)?;
         Ok(document)
     }
 
@@ -762,7 +782,7 @@ impl fmt::Display for ProjectFileError {
 
 impl Error for ProjectFileError {}
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

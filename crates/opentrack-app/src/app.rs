@@ -8,6 +8,8 @@ pub(crate) mod audio_events;
 mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
+#[path = "media_names.rs"]
+pub(crate) mod media_names;
 #[path = "media_pool.rs"]
 mod media_pool;
 #[path = "metering.rs"]
@@ -26,6 +28,8 @@ mod project_rate;
 mod recording_undo;
 #[path = "sample_editor.rs"]
 mod sample_editor;
+#[path = "transport_panel.rs"]
+mod transport_panel;
 #[path = "waveform_view.rs"]
 mod waveform_view;
 
@@ -651,6 +655,7 @@ pub struct OpenTrackApp {
     dock_state: DockState<PanelTab>,
     workspace_state: ProjectWorkspaceState,
     arrange_view_state: ArrangeViewState,
+    audio_event_clipboard: Option<audio_events::Clipboard>,
     project_window: ProjectWindowState,
     workspace_preferences: WorkspacePreferences,
     data: AppData,
@@ -662,6 +667,11 @@ pub struct OpenTrackApp {
     main_window_bounds: Option<WindowBounds>,
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
+    metronome_enabled: bool,
+    metronome_level: f32,
+    metronome_pitch_midi: u8,
+    metronome_settings_open: bool,
+    tempo_signature_settings_open: bool,
     edit_tool: EditTool,
     keymap_profile: Option<KeymapProfile>,
     native_key_capture: Option<NativeKeyCapture>,
@@ -1107,110 +1117,6 @@ fn toolbar_window_toggle(
     response
 }
 
-fn transport_panel_button(
-    ui: &mut egui::Ui,
-    origin: Pos2,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    bounds: [f32; 4],
-    label: &str,
-    tooltip: &str,
-    enabled: bool,
-    selected: bool,
-) -> egui::Response {
-    transport_panel_button_tinted(
-        ui, origin, id, bounds, label, tooltip, enabled, selected, None,
-    )
-}
-
-fn transport_panel_button_tinted(
-    ui: &mut egui::Ui,
-    origin: Pos2,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    bounds: [f32; 4],
-    label: &str,
-    tooltip: &str,
-    enabled: bool,
-    selected: bool,
-    selected_color: Option<Color32>,
-) -> egui::Response {
-    let rect = Rect::from_min_size(
-        origin + Vec2::new(bounds[0], bounds[1]),
-        Vec2::new(bounds[2], bounds[3]),
-    );
-    let sense = if enabled {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let response = ui.interact(rect, ui.make_persistent_id(id), sense);
-    let visuals = ui.style().interact(&response);
-    if selected || response.hovered() {
-        let fill = if selected && label == "●" {
-            theme::RECORD
-        } else if selected {
-            selected_color.unwrap_or(theme::palette(ui).accent)
-        } else {
-            visuals.bg_fill
-        };
-        let stroke = if selected {
-            selected_color
-                .map(|color| Stroke::new(1.0, color))
-                .unwrap_or(ui.visuals().selection.stroke)
-        } else {
-            visuals.bg_stroke
-        };
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(1), fill);
-        ui.painter().rect_stroke(
-            rect,
-            egui::CornerRadius::same(1),
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-    }
-    let text_color = if selected {
-        Color32::WHITE
-    } else if enabled {
-        ui.visuals().text_color()
-    } else {
-        ui.visuals().text_color().gamma_multiply(0.7)
-    };
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(9.0),
-        text_color,
-    );
-    if tooltip.is_empty() {
-        response
-    } else {
-        response.on_hover_text(tooltip)
-    }
-}
-
-fn transport_panel_text(
-    ui: &mut egui::Ui,
-    origin: Pos2,
-    bounds: [f32; 4],
-    text: &str,
-    color: Color32,
-    size: f32,
-    monospace: bool,
-) {
-    let rect = Rect::from_min_size(
-        origin + Vec2::new(bounds[0], bounds[1]),
-        Vec2::new(bounds[2], bounds[3]),
-    );
-    let font = if monospace {
-        FontId::monospace(size)
-    } else {
-        FontId::proportional(size)
-    };
-    ui.painter()
-        .text(rect.center(), Align2::CENTER_CENTER, text, font, color);
-}
-
 fn disabled_menu_commands(ui: &mut egui::Ui, commands: &[(&str, &str)]) {
     for (label, shortcut) in commands {
         menu_command(ui, label, shortcut, false);
@@ -1219,6 +1125,7 @@ fn disabled_menu_commands(ui: &mut egui::Ui, commands: &[(&str, &str)]) {
 
 #[derive(Default)]
 struct ProjectHistory {
+    names: media_names::Names,
     undo: VecDeque<HistoryEntry>,
     redo: VecDeque<HistoryEntry>,
     pending_recording: Option<recording_undo::RecordingUndo>,
@@ -1244,6 +1151,35 @@ impl HistoryEntry {
 }
 
 impl ProjectHistory {
+    fn retain_analysis(&mut self, track_id: u64, clip: &opentrack_core::project::AudioClip) {
+        let names = &self.names;
+        let attach = |snapshot: &mut Vec<u8>| {
+            let Ok(mut project) = serde_json::from_slice::<Project>(snapshot) else {
+                return;
+            };
+            if let Some(c) = project
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == track_id)
+                .and_then(|t| t.clips.iter_mut().find(|c| c.id == clip.id))
+                && c.pitch_time.is_none()
+                && names.same_source(&c.source_path, &clip.source_path)
+                && c.source_offset_seconds == clip.source_offset_seconds
+                && c.duration_seconds == clip.duration_seconds
+            {
+                c.pitch_time = clip.pitch_time.clone();
+                if let Ok(bytes) = serde_json::to_vec(&project) {
+                    *snapshot = bytes;
+                }
+            }
+        };
+        if let Some(snapshot) = &mut self.pending {
+            attach(snapshot);
+        }
+        for entry in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            attach(&mut entry.snapshot);
+        }
+    }
     const MAX_ENTRIES: usize = 32;
     const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
     const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
@@ -1321,11 +1257,21 @@ impl ProjectHistory {
             }
         }
         if let Some(recording) = previous.recording.as_mut() {
+            if let Err(error) = self.names.restore(Some(&restored)) {
+                self.last_error = Some(error);
+                self.undo.push_back(previous);
+                return None;
+            }
             if let Err(error) = recording.remove(&restored) {
                 self.last_error = Some(format!("Could not undo recording: {error}"));
                 self.undo.push_back(previous);
                 return None;
             }
+        }
+        if let Err(error) = self.names.restore(Some(&restored)) {
+            self.last_error = Some(error);
+            self.undo.push_back(previous);
+            return None;
         }
         self.redo.push_back(HistoryEntry {
             snapshot: current,
@@ -1367,6 +1313,11 @@ impl ProjectHistory {
                 return None;
             }
         }
+        if let Err(error) = self.names.restore(Some(&restored)) {
+            self.last_error = Some(error);
+            self.redo.push_back(next);
+            return None;
+        }
         self.undo.push_back(HistoryEntry {
             snapshot: current,
             recording: next.recording.take(),
@@ -1389,6 +1340,7 @@ impl ProjectHistory {
     fn saved(&mut self, project: &Project) {
         self.unsaved_recordings.clear();
         self.saved_paths = project.media_paths().into_iter().collect();
+        self.names.saved(&mut self.saved_paths);
         self.saved_recording_recovery
             .retain(|r| r.protects_saved(&self.saved_paths));
     }
@@ -1426,6 +1378,7 @@ impl ProjectHistory {
     }
     fn discard_recordings(&mut self) -> Result<(), String> {
         self.restore_saved_recordings()?;
+        self.names.restore(None)?;
         let paths = self
             .unsaved_recordings
             .iter()
@@ -1450,6 +1403,7 @@ impl ProjectHistory {
         Ok(())
     }
     fn clear(&mut self) {
+        self.names = Default::default();
         self.unsaved_recordings.clear();
         self.saved_recording_recovery.clear();
         self.saved_paths.clear();
@@ -1790,6 +1744,7 @@ impl OpenTrackApp {
             dock_state,
             workspace_state,
             arrange_view_state: ArrangeViewState::default(),
+            audio_event_clipboard: None,
             project_window,
             workspace_preferences,
             data: AppData::default(),
@@ -1811,12 +1766,34 @@ impl OpenTrackApp {
                     .storage
                     .and_then(|storage| eframe::get_value(storage, "sample-editor-snap-v1"))
                     .unwrap_or_default();
+                state.pitch_view = creation
+                    .storage
+                    .and_then(|storage| eframe::get_value(storage, "sample-editor-pitch-view-v1"))
+                    .unwrap_or_default();
+                state.pitch_view.sanitize();
                 state
             },
             sample_editor_active: false,
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
+            metronome_enabled: creation
+                .storage
+                .and_then(|s| eframe::get_value(s, "metronome-enabled"))
+                .unwrap_or(false),
+            metronome_level: creation
+                .storage
+                .and_then(|s| eframe::get_value::<f32>(s, "metronome-level"))
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.35)
+                .clamp(0.0, 1.0),
+            metronome_pitch_midi: creation
+                .storage
+                .and_then(|s| eframe::get_value::<u8>(s, "metronome-pitch-midi"))
+                .unwrap_or(87)
+                .clamp(24, 108),
+            metronome_settings_open: false,
+            tempo_signature_settings_open: false,
             edit_tool: EditTool::Select,
             keymap_profile,
             native_key_capture,
@@ -2085,6 +2062,7 @@ impl OpenTrackApp {
         if self.is_recording() {
             return;
         }
+
         if let Some(project) = self.project_history.undo(&self.data.project) {
             self.project_history.skip_next_commit = true;
             self.data.project = project;
@@ -2103,6 +2081,7 @@ impl OpenTrackApp {
         if self.is_recording() {
             return;
         }
+
         if let Some(project) = self.project_history.redo(&self.data.project) {
             self.project_history.skip_next_commit = true;
             self.data.project = project;
@@ -2414,7 +2393,7 @@ impl OpenTrackApp {
                         .map(|clip| {
                             (
                                 clip.id,
-                                clip.source_path.clone(),
+                                sample_editor::playback_path(clip).to_path_buf(),
                                 clip.start_beats,
                                 clip.gain,
                                 clip.source_offset_seconds,
@@ -2422,6 +2401,7 @@ impl OpenTrackApp {
                                 clip.fade_in_seconds,
                                 clip.fade_out_seconds,
                                 clip.source_fades.clone(),
+                                clip.pitch_time.clone(),
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -2471,7 +2451,22 @@ impl OpenTrackApp {
 
         let mut playback_tracks = Vec::with_capacity(track_descriptors.len());
         let mut source_errors = Vec::new();
-        let mut active_audio_paths = HashSet::new();
+        let mut active_audio_paths: HashSet<_> = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(|c| c.source_path.clone()))
+            .collect();
+        // Keep originals available for waveform/analysis and pool operations;
+        // playback may additionally load an event's worker-rendered variant.
+        for path in &active_audio_paths {
+            if !self.data.audio_sources.contains_key(path)
+                && let Ok(source) = AudioSource::open(path)
+            {
+                self.data.audio_sources.insert(path.clone(), source);
+            }
+        }
         let mut active_stream_clip_ids = HashSet::new();
         for (
             meter_peak,
@@ -2504,6 +2499,7 @@ impl OpenTrackApp {
                 fade_in_seconds,
                 fade_out_seconds,
                 source_fades,
+                pitch_edit,
             ) in clips
             {
                 active_audio_paths.insert(source_path.clone());
@@ -2523,7 +2519,28 @@ impl OpenTrackApp {
                         }
                     }
                 };
-                if let Some(source) = source {
+                if let Some(mut source) = source {
+                    if matches!(source, AudioSource::Streamed(_))
+                        && pitch_edit.as_ref().is_some_and(|e| {
+                            e.enabled
+                                && e.notes.iter().any(|n| {
+                                    n.shift != 0.0
+                                        || n.straighten != 0.0
+                                        || n.start != n.source_start
+                                        || n.end != n.source_end
+                                })
+                        })
+                    {
+                        match opentrack_audio::DecodedWav::open(&source_path) {
+                            Ok(decoded) => {
+                                source = AudioSource::Decoded(Arc::new(decoded));
+                                self.data
+                                    .audio_sources
+                                    .insert(source_path.clone(), source.clone());
+                            }
+                            Err(error) => source_errors.push(format!("Live pitch source: {error}")),
+                        }
+                    }
                     let playback_source = match &source {
                         AudioSource::Decoded(_) => PlaybackSource::from_asset(&source, None),
                         AudioSource::Streamed(streamed) => {
@@ -2549,6 +2566,20 @@ impl OpenTrackApp {
                             })
                         }
                     };
+                    let playback_source = playback_source.and_then(|source| {
+                        if let Some(edit) = &pitch_edit {
+                            match source.clone().with_pitch_time(edit, tempo_bpm) {
+                                Ok(processed) => Ok(processed),
+                                Err(error) => {
+                                    source_errors
+                                        .push(format!("{error} Original audio remains active."));
+                                    Ok(source)
+                                }
+                            }
+                        } else {
+                            Ok(source)
+                        }
+                    });
                     let playback_source = match playback_source {
                         Ok(source) => source,
                         Err(error) => {
@@ -2610,12 +2641,19 @@ impl OpenTrackApp {
             .audio_sources
             .retain(|path, _| active_audio_paths.contains(path));
         if let Some(engine) = self.audio_engine.as_mut() {
-            engine.set_playback_plan_with_output(
+            engine.set_playback_plan_with_metronome(
                 tempo_bpm,
                 playback_tracks,
                 loop_range_beats,
                 self.data.project.cycle_mode,
                 &self.data.project.output_channel.strip,
+                opentrack_audio::MetronomeSettings {
+                    enabled: self.metronome_enabled,
+                    level: self.metronome_level,
+                    beats_per_bar: self.data.project.beats_per_bar,
+                    beat_unit: self.data.project.beat_unit,
+                    downbeat_note: self.metronome_pitch_midi,
+                },
             );
         }
         self.update_input_capture_state();
@@ -2714,6 +2752,21 @@ impl OpenTrackApp {
         }
     }
 
+    fn toggle_metronome(&mut self) {
+        self.metronome_enabled = !self.metronome_enabled;
+        self.rebuild_audio_plan();
+    }
+
+    fn project_timing_changed(&mut self) {
+        let beat = self.data.transport.position_beats.max(0.0);
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        self.rebuild_audio_plan();
+        if let Some(engine) = &self.audio_engine {
+            engine.seek_seconds(beat * 60.0 / tempo);
+        }
+        self.mark_modified();
+    }
+
     fn toggle_cycle(&mut self) {
         self.data.transport.cycle = !self.data.transport.cycle;
         self.rebuild_audio_plan();
@@ -2750,6 +2803,7 @@ impl OpenTrackApp {
         self.project_history.clear();
         self.project_history.skip_next_commit = true;
         self.data = AppData::default();
+        self.audio_event_clipboard = None;
         self.dock_state = default_dock_state();
         self.workspace_state = initial_workspace_state(&self.dock_state)
             .expect("the built-in dock layout must be serializable");
@@ -2975,6 +3029,7 @@ impl OpenTrackApp {
                     reported_stream_underruns: HashSet::new(),
                     reported_waveform_errors: HashSet::new(),
                 };
+                self.audio_event_clipboard = None;
                 self.workspace_state = workspace_state;
                 self.dock_state = document.live_dock_state;
                 self.arrange_view_state = arrange_view_state;
@@ -3386,6 +3441,7 @@ impl OpenTrackApp {
         self.project_open = false;
         self.project_folder_managed = false;
         self.data = AppData::default();
+        self.audio_event_clipboard = None;
         self.project_history.clear();
         self.mark_saved();
         self.status_message = "Project folder setup canceled".to_owned();
@@ -4165,6 +4221,8 @@ impl OpenTrackApp {
             }
             "edit.undo" => self.undo_project(),
             "edit.redo" => self.redo_project(),
+            "edit.copy" => self.copy_selected_audio_events(),
+            "edit.paste" => self.paste_audio_events(),
             "edit.open_default_editor" => self.open_selected_midi_editor(),
             "edit.open_close_editor" => self.midi_editor_open = false,
             "devices.mixer" => self.focus_tab(PanelTab::Mixer),
@@ -4197,6 +4255,7 @@ impl OpenTrackApp {
                 self.toggle_cycle();
             }
             "transport.record" => self.toggle_recording(),
+            "transport.metronome_on" => self.toggle_metronome(),
             "edit.record_enable" => self.modify_selected_track(|track| {
                 track.armed = !track.armed;
             }),
@@ -4241,10 +4300,8 @@ impl OpenTrackApp {
 
     fn zoom_tracks(&mut self, scale: f32) {
         self.arrange_view_state.leave_exclusive_mode();
-        for track in &self.data.project.tracks {
-            let height = self.arrange_view_state.track_height(track.id) * scale;
-            self.arrange_view_state.set_track_height(track.id, height);
-        }
+        self.arrange_view_state.track_vertical_zoom =
+            (self.arrange_view_state.track_vertical_zoom * scale).clamp(0.5, 4.0);
         self.status_message = if scale >= 1.0 {
             "Zoomed tracks in".to_owned()
         } else {
@@ -6250,12 +6307,34 @@ impl OpenTrackApp {
                     }
                     menu_command(ui, "History...", "", false);
                     ui.separator();
+                    menu_command(ui, "Cut", "Ctrl+X", false);
+                    let can_copy = self.project_open
+                        && !self.is_recording()
+                        && !self
+                            .arrange_view_state
+                            .audio_events
+                            .selected_ids()
+                            .is_empty();
+                    if menu_command(ui, "Copy", "Ctrl+C", can_copy).clicked() {
+                        self.copy_selected_audio_events();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
+                        "Paste",
+                        "Ctrl+V",
+                        self.project_open
+                            && !self.is_recording()
+                            && self.audio_event_clipboard.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.paste_audio_events();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Cut", "Ctrl+X"),
-                            ("Copy", "Ctrl+C"),
-                            ("Paste", "Ctrl+V"),
                             ("Paste at Origin", "Alt+V"),
                             ("Split at Cursor", "Alt+X"),
                             ("Split Loop", ""),
@@ -6786,11 +6865,19 @@ impl OpenTrackApp {
                     menu_command(ui, "Use Post-roll", "", false);
                     menu_command(ui, "Start Record at Left Locator", "", false);
                     ui.separator();
+                    if menu_command(ui, "Metronome Setup...", "", true).clicked() {
+                        self.metronome_settings_open = true;
+                        ui.close();
+                    }
+                    if checked_menu_command(ui, "Metronome On", "C", self.metronome_enabled, true)
+                        .clicked()
+                    {
+                        self.toggle_metronome();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Metronome Setup...", ""),
-                            ("Metronome On", "C"),
                             ("Precount On", ""),
                             ("Project Synchronization Setup...", ""),
                             ("Use External Sync", "T"),
@@ -7075,6 +7162,12 @@ impl OpenTrackApp {
         let sample_grid = self
             .arrange_view_state
             .snap_grid_beats(self.data.project.beats_per_bar);
+        self.sample_editor.set_render_directory(
+            self.project_path
+                .as_deref()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("Metadata").join("PitchTime")),
+        );
         let modified = ui
             .scope_builder(
                 egui::UiBuilder::new()
@@ -7125,6 +7218,17 @@ impl OpenTrackApp {
             if let Some((_, id)) = self.sample_editor.target {
                 self.arrange_view_state.audio_events.select_one(id);
             }
+        }
+        if let Some((track, id)) = self.sample_editor.analysis_attached.take()
+            && let Some(clip) = self
+                .data
+                .project
+                .tracks
+                .iter()
+                .find(|t| t.id == track)
+                .and_then(|t| t.clips.iter().find(|c| c.id == id))
+        {
+            self.project_history.retain_analysis(track, clip);
         }
         if self.data.transport.position_beats != position_before {
             if let Some(engine) = &self.audio_engine {
@@ -7292,7 +7396,9 @@ impl OpenTrackApp {
             || self.preferences_ui.is_open
             || self.key_commands_open
             || self.workspace_organizer_open
-            || self.about_open;
+            || self.about_open
+            || self.metronome_settings_open
+            || self.tempo_signature_settings_open;
         if self.channel_window_owner.apply(
             self.channel_settings_ui.preferences.always_on_top,
             dialog_open,
@@ -7929,6 +8035,16 @@ impl OpenTrackApp {
             self.sample_editor.target = Some(target);
             self.sample_editor_active = true;
             self.mixer_window.open = true;
+        }
+        if let Some((track, id, name)) = self.arrange_view_state.audio_events.rename_request.take()
+        {
+            match self.rename_event_source(track, id, &name) {
+                Ok(changed) => modified |= changed,
+                Err(error) => {
+                    self.status_message = error.clone();
+                    self.media_operation_error = Some(error);
+                }
+            }
         }
         if let Some(message) = self.arrange_view_state.audio_events.message.take() {
             self.status_message = message;
@@ -8588,409 +8704,7 @@ impl OpenTrackApp {
     }
 
     fn show_transport(&mut self, ui: &mut egui::Ui) {
-        let palette = theme::palette(ui);
-        let content = ui.available_rect_before_wrap();
-        let origin = content.min;
-        let panel = Rect::from_min_size(origin, content.size());
-        let painter = ui.painter().clone();
-        painter.rect_filled(panel, egui::CornerRadius::ZERO, palette.surface_raised);
-        painter.rect_stroke(
-            panel,
-            egui::CornerRadius::ZERO,
-            Stroke::new(1.0, palette.grid),
-            egui::StrokeKind::Inside,
-        );
-        for x in [24.0, 96.0, 248.0, 486.0, 612.0, 746.0] {
-            painter.line_segment(
-                [origin + Vec2::new(x, 4.0), origin + Vec2::new(x, 59.0)],
-                Stroke::new(1.0, palette.grid),
-            );
-        }
-
-        // Compact original controls follow the captured Transport Panel's one-row layout.
-        for (index, height) in [25.0, 38.0, 31.0, 44.0, 36.0].into_iter().enumerate() {
-            let x = 5.0 + index as f32 * 3.5;
-            let bar =
-                Rect::from_min_size(origin + Vec2::new(x, 55.0 - height), Vec2::new(2.0, height));
-            painter.rect_filled(bar, egui::CornerRadius::ZERO, palette.text);
-        }
-
-        let normal = transport_panel_button(
-            ui,
-            origin,
-            "record-mode",
-            [28.0, 6.0, 63.0, 15.0],
-            "Normal ▾",
-            "Linear Record Mode",
-            false,
-            false,
-        );
-        let mix = transport_panel_button(
-            ui,
-            origin,
-            "midi-record-mode",
-            [28.0, 23.0, 63.0, 15.0],
-            "Mix (MIDI) ▾",
-            "Cycle Record Mode",
-            false,
-            false,
-        );
-        let auto = transport_panel_button(
-            ui,
-            origin,
-            "auto-quantize",
-            [28.0, 41.0, 31.0, 14.0],
-            "AUTO",
-            "Automatic MIDI Record Quantize",
-            false,
-            false,
-        );
-        let _ = (normal, mix, auto);
-        transport_panel_text(
-            ui,
-            origin,
-            [61.0, 41.0, 30.0, 14.0],
-            "OFF",
-            palette.muted,
-            9.0,
-            true,
-        );
-
-        let left = transport_panel_button(
-            ui,
-            origin,
-            "left-locator",
-            [98.0, 7.0, 145.0, 21.0],
-            &format!(
-                "L  {}",
-                format_transport_position(
-                    if self.data.project.cycle_mode == CycleMode::Skip {
-                        self.data.project.loop_end_beats
-                    } else {
-                        self.data.project.loop_start_beats
-                    },
-                    self.data.project.beats_per_bar
-                )
-            ),
-            "Left Locator Position",
-            false,
-            false,
-        );
-        let right = transport_panel_button(
-            ui,
-            origin,
-            "right-locator",
-            [98.0, 34.0, 145.0, 21.0],
-            &format!(
-                "R  {}",
-                format_transport_position(
-                    if self.data.project.cycle_mode == CycleMode::Skip {
-                        self.data.project.loop_start_beats
-                    } else {
-                        self.data.project.loop_end_beats
-                    },
-                    self.data.project.beats_per_bar
-                )
-            ),
-            "Right Locator Position",
-            false,
-            false,
-        );
-        let _ = (left, right);
-
-        let position = transport_panel_button(
-            ui,
-            origin,
-            "primary-time",
-            [253.0, 6.0, 130.0, 23.0],
-            &format_transport_position(
-                self.data.transport.position_beats,
-                self.data.project.beats_per_bar,
-            ),
-            "Primary Time Display",
-            false,
-            false,
-        );
-        let seconds = self.data.transport.position_beats.max(0.0) * 60.0
-            / self.data.project.tempo_bpm.max(1.0);
-        let time_display = format!(
-            "{}:{:02}:{:02}.{:03}",
-            (seconds / 3600.0).floor() as u64,
-            ((seconds / 60.0).floor() as u64) % 60,
-            seconds.floor() as u64 % 60,
-            (seconds.fract() * 1000.0).round() as u16
-        );
-        transport_panel_text(
-            ui,
-            origin,
-            [384.0, 6.0, 97.0, 23.0],
-            &time_display,
-            palette.text,
-            11.0,
-            true,
-        );
-        let _ = position;
-
-        let previous = transport_panel_button(
-            ui,
-            origin,
-            "left-locator-jump",
-            [252.0, 34.0, 25.0, 23.0],
-            "|◀",
-            "Goto Previous Marker / Zero",
-            true,
-            false,
-        );
-        let rewind = transport_panel_button(
-            ui,
-            origin,
-            "rewind",
-            [278.0, 34.0, 25.0, 23.0],
-            "◀◀",
-            "Rewind",
-            true,
-            false,
-        );
-        let fast_forward = transport_panel_button(
-            ui,
-            origin,
-            "fast-forward",
-            [304.0, 34.0, 25.0, 23.0],
-            "▶▶",
-            "Fast Forward",
-            true,
-            false,
-        );
-        let next = transport_panel_button(
-            ui,
-            origin,
-            "right-locator-jump",
-            [330.0, 34.0, 25.0, 23.0],
-            "▶|",
-            "Goto Next Marker / Project End",
-            false,
-            false,
-        );
-        let cycle = transport_panel_button_tinted(
-            ui,
-            origin,
-            "cycle",
-            [356.0, 34.0, 25.0, 23.0],
-            "↻",
-            "Cycle",
-            true,
-            self.data.transport.cycle,
-            Some(crate::timeline::cycle_color(self.data.project.cycle_mode)),
-        );
-        let stop = transport_panel_button(
-            ui,
-            origin,
-            "stop",
-            [382.0, 34.0, 25.0, 23.0],
-            "■",
-            "Stop",
-            true,
-            false,
-        );
-        let play = transport_panel_button(
-            ui,
-            origin,
-            "play",
-            [408.0, 34.0, 25.0, 23.0],
-            "▶",
-            "Play",
-            true,
-            self.data.transport.playing,
-        );
-        let record = transport_panel_button(
-            ui,
-            origin,
-            "record",
-            [434.0, 34.0, 25.0, 23.0],
-            "●",
-            "Record",
-            true,
-            self.data.transport.recording,
-        );
-        let _ = next;
-
-        let click = transport_panel_button(
-            ui,
-            origin,
-            "click",
-            [491.0, 7.0, 37.0, 15.0],
-            "CLICK",
-            "Metronome/Click (use CTRL to open metronome settings)",
-            false,
-            false,
-        );
-        let tempo_mode = transport_panel_button(
-            ui,
-            origin,
-            "tempo-mode",
-            [491.0, 25.0, 54.0, 15.0],
-            "TEMPO TRACK",
-            "Activate Tempo Track (use CTRL to open project tempo track editor)",
-            false,
-            false,
-        );
-        let sync_mode = transport_panel_button(
-            ui,
-            origin,
-            "sync-mode",
-            [491.0, 43.0, 42.0, 15.0],
-            "SYNC INT.",
-            "Activate External Sync (use CTRL to open synchronisation settings)",
-            false,
-            false,
-        );
-        let _ = (click, tempo_mode, sync_mode);
-        transport_panel_text(
-            ui,
-            origin,
-            [530.0, 7.0, 22.0, 15.0],
-            "OFF",
-            palette.muted,
-            9.0,
-            true,
-        );
-        transport_panel_text(
-            ui,
-            origin,
-            [550.0, 25.0, 23.0, 15.0],
-            &format!(
-                "{}/{}",
-                self.data.project.beats_per_bar, self.data.project.beat_unit
-            ),
-            palette.text,
-            8.0,
-            true,
-        );
-        transport_panel_text(
-            ui,
-            origin,
-            [574.0, 25.0, 34.0, 15.0],
-            &format!("{:.3}", self.data.project.tempo_bpm),
-            palette.text,
-            8.0,
-            true,
-        );
-        transport_panel_text(
-            ui,
-            origin,
-            [535.0, 43.0, 73.0, 15.0],
-            "Offline",
-            palette.muted,
-            9.0,
-            true,
-        );
-
-        let show_markers = transport_panel_button(
-            ui,
-            origin,
-            "show-markers",
-            [616.0, 6.0, 36.0, 15.0],
-            "SHOW",
-            "Open Markers",
-            false,
-            false,
-        );
-        let marker_selector = transport_panel_button(
-            ui,
-            origin,
-            "marker-selector",
-            [655.0, 6.0, 74.0, 15.0],
-            "MARKER",
-            "",
-            false,
-            false,
-        );
-        let _ = (show_markers, marker_selector);
-        for row in 0..3 {
-            for column in 0..5 {
-                let marker = row * 5 + column + 1;
-                let response = transport_panel_button(
-                    ui,
-                    origin,
-                    format!("marker-{marker}"),
-                    [
-                        616.0 + column as f32 * 26.0,
-                        24.0 + row as f32 * 12.0,
-                        25.0,
-                        11.0,
-                    ],
-                    &marker.to_string(),
-                    if marker == 1 {
-                        "Jump to Marker 1 (use ALT to set)"
-                    } else {
-                        ""
-                    },
-                    false,
-                    false,
-                );
-                let _ = response;
-            }
-        }
-
-        for index in 0..5 {
-            let x = 753.0 + index as f32 * 14.0;
-            let meter = Rect::from_min_size(origin + Vec2::new(x, 8.0), Vec2::new(8.0, 47.0));
-            painter.rect_filled(meter, egui::CornerRadius::ZERO, palette.surface);
-            painter.rect_stroke(
-                meter,
-                egui::CornerRadius::ZERO,
-                Stroke::new(1.0, palette.grid),
-                egui::StrokeKind::Inside,
-            );
-            for y in (12..54).step_by(6) {
-                painter.line_segment(
-                    [
-                        origin + Vec2::new(x + 2.0, y as f32),
-                        origin + Vec2::new(x + 6.0, y as f32),
-                    ],
-                    Stroke::new(1.0, palette.muted),
-                );
-            }
-        }
-
-        if previous.clicked() {
-            self.data.transport.position_beats = self.data.project.loop_start_beats;
-            self.set_transport_playing(false);
-            if let Some(engine) = &self.audio_engine {
-                engine.seek_seconds(
-                    self.data.transport.position_beats * 60.0
-                        / self.data.project.tempo_bpm.max(1.0),
-                );
-            }
-        }
-        if rewind.clicked() || fast_forward.clicked() {
-            let delta = if rewind.clicked() { -1.0 } else { 1.0 };
-            self.data.transport.position_beats =
-                (self.data.transport.position_beats + delta).max(0.0);
-            if let Some(engine) = &self.audio_engine {
-                engine.seek_seconds(
-                    self.data.transport.position_beats * 60.0
-                        / self.data.project.tempo_bpm.max(1.0),
-                );
-            }
-        }
-        if cycle.clicked() {
-            self.toggle_cycle();
-        }
-        if stop.clicked() {
-            self.set_transport_playing(false);
-            self.data.transport.recording = false;
-        }
-        if play.clicked() {
-            if self.is_recording() {
-                self.finish_recording();
-            }
-            self.set_transport_playing(true);
-            self.data.transport.recording = false;
-        }
-        if record.clicked() {
-            self.toggle_recording();
-        }
+        transport_panel::show(self, ui);
     }
 
     fn show_status(&self, ui: &mut egui::Ui) {
@@ -9149,7 +8863,7 @@ impl eframe::App for OpenTrackApp {
                     egui::Frame::new()
                         .fill(theme::palette(ui).surface_raised)
                         .stroke(Stroke::new(1.0, theme::palette(ui).grid))
-                        .inner_margin(egui::Margin::same(2)),
+                        .inner_margin(egui::Margin::ZERO),
                 )
                 .show(ui.ctx(), |ui| self.show_transport(ui));
         }
@@ -9189,6 +8903,8 @@ impl eframe::App for OpenTrackApp {
         self.show_media_operation_error(&ctx);
         self.show_project_folder_setup(&ctx);
         self.show_about_window(&ctx);
+        transport_panel::settings(self, &ctx);
+        transport_panel::tempo_signature_settings(self, &ctx);
         self.preferences_ui
             .show(&ctx, &mut self.metering_preferences);
         self.channel_settings_ui.analyzer.release_ms =
@@ -9213,6 +8929,11 @@ impl eframe::App for OpenTrackApp {
             &self.metering_preferences,
         );
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
+        eframe::set_value(
+            storage,
+            "sample-editor-pitch-view-v1",
+            &self.sample_editor.pitch_view,
+        );
         eframe::set_value(storage, "dock-state", &self.dock_state);
         eframe::set_value(
             storage,
@@ -9253,6 +8974,9 @@ impl eframe::App for OpenTrackApp {
             &self.selected_midi_input_device,
         );
         eframe::set_value(storage, "midi-thru-enabled", &self.midi_thru_enabled);
+        eframe::set_value(storage, "metronome-enabled", &self.metronome_enabled);
+        eframe::set_value(storage, "metronome-level", &self.metronome_level);
+        eframe::set_value(storage, "metronome-pitch-midi", &self.metronome_pitch_midi);
         if let Some(profile) = &self.keymap_profile {
             eframe::set_value(
                 storage,
@@ -9819,7 +9543,7 @@ fn show_project(
     ui.style_mut().spacing.scroll.bar_inner_margin = 1.0;
     ui.style_mut().spacing.scroll.bar_outer_margin = 1.0;
     let scroll_parent = ui.available_rect_before_wrap();
-    let timeline_view_width = (scroll_parent.width() - lane_header_width - 14.0).max(1.0);
+    let timeline_view_width = (scroll_parent.width() - lane_header_width - 34.0).max(1.0);
     let bar_width = (timeline_view_width / 49.0
         * arrange_view_state
             .timeline_zoom
@@ -9830,6 +9554,47 @@ fn show_project(
         .iter()
         .map(|track| track.id)
         .collect::<Vec<_>>();
+    let mut custom_scroll_offset = None;
+    if let Some(action) = crate::view_controls::wheel(ui, scroll_parent) {
+        use crate::view_controls::WheelAction;
+        match action {
+            WheelAction::VerticalZoom(amount) => {
+                let previous = arrange_view_state.track_vertical_zoom;
+                arrange_view_state.track_vertical_zoom =
+                    (previous * (amount * 0.003).exp()).clamp(0.5, 4.0);
+                let anchor = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .map_or(0.0, |p| (p.y - scroll_parent.top() - ruler_height).max(0.0));
+                arrange_view_state.track_scroll_y = ((arrange_view_state.track_scroll_y + anchor)
+                    * arrange_view_state.track_vertical_zoom
+                    / previous
+                    - anchor)
+                    .max(0.0);
+            }
+            WheelAction::VerticalPan(amount) => {
+                arrange_view_state.track_scroll_y =
+                    (arrange_view_state.track_scroll_y - amount).max(0.0);
+            }
+            WheelAction::TimeZoom(amount) => {
+                let previous = bar_width;
+                arrange_view_state.timeline_zoom = (arrange_view_state.timeline_zoom
+                    * (amount * 0.004).exp())
+                .clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM);
+                let next = (timeline_view_width / 49.0 * arrange_view_state.timeline_zoom).max(4.0);
+                let anchor = ui.input(|i| i.pointer.hover_pos()).map_or(0.0, |p| {
+                    (p.x - scroll_parent.left() - lane_header_width).max(0.0)
+                });
+                arrange_view_state.timeline_scroll_x =
+                    ((arrange_view_state.timeline_scroll_x + anchor) * next / previous - anchor)
+                        .max(0.0);
+            }
+        }
+        custom_scroll_offset = Some(Vec2::new(
+            arrange_view_state.timeline_scroll_x,
+            arrange_view_state.track_scroll_y,
+        ));
+    }
+    let bar_width = (timeline_view_width / 49.0 * arrange_view_state.timeline_zoom).max(4.0);
     arrange_view_state
         .selected_track_ids
         .retain(|track_id| track_ids.contains(track_id));
@@ -9917,14 +9682,16 @@ fn show_project(
     let mut reorder_indicator = None;
     let mut clear_all_muted = false;
     let mut clear_all_solo = false;
-    let mut custom_scroll_offset = None;
-
     let scroll_bar_rect = Rect::from_min_max(
         scroll_parent.min + Vec2::new(lane_header_width, ruler_height),
-        scroll_parent.max - Vec2::new(14.0, 16.0),
+        scroll_parent.max - Vec2::new(34.0, 16.0),
     );
     let scroll_output = egui::ScrollArea::both()
         .id_salt("project-arrange-scroll")
+        .scroll_source(egui::scroll_area::ScrollSource {
+            mouse_wheel: false,
+            ..Default::default()
+        })
         .scroll_offset(Vec2::new(
             arrange_view_state.timeline_scroll_x.max(0.0),
             arrange_view_state.track_scroll_y.max(0.0),
@@ -11414,6 +11181,20 @@ fn show_project(
     } else {
         arrange_view_state.timeline_scroll_x = scroll_output.state.offset.x.max(0.0);
         arrange_view_state.track_scroll_y = scroll_output.state.offset.y.max(0.0);
+    }
+    let track_zoom_rect = Rect::from_min_size(
+        Pos2::new(scroll_parent.right() - 20.0, scroll_parent.bottom() - 94.0),
+        Vec2::new(18.0, 76.0),
+    );
+    let previous_track_zoom = arrange_view_state.track_vertical_zoom;
+    project_controls::track_zoom_control(
+        ui,
+        track_zoom_rect,
+        &mut arrange_view_state.track_vertical_zoom,
+    );
+    if (arrange_view_state.track_vertical_zoom - previous_track_zoom).abs() > f32::EPSILON {
+        arrange_view_state.track_scroll_y *=
+            arrange_view_state.track_vertical_zoom / previous_track_zoom.max(0.001);
     }
     if clear_all_muted {
         for track in &mut project.tracks {
@@ -13911,16 +13692,17 @@ fn format_key_chord(chord: KeyChord) -> String {
     parts.join("+")
 }
 
-fn format_transport_position(beats: f64, beats_per_bar: u8) -> String {
-    let beats = beats.max(0.0);
-    let whole = beats.floor() as u64;
-    let beats_per_bar = u64::from(beats_per_bar.max(1));
-    let bar = whole / beats_per_bar + 1;
-    let beat = whole % beats_per_bar + 1;
-    let within_beat = beats.fract() * 4.0;
-    let sixteenth = within_beat.floor() as u64 + 1;
-    let tick = ((within_beat.fract()) * 120.0).round() as u16;
-    format!("{bar}.{beat}.{sixteenth}.{tick}")
+fn format_transport_position(beats: f64, beats_per_bar: u8, beat_unit: u8) -> String {
+    let meter_beats = beats.max(0.0) * f64::from(beat_unit.max(1)) / 4.0;
+    let total_ticks = (meter_beats * 4.0 * 100.0).round() as u64;
+    let ticks_per_bar = u64::from(beats_per_bar.max(1)) * 4 * 100;
+    let bar = total_ticks / ticks_per_bar + 1;
+    let within_bar = total_ticks % ticks_per_bar;
+    let beat = within_bar / 400 + 1;
+    let within_beat = within_bar % 400;
+    let sixteenth = within_beat / 100 + 1;
+    let tick = within_beat % 100;
+    format!("{bar}.{beat}.{sixteenth}.{tick:02}")
 }
 
 fn safe_project_filename(project_name: &str) -> String {
@@ -14464,6 +14246,45 @@ mod ruler_interaction_tests {
     }
 
     #[test]
+    fn project_raw_wheel_gestures_zoom_time_scroll_tracks_and_zoom_heights_without_content_edits() {
+        let mut f = Fixture::new();
+        for _ in 0..20 {
+            f.project.add_track(TrackKind::Audio);
+        }
+        let before = f.project.clone();
+        f.frame(vec![]);
+        let event = |modifiers, amount| {
+            vec![
+                egui::Event::PointerMoved(Pos2::new(600.0, 200.0)),
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, amount),
+                    phase: egui::TouchPhase::Move,
+                    modifiers,
+                },
+            ]
+        };
+        assert!(!f.frame(event(egui::Modifiers::SHIFT, -1.0)));
+        assert!(f.view.track_scroll_y > 0.0);
+        assert_eq!(f.view.timeline_scroll_x, 0.0);
+        let previous = f.view.track_vertical_zoom;
+        assert!(!f.frame(event(
+            egui::Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Default::default()
+            },
+            1.0
+        )));
+        assert!(f.view.track_vertical_zoom > previous);
+        let previous = f.view.timeline_zoom;
+        assert!(!f.frame(event(egui::Modifiers::NONE, 1.0)));
+        assert!(f.view.timeline_zoom > previous);
+        assert_eq!(f.project, before);
+    }
+
+    #[test]
     fn automation_expansion_reserves_a_separate_area_and_rejects_audio_event_drop_there() {
         let mut f = Fixture::new();
         f.project.add_track(TrackKind::Audio);
@@ -14480,13 +14301,13 @@ mod ruler_interaction_tests {
         f.frame(vec![]);
         f.frame(vec![]);
         f.button(400.0, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(590.0, 120.0))]);
-        f.button(590.0, 120.0, false);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(580.0, 120.0))]);
+        f.button(580.0, 120.0, false);
         assert_eq!(f.project.tracks[0].clips.len(), 1);
         assert!(f.project.tracks[1].clips.is_empty());
         f.button(400.0, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(590.0, 180.0))]);
-        f.button(590.0, 180.0, false);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(580.0, 180.0))]);
+        f.button(580.0, 180.0, false);
         assert!(f.project.tracks[0].clips.is_empty());
         assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
     }
@@ -14507,9 +14328,9 @@ mod ruler_interaction_tests {
         f.frame(vec![]);
         f.frame(vec![]);
         f.button(400.0, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(590.0, 140.0))]);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(580.0, 140.0))]);
         f.frame(vec![]);
-        f.button(590.0, 140.0, false);
+        f.button(580.0, 140.0, false);
         assert!(f.project.tracks[0].clips.is_empty());
         assert_eq!(f.project.tracks[1].clips.len(), 1);
         assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
@@ -14603,12 +14424,12 @@ mod ruler_interaction_tests {
             f.view.grid_type = grid_type;
             f.view.quantize.note = note;
             f.frame(vec![]);
-            f.button(385.0, 16.0, true);
-            f.button(385.0, 16.0, false);
+            f.button(382.0, 16.0, true);
+            f.button(382.0, 16.0, false);
             assert_eq!(f.position, expected);
             f.button(320.0, 16.0, true);
-            f.frame(vec![egui::Event::PointerMoved(Pos2::new(385.0, 16.0))]);
-            f.button(385.0, 16.0, false);
+            f.frame(vec![egui::Event::PointerMoved(Pos2::new(382.0, 16.0))]);
+            f.button(382.0, 16.0, false);
             assert_eq!(f.position, expected);
         }
         let mut f = Fixture::new();
@@ -14618,20 +14439,20 @@ mod ruler_interaction_tests {
         f.project.set_loop_range(100.0, 110.0);
         f.frame(vec![]);
         f.button(320.0, 3.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(385.0, 3.0))]);
-        f.button(385.0, 3.0, false);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(382.0, 3.0))]);
+        f.button(382.0, 3.0, false);
         assert_eq!(
             (f.project.loop_start_beats, f.project.loop_end_beats),
             (6.0, 9.5)
         );
         f.button(340.0, 3.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(385.0, 3.0))]);
-        f.button(385.0, 3.0, false);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(382.0, 3.0))]);
+        f.button(382.0, 3.0, false);
         assert_eq!(
             (f.project.loop_start_beats, f.project.loop_end_beats),
             (8.0, 11.5)
         );
-        let right_x = 198.0 + 11.5 / 4.0 * ((1200.0 - 198.0 - 14.0) / 49.0 * 4.0);
+        let right_x = 198.0 + 11.5 / 4.0 * ((1200.0 - 198.0 - 34.0) / 49.0 * 4.0);
         f.button(right_x + 2.0, 3.0, true);
         f.frame(vec![egui::Event::PointerMoved(Pos2::new(460.0, 3.0))]);
         f.button(460.0, 3.0, false);
@@ -14835,11 +14656,11 @@ mod ruler_interaction_tests {
             let anchor = crate::timeline::ruler_position_beats(
                 320.0,
                 198.0 - f.view.timeline_scroll_x,
-                (1200.0 - 198.0 - 14.0) / 49.0 * f.view.timeline_zoom,
+                (1200.0 - 198.0 - 34.0) / 49.0 * f.view.timeline_zoom,
                 4,
             );
             assert!(
-                (anchor - (320.0 - 198.0) / ((1200.0 - 198.0 - 14.0) / 49.0) * 4.0).abs() < 0.001
+                (anchor - (320.0 - 198.0) / ((1200.0 - 198.0 - 34.0) / 49.0) * 4.0).abs() < 0.001
             );
             f.view.snap_enabled = true;
             f.button(480.0, 26.0, false);
@@ -14856,13 +14677,13 @@ mod ruler_interaction_tests {
         f.frame(vec![egui::Event::PointerMoved(Pos2::new(320.0, -40.0))]);
         assert_eq!(f.view.timeline_scroll_x, 0.0);
         f.frame(vec![egui::Event::PointerMoved(Pos2::new(320.0, 46.0))]);
-        let expected = (320.0 - 198.0) / ((1200.0 - 198.0 - 14.0) / 49.0) * 4.0;
+        let expected = (320.0 - 198.0) / ((1200.0 - 198.0 - 34.0) / 49.0) * 4.0;
         assert!((f.position - expected).abs() < 0.001);
     }
 
     #[test]
     fn corner_handles_resize_only_their_boundary_for_loop_and_skip() {
-        let bar_width = (1200.0 - 198.0 - 14.0) / 49.0;
+        let bar_width = (1200.0 - 198.0 - 34.0) / 49.0;
         for skip in [false, true] {
             for left in [false, true] {
                 let mut f = Fixture::new();

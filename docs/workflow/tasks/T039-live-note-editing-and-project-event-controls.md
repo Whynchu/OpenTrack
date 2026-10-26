@@ -1,0 +1,35 @@
+# T039 - Live note editing and Project event controls
+
+- Status: review_pending. Actual implementer/reviewer: GPT-6.1 Sol; no delegated/independent review.
+- Authorization: user approved the eight-item correction plan after reporting T038's interaction failures and supplying `Screenshot 2026-10-25 180823.png`.
+- Architecture: original Rust implementation; no dependencies added. Preserve the Mixer UI and keep one closed OpenTrack instance before building.
+
+## Implemented changes
+
+1. **Note ownership and contextual cutting.** In Pitch & Time, the waveform no longer captures primary note gestures or forwards scissors to `Project::split_audio_clip`. Note hit testing owns capture, including drags outside a box and grabs near its curve. A note's bottom quarter enables scissors with a precise snapped vertical guide. The surrounding proximity band reveals only the white horizontal affordance across the allowed cut span. Edge handles still stretch notes. Note split/join/remove preserve the audio-event identity and source recording.
+2. **Direct live processing.** Apply and bounced-WAV publication are removed from the editor. Note changes immediately publish persistent clip intent. A prepared, immutable pitch-synchronous source reads the existing decoded audio directly during playback. Preparation creates pulse/grain tables on the control thread; the callback uses bounded neighbour searches/interpolation with no allocation or filesystem access. The existing plan crossfade handles updates. No output audio file is required. Note/source identity remains separate from the Project event. Large streamed assets need control-thread decoding within the existing decode limit; failures visibly retain original playback.
+3. **Undo and persistence.** The normal Project history now captures each complete note gesture. Initial analysis is retained in compatible history snapshots rather than added as an Undo step. Undo reverses the edit without removing analysis; notes also survive event switches/save/reopen. OPR v26 retains defaults for old formats, including v25 attachments. The existing `rendered_source` field remains readable for compatibility but live playback uses original source plus note intent.
+4. **Inspector.** Width grows from 148 to 232 px. The scrolling sidebar is removed; paired fields and button rows reduce height, Definition starts collapsed, and Range stays outside the pitch view. Wheel gestures are limited to grid/ruler/keyboard, so the text panel cannot move or zoom the piano grid. Very small panel heights still need visual qualification.
+5. **Slide segmentation.** Median-smoothed voiced frames are compared with the whole current note, not a trailing reference that follows a slide. A sustained stable new pitch triggers a split near the transition midpoint. Ascending/descending three-note slides and vibrato fixtures pass. Existing attachments are retained until explicit reanalysis or Reset all. Real singing remains an unmeasured dataset; this is an improved deterministic baseline, not a neural detector.
+6. **Project event controls.** Selection outlines/marquee, gain and fade lines and handles are white. Selected audio events receive relative gain-dB/fade-duration changes together, with per-event limits, one gesture history and Escape restoration. Hover tooltips identify gain, fades and trims; double-click gain resets selected gains to unity. Track colors remain the event's color.
+7. **Source renaming.** Double-click an event's bottom name band for inline rename; double-click its waveform still opens Sample Editor. The original filename text is selected. Enter/focus loss commits; Escape cancels. The file is renamed in place with its WAV extension retained, references/Media Pool updated, and unprocessed shared copies receive the new displayed name. Processed variations retain their names while source references remain valid. Invalid names/collisions fail without overwriting. Undo/Redo and Discard restore physical filenames. Content identity checks protect externally replaced files. A write-ahead rename journal in managed Metadata lets reopening the saved OPR restore an unsaved rename after process loss.
+
+## Checks and review boundary
+
+Automated checks cover the full Sample Editor (rather than only isolated note widgets): contextual note split leaves one Project event, held pitch drag changes persistent intent without Apply, Undo retains analysis, and sidebar wheel leaves the grid unchanged. Additional checks cover initial analysis/history, batch fade/gain plus cancellation, name-band focus/typing, filename Undo/Redo/discard/collision, recovery through native OPR reopening, and compatibility versions 14-26. The live source test samples audio after the original WAV has been removed from disk, proving sampling uses prepared memory, with independent pitch/time and stereo checks.
+
+The first new inline-rename test exposed an event-wide double-click counter/focus problem; name clicks now have their own target/timing check. A rename-recovery fixture initially serialized uninitialized dock geometry; the fixture now supplies finite geometry. Neither failed check was treated as acceptance. Final test/build identity and log are recorded in current.md.
+
+No desktop or hardware listening session was performed; OpenTrack is left closed for the user. No saved EXAMPLE source/project was touched. Real-time CPU/dropout qualification, long-source preparation cost, seams/consonants/formants, real-vocal segmentation, small-panel fit, exact hover margins and visual matching remain pending. Current waveform backgrounds still represent the original source; detailed post-processing waveform regeneration is a remaining display gap. Stop here for the requested interaction/listening review.
+
+## Coverage record
+
+| Evidence | Display conditions | Panels/theme | Action/source | Match status |
+| --- | --- | --- | --- | --- |
+| User baseline `C:/Users/Samue/Pictures/Screenshots/Screenshot 2026-10-25 180823.png` | 1920 x 1030 image; scaling unknown; main window maximized | Project, Sample Editor, floating Transport; dark | T038: dragging, scissors, sidebar, event guides; sample_editor.rs/pitch_editing.rs/audio_events.rs | User-reported failures; baseline only |
+| Existing SE-05 / 090626 | Archived reference conditions; no new capture | Sample Editor note regions | Region/curve/piano organization | Reference observed; revised app comparison pending |
+| T039 headless checks | Synthetic egui frames and WAV fixtures; no desktop | Controlled test state | Input ownership, persistence, filesystem recovery, live source | Automated pass; visual/listening acceptance pending |
+
+No after-image or screenshot parity is claimed. Keep the scoped ledger and unknowns separate from whole-DAW completion.
+
+Final delivery: 189 release checks pass (115 app, 58 audio, 16 core); formatting/diff/ledger checks pass. x64 local ASIO retained. Executable SHA-256: `DF900FE49661DB072FC7A42CA1E1EBD43A5501C849CE720D8CEA835780A2BBDF`. OpenTrack is closed; user acceptance pending.

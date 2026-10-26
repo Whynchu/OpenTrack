@@ -9,6 +9,7 @@ mod project_file;
 mod system_tool_icons;
 mod theme;
 mod timeline;
+mod view_controls;
 
 fn main() -> eframe::Result {
     crash_log::install();

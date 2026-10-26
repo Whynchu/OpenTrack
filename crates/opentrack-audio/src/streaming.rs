@@ -285,6 +285,7 @@ impl Drop for StreamedWav {
 /// Immutable source access used by one arranged clip in the callback.
 #[derive(Clone)]
 pub enum PlaybackSource {
+    LivePitch(Arc<crate::live_pitch::LivePitchSource>),
     Decoded(Arc<DecodedWav>),
     Streamed {
         source: Arc<StreamedWav>,
@@ -293,6 +294,29 @@ pub enum PlaybackSource {
 }
 
 impl PlaybackSource {
+    pub fn with_pitch_time(
+        self,
+        edit: &opentrack_core::pitch_time::PitchTimeEdit,
+        tempo_bpm: f64,
+    ) -> Result<Self, String> {
+        if !edit.enabled {
+            return Ok(self);
+        }
+        if edit.notes.iter().all(|n| {
+            n.shift == 0.0
+                && n.straighten == 0.0
+                && n.start == n.source_start
+                && n.end == n.source_end
+        }) {
+            return Ok(self);
+        }
+        match self {
+            Self::Decoded(source) => Ok(Self::LivePitch(Arc::new(
+                crate::live_pitch::LivePitchSource::new(source, edit, tempo_bpm)?,
+            ))),
+            _ => Err("Live pitch editing currently requires a decoded audio source.".into()),
+        }
+    }
     pub fn from_asset(
         source: &AudioSource,
         streamed_reader: Option<Arc<StreamingPlayback>>,
@@ -314,6 +338,7 @@ impl PlaybackSource {
 
     pub(crate) fn sample_rate(&self) -> u32 {
         match self {
+            Self::LivePitch(source) => source.sample_rate(),
             Self::Decoded(source) => source.sample_rate,
             Self::Streamed { source, .. } => source.sample_rate,
         }
@@ -321,6 +346,7 @@ impl PlaybackSource {
 
     pub(crate) fn frame_count(&self) -> u64 {
         match self {
+            Self::LivePitch(source) => source.frame_count(),
             Self::Decoded(source) => (source.samples.len() / usize::from(source.channels)) as u64,
             Self::Streamed { source, .. } => u64::from(source.frame_count),
         }
@@ -328,6 +354,7 @@ impl PlaybackSource {
 
     pub(crate) fn sample_frame(&self, frame: u64) -> Option<(f32, f32)> {
         match self {
+            Self::LivePitch(source) => source.sample_frame(frame),
             Self::Decoded(source) => {
                 let channels = usize::from(source.channels);
                 let frame = usize::try_from(frame).ok()?;
@@ -351,6 +378,7 @@ impl PlaybackSource {
 impl fmt::Debug for PlaybackSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LivePitch(source) => formatter.debug_tuple("LivePitch").field(source).finish(),
             Self::Decoded(source) => formatter.debug_tuple("Decoded").field(source).finish(),
             Self::Streamed { source, reader } => formatter
                 .debug_struct("Streamed")

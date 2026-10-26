@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "transport-v4",
-    "description": "Project transport pilot and follow-on interactions; whole DAW inventory not yet established.",
+    "version": "transport-v16-pitch-time-editing-workflows",
+    "description": "Project transport/navigation, clipboard, monophonic Pitch & Time editing/processing, Project event controls and shared Mixer interaction; whole DAW inventory remains separate.",
     "baseline_complete": true,
-    "change_reason": "T009 refines enabled grid-field presentation and toolbar glyphs. Panel/window toggle coverage is recorded in T009 without adding unrelated items to the transport-v4 denominator. Current live review remains pending."
+    "change_reason": "T041 review adds Shift activation during a held pitch drag, bidirectional stretching of already-attached note boundaries, and double-click reset behavior for note edges and bodies. No existing requirement was removed."
   },
   "evidence": {
     "intent-2026-10-24": {
@@ -119,6 +119,234 @@
       "kind": "user",
       "location": "docs/workflow/tasks/T012-wasapi-low-latency.md",
       "note": "User reports no usable input devices; requests lowest stable latency, other-app audio and optional exclusive. Research plan only; no hardware verification or change to transport-v4 denominator."
+    },
+    "t029-reference": {
+      "kind": "reference",
+      "location": "G:/dev/Opentrack/_analysis-tools/reports/workflow-L1/02-mixer-transport-1.png",
+      "note": "Primary 837x69 crop directly inspected for grouping, button sizes, clock/locator layout and edges. Full display scaling/placement and sound are unknown."
+    },
+    "t029-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T029-transport-panel-and-click.md",
+      "note": "User requests transport tightening to crop plus a pop click with E-flat accent and octave-lower remaining beats. Absolute octave is an implementation choice for listening review."
+    },
+    "t029-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T029-transport-panel-and-click.md",
+      "identity": "x64 local-ASIO EXE SHA-256 5F27B9C7D4F3B9EE91388A4D19D62E1CFA7133AF454655369AEF811FA427DA94; crates/opentrack-app/src/transport_panel.rs: E78D492B503BDB18416A31A7E85003D93C32A079AA16545A746DF029617A5390; crates/opentrack-audio/src/metronome.rs: CAEFD2B0871D9422EB3F18288A1174EBECC8995F1FD67899E99583A0778150F5; crates/opentrack-app/src/app.rs: C664A676BA24CA1FB0F44DF1C48C08D697CDD021916967B132F0936773D42E9F; crates/opentrack-audio/src/lib.rs: A314A869165DFCE1BAE3BBBBC0DBFE84ED12B89F8442ADD606A81DAADE1DAF39",
+      "note": "164 release tests pass (98 app,50 audio,16 core); local-ASIO build succeeds. Synthetic sampleclock/block/cycle/master processing and actual CLICK/Control-click input checks pass. No desktop or listening acceptance."
+    },
+    "t031-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T031-transport-timing-and-click-routing.md",
+      "note": "User direction for independent click routing, tempo/meter editing, selectable pitch and two-digit transport ticks."
+    },
+    "t031-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T031-transport-timing-and-click-routing.md",
+      "identity": "x64 ASIO EXE SHA-256 E404670BABD6B0E50449FFAD6FE6CA4FA631A19B50C51664BF04E73932B30EA8; transport_panel.rs SHA-256 E526264E5A4CC11717DC7E8341A92252957ADC86480FA0BB3DFB6944D3696452; app.rs SHA-256 BAEEB1ECED4B6F2D23DD1A690FEF390CCA239D8B9F90120BAFC1094C11F70779; sample_editor.rs SHA-256 0CDCDDAB127E6516EDD1114F3FDB6BC5B9E9DF393CB178AF3E1256AE05654AD1; metronome.rs SHA-256 7F45EAB73BD85C406D55DECE1A856EFF89820CA19AEC8D53D79871EEEA76AB14; audio lib.rs SHA-256 0CDE2DA0AB5AE425894557C4A5F90379DE5598BBEB19407E5A934055CC33F96B",
+      "note": "168 release tests pass (101 app,51 audio,16 core); cargo fmt and all ledger reports pass; x64 build confirms local_asio=true; OpenTrack was closed before build and remains closed. Visual/manual audio and project save/undo review pending."
+    },
+    "t032-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T032-timeline-audio-event-copy-paste.md",
+      "note": "User asked for Ctrl+C/Ctrl+V timeline audio-event copy and paste."
+    },
+    "t032-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T032-timeline-audio-event-copy-paste.md",
+      "identity": "x64 local-ASIO EXE 4EC7FEF814FE58763AB2D40F2DD00EFE3E0DAE7684C1551BD4E133BADED6F771; audio_events.rs 7122D7DFACBF390C2DF6DDF7990EF1533D360E49C47641815846410CF140541C; app.rs 1E5564B84110C84F60E3C96760A020FDF03128336A88B7053871ABEF7EB2F7FB; project.rs DC0C81B3541AAB1002F7416D1B8E95F01766BEFDFD6DF70ADCAC23A8A0DC27DE",
+      "note": "x64 local-ASIO release build passes; no tests added or run for this request. Desktop event interaction and undo remain pending."
+    },
+    "t033-intent": {
+      "kind": "user",
+      "location": "docs/workflow/README.md#t033-direction-2026-10-25",
+      "note": "User directed Rust-first Pitch & Time work from the re-shared Sample Editor captures, with real on-demand analysis and functional editing as the goal."
+    },
+    "t033-reference": {
+      "kind": "reference",
+      "location": "docs/reviews/sample-editor-study.md#se-02--se-06",
+      "note": "Archived primary screenshots show a piano axis, waveform and pitch trace, colored note regions and local time ratios. Gestures and audio results are not inferred from stills."
+    },
+    "t033-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T033-pitch-analysis-preview.md",
+      "identity": "x64 local-ASIO EXE EA6189FE5C4375C7322F582EB91F2FDAECB76C61158FBC5245E6997873500448; pitch_analysis.rs 3DABCDDE68708B70D9F62921AEA92DCA0FEB1B251B0F34126D036D3493451C20; sample_editor.rs DE0B703502A70BD80E6A1A4BE7ED829D89D509FE89AE6DAD746BAD17E61F7C47; audio lib.rs DE720F3DEDFEF79526CB3CE98829E0D0A2A878446B34D4ED0582A49D54C8F6F6",
+      "note": "x64 release build and local_asio metadata verified; formatting and diff checks pass. No tests or desktop interaction were performed."
+    },
+    "t034-reference": {
+      "kind": "reference",
+      "location": "docs/workflow/tasks/T034-pitch-view-and-vertical-zoom.md",
+      "note": "SE-05 screenshot 090626 shows the piano rail, semitone bands, waveform backdrop, pitch contour and right-edge vertical controls. User specifies the zoom controls note-row height."
+    },
+    "t034-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T034-pitch-view-and-vertical-zoom.md",
+      "note": "User requests visual refinement and lower-right vertical zoom only, retaining existing horizontal gestures."
+    },
+    "t034-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T034-pitch-view-and-vertical-zoom.md",
+      "identity": "x64 local-ASIO EXE 47E12607B75E15C85F2225ECAE4B6590E3A27AD7FCEE197131F3F5EA0A880427; sample_editor.rs 96557F182123EDC24B4FC3A932C9C7B59583611BAF0976EBD163143F164548AD; sample_pitch_view.rs 6CB8C4C4D330490044A289C59DB16AA7140EC5B96E184565C558F35FDD8712C4; app.rs C912E797E8CACAA62FA5BDE5DED36E93B68E9F03F31928FD5B827A0165195C75",
+      "note": "Eight targeted release editor tests, formatting, diff and x64 local-ASIO build pass. No live display or hardware check; user review pending."
+    },
+    "t033-user-trace": {
+      "kind": "runtime",
+      "location": "C:/Users/Samue/Pictures/Screenshots/Screenshot 2026-10-25 155531.png",
+      "identity": "User screenshot of T033 executable EA6189FE5C4375C7322F582EB91F2FDAECB76C61158FBC5245E6997873500448",
+      "note": "User confirms visible lines and supplies a real-take screenshot. Detector accuracy, cancellation and persistence were not measured; new T034 display changes need review."
+    },
+    "t035-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T035-pitch-navigation-gestures.md",
+      "note": "Middle drag vertically pans pitch; Shift+wheel pans pitch; Ctrl+Shift+wheel changes pitch zoom; horizontal middle drag/time zoom remain available."
+    },
+    "t035-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T035-pitch-navigation-gestures.md",
+      "identity": "x64 local-ASIO EXE 9A82DB868A64D4E153AB99DAD953AE33745F1D53071C74B42D157869509B766B; sample_editor.rs 8CC6B7E336D68179D585E3804F4F9BE0DF00710F4FA6EC9FC92A9FABABC2284A; sample_pitch_view.rs 32A960F1AE009ECF7C5F820F964E147613B2C2F25876FA3671FED76481086DEF",
+      "note": "Build and format/diff checks pass. No tests or live interactions were run."
+    },
+    "t036-intent": {
+      "kind": "user",
+      "location": "conversation 2026-10-25: Project vertical track zoom and same key/middle-mouse controls as Sample Editor",
+      "note": "User-specified behavior; the Project implementation and runtime acceptance are tracked separately."
+    },
+    "t036-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/app.rs; crates/opentrack-app/src/project_controls.rs; crates/opentrack-app/src/project_file.rs",
+      "identity": "working-tree T036"
+    },
+    "t037-intent": {
+      "kind": "user",
+      "location": "conversation 2026-10-25 following T036 build DE937705",
+      "note": "Middle pan approved; ordinary/Shift wheel inconsistent and Ctrl+Shift wheel unresponsive; use existing Sample Editor vertical zoom style for all three controls."
+    },
+    "t037-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/view_controls.rs, app.rs, sample_editor.rs, sample_pitch_view.rs, project_controls.rs; docs/workflow/tasks/T037-shared-navigation-and-zoom-controls.md",
+      "identity": "x64 local-ASIO EXE 89ED498704B8380E175355F6AF7B92E689B32E8AF075C54F40A6AB4409789C75; working tree T037",
+      "note": "Original MouseWheel event handling and common slider implementation; raw egui event and view integration checks pass. Live review pending."
+    },
+    "t038-intent": {
+      "kind": "user",
+      "location": "conversation 2026-10-25 following T036 review",
+      "note": "Actual sung-note outlines, inspect absolute pitch accuracy/resolution, and implement basic audible pitch/time editing."
+    },
+    "t038-source": {
+      "kind": "source",
+      "location": "crates/opentrack-core/src/pitch_time.rs; crates/opentrack-audio/src/pitch_analysis.rs and pitch_render.rs; crates/opentrack-app/src/pitch_editing.rs and sample_editor.rs; docs/workflow/tasks/T038-editable-pitch-notes-and-offline-rendering.md",
+      "identity": "x64 local-ASIO EXE 89ED498704B8380E175355F6AF7B92E689B32E8AF075C54F40A6AB4409789C75; working tree T038",
+      "note": "Original Rust monophonic segmentation/edit/rendering with persistent applied intent; no new dependencies. Quantified synthetic and real WAV tests are separate from live/listening acceptance. Final release workspace checks: 181 pass; formatting/diff/build pass. Live visual and vocal listening acceptance pending."
+    },
+    "t039-user-review": {
+      "kind": "user",
+      "location": "conversation and C:/Users/Samue/Pictures/Screenshots/Screenshot 2026-10-25 180823.png",
+      "note": "1920x1030 baseline, scaling unknown, maximized main window; Project/Sample Editor/floating Transport, dark. User reports T038 failures and authorizes the eight-item correction plan. No after-image acceptance."
+    },
+    "t039-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T039-live-note-editing-and-project-event-controls.md; live_pitch.rs, streaming.rs, sample_editor.rs, pitch_editing.rs, media_names.rs, audio_events.rs, app.rs, project_file.rs",
+      "identity": "x64 local-ASIO EXE DF900FE49661DB072FC7A42CA1E1EBD43A5501C849CE720D8CEA835780A2BBDF; OPR v26; T039 working tree",
+      "note": "189 release checks pass: 115 app,58 audio,16 core. Includes full editor input ownership, live sampling, gesture Undo/analysis retention, slides/vibrato, batch controls, inline naming, file collision/discard and restart recovery. Hardware/listening/visual review pending."
+    },
+    "t040-intent": {
+      "kind": "user",
+      "location": "conversation 2026-10-25 following T039 review",
+      "note": "Bodies move vertically and snap to center pitch; edges stretch timing; Shift+left tunes pitch finely; note click closes the program."
+    },
+    "t040-panic": {
+      "kind": "runtime",
+      "location": "%LOCALAPPDATA%/OpenTrack-/logs/panic.log, entry 1792969494",
+      "identity": "user T039 session",
+      "note": "f64 clamp failed with min 1.7763568394002505e-15 and max 0.0. Unsymbolized stack; matches old horizontal body-movement constraint and regression fixture."
+    },
+    "t040-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/pitch_editing.rs; full editor regression in sample_editor.rs; docs/workflow/tasks/T040-note-pitch-drag-and-click-crash.md",
+      "identity": "x64 local-ASIO EXE DED1D93FB9389A9F4641355DA9F43CF1D40722DE727E8471CDE99FD82ABF159D; T040 working tree",
+      "note": "Pitch-only bodies, absolute semitone center snapping, Shift fine mode, guarded time bounds and exact rounding-overlap regression. Live review pending. Final release workspace: 191 pass (117 app,58 audio,16 core); formatting/diff/build pass."
+    },
+    "t041-intent": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T041-pitch-editing-gestures-and-persistence.md and user-approved three-batch editing plan",
+      "note": "User-specified behavior and review order. Cubase captures provide UI context but do not establish the new gesture details or audio algorithm."
+    },
+    "t041-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/pitch_editing.rs; crates/opentrack-app/src/sample_editor.rs; docs/workflow/tasks/T041-pitch-editing-gestures-and-persistence.md",
+      "identity": "x64 exe sha256:ACCCDB5E75F434D3B15ECF451ACA682717D34233F3E2CC2B9DE2ECA5D069B8AF; pitch_editing.rs sha256:B74B1E10B026821007D71FF748C748C5F41ED8AC1B39E2B6EE8F4A023988D368; sample_editor.rs sha256:0DEA45F5F20B66144626D1A3C5A7BA442AA36929D443E4B804E928E71E778E48",
+      "note": "Batch1 source and ASIO-enabled x64 release build; user review pending."
+    },
+    "t041-automated": {
+      "kind": "runtime",
+      "location": "builds/x64/T041-workspace-stdout.txt and builds/x64/T041-targeted-stdout.txt (ignored local logs)",
+      "identity": "test exe sha256:EA54729F2CD66A5D08923FA0CFDA62A9826493D03388CD74E28CE1B9E0B586CB; x64 local-ASIO target; workspace: app121/audio58/core16; note-editing subset:8; source identity t041-source",
+      "note": "Headless egui/domain/project-file execution validates editing and OPR mechanics. It is not live desktop, visual, ASIO-listening, or user acceptance."
+    },
+    "t041-review-feedback": {
+      "kind": "user",
+      "location": "conversation 2026-10-25 following T041 Batch 1 review",
+      "note": "User approved adding Shift-before/Shift-during fine pitch drag, stretching a formerly attached neighbor when a boundary is pulled away, and double-click reset on note edges or bodies before resuming T041."
+    },
+    "t041-r2-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/pitch_editing.rs; docs/workflow/tasks/T041-pitch-editing-gestures-and-persistence.md",
+      "identity": "x64 local-ASIO EXE sha256:4D34F3EEB6054E82B1CEBD722BD38F5C618B94A3DB45B14A32CE3285867D400D; pitch_editing.rs sha256:158E692A06D6281B80BEDE71A2F36219DA1CE22750E3161DAFC9BDB98436B2B2; sample_editor.rs sha256:0DEA45F5F20B66144626D1A3C5A7BA442AA36929D443E4B804E928E71E778E48",
+      "note": "Current Rust source and x64 ASIO-enabled release build. build-info.json reports local_asio=true; OpenTrack was verified closed after the build. Batch1 awaits live user review."
+    },
+    "t041-r2-automated": {
+      "kind": "runtime",
+      "location": "builds/x64/T041-r2-workspace-stdout.txt and builds/x64/T041-r2-focused-stdout.txt (ignored local logs)",
+      "identity": "test exe sha256:F78B16E7BCE066924BC8F74F893ABDD4AA1C1A8FECD608B13B3AEF1146B1D00A; app exe sha256:4D34F3EEB6054E82B1CEBD722BD38F5C618B94A3DB45B14A32CE3285867D400D; x64 local-ASIO target; workspace: app124/audio58/core16; focused note-editing subset:11; source identity t041-r2-source",
+      "note": "Headless egui/domain/project-file execution validates editing and OPR mechanics; full release workspace suite and x64 build pass. This is not live desktop, visual, ASIO-listening, or user acceptance."
+    },
+    "t041-user-acceptance": {
+      "kind": "user",
+      "location": "conversation 2026-10-25 after T041 x64 build review",
+      "note": "User confirmed ?I verify!! great work!? after the Batch1 review build. The user then confirmed OpenTrack was closed. Batch1 acceptance was given; the overall Pitch & Time workflow remains pending."
+    },
+    "t041-live-review": {
+      "kind": "runtime",
+      "location": "conversation 2026-10-25 after T041 x64 build review",
+      "identity": "user-reported live check of x64 local-ASIO EXE sha256:4D34F3EEB6054E82B1CEBD722BD38F5C618B94A3DB45B14A32CE3285867D400D",
+      "note": "User confirmed Batch1 verification and acceptance; details of individual gestures were not itemized. This closes the Batch1 review gate but does not establish visual/reference parity or audio-quality acceptance."
+    },
+    "t042-source": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-audio/src/live_pitch.rs; crates/opentrack-audio/src/pitch_render.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "x64 local-ASIO EXE sha256:DA01461000868583B4E4FD707C41B7CAF337DDF9EF226B335B60014705173D15; pitch_synthesis.rs sha256:B89F88208C3083D92353C64012019192893F08D4D0432B4DBAC7769B08E26549; live_pitch.rs sha256:F976E5A4EA18C626D987D001D261064C66B7B8A4586AB726B78F00A6A4DD1450; pitch_render.rs sha256:802661BA23EC939185B261FF2D98962B4B4D570888A9C6CD413B47DCB3E9CD08",
+      "note": "First T042 renderer revision: shared live/offline synthesis, log-interpolated F0, unvoiced fade and wide touching-note crossfade. Superseded by t042-source-r2 after the user reported the wide blend did not provide the desired in-note pitch pull and shortening sounded bubbly."
+    },
+    "t042-source-r2": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-audio/src/live_pitch.rs; crates/opentrack-audio/src/pitch_render.rs; crates/opentrack-audio/src/streaming.rs; crates/opentrack-app/src/app.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "x64 local-ASIO EXE sha256:937351927E852FE05E143FFA1339233BF7BE07DF6000598F7B9046E6232C0E0D; pitch_synthesis.rs sha256:900BBB29A8F60EC4E8D67169FD84CDCAF9D56859DE9B4E8219D325FE7650CC57; live_pitch.rs sha256:035E6A441044937FD7BA3F2FC957E2E32920863A44A6D6F5BA26D0B865ADCD43; pitch_render.rs sha256:285E81C160AEC0B54747AFD66BB56CF40458E242B159303A08371E8C632F4001; streaming.rs sha256:89A51765D4FF2BAB22A745CBE882C69F06A5D0264ECC7092F665895332176B68; audio lib.rs sha256:6BFDC0D02C1099162D775DFFBDCD9F8B4895859EC7FF03D78DCD4F620FF8E71C; app.rs sha256:42DAE77F8EB5F245449E581927692A6F879083DCF320C6B8F29E14A5E2DF4593",
+      "note": "First tempo-aware in-note pitch ramp revision. The user supplied screenshots showing the visible trace still jumped at note boundaries; this revision did not update the Sample Editor trace and is superseded by t042-source-r3."
+    },
+    "t042-source-r3": {
+      "kind": "source",
+      "location": "crates/opentrack-core/src/pitch_time.rs; crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-app/src/sample_editor.rs; crates/opentrack-app/src/pitch_editing.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "x64 local-ASIO EXE sha256:B3505DE543612A39CFC26A0D89499F60E2A5536C87C4D0EC60D5C79054C8ED62; pitch_time.rs sha256:BF1C38A190D314954D95E6CC56B3A3F64B3140CD8312E5FBE6C0D9FE89294DDE; pitch_synthesis.rs sha256:B9176FA18961F43CCB58B987AA5B0C4D98440287DBDD8E9C491AC4AEC549C8FC; sample_editor.rs sha256:98D0F0BC00F87DB1B192017B8F9B1755DFB80F71B48213B77E124607B4DBA807; pitch_editing.rs sha256:D156015781E0B4A726CBF2BC6DF721CDB70FAFBE6F5109E6645992DD0B8EB4B1",
+      "note": "Shared tempo-aware contour and boundary crossfade updated the visible jumps, but the user clarified that target pitch must follow actual note tails and nearby notes should share the slide. Superseded by t042-source-r4."
+    },
+    "t042-source-r4": {
+      "kind": "source",
+      "location": "crates/opentrack-core/src/pitch_time.rs; crates/opentrack-audio/src/pitch_synthesis.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "x64 local-ASIO EXE sha256:F21F417145B6590D19270EA5BAD3F242D78B9727ADF1FF038B6C31CD395B98C4; pitch_time.rs sha256:0CE2541A3A37EC730AD876069013E2FEE8AE9C9E6A48A3CF5DB5FAECB1A0B208; pitch_synthesis.rs sha256:10DE0C0F7A9EDCCA123E4D149579C75DD5506D75BE7F8BCA1E1B0E58B2BDD4AB",
+      "note": "Shared pitch contour targets analyzed source-tail pitches. Both edited and adjacent unedited notes ease toward the same boundary pitch over at most one sixteenth-note; adjacent unedited note bodies stay on source audio. The local-ASIO build succeeded; no tests or listening were run, and audio quality awaits the user's own review."
+    },
+    "t042-automated": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md#verification-and-review-gate",
+      "identity": "x64 local-ASIO EXE sha256:DA01461000868583B4E4FD707C41B7CAF337DDF9EF226B335B60014705173D15; `cargo test --workspace --release --features opentrack-audio/local-asio --target x86_64-pc-windows-msvc`; workspace app124/audio61/core16 pass; one manual comparison test ignored in suite",
+      "note": "Historical first-renderer verification only. These tests ran against the previous T042 executable/source; they do not verify t042-source-r2. No tests were run for the latest iteration because the user will review with their own audio."
+    },
+    "t042-controlled-comparison": {
+      "kind": "runtime",
+      "location": "builds/x64/T042-audio-comparisons/baseline; builds/x64/T042-audio-comparisons/candidate; builds/x64/T042-audio-comparisons/measure.py; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "input Vocal 01.wav sha256:6457409352A59F3BA289FEFBBE3DDA95117C2C49F15BF38542FD291EF6BB07F0; 48kHz mono; reference float-WAV sha256:36DC4F70B16C2EA115EF11764ECC45E1C3E66C6579EA781EC1128E7551DD4435; single-note candidate sha256:2D18A4B25F185E7AF7C7EAA98E25674120F35876A82C8B20D05F0CE12448ECC3; all-notes candidate sha256:AF4F7B525D0C3800BD063EEE499F123250EF11265A78715D7CF8969DB10C3778; touching candidate sha256:5D311174C1D8EACCA08E9141A0548F303CE12466B319591F6C5F67CB0640C28A",
+      "note": "Historical first-renderer measurement only. It used the previous wide waveform crossfade and is not a measurement of t042-source-r2. Do not use it as current audio-quality acceptance evidence."
     }
   },
   "requirements": [
@@ -535,6 +763,800 @@
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "Bar/Beat/Use Quantize menus and 1/1-1/128 straight/triplet/dotted values are functional. Actual popup selections, shared seek/draw/move/resize snap, OPR v17 round-trip and legacy defaults pass headless tests. Full reference menu layout and live user check pending. T009 makes implemented field captions/arrows high contrast, verified from emitted text in both themes; actual popup/menu regressions pass. Live toolbar appearance pending."
+    },
+    {
+      "id": "transport-panel-layout",
+      "weight": 2,
+      "outcome": "Transport panel grouping, numeric displays, editable tempo/signature controls, contiguous buttons and left/right edges follow the primary crop with OpenTrack palette.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t029-source",
+        "t031-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t029-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "metronome-control",
+      "weight": 3,
+      "outcome": "CLICK, remappable C and Transport menu toggle the same state; Setup adjusts level and downbeat pitch with left/right controls; settings persist globally without editing Project.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t029-source",
+        "t031-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t029-intent",
+          "t031-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "metronome-audio",
+      "weight": 3,
+      "outcome": "Short pop click accents the chosen pitch with octave-lower other beats, follows tempo/signature/cycle/skip sample clock, bypasses Stereo Out processing/meter and does not enter recording capture.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t029-source",
+        "t031-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t029-intent",
+          "t031-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Click now enters device output after Stereo Out processing and meter publication. Live sound and device path require review; wider non-4/4 Project ruler/grid mapping remains incomplete."
+    },
+    {
+      "id": "transport-timing-controls",
+      "weight": 2,
+      "outcome": "Transport allows tempo entry/drag and time-signature editing; the bar-position readout carries tick 100 into the next subdivision and displays two tick digits.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t031-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t031-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Tempo can be typed/dragged in the Transport; signature field opens project numerator/denominator controls. Edits rebuild audio plan and preserve the current beat. Position ticks are fixed-width 00-99 and carry across subdivisions, beats and bars. Non-4/4 arrangement rulers and grids are not corrected by this slice."
+    },
+    {
+      "id": "audio-event-copy-paste",
+      "weight": 2,
+      "outcome": "Ctrl+C copies selected Project timeline audio events; Ctrl+V creates new selected events at the transport cursor while preserving relative timing, track spacing, source trims/fades/gain, and Undo/Redo.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t032-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t032-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "In-app transient clipboard; no WAV byte duplication. Core paste transaction allocates fresh IDs and retains source paths in Media Pool. Destination lane row spacing and channel widths are validated atomically. Ctrl+P Media Pool remains unchanged. No T032 tests were run."
+    },
+    {
+      "id": "pitch-analysis-on-demand",
+      "weight": 3,
+      "outcome": "Clicking Pitch & Time on the active event starts cancellable Rust analysis for its source range; import, playback, project open and ordinary Sample Editor open do not analyze audio.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t033-source",
+        "t038-source",
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t033-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Explicit worker with cancellation, source/event snapshot validation, persisted source/range/detector identity and no eager job on reopening saved analysis."
+    },
+    {
+      "id": "pitch-trace-preview",
+      "weight": 2,
+      "outcome": "Show source-relative voiced pitch estimates over the event waveform with a pitch axis; unvoiced frames break the trace.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t033-source",
+        "t034-source",
+        "t038-source",
+        "t039-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t033-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "True measured trace, separate keyboard, subdued waveform, editable note region outlines, selected coloring and curve preview; visual parity remains pending."
+    },
+    {
+      "id": "analysis-cache-persistence",
+      "weight": 3,
+      "outcome": "Reuse analyzed source/range results across shared event copies and save/reopen without eager reanalysis; reject stale source/model results.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t038-source",
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t033-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "OPR v26 retains analysis plus immediate edit intent and restores without eager analysis. Source/range/detector identity remains; initial analysis survives edit Undo. Cross-event external mirror lookup remains unimplemented."
+    },
+    {
+      "id": "pitch-note-region-editing",
+      "weight": 3,
+      "outcome": "Segment real analysis into editable note regions with stable event intent and undoable boundary/split/join operations.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t038-source",
+        "t039-source",
+        "t040-source",
+        "t041-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t033-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Bodies now change pitch only, snapping absolute center; Shift+left fine-tunes continuously at 0.1 sensitivity and targets that note. Timing stays with edge stretches. Selection and epsilon-touching constraints do not mutate or panic. Live intent/gesture history and analysis retention remain."
+    },
+    {
+      "id": "audible-pitch-rendering",
+      "weight": 3,
+      "outcome": "Pitch edits create an audible, reversible processed result while preserving original source audio and Project/Mixer/export consistency.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t038-source",
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t033-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Prepared immutable pitch-synchronous PlaybackSource samples original decoded memory directly with bounded callback work. Edits take effect without output files; original/corrected comparison and Project/Mixer routing share intent. Hardware latency/CPU/dropouts, vocal quality, processed-waveform regeneration and export remain pending."
+    },
+    {
+      "id": "time-correction-rendering",
+      "weight": 3,
+      "outcome": "Local time anchors/ratios produce audible time correction in Pitch & Time, preserving source originals and reversible event intent; no separate AudioWarp feature.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t038-source",
+        "t039-source"
+      ],
+      "reference": {
+        "status": "observed",
+        "evidence": [
+          "t033-reference"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Note source/destination anchors and edge stretches update a live stateless source without bouncing. Whole-event length remains fixed; interior anchors, consonants/transients, detailed processed-waveform presentation and real-vocal listening remain pending."
+    },
+    {
+      "id": "pitch-vertical-zoom",
+      "weight": 2,
+      "outcome": "Lower-right vertical zoom adjusts semitone row height around the same pitch center, with vertical range navigation. Middle-drag or Shift+wheel pans pitch; Ctrl+Shift+wheel zooms pitch. Plain wheel and horizontal middle pan retain timeline navigation. View state persists without editing project audio.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t034-source",
+        "t035-source",
+        "t037-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t034-intent",
+          "t035-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "project-track-vertical-zoom",
+      "weight": 2,
+      "outcome": "A lower-right Project control and keyboard zoom share persisted vertical track scaling; Shift+wheel scrolls tracks, Ctrl+Shift+wheel zooms them, and middle drag pans the arrange view in both directions.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t036-source",
+        "t037-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t036-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "shared-zoom-control-style",
+      "weight": 1,
+      "outcome": "Project time, Project track and Sample Editor pitch zoom share the chosen Sample Editor thumb/rail, hover/drag accent, +/- buttons and reset behavior.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t037-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t037-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-detector-qualification",
+      "weight": 3,
+      "outcome": "Measure absolute cents/voicing/octave/timing error at declared resolution on known sources and labeled real monophonic vocals; distinguish synthetic confidence from real singing accuracy.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t038-source",
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t038-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "note-tool-isolation",
+      "weight": 3,
+      "outcome": "Pitch & Time gestures target notes; scissors never split or create Project audio events.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source",
+        "t040-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "live-note-audition",
+      "weight": 3,
+      "outcome": "Pitch/time movement immediately updates original-source playback without Apply or creating output audio files; source samples remain intact.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "note-gesture-history",
+      "weight": 2,
+      "outcome": "Each pitch/time gesture, including resetting multiple selected notes, is one reversible Project edit; analysis remains available through Undo/Redo and exact native save/reopen.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source",
+        "t040-source",
+        "t041-source",
+        "t041-r2-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-r2-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "context-note-scissors",
+      "weight": 2,
+      "outcome": "Bottom-quarter note hover shows a snapped white cut guide and scissors; nearby proximity reveals only a subtle white allowed-span affordance.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source",
+        "t040-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-inspector-isolation",
+      "weight": 2,
+      "outcome": "A compact wider fixed Inspector fits the normal lower zone, with no scrolling text panel and no grid wheel action from that panel.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "slide-note-segmentation",
+      "weight": 2,
+      "outcome": "Separate sustained notes connected by upward/downward slides while preserving ordinary vibrato, with manual repair retained.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "project-event-batch-controls",
+      "weight": 2,
+      "outcome": "White event selection/fade/gain guides, descriptive hover tooltips and selected-event fade/gain editing with cancellation and one-gesture Undo.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "audio-source-file-renaming",
+      "weight": 2,
+      "outcome": "Event-name double-click renames the actual audio file, updates shared references/unprocessed copy labels, preserves processed variation labels, rejects collisions, and supports Undo/Redo/discard/restart recovery.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t039-user-review"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "note-body-pitch-modes",
+      "weight": 2,
+      "outcome": "Plain body drag changes pitch only and snaps the absolute center; Shift held before or pressed during a body drag latches continuous sub-semitone correction without a pitch jump and shows cents from the nearest semitone; body movement never changes timing.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t040-source",
+        "t041-source",
+        "t041-r2-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t040-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-r2-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "note-click-boundary-stability",
+      "weight": 3,
+      "outcome": "Selecting and dragging touching notes tolerates floating-point seams; invalid time bounds preserve existing values rather than panicking.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t040-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t040-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-note-marquee-reset",
+      "weight": 2,
+      "outcome": "Dragging from empty Sample Editor grid selects intersected note regions without editing project state; Reset restores all selected notes as one Undo and keeps adjacent regions valid.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t041-source",
+        "t041-r2-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-r2-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-note-edge-push",
+      "weight": 2,
+      "outcome": "Stretching a note boundary moves the adjoining note?s nearest edge inward or outward when the regions were attached; far edges stay fixed, pre-existing gaps remain open until crossed, and both regions retain at least 10 ms.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t041-source",
+        "t041-r2-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-r2-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-note-double-click-reset",
+      "weight": 2,
+      "outcome": "Double-clicking one note edge restores that edge to its source boundary; double-clicking the note body restores analyzed pitch and source timing. The reset preserves analysis and is published as an undoable project edit.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t041-r2-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-review-feedback"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-r2-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-edit-opr-roundtrip",
+      "weight": 3,
+      "outcome": "Native OPR save/reopen restores exact split note identity, analysis, source/destination boundaries, pitch and timing without scheduling analysis again.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t041-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pass",
+        "evidence": [
+          "t041-automated"
+        ]
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-processing-quality",
+      "weight": 3,
+      "outcome": "Pitch correction on controlled vocal sources avoids the reported bubbly/poppy artifacts while preserving original media and musical accuracy.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t039-source",
+        "t042-source",
+        "t042-source-r2",
+        "t042-source-r3",
+        "t042-source-r4"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-note-transition-blend",
+      "weight": 3,
+      "outcome": "Pitch targets ease toward the connected note inside each edited note for at most one sixteenth-note, with an audible seam blend and no Project event changes.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t042-source-r2",
+        "t042-source-r3",
+        "t042-source-r4"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "project-event-contextual-scissors",
+      "weight": 2,
+      "outcome": "Project event hover above the black name strip exposes a contextual cut zone that splits at the actual snapped guide.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "snap-aware-scissor-cursor",
+      "weight": 2,
+      "outcome": "Project and Sample Editor show scissors alone when Snap is off and pencil alone for loop/skip drawing; snapped cut cursor follows the committed guide.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t039-source",
+        "t040-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "shared-view-wheel-map",
+      "weight": 2,
+      "outcome": "Project and Sample Editor share plain-wheel time zoom, Ctrl+wheel horizontal scroll, Shift+wheel vertical scroll and Ctrl+Shift+wheel vertical zoom.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t037-source",
+        "t036-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "mixer-fader-and-track-selection",
+      "weight": 2,
+      "outcome": "Mixer fader caps are rectangular and clicking a Mixer channel selects the same shared track in Project and Inspector.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t039-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
     }
   ],
   "gates": {
@@ -555,6 +1577,63 @@
     },
     "accepted-ui": {
       "description": "Affected accepted Mixer and Project controls pass regression checks.",
+      "status": "pending",
+      "evidence": []
+    },
+    "transport-panel-review": {
+      "description": "Same-display current capture and full-edge visual comparison of the compact panel, actual buttons, meters and output slider are reviewed.",
+      "status": "pending",
+      "evidence": []
+    },
+    "metronome-listening": {
+      "description": "Target-device audible pop timbre, level, clock/loop/skip behavior, recording isolation, restart preferences and Project grid alignment (including non-4/4) are qualified.",
+      "status": "pending",
+      "evidence": []
+    },
+    "audio-event-clipboard-review": {
+      "description": "Single and multi-event Ctrl+C/Ctrl+V, cursor placement, channel-width validation, playback, and Undo/Redo pass live checks.",
+      "status": "pending",
+      "evidence": []
+    },
+    "pitch-time-analysis-review": {
+      "description": "No eager work; actual analysis result and confidence/voicing presentation; cancel, event-switch stale rejection, original-audio integrity and runtime behavior pass on real monophonic audio.",
+      "status": "pending",
+      "evidence": []
+    },
+    "project-track-navigation-review": {
+      "description": "Verify vertical control, keyboard zoom, Shift+wheel scroll, Ctrl+Shift+wheel zoom, middle-drag pan, and ordinary Project seek/zoom on the live app.",
+      "status": "pending",
+      "evidence": []
+    },
+    "pitch-time-render-review": {
+      "description": "Live note edits, real-vocal listening, stereo/transient/seam/formant behavior, Undo/Redo, save/reopen and failure/cancel/source-integrity checks pass.",
+      "status": "pending",
+      "evidence": []
+    },
+    "project-event-batch-editing-review": {
+      "description": "User verifies the complete T039 interaction, audio/filesystem, Undo/save/reopen/discard scenario on the target build.",
+      "status": "pending",
+      "evidence": []
+    },
+    "audio-source-renaming-review": {
+      "description": "User verifies the complete T039 interaction, audio/filesystem, Undo/save/reopen/discard scenario on the target build.",
+      "status": "pending",
+      "evidence": []
+    },
+    "pitch-note-editing-batch1-review": {
+      "description": "User verifies fine pitch/cents, note marquee, selected Reset/Undo, neighbor-pushing stretches, double-click reset and exact OPR reopen in the built app; close the app afterward.",
+      "status": "pass",
+      "evidence": [
+        "t041-live-review"
+      ]
+    },
+    "pitch-processing-listening-review": {
+      "description": "User checks the current build with their own audio for pitch quality, in-note transitions (at most one sixteenth-note), and time-shrink bubbling/chopping before Batch3 begins.",
+      "status": "pending",
+      "evidence": []
+    },
+    "project-mixer-interaction-review": {
+      "description": "User verifies contextual Project cuts, Snap-dependent cursor artwork, shared wheel bindings, rectangular Mixer faders and shared channel selection on the built app.",
       "status": "pending",
       "evidence": []
     }
@@ -644,6 +1723,203 @@
         "ruler-regressions"
       ],
       "gates": [
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "compact-transport-panel",
+      "weight": 2,
+      "requirements": [
+        "transport-panel-layout",
+        "transport-timing-controls"
+      ],
+      "gates": [
+        "transport-panel-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "metronome-playback-recording",
+      "weight": 3,
+      "requirements": [
+        "metronome-control",
+        "metronome-audio"
+      ],
+      "gates": [
+        "metronome-listening",
+        "dirty-state"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "timeline-audio-event-copy-paste",
+      "weight": 2,
+      "requirements": [
+        "audio-event-copy-paste"
+      ],
+      "gates": [
+        "audio-event-clipboard-review",
+        "dirty-state"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "pitch-time-analysis-and-editing",
+      "weight": 3,
+      "requirements": [
+        "pitch-analysis-on-demand",
+        "pitch-trace-preview",
+        "analysis-cache-persistence",
+        "pitch-note-region-editing",
+        "audible-pitch-rendering",
+        "time-correction-rendering",
+        "pitch-vertical-zoom",
+        "pitch-detector-qualification",
+        "note-tool-isolation",
+        "live-note-audition",
+        "note-gesture-history",
+        "context-note-scissors",
+        "pitch-inspector-isolation",
+        "slide-note-segmentation",
+        "note-body-pitch-modes",
+        "note-click-boundary-stability",
+        "pitch-note-marquee-reset",
+        "pitch-note-edge-push",
+        "pitch-note-double-click-reset",
+        "pitch-edit-opr-roundtrip"
+      ],
+      "gates": [
+        "pitch-time-analysis-review",
+        "pitch-time-render-review",
+        "pitch-note-editing-batch1-review"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "project-track-navigation",
+      "weight": 2,
+      "requirements": [
+        "project-track-vertical-zoom"
+      ],
+      "gates": [
+        "project-track-navigation-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "shared-view-navigation",
+      "weight": 2,
+      "requirements": [
+        "shared-zoom-control-style"
+      ],
+      "gates": [
+        "project-track-navigation-review",
+        "accepted-ui",
+        "dirty-state"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "project-event-batch-editing",
+      "weight": 2,
+      "requirements": [
+        "project-event-batch-controls"
+      ],
+      "gates": [
+        "project-event-batch-editing-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "audio-source-renaming",
+      "weight": 2,
+      "requirements": [
+        "audio-source-file-renaming"
+      ],
+      "gates": [
+        "audio-source-renaming-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "pitch-processing-quality-and-transitions",
+      "weight": 3,
+      "requirements": [
+        "pitch-processing-quality",
+        "pitch-note-transition-blend"
+      ],
+      "gates": [
+        "pitch-processing-listening-review",
+        "pitch-time-render-review"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "project-mixer-editing-interaction",
+      "weight": 2,
+      "requirements": [
+        "project-event-contextual-scissors",
+        "snap-aware-scissor-cursor",
+        "shared-view-wheel-map",
+        "mixer-fader-and-track-selection"
+      ],
+      "gates": [
+        "project-mixer-interaction-review",
         "accepted-ui"
       ],
       "scenario": {

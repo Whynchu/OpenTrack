@@ -1,5 +1,31 @@
-//! Lower-zone Sample Editor. Pitch analysis/warp processing are explicitly deferred.
+//! Lower-zone Sample Editor and its on-demand Pitch & Time analysis preview.
 use super::*;
+use std::sync::atomic::AtomicBool;
+#[path = "pitch_editing.rs"]
+mod editing;
+#[path = "sample_pitch_view.rs"]
+mod pitch_view;
+pub(super) use editing::playback_path;
+pub(super) use pitch_view::Viewport as PitchViewport;
+
+struct PitchTask {
+    original_clip: opentrack_core::project::AudioClip,
+    source_identity: (u64, u64),
+    target: (u64, u64),
+    source_path: PathBuf,
+    source_offset_seconds: f64,
+    duration_seconds: f64,
+    cancel: Arc<AtomicBool>,
+    result: Receiver<Result<opentrack_audio::PitchAnalysis, String>>,
+}
+
+struct PitchResult {
+    target: (u64, u64),
+    source_path: PathBuf,
+    source_offset_seconds: f64,
+    duration_seconds: f64,
+    analysis: opentrack_audio::PitchAnalysis,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct SnapSettings {
@@ -34,6 +60,11 @@ pub(super) struct State {
     ruler_drag: Option<(Pos2, f64, f64, f64, f64)>,
     pub event_focus: bool,
     pub cycle_enabled: bool,
+    pitch_task: Option<PitchTask>,
+    pitch_result: Option<PitchResult>,
+    pub pitch_view: PitchViewport,
+    notes: editing::NoteEditor,
+    pub analysis_attached: Option<(u64, u64)>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -49,14 +80,19 @@ impl Default for State {
             ruler_drag: None,
             event_focus: false,
             cycle_enabled: false,
+            pitch_task: None,
+            pitch_result: None,
+            pitch_view: PitchViewport::default(),
+            notes: editing::NoteEditor::default(),
+            analysis_attached: None,
         }
     }
 }
 fn local_time(project_beat: f64, clip: &opentrack_core::project::AudioClip, tempo: f64) -> f64 {
     (project_beat - clip.start_beats) * 60.0 / tempo
 }
-fn musical_position(beat: f64, beats_per_bar: u8) -> String {
-    format_transport_position(beat, beats_per_bar)
+fn musical_position(beat: f64, beats_per_bar: u8, beat_unit: u8) -> String {
+    format_transport_position(beat, beats_per_bar, beat_unit)
 }
 
 fn waveform_channels(track: u8, source: Option<&AudioSource>) -> usize {
@@ -130,16 +166,137 @@ pub(super) fn show(
         return false;
     };
     let color = project_controls::track_color(track);
-    let source = sources.get(&original.source_path);
+    let source = sources
+        .get(playback_path(&original))
+        .or_else(|| sources.get(&original.source_path));
     let channels = waveform_channels(track.audio_channels, source);
     if state.owner != state.target {
+        if let Some(task) = state.pitch_task.take() {
+            task.cancel.store(true, Ordering::Release);
+        }
+        state.pitch_result = None;
+        let directory = state.notes.directory.clone();
+        state.notes = editing::NoteEditor::default();
+        state.notes.directory = directory;
         state.owner = state.target;
         state.view = None;
         state.selection = None;
         state.message.clear();
     }
+    if state.notes.sync(&original) {
+        state.pitch_result = None;
+    }
+    let stored_valid = original.pitch_time.as_ref().is_some_and(|edit| {
+        edit.matches_range(original.source_offset_seconds, original.duration_seconds)
+            && opentrack_audio::pitch_source_identity(&original.source_path).ok()
+                == Some((edit.source_bytes, edit.source_modified_ns))
+    });
+    if state.pitch_result.as_ref().is_some_and(|r| {
+        r.source_path != original.source_path
+            || r.source_offset_seconds != original.source_offset_seconds
+            || r.duration_seconds != original.duration_seconds
+    }) {
+        state.pitch_result = None;
+    }
+    if original.pitch_time.is_some() && !stored_valid {
+        state.pitch_result = None;
+        state.message="Source/range changed. Existing edits are retained; re-analyze explicitly to edit this range.".into();
+    }
+    if state.pitch_result.is_none() && stored_valid && state.pitch_task.is_none() {
+        let analysis = original.pitch_time.as_ref().unwrap().analysis.clone();
+        state.pitch_view.center_on(&analysis);
+        state.pitch_result = Some(PitchResult {
+            target: (track_id, clip_id),
+            source_path: original.source_path.clone(),
+            source_offset_seconds: original.source_offset_seconds,
+            duration_seconds: original.duration_seconds,
+            analysis,
+        });
+    }
+    let mut attached = None;
+    let finished = state
+        .pitch_task
+        .as_ref()
+        .and_then(|task| match task.result.try_recv() {
+            Ok(result) => Some((
+                task.target,
+                task.source_path.clone(),
+                task.source_offset_seconds,
+                task.duration_seconds,
+                task.source_identity,
+                task.original_clip.clone(),
+                result,
+            )),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some((
+                task.target,
+                task.source_path.clone(),
+                task.source_offset_seconds,
+                task.duration_seconds,
+                task.source_identity,
+                task.original_clip.clone(),
+                Err("Pitch analysis worker stopped unexpectedly.".to_owned()),
+            )),
+        });
+    if let Some((target, path, offset, duration, identity, snapshot, result)) = finished {
+        state.pitch_task = None;
+        if target == state.target.unwrap_or_default()
+            && original == snapshot
+            && path == original.source_path
+            && offset == original.source_offset_seconds
+            && duration == original.duration_seconds
+            && opentrack_audio::pitch_source_identity(&path).ok() == Some(identity)
+        {
+            match result {
+                Ok(analysis) => {
+                    state.pitch_view.center_on(&analysis);
+                    let pitched = analysis
+                        .points
+                        .iter()
+                        .filter(|p| p.frequency_hz.is_some())
+                        .count();
+                    state.message =
+                        format!("Pitch analysis ready - {pitched} voiced frames (10 ms)");
+                    attached = Some(opentrack_core::pitch_time::PitchTimeEdit {
+                        detector_version: opentrack_core::pitch_time::DETECTOR_VERSION,
+                        source_bytes: identity.0,
+                        source_modified_ns: identity.1,
+                        notes: opentrack_audio::segment_notes(&analysis),
+                        analysis: analysis.clone(),
+                        rendered_source: None,
+                        enabled: true,
+                    });
+                    state.pitch_result = Some(PitchResult {
+                        target,
+                        source_path: path,
+                        source_offset_seconds: offset,
+                        duration_seconds: duration,
+                        analysis,
+                    });
+                }
+                Err(error) => {
+                    if error != "Pitch analysis canceled." {
+                        state.message = error;
+                    }
+                }
+            }
+        }
+    }
     let mut edited = original.clone();
+    if let Some(edit) = attached {
+        edited.pitch_time = Some(edit);
+        state.analysis_attached = Some((track_id, clip_id));
+        state.notes.sync(&edited);
+    }
     let mut split = false;
+    let mut analyze_pitch = false;
+    let mut cancel_pitch = false;
+    let pitch_visible = state.pitch_result.as_ref().is_some_and(|result| {
+        result.target == (track_id, clip_id)
+            && result.source_path == original.source_path
+            && result.source_offset_seconds.to_bits() == original.source_offset_seconds.to_bits()
+            && result.duration_seconds.to_bits() == original.duration_seconds.to_bits()
+    });
     let bounds = ui.available_rect_before_wrap();
     let p = theme::palette(ui);
     let toolbar = Rect::from_min_size(bounds.min, Vec2::new(bounds.width(), 28.0));
@@ -153,19 +310,48 @@ pub(super) fn show(
     );
     let sidebar = Rect::from_min_max(
         Pos2::new(bounds.left(), overview.bottom() + 2.0),
-        Pos2::new(bounds.left() + 148.0, bounds.bottom() - 22.0),
+        Pos2::new(bounds.left() + 232.0, bounds.bottom() - 22.0),
     );
-    let ruler = Rect::from_min_size(
-        Pos2::new(sidebar.right() + 5.0, sidebar.top()),
-        Vec2::new((bounds.right() - sidebar.right() - 5.0).max(1.0), 22.0),
+    let keyboard_width = if pitch_visible { 38.0 } else { 0.0 };
+    let rail_width = if pitch_visible { 20.0 } else { 0.0 };
+    let ruler = Rect::from_min_max(
+        Pos2::new(sidebar.right() + 5.0 + keyboard_width, sidebar.top()),
+        Pos2::new(bounds.right() - rail_width, sidebar.top() + 22.0),
     );
     let wave = Rect::from_min_max(
         ruler.left_bottom(),
         Pos2::new(
-            bounds.right(),
+            ruler.right(),
             (bounds.bottom() - 22.0).max(ruler.bottom() + 10.0),
         ),
     );
+    let keyboard = Rect::from_min_max(
+        Pos2::new(ruler.left() - keyboard_width, wave.top()),
+        wave.left_bottom(),
+    );
+    let pitch_rail = Rect::from_min_max(wave.right_top(), Pos2::new(bounds.right(), wave.bottom()));
+    let wheel_action = crate::view_controls::wheel(ui, wave.union(ruler).union(keyboard));
+    if pitch_visible {
+        let (origin, pointer_delta, middle_down) = ui.input(|input| {
+            (
+                input.pointer.press_origin(),
+                input.pointer.delta(),
+                input.pointer.button_down(egui::PointerButton::Middle),
+            )
+        });
+        if middle_down && origin.is_some_and(|pos| wave.union(ruler).contains(pos)) {
+            state.pitch_view.pan_pixels(pointer_delta.y, wave.height());
+        }
+        match wheel_action {
+            Some(crate::view_controls::WheelAction::VerticalPan(amount)) => {
+                state.pitch_view.scroll(amount)
+            }
+            Some(crate::view_controls::WheelAction::VerticalZoom(amount)) => {
+                state.pitch_view.zoom_scroll(amount)
+            }
+            _ => {}
+        }
+    }
     ui.painter().rect_filled(toolbar, 0.0, p.surface_raised);
     ui.painter().rect_filled(info, 0.0, p.surface);
     ui.scope_builder(
@@ -204,8 +390,8 @@ pub(super) fn show(
                         ui.selectable_value(&mut state.musical, false, "Seconds");
                     });
                 ui.label(format!(
-                    "Tempo {:.2}   {}/4",
-                    project.tempo_bpm, project.beats_per_bar
+                    "Tempo {:.2}   {}/{}",
+                    project.tempo_bpm, project.beats_per_bar, project.beat_unit
                 ));
                 ui.add_space(8.0);
                 ui.checkbox(&mut state.snap.enabled, "Snap");
@@ -247,7 +433,7 @@ pub(super) fn show(
                     });
                 if ui
                     .add_enabled(
-                        enabled && state.selection.is_some(),
+                        enabled && state.selection.is_some() && !pitch_visible,
                         egui::Button::new("Split at Selection"),
                     )
                     .clicked()
@@ -256,7 +442,7 @@ pub(super) fn show(
                 }
                 ui.label(format!(
                     "Cursor {}",
-                    musical_position(*transport, project.beats_per_bar)
+                    musical_position(*transport, project.beats_per_bar, project.beat_unit)
                 ));
             });
         },
@@ -339,6 +525,7 @@ pub(super) fn show(
     ui.painter().rect_filled(sidebar, 0.0, p.surface_raised);
     ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar.shrink(4.0)), |ui| {
         ui.set_clip_rect(sidebar);
+
         ui.spacing_mut().item_spacing = Vec2::new(3.0, 4.0);
         let title = ui.allocate_space(Vec2::new(sidebar.width() - 8.0, 22.0)).1;
         ui.painter().rect_filled(title, 0.0, color);
@@ -350,7 +537,7 @@ pub(super) fn show(
             project_controls::label_ink(color),
         );
         egui::CollapsingHeader::new("Definition")
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 ui.label(if channels == 1 { "Mono" } else { "Stereo" });
                 if let Some(source) = source {
@@ -359,13 +546,34 @@ pub(super) fn show(
                 ui.label(format!("{:.3} s", original.duration_seconds));
             });
         ui.separator();
-        ui.add_enabled(false, egui::Button::new("Pitch & Time"));
-        ui.label(
-            egui::RichText::new("Pitch analysis and correction: planned")
-                .small()
-                .color(p.muted),
-        );
-        egui::CollapsingHeader::new("Range")
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Pitch & Time").strong());
+            if ui.small_button("Center").clicked() {if let Some(result)=&state.pitch_result {state.pitch_view.center_on(&result.analysis);}}
+        });
+        if state.pitch_task.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Analyzing pitch…");
+                cancel_pitch = ui.small_button("Cancel").clicked();
+            });
+        } else {
+            analyze_pitch = ui
+                .add_enabled(
+                    source.is_some() && enabled,
+                    egui::Button::new(if state.pitch_result.is_some() {
+                        "Re-analyze Pitch"
+                    } else {
+                        "Pitch & Time"
+                    }),
+                )
+                .on_hover_text("Analyze this event's source range for a monophonic pitch trace. No audio is changed.")
+                .clicked();
+        }
+        if pitch_visible {
+
+            if let Some(edit)=state.notes.sidebar(ui,&original,enabled) {edited.pitch_time=Some(edit);}
+        }
+        if !pitch_visible { egui::CollapsingHeader::new("Range")
             .default_open(true)
             .show(ui, |ui| {
                 if let Some((a, b)) = state.selection {
@@ -374,11 +582,93 @@ pub(super) fn show(
                 } else {
                     ui.label("No range selected");
                 }
-            });
+            }); }
     });
+    if cancel_pitch {
+        if let Some(task) = state.pitch_task.as_ref() {
+            task.cancel.store(true, Ordering::Release);
+            state.message = "Canceling pitch analysis…".to_owned();
+        }
+    }
+    if analyze_pitch {
+        let path = original.source_path.clone();
+        let offset = original.source_offset_seconds;
+        let duration = original.duration_seconds;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let (sender, receiver) = mpsc::channel();
+        let identity =
+            opentrack_audio::pitch_source_identity(&original.source_path).unwrap_or_default();
+        let cache = state.notes.analysis_directory();
+        let spawn_result = std::thread::Builder::new()
+            .name("opentrack-pitch-analysis".to_owned())
+            .spawn(move || {
+                let result =
+                    opentrack_audio::analyze_pitch_file(&path, offset, duration, &worker_cancel)
+                        .and_then(|analysis| {
+                            if opentrack_audio::pitch_source_identity(&path).ok() != Some(identity)
+                            {
+                                return Err("The source changed during analysis.".into());
+                            }
+                            if let Some(directory) = cache {
+                                use std::hash::{Hash, Hasher};
+                                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                                path.hash(&mut hash);
+                                identity.hash(&mut hash);
+                                offset.to_bits().hash(&mut hash);
+                                duration.to_bits().hash(&mut hash);
+                                std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+                                let bytes = serde_json::to_vec(&(
+                                    opentrack_core::pitch_time::DETECTOR_VERSION,
+                                    identity,
+                                    &analysis,
+                                ))
+                                .map_err(|e| e.to_string())?;
+                                std::fs::write(
+                                    directory.join(format!("f0-v2-{:016x}.json", hash.finish())),
+                                    bytes,
+                                )
+                                .map_err(|e| e.to_string())?;
+                            }
+                            if worker_cancel.load(Ordering::Acquire) {
+                                return Err("Pitch analysis canceled.".into());
+                            }
+                            Ok(analysis)
+                        });
+                let _ = sender.send(result);
+            });
+        match spawn_result {
+            Ok(_) => {
+                state.pitch_result = None;
+                state.pitch_task = Some(PitchTask {
+                    original_clip: original.clone(),
+                    source_identity: identity,
+                    target: (track_id, clip_id),
+                    source_path: original.source_path.clone(),
+                    source_offset_seconds: offset,
+                    duration_seconds: duration,
+                    cancel,
+                    result: receiver,
+                });
+                state.message = "Analyzing the selected event's source range…".to_owned();
+            }
+            Err(error) => state.message = format!("Could not start pitch analysis: {error}"),
+        }
+    }
+    if state.pitch_task.is_some() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(40));
+    }
     ui.painter().rect_filled(wave, 0.0, p.canvas);
-    ui.painter()
-        .rect_filled(wave, 0.0, color.gamma_multiply(0.15));
+    if pitch_visible {
+        pitch_view::controls(ui, pitch_rail, keyboard, wave, &mut state.pitch_view);
+        pitch_view::grid(ui, keyboard, wave, &state.pitch_view);
+    }
+    ui.painter().rect_filled(
+        wave,
+        0.0,
+        color.gamma_multiply(if pitch_visible { 0.035 } else { 0.15 }),
+    );
     ui.painter().rect_filled(overview, 0.0, p.canvas);
     ui.painter()
         .rect_filled(overview, 0.0, color.gamma_multiply(0.2));
@@ -397,22 +687,30 @@ pub(super) fn show(
         start = (local_cursor - span * 0.15).max(minimum_start);
         end = start + span;
     }
-    let response = ui.interact(wave, ui.id().with("sample-wave"), Sense::click_and_drag());
-    if response.hovered() {
-        let delta = ui.input(|i| i.smooth_scroll_delta.y);
-        if delta != 0.0 {
-            let anchor = response
-                .hover_pos()
-                .map(|p| ((p.x - wave.left()) / wave.width()) as f64)
-                .unwrap_or(0.5)
-                .clamp(0.0, 1.0);
-            let span = ((end - start) * (-delta as f64 * 0.004).exp())
-                .clamp(0.001_f64.min(original.duration_seconds), max_span);
-            start = (start + anchor * (end - start) - anchor * span).max(minimum_start);
-            end = start + span;
-        }
+    let response = ui.interact(
+        wave,
+        ui.id().with("sample-wave"),
+        if pitch_visible {
+            Sense::hover()
+        } else {
+            Sense::click_and_drag()
+        },
+    );
+    if let Some(crate::view_controls::WheelAction::TimeZoom(delta)) = wheel_action {
+        let anchor = ui
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| ((p.x - wave.left()) / wave.width()) as f64)
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        let span = ((end - start) * (-delta as f64 * 0.004).exp())
+            .clamp(0.001_f64.min(original.duration_seconds), max_span);
+        start = (start + anchor * (end - start) - anchor * span).max(minimum_start);
+        end = start + span;
     }
-    if response.dragged_by(egui::PointerButton::Middle) {
+    if ui.input(|i| {
+        i.pointer.button_down(egui::PointerButton::Middle)
+            && i.pointer.press_origin().is_some_and(|p| wave.contains(p))
+    }) {
         let span = end - start;
         start = (start - ui.input(|i| i.pointer.delta().x) as f64 / wave.width() as f64 * span)
             .max(minimum_start);
@@ -458,7 +756,7 @@ pub(super) fn show(
         {
             let t = snap_local(to_seconds(pos.x));
             state.selection = Some((t, t));
-            if *tool == EditTool::Split {
+            if *tool == EditTool::Split && !pitch_visible {
                 split = true;
             }
         }
@@ -470,7 +768,9 @@ pub(super) fn show(
             state.selection = Some((a, snap_local(to_seconds(pos.x))));
         }
     }
-    audio_events::toolbox(ui, wave, &mut state.toolbox, tool);
+    if !pitch_visible {
+        audio_events::toolbox(ui, wave, &mut state.toolbox, tool);
+    }
     if response.hovered() {
         if *tool == EditTool::Split {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -598,7 +898,7 @@ pub(super) fn show(
             Stroke::new(0.5, p.grid),
         );
         let label = if state.musical {
-            musical_position(value, project.beats_per_bar)
+            musical_position(value, project.beats_per_bar, project.beat_unit)
         } else {
             format!("{value:.3}")
         };
@@ -643,7 +943,11 @@ pub(super) fn show(
             wave,
             channels,
             original.duration_seconds,
-            color,
+            if pitch_visible {
+                p.muted.gamma_multiply(0.38)
+            } else {
+                color
+            },
             |a, b, n, ch| {
                 let mut values = s.waveform_columns(
                     a + original.source_offset_seconds,
@@ -679,6 +983,58 @@ pub(super) fn show(
             FontId::proportional(14.0),
             p.text,
         );
+    }
+    if pitch_visible {
+        state.notes.draw(
+            ui,
+            wave,
+            &state.pitch_view,
+            start,
+            end,
+            &original,
+            grid,
+            project.tempo_bpm,
+            *tool,
+            enabled,
+        );
+        let result = state.pitch_result.as_ref().expect("visible analysis");
+        let edit = state.notes.draft.as_ref().expect("visible pitch edits");
+        let pitch_painter = ui.painter().with_clip_rect(wave);
+        let mut previous: Option<Pos2> = None;
+        for point in &result.analysis.points {
+            let Some(frequency) = point.frequency_hz.filter(|hz| hz.is_finite() && *hz > 0.0)
+            else {
+                previous = None;
+                continue;
+            };
+            let source_local = point.source_time_seconds - original.source_offset_seconds;
+            let region_index = edit
+                .notes
+                .iter()
+                .position(|n| source_local >= n.source_start && source_local <= n.source_end);
+            let local_time =
+                region_index.map_or(source_local, |index| edit.notes[index].time(source_local));
+            if local_time < start || local_time > end {
+                previous = None;
+                continue;
+            }
+            let detected_midi = 69.0 + 12.0 * (frequency / 440.0).log2();
+            let midi = region_index.map_or(detected_midi, |index| {
+                edit.pitch_midi_at(index, detected_midi, local_time, project.tempo_bpm)
+            });
+            let point_pos = Pos2::new(
+                wave.left() + ((local_time - start) / (end - start)) as f32 * wave.width(),
+                state.pitch_view.y(midi, wave),
+            );
+            if let Some(previous_pos) = previous {
+                let alpha = (point.confidence * 0.45 + 0.55).clamp(0.55, 1.0);
+                pitch_painter.line_segment(
+                    [previous_pos, point_pos],
+                    Stroke::new(1.7, p.text.gamma_multiply(alpha)),
+                );
+            }
+            previous = Some(point_pos);
+        }
     }
     // The editor shares the Project's global locators. Convert from project beats
     // to event-local time; the source trim offset is deliberately irrelevant.
@@ -784,7 +1140,7 @@ pub(super) fn show(
         Stroke::new(1.0, theme::PLAYHEAD),
         egui::StrokeKind::Inside,
     );
-    if *tool == EditTool::Split && response.hovered() {
+    if !pitch_visible && *tool == EditTool::Split && response.hovered() {
         if let Some(pos) = response.hover_pos() {
             let beat = original.start_beats + to_seconds(pos.x) * project.tempo_bpm / 60.0;
             let beat = grid.map_or(beat, |step| crate::timeline::snap_beats_to_grid(beat, step));
@@ -819,17 +1175,33 @@ pub(super) fn show(
             Stroke::new(1.0, p.accent),
         );
     }
-    ui.painter().text(
-        Pos2::new(wave.left(), bounds.bottom() - 8.0),
-        Align2::LEFT_BOTTOM,
-        &state.message,
-        FontId::proportional(11.0),
-        p.text,
-    );
+    let footer = Rect::from_min_max(Pos2::new(ruler.left(), bounds.bottom() - 20.0), bounds.max);
+    ui.painter().rect_filled(footer, 0.0, p.surface);
+    ui.painter()
+        .with_clip_rect(footer.shrink2(Vec2::new(4.0, 0.0)))
+        .text(
+            Pos2::new(footer.left() + 4.0, footer.center().y),
+            Align2::LEFT_CENTER,
+            &state.message,
+            FontId::proportional(11.0),
+            p.text,
+        );
+    if let Some(cents) = state.notes.selected_pitch_cents() {
+        ui.painter().with_clip_rect(footer).text(
+            Pos2::new(footer.right() - 8.0, footer.center().y),
+            Align2::RIGHT_CENTER,
+            format!("Pitch offset {cents:+.1} cents"),
+            FontId::monospace(11.0),
+            p.text,
+        );
+    }
+    if let Some(edit) = state.notes.publish() {
+        edited.pitch_time = Some(edit);
+    }
     if !enabled {
         return false;
     }
-    if split {
+    if split && !pitch_visible {
         if let Some((a, _)) = state.selection {
             let beat = original.start_beats + a * project.tempo_bpm / 60.0;
             let beat = grid.map_or(beat, |step| crate::timeline::snap_beats_to_grid(beat, step));
@@ -861,6 +1233,440 @@ pub(super) fn show(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    #[test]
+    fn full_editor_context_split_is_note_only_drag_is_live_and_sidebar_wheel_is_isolated() {
+        let (path, source) = fixture_source(1);
+        let analysis =
+            opentrack_audio::analyze_pitch_file(&path, 0.0, 1.0, &AtomicBool::new(false)).unwrap();
+        let identity = opentrack_audio::pitch_source_identity(&path).unwrap();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.add_audio_clip(0, path.clone(), 0.0, 1.0).unwrap();
+        project.tracks[0].clips[0].pitch_time = Some(opentrack_core::pitch_time::PitchTimeEdit {
+            detector_version: 2,
+            source_bytes: identity.0,
+            source_modified_ns: identity.1,
+            notes: opentrack_audio::segment_notes(&analysis),
+            analysis,
+            rendered_source: None,
+            enabled: true,
+        });
+        let mut state = State::default();
+        state.target = Some((project.tracks[0].id, id));
+        state.snap.enabled = false;
+        let ctx = egui::Context::default();
+        let sources = HashMap::from([(path.clone(), source)]);
+        let mut history = ProjectHistory::default();
+        let frame = |events: Vec<egui::Event>,
+                     project: &mut Project,
+                     state: &mut State,
+                     history: &mut ProjectHistory| {
+            history.begin(project);
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    show(
+                        ui,
+                        project,
+                        &sources,
+                        state,
+                        &mut EditTool::Select,
+                        None,
+                        true,
+                        &mut 0.0,
+                        false,
+                    );
+                },
+            );
+            history.finish_frame(project, !ctx.input(|i| i.pointer.any_down()));
+        };
+        let button = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        frame(vec![], &mut project, &mut state, &mut history);
+        let wave = Rect::from_min_max(Pos2::new(275.0, 123.0), Pos2::new(1180.0, 478.0));
+        let note = state.notes.draft.as_ref().unwrap().notes[0].clone();
+        let y = state.pitch_view.y(note.detected_midi, wave);
+        let cut = Pos2::new(wave.left() + wave.width() * 0.5, y + 4.2);
+        frame(button(cut, true), &mut project, &mut state, &mut history);
+        frame(button(cut, false), &mut project, &mut state, &mut history);
+        assert_eq!(project.tracks[0].clips.len(), 1);
+        assert_eq!(
+            project.tracks[0].clips[0]
+                .pitch_time
+                .as_ref()
+                .unwrap()
+                .notes
+                .len(),
+            2
+        );
+        let press = Pos2::new(wave.left() + wave.width() * 0.25, y);
+        let before_drag = project.tracks[0].clips[0]
+            .pitch_time
+            .as_ref()
+            .unwrap()
+            .notes[0]
+            .clone();
+        frame(button(press, true), &mut project, &mut state, &mut history);
+        let moved = press - Vec2::new(0.0, wave.height() / state.pitch_view.span);
+        frame(
+            vec![egui::Event::PointerMoved(moved)],
+            &mut project,
+            &mut state,
+            &mut history,
+        );
+        let changed = &project.tracks[0].clips[0]
+            .pitch_time
+            .as_ref()
+            .unwrap()
+            .notes[0];
+        assert!(
+            (changed.detected_midi + changed.shift
+                - (before_drag.detected_midi + before_drag.shift + 1.0).round())
+            .abs()
+                < 1e-5,
+            "the note's absolute center must snap during the held drag, without Apply"
+        );
+        assert_eq!(
+            (changed.start, changed.end),
+            (before_drag.start, before_drag.end)
+        );
+        frame(button(moved, false), &mut project, &mut state, &mut history);
+        let undone = history.undo(&project).unwrap();
+        assert_eq!(
+            undone.tracks[0].clips[0].pitch_time.as_ref().unwrap().notes[0].shift,
+            0.0
+        );
+        assert_eq!(
+            undone.tracks[0].clips[0]
+                .pitch_time
+                .as_ref()
+                .unwrap()
+                .notes
+                .len(),
+            2
+        );
+        let view = state.view;
+        let center = state.pitch_view.center;
+        frame(
+            vec![
+                egui::Event::PointerMoved(Pos2::new(80.0, 240.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, 2.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut project,
+            &mut state,
+            &mut history,
+        );
+        assert_eq!(state.view, view);
+        assert_eq!(state.pitch_view.center, center);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn saved_analysis_reopens_without_a_job_and_raw_wheel_gestures_affect_the_correct_axes() {
+        let (path, source) = fixture_source(1);
+        let analysis =
+            opentrack_audio::analyze_pitch_file(&path, 0.0, 1.0, &AtomicBool::new(false)).unwrap();
+        let identity = opentrack_audio::pitch_source_identity(&path).unwrap();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.add_audio_clip(0, path.clone(), 0.0, 1.0).unwrap();
+        project.tracks[0].clips[0].pitch_time = Some(opentrack_core::pitch_time::PitchTimeEdit {
+            detector_version: opentrack_core::pitch_time::DETECTOR_VERSION,
+            source_bytes: identity.0,
+            source_modified_ns: identity.1,
+            notes: opentrack_audio::segment_notes(&analysis),
+            analysis,
+            rendered_source: None,
+            enabled: true,
+        });
+        let saved = project.clone();
+        let sources = HashMap::from([(path.clone(), source)]);
+        let mut state = State::default();
+        state.target = Some((project.tracks[0].id, id));
+        let ctx = egui::Context::default();
+        let frame = |events: Vec<egui::Event>, project: &mut Project, state: &mut State| {
+            let mut modified = false;
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    modified = show(
+                        ui,
+                        project,
+                        &sources,
+                        state,
+                        &mut EditTool::Select,
+                        None,
+                        true,
+                        &mut 0.0,
+                        false,
+                    );
+                },
+            );
+            modified
+        };
+        assert!(!frame(vec![], &mut project, &mut state));
+        assert!(state.pitch_result.is_some() && state.pitch_task.is_none());
+        let event = |modifiers| {
+            vec![
+                egui::Event::PointerMoved(Pos2::new(600.0, 250.0)),
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, 1.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers,
+                },
+            ]
+        };
+        let view = state.view.unwrap();
+        assert!(!frame(
+            event(egui::Modifiers::NONE),
+            &mut project,
+            &mut state
+        ));
+        let zoomed = state.view.unwrap();
+        assert!(zoomed.1 - zoomed.0 < view.1 - view.0);
+        let center = state.pitch_view.center;
+        assert!(!frame(
+            event(egui::Modifiers::SHIFT),
+            &mut project,
+            &mut state
+        ));
+        assert!(state.pitch_view.center > center);
+        assert_eq!(state.view, Some(zoomed));
+        let span = state.pitch_view.span;
+        assert!(!frame(
+            event(egui::Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Default::default()
+            }),
+            &mut project,
+            &mut state
+        ));
+        assert!(state.pitch_view.span < span);
+        assert_eq!(state.view, Some(zoomed));
+        assert!(state.pitch_task.is_none());
+        assert_eq!(project, saved);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn opr_roundtrip_restores_note_splits_and_edits_without_scheduling_analysis() {
+        let (source_path, source) = fixture_source(1);
+        let identity = opentrack_audio::pitch_source_identity(&source_path).unwrap();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let clip_id = project
+            .add_audio_clip(0, source_path.clone(), 0.0, 1.0)
+            .unwrap();
+        let edit = opentrack_core::pitch_time::PitchTimeEdit {
+            detector_version: opentrack_core::pitch_time::DETECTOR_VERSION,
+            source_bytes: identity.0,
+            source_modified_ns: identity.1,
+            analysis: opentrack_audio::PitchAnalysis {
+                sample_rate_hz: 8000,
+                source_start_seconds: 0.0,
+                source_duration_seconds: 1.0,
+                points: vec![
+                    opentrack_audio::PitchPoint {
+                        source_time_seconds: 0.1,
+                        frequency_hz: Some(440.0),
+                        confidence: 0.99,
+                    },
+                    opentrack_audio::PitchPoint {
+                        source_time_seconds: 0.4,
+                        frequency_hz: Some(493.88),
+                        confidence: 0.96,
+                    },
+                    opentrack_audio::PitchPoint {
+                        source_time_seconds: 0.8,
+                        frequency_hz: Some(523.25),
+                        confidence: 0.98,
+                    },
+                ],
+            },
+            notes: vec![
+                opentrack_core::pitch_time::PitchNote {
+                    id: 17,
+                    source_start: 0.1,
+                    source_end: 0.4,
+                    start: 0.12,
+                    end: 0.42,
+                    detected_midi: 69.234,
+                    shift: 0.321,
+                    straighten: 0.4,
+                },
+                opentrack_core::pitch_time::PitchNote {
+                    id: 18,
+                    source_start: 0.4,
+                    source_end: 0.8,
+                    start: 0.42,
+                    end: 0.82,
+                    detected_midi: 71.876,
+                    shift: -0.127,
+                    straighten: 0.65,
+                },
+            ],
+            rendered_source: None,
+            enabled: true,
+        };
+        project.tracks[0].clips[0].pitch_time = Some(edit.clone());
+
+        let mut dock_value =
+            serde_json::to_value(egui_dock::DockState::new(vec![PanelTab::Project])).unwrap();
+        let leaf = &mut dock_value["surfaces"][0]["Main"]["nodes"][0]["Leaf"];
+        for rectangle in ["rect", "viewport"] {
+            for edge in ["min", "max"] {
+                for axis in ["x", "y"] {
+                    leaf[rectangle][edge][axis] = serde_json::Value::from(0.0);
+                }
+            }
+        }
+        let dock: egui_dock::DockState<PanelTab> = serde_json::from_value(dock_value).unwrap();
+        let workspace = crate::project_file::initial_workspace_state(&dock).unwrap();
+        let project_path = source_path.with_extension("pitch-roundtrip.opr");
+        let document =
+            crate::project_file::ProjectFile::new(project.clone(), workspace, dock, true, 0, false);
+        document.write(&project_path).unwrap();
+        let mut reopened = crate::project_file::ProjectFile::read(&project_path)
+            .unwrap()
+            .project;
+        assert_eq!(reopened.tracks[0].clips[0].pitch_time, Some(edit.clone()));
+
+        let mut state = State::default();
+        state.target = Some((reopened.tracks[0].id, clip_id));
+        let sources = HashMap::from([(source_path.clone(), source)]);
+        let ctx = egui::Context::default();
+        let mut modified = true;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
+                ..Default::default()
+            },
+            |ui| {
+                modified = show(
+                    ui,
+                    &mut reopened,
+                    &sources,
+                    &mut state,
+                    &mut EditTool::Select,
+                    None,
+                    true,
+                    &mut 0.0,
+                    false,
+                );
+            },
+        );
+        assert!(!modified);
+        assert!(state.pitch_result.is_some());
+        assert!(
+            state.pitch_task.is_none(),
+            "reopening restored analysis without a job"
+        );
+        assert_eq!(state.notes.draft, Some(edit.clone()));
+        assert_eq!(reopened.tracks[0].clips[0].pitch_time, Some(edit));
+        std::fs::remove_file(project_path).unwrap();
+        std::fs::remove_file(source_path).unwrap();
+    }
+
+    #[test]
+    fn analyzed_pitch_view_renders_keyboard_and_trace_without_editing_source_or_project() {
+        let (path, source) = fixture_source(1);
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.add_audio_clip(0, path.clone(), 0.0, 1.0).unwrap();
+        let target = (project.tracks[0].id, id);
+        let saved = project.clone();
+        let sources = HashMap::from([(path.clone(), source)]);
+        let mut state = State::default();
+        state.target = Some(target);
+        state.owner = Some(target);
+        state.pitch_view.center = 69.0;
+        state.pitch_result = Some(PitchResult {
+            target,
+            source_path: path.clone(),
+            source_offset_seconds: 0.0,
+            duration_seconds: 1.0,
+            analysis: opentrack_audio::PitchAnalysis {
+                sample_rate_hz: 8_000,
+                source_start_seconds: 0.0,
+                source_duration_seconds: 1.0,
+                points: [0.2, 0.4]
+                    .into_iter()
+                    .map(|time| opentrack_audio::PitchPoint {
+                        source_time_seconds: time,
+                        frequency_hz: Some(440.0),
+                        confidence: 0.98,
+                    })
+                    .collect(),
+            },
+        });
+        let ctx = egui::Context::default();
+        let mut tool = EditTool::Select;
+        let mut transport = 0.0;
+        for span in [24.0, 6.0, 72.0] {
+            state.pitch_view.span = span;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    assert!(!show(
+                        ui,
+                        &mut project,
+                        &sources,
+                        &mut state,
+                        &mut tool,
+                        None,
+                        true,
+                        &mut transport,
+                        false
+                    ));
+                },
+            );
+            assert!(out.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::LineSegment { points, stroke } if stroke.width == 1.7 && (points[0].y - points[1].y).abs() < 0.001
+            )), "actual F0 trace is drawn in every vertical zoom state");
+            assert!(
+                !out.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text().contains("Hz analysis")
+                )),
+                "analysis diagnostics do not overlap the plot's right edge"
+            );
+            assert!(
+                state.pitch_task.is_none(),
+                "view changes must never schedule analysis"
+            );
+            assert_eq!(project, saved);
+            out.textures_delta.clear();
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     pub(crate) fn fixture_source(channels: u16) -> (PathBuf, AudioSource) {
         let path = std::env::temp_dir().join(format!(
             "opentrack-sample-editor-{}-{}.wav",
@@ -1453,11 +2259,19 @@ pub(super) mod tests {
 }
 
 impl State {
+    pub fn set_render_directory(&mut self, directory: Option<PathBuf>) {
+        self.notes.directory = directory;
+    }
     pub fn reset_target(&mut self) {
+        if let Some(task) = self.pitch_task.as_ref() {
+            task.cancel.store(true, Ordering::Release);
+        }
         let snap = self.snap.clone();
+        let pitch_view = self.pitch_view.clone();
         let musical = self.musical;
         *self = Self::default();
         self.snap = snap;
+        self.pitch_view = pitch_view;
         self.musical = musical;
     }
 }

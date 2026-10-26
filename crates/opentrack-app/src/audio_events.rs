@@ -12,6 +12,7 @@ enum Tool {
 }
 #[derive(Clone, Debug)]
 struct Gesture {
+    peers: Vec<(u64, AudioClip)>,
     track: u64,
     original: AudioClip,
     press: Pos2,
@@ -49,6 +50,9 @@ struct MarqueeGesture {
 }
 #[derive(Clone, Debug, Default)]
 pub(crate) struct State {
+    rename: Option<(u64, u64, String, bool)>,
+    pub rename_request: Option<(u64, u64, String)>,
+    last_name_click: Option<(u64, f64, Pos2)>,
     selected: Option<u64>,
     pub row_focus: bool,
     extra_selected: HashSet<u64>,
@@ -82,6 +86,155 @@ impl State {
         self.row_focus = false;
         self.selected = Some(id);
         self.extra_selected.clear();
+    }
+    pub fn select_many(&mut self, ids: impl IntoIterator<Item = u64>) {
+        self.clear_selection();
+        let mut ids = ids.into_iter();
+        self.selected = ids.next();
+        self.extra_selected.extend(ids);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ClipboardItem {
+    track_offset: usize,
+    channels: u8,
+    clip: AudioClip,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Clipboard {
+    anchor_track_id: u64,
+    anchor_beat: f64,
+    items: Vec<ClipboardItem>,
+}
+
+impl OpenTrackApp {
+    pub(super) fn copy_selected_audio_events(&mut self) {
+        let selected: HashSet<_> = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect();
+        if selected.is_empty() {
+            self.status_message = "Select audio events to copy".into();
+            return;
+        }
+        let mut found = Vec::new();
+        for (row, track) in self.data.project.tracks.iter().enumerate() {
+            if track.kind != TrackKind::Audio {
+                continue;
+            }
+            for clip in &track.clips {
+                if selected.contains(&clip.id) {
+                    found.push((row, track.id, track.audio_channels, clip.clone()));
+                }
+            }
+        }
+        if found.is_empty() {
+            self.status_message = "The selected audio events are no longer in the project".into();
+            return;
+        }
+        let anchor_row = found.iter().map(|(row, ..)| *row).min().unwrap_or_default();
+        let anchor_track_id = self.data.project.tracks[anchor_row].id;
+        let anchor_beat = found
+            .iter()
+            .map(|(_, _, _, clip)| clip.start_beats)
+            .fold(f64::INFINITY, f64::min);
+        let mut items: Vec<_> = found
+            .into_iter()
+            .map(|(row, _, channels, clip)| ClipboardItem {
+                track_offset: row - anchor_row,
+                channels,
+                clip,
+            })
+            .collect();
+        items.sort_by(|a, b| {
+            a.track_offset
+                .cmp(&b.track_offset)
+                .then_with(|| a.clip.start_beats.total_cmp(&b.clip.start_beats))
+                .then_with(|| a.clip.id.cmp(&b.clip.id))
+        });
+        let count = items.len();
+        self.audio_event_clipboard = Some(Clipboard {
+            anchor_track_id,
+            anchor_beat,
+            items,
+        });
+        self.status_message = format!("Copied {count} audio event(s)");
+    }
+
+    pub(super) fn paste_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before pasting audio events".into();
+            return;
+        }
+        let Some(clipboard) = self.audio_event_clipboard.clone() else {
+            self.status_message = "Copy audio events before pasting".into();
+            return;
+        };
+        let anchor_index = self
+            .data
+            .project
+            .selected_track
+            .map(|index| index as usize)
+            .filter(|index| {
+                self.data
+                    .project
+                    .tracks
+                    .get(*index)
+                    .is_some_and(|track| track.kind == TrackKind::Audio)
+            })
+            .or_else(|| {
+                self.data
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|track| track.id == clipboard.anchor_track_id)
+            });
+        let Some(anchor_index) = anchor_index else {
+            self.status_message = "Choose an audio track to paste onto".into();
+            return;
+        };
+        let mut paste = Vec::with_capacity(clipboard.items.len());
+        for item in &clipboard.items {
+            let Some(track_index) = anchor_index.checked_add(item.track_offset) else {
+                self.status_message =
+                    "The selected destination tracks do not match the copied events".into();
+                return;
+            };
+            let Some(track) = self.data.project.tracks.get(track_index) else {
+                self.status_message =
+                    "The selected destination tracks do not match the copied events".into();
+                return;
+            };
+            if track.kind != TrackKind::Audio || track.audio_channels != item.channels {
+                self.status_message =
+                    "Paste requires audio tracks with matching channel widths".into();
+                return;
+            }
+            let mut clip = item.clip.clone();
+            clip.start_beats = self.data.transport.position_beats.max(0.0)
+                + (item.clip.start_beats - clipboard.anchor_beat);
+            paste.push((track_index, clip));
+        }
+        if !self.project_history.begin(&self.data.project) {
+            self.status_message = "Undo history is unavailable for this project size".into();
+            return;
+        }
+        let Some(new_ids) = self.data.project.paste_audio_clips(&paste) else {
+            self.status_message = "Could not paste the selected audio events".into();
+            return;
+        };
+        self.arrange_view_state.audio_events.select_many(new_ids);
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Pasted {} audio event(s); Undo restores the previous arrangement",
+            paste.len()
+        );
     }
 }
 
@@ -258,7 +411,10 @@ fn paint(
         },
     );
     let wave = wave_rect(r);
-    if let Some(source) = sources.get(&c.source_path) {
+    if let Some(source) = sources
+        .get(super::sample_editor::playback_path(c))
+        .or_else(|| sources.get(&c.source_path))
+    {
         super::waveform_view::draw(
             &painter,
             wave,
@@ -311,7 +467,7 @@ fn paint(
         Stroke::new(
             1.0,
             if selected {
-                theme::RECORD
+                Color32::WHITE
             } else {
                 Color32::BLACK
             }
@@ -320,7 +476,7 @@ fn paint(
         egui::StrokeKind::Inside,
     );
     if selected && !ghost {
-        let blue = Color32::from_rgb(70, 170, 245);
+        let blue = Color32::WHITE;
         let gain = gain_y(c, wave);
         painter.line_segment(
             [Pos2::new(r.left(), gain), Pos2::new(r.right(), gain)],
@@ -378,6 +534,7 @@ pub(super) fn show_with_tool(
     };
     let tempo = project.tempo_bpm;
     let mut reset_gain = None;
+    let mut rename_done = None;
     let input = ui.input(|i| {
         (
             i.pointer.hover_pos(),
@@ -478,11 +635,11 @@ pub(super) fn show_with_tool(
                     state.extra_selected.remove(&primary);
                 }
                 let painter = ui.painter().with_clip_rect(visible);
-                painter.rect_filled(rect, 0.0, theme::palette(ui).accent.gamma_multiply(0.12));
+                painter.rect_filled(rect, 0.0, Color32::WHITE.gamma_multiply(0.10));
                 painter.rect_stroke(
                     rect,
                     0.0,
-                    Stroke::new(1.0, theme::palette(ui).accent),
+                    Stroke::new(1.0, Color32::WHITE),
                     egui::StrokeKind::Inside,
                 );
                 if input.1 {
@@ -511,6 +668,9 @@ pub(super) fn show_with_tool(
         if input.3 {
             if g.tool != Tool::Move {
                 out.changed |= project.edit_audio_clip(g.track, g.track, g.original.clone());
+                for (track, clip) in &g.peers {
+                    out.changed |= project.edit_audio_clip(*track, *track, clip.clone());
+                }
             }
         } else if let Some(pos) = input.0 {
             update(
@@ -539,6 +699,39 @@ pub(super) fn show_with_tool(
                             .map(|i| i as u32);
                     }
                     out.changed |= changed;
+                    for (track, original) in &g.peers {
+                        let mut clip = original.clone();
+                        match g.tool {
+                            Tool::Gain => {
+                                clip.gain = if g.candidate.gain == 0.0 {
+                                    0.0
+                                } else {
+                                    (clip.gain * (g.candidate.gain / g.original.gain.max(0.000001)))
+                                        .clamp(0.0, 4.0)
+                                }
+                            }
+                            Tool::FadeIn => {
+                                clip.fade_in_seconds = (clip.fade_in_seconds
+                                    + g.candidate.fade_in_seconds
+                                    - g.original.fade_in_seconds)
+                                    .clamp(
+                                        0.0,
+                                        (clip.duration_seconds - clip.fade_out_seconds).max(0.0),
+                                    )
+                            }
+                            Tool::FadeOut => {
+                                clip.fade_out_seconds = (clip.fade_out_seconds
+                                    + g.candidate.fade_out_seconds
+                                    - g.original.fade_out_seconds)
+                                    .clamp(
+                                        0.0,
+                                        (clip.duration_seconds - clip.fade_in_seconds).max(0.0),
+                                    )
+                            }
+                            _ => {}
+                        }
+                        out.changed |= project.edit_audio_clip(*track, *track, clip);
+                    }
                 }
             }
             if input.1 {
@@ -688,7 +881,56 @@ pub(super) fn show_with_tool(
                 continue;
             }
             let response = ui.interact(r, Id::new(("audio-event", c.id)), Sense::click_and_drag());
+            if let Some((track, id, text, focus)) = &mut state.rename
+                && *id == c.id
+            {
+                let edit_rect = Rect::from_min_max(
+                    Pos2::new(r.left() + 2.0, r.bottom() - 16.0),
+                    r.right_bottom(),
+                );
+                let edit = ui.put(
+                    edit_rect,
+                    egui::TextEdit::singleline(&mut *text)
+                        .font(FontId::proportional(10.0))
+                        .margin(Vec2::ZERO),
+                );
+                let first = *focus;
+                if first {
+                    edit.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(text.chars().count()),
+                            )));
+                        state.store(ui.ctx(), edit.id);
+                    }
+                    *focus = false;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    rename_done = Some(None);
+                } else if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    || (!first && edit.lost_focus())
+                {
+                    rename_done = Some(Some((*track, *id, text.trim().to_owned())));
+                }
+            }
             if response.clicked_by(egui::PointerButton::Primary) {
+                if *edit_tool == EditTool::Select
+                    && let Some(pos) = input.0.filter(|p| p.y >= r.bottom() - 13.0)
+                {
+                    let time = ui.input(|i| i.time);
+                    let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+                    if state.last_name_click.is_some_and(|(id, before, point)| {
+                        id == c.id && time - before < delay && point.distance(pos) < 6.0
+                    }) {
+                        state.rename = Some((lane.id, c.id, c.name.clone(), true));
+                        state.last_name_click = None;
+                    } else {
+                        state.last_name_click = Some((c.id, time, pos));
+                    }
+                }
                 state.row_focus = false;
                 if *edit_tool == EditTool::Split {
                     if let Some(pos) = response.interact_pointer_pos() {
@@ -698,7 +940,7 @@ pub(super) fn show_with_tool(
                     if state.selected != Some(c.id) && !state.extra_selected.insert(c.id) {
                         state.extra_selected.remove(&c.id);
                     }
-                } else {
+                } else if !selected {
                     state.selected = Some(c.id);
                     state.extra_selected.clear();
                 }
@@ -722,6 +964,17 @@ pub(super) fn show_with_tool(
                     } else {
                         cursor(hovered)
                     });
+                    let text = match hovered {
+                        Tool::FadeIn => "Fade in - drag to adjust selected events",
+                        Tool::FadeOut => "Fade out - drag to adjust selected events",
+                        Tool::Gain => "Event volume - drag; double-click for 0 dB",
+                        Tool::Left => "Trim event start",
+                        Tool::Right => "Trim event end",
+                        Tool::Move => "",
+                    };
+                    if !text.is_empty() {
+                        response.clone().on_hover_text(text);
+                    }
                 }
             }
 
@@ -741,7 +994,12 @@ pub(super) fn show_with_tool(
                     hit(c, event_rect(c, lane, origin, px, tempo), pos, selected) != Tool::Gain
                 })
             {
-                state.open_editor = Some((lane.id, c.id));
+                if input
+                    .0
+                    .is_some_and(|p| p.y < event_rect(c, lane, origin, px, tempo).bottom() - 13.0)
+                {
+                    state.open_editor = Some((lane.id, c.id));
+                }
             }
             if *edit_tool == EditTool::Select
                 && response.drag_started_by(egui::PointerButton::Primary)
@@ -795,6 +1053,17 @@ pub(super) fn show_with_tool(
                     state.select_one(c.id);
                 }
                 let mut g = Gesture {
+                    peers: if was_selected
+                        && matches!(tool, Tool::Gain | Tool::FadeIn | Tool::FadeOut)
+                    {
+                        selected_members
+                            .into_iter()
+                            .filter(|m| m.original.id != c.id)
+                            .map(|m| (m.track, m.original))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
                     track: lane.id,
                     original: c.clone(),
                     candidate: c.clone(),
@@ -835,6 +1104,10 @@ pub(super) fn show_with_tool(
             Stroke::new(1.0, theme::PLAYHEAD),
         );
     }
+    if let Some(request) = rename_done {
+        state.rename = None;
+        state.rename_request = request;
+    }
     if let Some((track, clip, at)) = split {
         if let Some(id) = project.split_audio_clip(track, clip, at) {
             state.selected = Some(id);
@@ -859,6 +1132,14 @@ pub(super) fn show_with_tool(
         }
     }
     if let Some((track, edited)) = reset_gain {
+        for t in &mut project.tracks {
+            for c in &mut t.clips {
+                if state.selected_ids().contains(&c.id) && c.id != edited.id && c.gain != 1.0 {
+                    c.gain = 1.0;
+                    out.changed = true;
+                }
+            }
+        }
         out.changed |= project.edit_audio_clip(track, track, edited);
     }
     if let Some(g) = state.gesture.as_ref().filter(|g| g.tool == Tool::Move) {
@@ -1272,6 +1553,72 @@ mod tests {
         assert_eq!(f.project.tracks[0].clips[0], before);
         f.button(Pos2::new(300.0, 67.0), false);
     }
+    #[test]
+    fn double_clicking_event_name_edits_the_file_name_instead_of_opening_the_sample_editor() {
+        let mut f = Fixture::new();
+        f.select();
+        let name = Pos2::new(450.0, 64.0);
+        f.button(name, true);
+        f.button(name, false);
+        f.button(name, true);
+        f.button(name, false);
+        f.frame(vec![]);
+        assert!(f.state.rename.is_some());
+        assert!(f.state.open_editor.is_none());
+        f.frame(vec![egui::Event::Text("Lead vocal".into())]);
+        f.frame(vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_eq!(
+            f.state.rename_request.as_ref().map(|r| r.2.as_str()),
+            Some("Lead vocal")
+        );
+        assert_eq!(
+            f.project.tracks[0].clips[0].source_path,
+            PathBuf::from("test.wav"),
+            "the UI only requests a prepared file operation"
+        );
+    }
+
+    #[test]
+    fn selected_event_fades_and_volume_adjust_as_a_group_and_escape_restores_them() {
+        let mut f = Fixture::new();
+        let first = f.project.tracks[0].clips[0].id;
+        let second = f
+            .project
+            .add_audio_clip(1, PathBuf::from("second.wav"), 1.0, 4.0)
+            .unwrap();
+        f.state.select_many([first, second]);
+        f.frame(vec![]);
+        f.button(Pos2::new(203.0, 3.0), true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(400.0, 3.0))]);
+        f.button(Pos2::new(400.0, 3.0), false);
+        assert!((f.project.tracks[0].clips[0].fade_in_seconds - 1.0).abs() < 0.001);
+        assert!((f.project.tracks[1].clips[0].fade_in_seconds - 1.0).abs() < 0.001);
+        f.frame(vec![]);
+        f.button(Pos2::new(600.0, 3.0), true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(600.0, 27.0))]);
+        f.frame(vec![]);
+        for track in &f.project.tracks[..2] {
+            assert!((20.0 * track.clips[0].gain.log10() + 6.0).abs() < 0.01);
+        }
+        f.frame(vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        for track in &f.project.tracks[..2] {
+            assert_eq!(track.clips[0].gain, 1.0);
+        }
+        f.button(Pos2::new(600.0, 27.0), false);
+    }
+
     #[test]
     fn fade_and_gain_handles_change_real_event_parameters_and_gain_snaps_back_to_unity() {
         let mut f = Fixture::new();

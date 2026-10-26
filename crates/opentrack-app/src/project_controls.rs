@@ -443,69 +443,25 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
 }
 
 pub(super) fn zoom_control(ui: &mut egui::Ui, rect: Rect, value: &mut f32) {
-    let p = theme::palette(ui);
-    ui.painter().rect_filled(rect, 0.0, p.surface_raised);
-    for (index, label) in ["−", "+"].into_iter().enumerate() {
-        let left = if index == 0 {
-            rect.left()
-        } else {
-            rect.right() - 16.0
-        };
-        let r = Rect::from_min_size(Pos2::new(left, rect.top()), Vec2::new(16.0, 16.0));
-        let response = ui.interact(r, Id::new(("project-zoom-step", index)), Sense::click());
-        if response.hovered() {
-            ui.painter().rect_filled(
-                r,
-                1.0,
-                theme::hover_button_fill(p.surface_raised, ui.visuals()),
-            );
-            ui.painter().rect_stroke(
-                r,
-                1.0,
-                ui.visuals().widgets.hovered.bg_stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        ui.painter().text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            label,
-            FontId::proportional(11.0),
-            p.text,
-        );
-        if response.clicked() {
-            *value = (*value * if index == 0 { 0.8 } else { 1.25 })
-                .clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM);
-        }
-    }
-    let rail = Rect::from_min_max(
-        rect.min + Vec2::new(19.0, 2.0),
-        rect.max - Vec2::new(19.0, 2.0),
-    );
-    let response = ui.interact(rail, Id::new("project-zoom-rail"), Sense::click_and_drag());
-    if (response.dragged() || response.clicked())
-        && let Some(pointer) = response.interact_pointer_pos()
-    {
-        let f = ((pointer.x - rail.left()) / rail.width()).clamp(0.0, 1.0);
-        *value = crate::timeline::MIN_ZOOM
-            * (crate::timeline::MAX_ZOOM / crate::timeline::MIN_ZOOM).powf(f);
-    }
-    ui.painter().line_segment(
-        [rail.left_center(), rail.right_center()],
-        Stroke::new(
-            if response.hovered() { 1.5 } else { 1.0 },
-            if response.hovered() { p.accent } else { p.text },
-        ),
-    );
-    let x = egui::lerp(
-        rail.x_range(),
-        ((*value / crate::timeline::MIN_ZOOM).ln()
-            / (crate::timeline::MAX_ZOOM / crate::timeline::MIN_ZOOM).ln())
-        .clamp(0.0, 1.0),
-    );
-    ui.painter().rect_filled(
-        Rect::from_center_size(Pos2::new(x, rail.center().y), Vec2::new(6.0, 10.0)),
+    crate::view_controls::zoom(
+        ui,
+        rect,
+        Id::new("project-time-zoom"),
+        value,
+        [crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM],
         1.0,
-        p.accent,
+        false,
+    );
+}
+
+pub(super) fn track_zoom_control(ui: &mut egui::Ui, rect: Rect, value: &mut f32) {
+    crate::view_controls::zoom(
+        ui,
+        rect,
+        Id::new("project-track-zoom"),
+        value,
+        [0.5, 4.0],
+        1.0,
+        true,
     );
 }
