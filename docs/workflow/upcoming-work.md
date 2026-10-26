@@ -264,23 +264,44 @@ Up to ten lanes are authorized. Start only lanes that do not conflict.
    `app.rs`).
 3. T042 dry/wet, voicing and time compression (`pitch_synthesis.rs`).
 4. Note color (`pitch_editing.rs`, `sample_editor.rs`, tests).
-5. Batch 3 scissors/cursor spec and tests (implementation gated).
-6. Batch 3 wheel map (implementation gated).
-7. Batch 3 Mixer fader/selection (implementation gated).
-8. VST host context/license skeleton (new files only).
-9. VST scanner/catalog (new files only).
-10. Verification/ledger/git integration.
+5. **Batch 3 integration owner** (gated): C1 contextual scissors + C2 snap-aware
+   cursor first, then C3 wheel map, then C4 fader cap + C5 shared selection.
+6. VST host context/license skeleton (new files only).
+7. VST scanner/catalog (new files only).
+8. Verification/ledger/git integration.
 
 Collision rules:
 
 - One agent owns one file set; no two agents edit the same file.
 - Batch 3 agents may prepare tests/specs but not ship behavior before the gate.
+- **Batch 3 must be serialized, not three parallel lanes.** C1/C2 share
+  `audio_events.rs`, `system_tool_icons.rs`, `app.rs`, `pitch_editing.rs`, and
+  `sample_editor.rs`. C3 shares `app.rs`/`sample_editor.rs`. C4/C5 share
+  `mixer.rs` and the two `app.rs` Mixer call sites. Use one integration owner for
+  `app.rs` and land the groups in order.
+- Note color shares `pitch_editing.rs`/`sample_editor.rs`; do not run it beside a
+  Batch 3 editor/cursor lane.
 - VST agents must not touch the pitch/playback graph until V3 and T042 are
-  coordinated.
+  coordinated. V1/V2 new-file work can run in parallel.
 - Use separate worktrees or branches for code; keep this docs/plan checkpoint on
-  `main`.
+  `main`. The automated worktree tool was unavailable at dispatch time, so the
+  first lanes are using disjoint files and must be reviewed before merging.
 - Merge in the order: T042 audio fix, note color, Batch 3, VST V1/V2, then V3.
 - Every merge updates `current.md`, the relevant task packet, and the ledger.
+
+### Batch 3 audit result (2026-10-25)
+
+- `project-event-contextual-scissors`: absent. Existing Split tool cuts anywhere
+  in the event; contextual name-strip cut must be added for Select.
+- `snap-aware-scissor-cursor`: partial. Cursor is always Crosshair+glyph; no
+  scissors-alone when Snap is off and no pencil-alone for range drawing.
+- `shared-view-wheel-map`: partial. Plain/Shift/Ctrl+Shift work; Ctrl+wheel
+  horizontal pan is missing in both views.
+- `mixer-fader-and-track-selection`: partial. Fader cap is rounded, not
+  rectangular; footer click selects, but channel-body click does not, and Project
+  multi-selection can disagree with Mixer/Inspector.
+- T039 remains `review_pending`; coordinate Project/event-file changes before
+  editing the same areas.
 
 ## Git and handoff
 
