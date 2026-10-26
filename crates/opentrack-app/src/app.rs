@@ -15118,7 +15118,9 @@ mod channel_window_lifecycle_tests {
                     .events
                     .push(egui::ViewportEvent::Close);
             }
-            ctx.run_ui(input, |ui| app.show_channel_settings_window(ui.ctx()))
+            let mut out = ctx.run_ui(input, |ui| app.show_channel_settings_window(ui.ctx()));
+            out.textures_delta.clear();
+            out
         };
         for bus in [Some(false), Some(true), None, Some(false), None] {
             let epoch = app.channel_settings_window.epoch;

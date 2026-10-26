@@ -996,6 +996,7 @@ pub(super) fn show(
             project.tempo_bpm,
             *tool,
             enabled,
+            Some(color),
         );
         let result = state.pitch_result.as_ref().expect("visible analysis");
         let edit = state.notes.draft.as_ref().expect("visible pitch edits");
@@ -1262,7 +1263,7 @@ pub(super) mod tests {
                      state: &mut State,
                      history: &mut ProjectHistory| {
             history.begin(project);
-            let _ = ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
                     events,
@@ -1282,6 +1283,7 @@ pub(super) mod tests {
                     );
                 },
             );
+            output.textures_delta.clear();
             history.finish_frame(project, !ctx.input(|i| i.pointer.any_down()));
         };
         let button = |pos, pressed| {
@@ -1404,7 +1406,7 @@ pub(super) mod tests {
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>, project: &mut Project, state: &mut State| {
             let mut modified = false;
-            let _ = ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
                     events,
@@ -1424,6 +1426,7 @@ pub(super) mod tests {
                     );
                 },
             );
+            output.textures_delta.clear();
             modified
         };
         assert!(!frame(vec![], &mut project, &mut state));
@@ -1561,7 +1564,7 @@ pub(super) mod tests {
         let sources = HashMap::from([(source_path.clone(), source)]);
         let ctx = egui::Context::default();
         let mut modified = true;
-        let _ = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),
                 ..Default::default()
@@ -1580,6 +1583,7 @@ pub(super) mod tests {
                 );
             },
         );
+        output.textures_delta.clear();
         assert!(!modified);
         assert!(state.pitch_result.is_some());
         assert!(
@@ -1595,9 +1599,32 @@ pub(super) mod tests {
     #[test]
     fn analyzed_pitch_view_renders_keyboard_and_trace_without_editing_source_or_project() {
         let (path, source) = fixture_source(1);
+        let analysis = opentrack_audio::PitchAnalysis {
+            sample_rate_hz: 8_000,
+            source_start_seconds: 0.0,
+            source_duration_seconds: 1.0,
+            points: [0.2, 0.4]
+                .into_iter()
+                .map(|time| opentrack_audio::PitchPoint {
+                    source_time_seconds: time,
+                    frequency_hz: Some(440.0),
+                    confidence: 0.98,
+                })
+                .collect(),
+        };
+        let identity = opentrack_audio::pitch_source_identity(&path).unwrap();
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         let id = project.add_audio_clip(0, path.clone(), 0.0, 1.0).unwrap();
+        project.tracks[0].clips[0].pitch_time = Some(opentrack_core::pitch_time::PitchTimeEdit {
+            detector_version: opentrack_core::pitch_time::DETECTOR_VERSION,
+            source_bytes: identity.0,
+            source_modified_ns: identity.1,
+            notes: Vec::new(),
+            analysis: analysis.clone(),
+            rendered_source: None,
+            enabled: true,
+        });
         let target = (project.tracks[0].id, id);
         let saved = project.clone();
         let sources = HashMap::from([(path.clone(), source)]);
@@ -1610,19 +1637,7 @@ pub(super) mod tests {
             source_path: path.clone(),
             source_offset_seconds: 0.0,
             duration_seconds: 1.0,
-            analysis: opentrack_audio::PitchAnalysis {
-                sample_rate_hz: 8_000,
-                source_start_seconds: 0.0,
-                source_duration_seconds: 1.0,
-                points: [0.2, 0.4]
-                    .into_iter()
-                    .map(|time| opentrack_audio::PitchPoint {
-                        source_time_seconds: time,
-                        frequency_hz: Some(440.0),
-                        confidence: 0.98,
-                    })
-                    .collect(),
-            },
+            analysis,
         });
         let ctx = egui::Context::default();
         let mut tool = EditTool::Select;

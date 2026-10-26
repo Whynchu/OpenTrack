@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn scissors_keeps_native_crosshair_visible_at_the_raw_pointer() {
         let ctx = egui::Context::default();
-        let out = ctx.run_ui(
+        let mut out = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(100.0))),
                 ..Default::default()
@@ -280,6 +280,7 @@ mod tests {
                 )
             },
         );
+        out.textures_delta.clear();
         assert_eq!(out.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
     }
 }

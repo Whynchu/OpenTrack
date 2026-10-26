@@ -9,6 +9,29 @@ use std::collections::BTreeSet;
 const MIN_NOTE_LENGTH_SECONDS: f64 = 0.01;
 const FINE_PITCH_SENSITIVITY: f32 = 0.25;
 const ATTACHED_NOTE_TOLERANCE_SECONDS: f64 = 1e-6;
+const NOTE_COLORS: [Color32; 4] = [
+    Color32::from_rgb(216, 125, 120),
+    Color32::from_rgb(179, 146, 225),
+    Color32::from_rgb(120, 189, 155),
+    Color32::from_rgb(104, 170, 223),
+];
+/// Only used when no track color is supplied, such as in isolated editor tests.
+const DEFAULT_SELECTED_NOTE_COLOR: Color32 = Color32::from_rgb(157, 202, 246);
+
+/// The palette index follows the note's current rounded semitone center, not
+/// the source pitch it was detected at. Invalid centers fall back to the first
+/// row instead of wrapping unpredictably.
+fn note_color_index(note: &PitchNote) -> usize {
+    let center = note.detected_midi + note.shift;
+    if !center.is_finite() {
+        return 0;
+    }
+    (center.round().clamp(0.0, 127.0) as usize) % NOTE_COLORS.len()
+}
+
+fn note_color(note: &PitchNote) -> Color32 {
+    NOTE_COLORS[note_color_index(note)]
+}
 
 fn center_pitch_cents(note: &PitchNote) -> f32 {
     let pitch = note.detected_midi + note.shift;
@@ -358,6 +381,7 @@ impl NoteEditor {
         tempo: f64,
         tool: EditTool,
         enabled: bool,
+        track_color: Option<Color32>,
     ) {
         let Some(edit) = &mut self.draft else {
             return;
@@ -443,16 +467,10 @@ impl NoteEditor {
                             && p.x < rect.right() - 6.0
                     })));
             let selected = self.selected.contains(&note.id);
-            let colors = [
-                Color32::from_rgb(216, 125, 120),
-                Color32::from_rgb(179, 146, 225),
-                Color32::from_rgb(120, 189, 155),
-                Color32::from_rgb(104, 170, 223),
-            ];
             let color = if selected {
-                Color32::from_rgb(240, 174, 91)
+                track_color.unwrap_or(DEFAULT_SELECTED_NOTE_COLOR)
             } else {
-                colors[(note.detected_midi.round() as usize) % colors.len()]
+                note_color(note)
             };
             painter.rect_filled(
                 rect,
@@ -784,7 +802,7 @@ mod tests {
         let wave = Rect::from_min_max(Pos2::new(200.0, 20.0), Pos2::new(1000.0, 300.0));
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>, editor: &mut NoteEditor| {
-            let _ = ctx.run_ui(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
                     events,
@@ -809,9 +827,12 @@ mod tests {
                         120.0,
                         EditTool::Select,
                         true,
+                        None,
                     );
                 },
-            );
+            )
+            .textures_delta
+            .clear();
         };
         let button = |pos, pressed, modifiers| {
             vec![
@@ -885,7 +906,7 @@ mod tests {
         let mut time = 0.0;
         let mut frame = |events: Vec<egui::Event>, editor: &mut NoteEditor| {
             time += 0.05;
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     time: Some(time),
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
@@ -904,9 +925,12 @@ mod tests {
                         120.0,
                         EditTool::Select,
                         true,
+                        None,
                     )
                 },
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         let button = |pos, pressed, modifiers| {
             vec![
@@ -984,7 +1008,7 @@ mod tests {
         editor.sync(&clip);
         let mut frame = |events: Vec<egui::Event>, editor: &mut NoteEditor, clip: &AudioClip| {
             time += 0.05;
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     time: Some(time),
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
@@ -1003,9 +1027,12 @@ mod tests {
                         120.0,
                         EditTool::Select,
                         true,
+                        None,
                     )
                 },
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         let click = |pos, pressed| {
             vec![
@@ -1244,7 +1271,7 @@ mod tests {
         let wave = Rect::from_min_max(Pos2::new(200.0, 20.0), Pos2::new(1000.0, 300.0));
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>, editor: &mut NoteEditor| {
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
                     events,
@@ -1262,9 +1289,12 @@ mod tests {
                         120.0,
                         EditTool::Select,
                         true,
+                        None,
                     )
                 },
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         let button = |pos, pressed| {
             vec![
@@ -1322,7 +1352,7 @@ mod tests {
         let wave = Rect::from_min_max(Pos2::new(200.0, 20.0), Pos2::new(1000.0, 300.0));
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>, editor: &mut NoteEditor| {
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
                     events,
@@ -1340,9 +1370,12 @@ mod tests {
                         120.0,
                         EditTool::Select,
                         true,
+                        None,
                     )
                 },
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         let button = |pos, pressed, modifiers| {
             vec![
@@ -1462,9 +1495,11 @@ mod tests {
         assert_eq!(bounded_time(0.3, 0.4, 0.4, 0.2), 0.4);
         let mut value = 0.0_f64;
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             note_value(ui, "Time", &mut value, 1.7763568394002505e-15..=0.0, 0.001)
-        });
+        })
+        .textures_delta
+        .clear();
         assert_eq!(value, 0.0);
     }
 
@@ -1521,6 +1556,281 @@ mod tests {
         });
         clip
     }
+    fn color_note(detected_midi: f32, shift: f32) -> PitchNote {
+        PitchNote {
+            id: 1,
+            source_start: 0.0,
+            source_end: 1.0,
+            start: 0.0,
+            end: 1.0,
+            detected_midi,
+            shift,
+            straighten: 0.0,
+        }
+    }
+
+    #[test]
+    fn note_palette_follows_the_current_rounded_center_for_semitone_and_fine_edits() {
+        let mut note = color_note(69.0, 0.0);
+        assert_eq!(note_color_index(&note), 1);
+        assert_eq!(note_color(&note), NOTE_COLORS[1]);
+
+        note.shift = 2.0;
+        assert_eq!(note_color_index(&note), 3);
+        assert_ne!(note_color(&note), NOTE_COLORS[1]);
+
+        note.shift = -2.0;
+        assert_eq!(note_color_index(&note), 3);
+
+        note.shift = 0.49;
+        assert_eq!(note_color_index(&note), 1, "69.49 rounds down to row 69");
+        note.shift = 0.51;
+        assert_eq!(note_color_index(&note), 2, "69.51 rounds up to row 70");
+
+        let mut invalid = color_note(f32::NAN, 0.0);
+        assert_eq!(note_color_index(&invalid), 0);
+        invalid = color_note(-20.0, -20.0);
+        assert_eq!(note_color_index(&invalid), 0);
+        invalid = color_note(200.0, 0.0);
+        assert_eq!(note_color_index(&invalid), 127 % NOTE_COLORS.len());
+    }
+
+    #[test]
+    fn time_only_edge_stretches_leave_note_colors_unchanged() {
+        let mut notes = vec![
+            color_note(60.0, 0.0),
+            color_note(62.0, 0.0),
+            color_note(64.0, 0.0),
+        ];
+        for (index, note) in notes.iter_mut().enumerate() {
+            note.id = index as u64 + 10;
+            note.source_start = index as f64 * 0.3;
+            note.source_end = (index + 1) as f64 * 0.3;
+            note.start = note.source_start;
+            note.end = note.source_end;
+        }
+        notes[2].source_end = 1.0;
+        notes[2].end = 1.0;
+        let colors: Vec<_> = notes.iter().map(note_color_index).collect();
+        let timing = (notes[1].start, notes[1].end);
+
+        resize_note_edge(&mut notes, 1, 1, -0.2, 1.0);
+        resize_note_edge(&mut notes, 1, 2, 0.3, 1.0);
+
+        assert_ne!((notes[1].start, notes[1].end), timing);
+        assert_eq!(
+            notes.iter().map(note_color_index).collect::<Vec<_>>(),
+            colors,
+            "resizing source time uses must not recolor notes"
+        );
+    }
+
+    #[test]
+    fn reset_and_undo_restore_the_original_note_color() {
+        let mut notes = vec![color_note(69.0, 2.0)];
+        assert_eq!(note_color_index(&notes[0]), 3);
+        assert!(reset_selected_notes(&mut notes, &BTreeSet::from([1]), 1.0));
+        assert_eq!(note_color_index(&notes[0]), 1);
+
+        let original = clip();
+        let original_color = note_color_index(&original.pitch_time.as_ref().unwrap().notes[0]);
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_audio_clip(0, original.source_path.clone(), 0.0, 1.0);
+        project.tracks[0].clips[0].pitch_time = original.pitch_time.clone();
+        let mut history = super::super::super::ProjectHistory::default();
+        history.begin(&project);
+        project.tracks[0].clips[0]
+            .pitch_time
+            .as_mut()
+            .unwrap()
+            .notes[0]
+            .shift = 2.0;
+        assert_eq!(
+            note_color_index(
+                &project.tracks[0].clips[0]
+                    .pitch_time
+                    .as_ref()
+                    .unwrap()
+                    .notes[0]
+            ),
+            3
+        );
+        assert!(history.finish_frame(&project, true));
+        let undone = history.undo(&project).unwrap();
+        assert_eq!(
+            note_color_index(&undone.tracks[0].clips[0].pitch_time.as_ref().unwrap().notes[0]),
+            original_color,
+            "Undo restores the analyzed center and therefore its palette color"
+        );
+    }
+
+    #[test]
+    fn multi_selected_drag_keeps_each_notes_own_center_color() {
+        let mut clip = clip();
+        let mut second = clip.pitch_time.as_ref().unwrap().notes[0].clone();
+        second.id = 2;
+        second.source_start = 0.65;
+        second.source_end = 0.9;
+        second.start = 0.65;
+        second.end = 0.9;
+        second.detected_midi = 72.0;
+        clip.pitch_time.as_mut().unwrap().notes.push(second);
+        let mut editor = NoteEditor::default();
+        editor.sync(&clip);
+        let view = PitchViewport {
+            center: 69.0,
+            span: 24.0,
+        };
+        let wave = Rect::from_min_max(Pos2::new(200.0, 20.0), Pos2::new(1000.0, 300.0));
+        let ctx = egui::Context::default();
+        let frame = |events: Vec<egui::Event>, editor: &mut NoteEditor| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.draw(
+                        ui,
+                        wave,
+                        &view,
+                        0.0,
+                        1.0,
+                        &clip,
+                        None,
+                        120.0,
+                        EditTool::Select,
+                        true,
+                        None,
+                    )
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let button = |pos, pressed, modifiers| {
+            vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers,
+                },
+            ]
+        };
+        frame(vec![], &mut editor);
+        let first = Pos2::new(500.0, view.y(69.0, wave));
+        let second = Pos2::new(820.0, view.y(72.0, wave));
+        frame(button(first, true, egui::Modifiers::NONE), &mut editor);
+        frame(button(first, false, egui::Modifiers::NONE), &mut editor);
+        frame(button(second, true, egui::Modifiers::CTRL), &mut editor);
+        frame(button(second, false, egui::Modifiers::CTRL), &mut editor);
+        assert_eq!(editor.selected, BTreeSet::from([1, 2]));
+
+        frame(button(first, true, egui::Modifiers::NONE), &mut editor);
+        let moved = first - Vec2::new(0.0, 2.0 * wave.height() / view.span);
+        frame(vec![egui::Event::PointerMoved(moved)], &mut editor);
+        frame(button(moved, false, egui::Modifiers::NONE), &mut editor);
+
+        let notes = &editor.draft.as_ref().unwrap().notes;
+        assert!((notes[0].detected_midi + notes[0].shift - 71.0).abs() < 1e-4);
+        assert!((notes[1].detected_midi + notes[1].shift - 74.0).abs() < 1e-4);
+        assert_eq!(note_color_index(&notes[0]), 3);
+        assert_eq!(note_color_index(&notes[1]), 2);
+        assert_ne!(
+            note_color_index(&notes[0]),
+            note_color_index(&notes[1]),
+            "multi-selected notes use their own centers, not one shared color"
+        );
+    }
+
+    #[test]
+    fn selected_notes_use_the_supplied_track_color_and_a_default_without_one() {
+        let clip = clip();
+        let mut editor = NoteEditor::default();
+        editor.sync(&clip);
+        editor.selected = BTreeSet::from([1]);
+        let view = PitchViewport {
+            center: 69.0,
+            span: 24.0,
+        };
+        let wave = Rect::from_min_max(Pos2::new(200.0, 20.0), Pos2::new(1000.0, 300.0));
+        let ctx = egui::Context::default();
+        let frame = |track_color: Option<Color32>, editor: &mut NoteEditor| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.draw(
+                        ui,
+                        wave,
+                        &view,
+                        0.0,
+                        1.0,
+                        &clip,
+                        None,
+                        120.0,
+                        EditTool::Select,
+                        true,
+                        track_color,
+                    )
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let track_color = Color32::from_rgb(12, 34, 56);
+        let output = frame(Some(track_color), &mut editor);
+        let expected_fill = track_color.gamma_multiply(0.20);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == expected_fill
+            )),
+            "the selected note fill uses the track color emphasis"
+        );
+        assert!(
+            output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == track_color
+            )),
+            "the selected note stroke uses the track color"
+        );
+        assert!(
+            output.shapes.iter().all(|shape| !matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect)
+                    if rect.stroke.color == Color32::from_rgb(240, 174, 91)
+            )),
+            "selected notes must not fall back to the old orange highlight"
+        );
+
+        let output = frame(None, &mut editor);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == DEFAULT_SELECTED_NOTE_COLOR
+            )),
+            "a draw call without a track color keeps the default selection highlight"
+        );
+
+        editor.selected.clear();
+        let expected = note_color(&clip.pitch_time.as_ref().unwrap().notes[0]);
+        let output = frame(None, &mut editor);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == expected
+            )),
+            "unselected notes use the palette color derived from their current center"
+        );
+    }
+
     #[test]
     fn actual_note_drag_resizes_and_splits_editable_regions_without_touching_original_audio() {
         let clip = clip();
@@ -1533,14 +1843,20 @@ mod tests {
             span: 24.0,
         };
         let frame = |events: Vec<egui::Event>, tool: EditTool, state: &mut NoteEditor| {
-            let _ = ctx.run_ui(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 340.0))),
                     events,
                     ..Default::default()
                 },
-                |ui| state.draw(ui, wave, &view, 0.0, 1.0, &clip, None, 120.0, tool, true),
-            );
+                |ui| {
+                    state.draw(
+                        ui, wave, &view, 0.0, 1.0, &clip, None, 120.0, tool, true, None,
+                    )
+                },
+            )
+            .textures_delta
+            .clear();
         };
         let button = |pos, pressed| {
             vec![
@@ -1606,6 +1922,11 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].end, notes[1].start);
         assert_eq!(notes[0].source_end, notes[1].source_start);
+        assert_eq!(
+            note_color_index(&notes[0]),
+            note_color_index(&notes[1]),
+            "split regions retain the same applicable center color"
+        );
         assert!(state.draft.as_ref().unwrap().validate(1.0));
         assert_eq!(clip.pitch_time.as_ref().unwrap().notes.len(), 1);
     }

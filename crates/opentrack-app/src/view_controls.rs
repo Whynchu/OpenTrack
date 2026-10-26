@@ -164,7 +164,7 @@ mod tests {
             ),
         ] {
             let mut actual = None;
-            let _ = ctx.run_ui(
+            let mut out = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(rect),
                     events: vec![
@@ -182,6 +182,7 @@ mod tests {
                     actual = wheel(ui, rect);
                 },
             );
+            out.textures_delta.clear();
             assert_eq!(actual, Some(expected));
         }
     }

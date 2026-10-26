@@ -743,14 +743,16 @@ mod tests {
         let original = app.data.project.clone();
         let mut frame = |mut events: Vec<egui::Event>, modifiers| {
             events.insert(0, egui::Event::ModifiersChanged(modifiers));
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 100.0))),
                     events,
                     ..Default::default()
                 },
                 |ui| show(&mut app, ui),
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         let output = frame(vec![], egui::Modifiers::NONE);
         let pos = output

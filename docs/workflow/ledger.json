@@ -347,6 +347,34 @@
       "location": "builds/x64/T042-audio-comparisons/baseline; builds/x64/T042-audio-comparisons/candidate; builds/x64/T042-audio-comparisons/measure.py; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
       "identity": "input Vocal 01.wav sha256:6457409352A59F3BA289FEFBBE3DDA95117C2C49F15BF38542FD291EF6BB07F0; 48kHz mono; reference float-WAV sha256:36DC4F70B16C2EA115EF11764ECC45E1C3E66C6579EA781EC1128E7551DD4435; single-note candidate sha256:2D18A4B25F185E7AF7C7EAA98E25674120F35876A82C8B20D05F0CE12448ECC3; all-notes candidate sha256:AF4F7B525D0C3800BD063EEE499F123250EF11265A78715D7CF8969DB10C3778; touching candidate sha256:5D311174C1D8EACCA08E9141A0548F303CE12466B319591F6C5F67CB0640C28A",
       "note": "Historical first-renderer measurement only. It used the previous wide waveform crossfade and is not a measurement of t042-source-r2. Do not use it as current audio-quality acceptance evidence."
+    },
+    "t042-note-color-intent": {
+      "kind": "user",
+      "location": "conversation 2026-10-25",
+      "note": "User requested unselected pitch notes use the nearest current semitone row color and selected notes use the track's chosen color rather than orange."
+    },
+    "t042-track-color-intent": {
+      "kind": "user",
+      "location": "conversation 2026-10-25",
+      "note": "User requested track meters, EQ parameters/graph and channel spectrum inherit track color; Stereo In/Out default to blue, are color-selectable and have no play control."
+    },
+    "t042-note-color-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/pitch_editing.rs; crates/opentrack-app/src/sample_editor.rs",
+      "identity": "git:81227f5 plus note-color work; pitch_editing.rs sha256:6E39B6387CFD1F08014B3F23AC2977C67C786862CA7E8F00EF901FBDA65A8C20; sample_editor.rs sha256:7B0FC26C335E639FBB4740141C8F81DE0E9CAE0F3F439448B9308D153C56B07B",
+      "note": "Semitone-row palette follows round(detected_midi + shift) clamped to MIDI 0..127; selection uses the supplied track color with a blue test-only fallback. Focused 16-test editing suite and 9-test Sample Editor suite pass; no live visual review."
+    },
+    "t042-drag-audit": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/pitch_editing.rs; sample_editor.rs; app.rs; crates/opentrack-audio/src/live_pitch.rs; streaming.rs",
+      "identity": "git:81227f5 plus note-color work; read-only source audit",
+      "note": "Draft publication and plan rebuild already occur during a note drag and the prepared source is fresh. No audition starts when the transport is stopped, and a running transport does not seek to the dragged note. Dedicated preview voice remains unimplemented."
+    },
+    "t042-synthesis-audit": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-core/src/pitch_time.rs; live_pitch.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "read-only audit of t042-source-r4 at git:81227f5",
+      "note": "Found a provable hard wet-to-dry switch at the inner endpoints of edge_only unedited-neighbor regions, plus a full-level two-pitch crossfade across the long pitch ramp and a midpoint boundary rule for one-edited/one-unedited pairs. No render or listening measurement."
     }
   },
   "requirements": [
@@ -1135,9 +1163,10 @@
       "id": "live-note-audition",
       "weight": 3,
       "outcome": "Pitch/time movement immediately updates original-source playback without Apply or creating output audio files; source samples remain intact.",
-      "implementation": "complete",
+      "implementation": "partial",
       "source_evidence": [
-        "t039-source"
+        "t039-source",
+        "t042-drag-audit"
       ],
       "reference": {
         "status": "user_specified",
@@ -1150,7 +1179,8 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Draft edits publish during a held gesture and the playback plan is rebuilt from the current edit, but no audition starts when the transport is stopped and a running transport is not seeked to the dragged note. Dedicated drag-audition voice remains unimplemented; transport-start fallback requires user approval."
     },
     {
       "id": "note-gesture-history",
@@ -1436,7 +1466,8 @@
         "t042-source",
         "t042-source-r2",
         "t042-source-r3",
-        "t042-source-r4"
+        "t042-source-r4",
+        "t042-synthesis-audit"
       ],
       "reference": {
         "status": "user_specified",
@@ -1449,7 +1480,8 @@
         "evidence": []
       },
       "parity": "pending",
-      "comparison_evidence": []
+      "comparison_evidence": [],
+      "implementation_note": "Current largest evidence-backed defect is a hard wet-to-dry switch at the inner endpoint of edge_only unedited-neighbor regions. A sample-continuity test and short endpoint crossfade are the next correction. The long two-pitch transition crossfade and midpoint boundary rule are secondary candidates; grain-phase and confidence-mix hypotheses remain unproven."
     },
     {
       "id": "pitch-note-transition-blend",
@@ -1549,6 +1581,47 @@
         "status": "user_specified",
         "evidence": [
           "t041-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "pitch-note-semitone-colors",
+      "weight": 2,
+      "outcome": "Unselected pitch notes use the color of their current rounded semitone row and selected notes use the track color, including after pitch, fine-tune, split and time-only edits.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t042-note-color-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t042-note-color-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Palette index is round(detected_midi + shift) clamped to MIDI 0..127. Selected fill and outline use project_controls::track_color; the blue fallback is test-only. Focused editing and Sample Editor suites pass; live visual review pending."
+    },
+    {
+      "id": "track-color-cohesion",
+      "weight": 2,
+      "outcome": "Project/Mixer meters, Channel Settings EQ parameters and response graph, and the channel spectrum inherit the channel's track color; Stereo In/Out default to blue and are color-selectable without audio-plan changes.",
+      "implementation": "absent",
+      "source_evidence": [],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t042-track-color-intent"
         ]
       },
       "runtime": {
@@ -1808,7 +1881,8 @@
         "pitch-note-marquee-reset",
         "pitch-note-edge-push",
         "pitch-note-double-click-reset",
-        "pitch-edit-opr-roundtrip"
+        "pitch-edit-opr-roundtrip",
+        "pitch-note-semitone-colors"
       ],
       "gates": [
         "pitch-time-analysis-review",
@@ -1916,7 +1990,8 @@
         "project-event-contextual-scissors",
         "snap-aware-scissor-cursor",
         "shared-view-wheel-map",
-        "mixer-fader-and-track-selection"
+        "mixer-fader-and-track-selection",
+        "track-color-cohesion"
       ],
       "gates": [
         "project-mixer-interaction-review",

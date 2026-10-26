@@ -247,14 +247,15 @@ mod tests {
         let (samples, mut edit) = fixture(true);
         let original = samples.clone();
         assert_eq!(
-            render_samples(&samples, 16000, 2, &edit, &AtomicBool::new(false)).unwrap(),
+            render_samples(&samples, 16000, 2, &edit, 120.0, &AtomicBool::new(false)).unwrap(),
             samples
         );
         for shift in [-5.0, 7.0] {
             edit.notes[0].shift = shift;
             edit.notes[0].start = 0.25;
             edit.notes[0].end = 0.9;
-            let out = render_samples(&samples, 16000, 2, &edit, &AtomicBool::new(false)).unwrap();
+            let out =
+                render_samples(&samples, 16000, 2, &edit, 120.0, &AtomicBool::new(false)).unwrap();
             assert_eq!(out.len(), samples.len());
             assert_eq!(samples, original);
             assert!(
@@ -288,6 +289,6 @@ mod tests {
             );
             assert!(mono[..2000].iter().all(|v| v.abs() < 1e-6));
         }
-        assert!(render_samples(&samples, 16000, 2, &edit, &AtomicBool::new(true)).is_err());
+        assert!(render_samples(&samples, 16000, 2, &edit, 120.0, &AtomicBool::new(true)).is_err());
     }
 }

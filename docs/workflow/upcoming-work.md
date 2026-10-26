@@ -53,21 +53,28 @@ Record whether the artifact is present after release/replay, at onset, sustain,
 tail, or only during the edit. No assistant-generated WAV review is required;
 this is the user’s own listening gate.
 
-### A2. Audit live publication during drag
+### A2. Add live audition during note drags
 
-Files: `pitch_editing.rs`, `sample_editor.rs`, `app.rs`, `live_pitch.rs`.
+Audit result: the draft **is** published during the gesture and the app **does**
+rebuild the playback plan on changed frames; the prepared pitch source is fresh.
+The missing behavior is audition. When the transport is stopped, the callback
+deliberately renders no event audio and there is no note preview voice. With the
+transport running but the playhead outside the event, the edit is also inaudible.
 
-Questions:
+Preferred fix: a dedicated note-audition voice prepared on the control thread
+from the dragged note range, looped for the gesture and stopped on release. It
+must not move the project playhead, must not rebuild the whole project plan per
+frame, and must not allocate in the callback.
 
-- Does a held note gesture publish the draft before pointer release?
-- Does the app rebuild the playback plan while the transport is playing?
-- Is the rebuilt `PitchSynthesis` actually used by the current playback plan?
-- Does a drag produce a plan swap on every frame, and does that swap click?
-- Does the editor’s draft and the engine’s plan describe the same edit?
+Fallback: start/seek the transport to the dragged note and restore it on release.
+This is smaller but changes shared transport/playhead state, so it needs explicit
+user approval before adoption.
 
-Acceptance: with the transport playing, body/edge dragging is audible
-continuously, follows the same contour as the trace, and releasing commits the
-final state without a jump. If the transport is stopped, no new audio starts.
+Acceptance: with the transport stopped, body/edge dragging auditions the note
+continuously with the same pitch/timing contour as the trace; releasing stops
+audition and commits the final state without a jump. With the transport playing,
+the drag remains continuously audible and does not create clicks from redundant
+plan swaps.
 
 ### A3. Pitch-mark and grain-phase continuity
 
@@ -171,6 +178,32 @@ Tasks:
 6. Build and include in the next visual review. This is visual-only and does not
    replace the T042 listening gate.
 
+## Workstream B2 — Track-color cohesion
+
+User request: track meters, EQ parameters, the EQ graph, and the channel
+spectrum should inherit the track color. Stereo In and Stereo Out should default
+to blue and also be color-selectable. Normal track colors remain user-selected.
+
+Scope:
+
+- **Meters:** Project track meters, Mixer meters, and Channel Settings meters use
+  the channel's track color. Preserve red above unity/clipping and any record
+  semantic color. Do not recolor the meter plate/rail backgrounds.
+- **EQ:** Parameter-bar fill/thumb, response curve, band nodes, hover accents,
+  and the channel spectrum's own trace use the track color. The comparison trace
+  stays orange. Disabled/bypassed elements stay muted.
+- **Stereo In/Out:** default blue when no color is set; expose the same color
+  picker used by normal tracks in the Project/Mixer bus strip. Persist the choice
+  in the project. Do not route color selection through audio-plan rebuilds.
+- **Normal tracks:** keep the existing palette and selected-track behavior.
+- **Tests/visual review:** track color reaches every meter/EQ/spectrum call site;
+  red clipping remains; bus defaults are blue; changing bus color persists and
+  does not dirty audio state.
+
+Collision note: `mixer.rs` and `app.rs` are shared with Batch 3's fader/selection
+work. Do track-color cohesion first, or serialize it with Batch 3. `channel_settings.rs`
+and `analyzer_view.rs` are otherwise independent of the pitch/note-color lane.
+
 ## Workstream C — Batch 3
 
 Start only after Batch 2 is accepted. These requirements already exist in the
@@ -220,6 +253,11 @@ T042 or Batch 3.
 - Probe README: all commands/results.
 - No Steinberg-authored files; own Rust host using the `vst3` crate bindings.
 - No `vst-audio`; Apache-2.0/no CLA direction.
+- VST foundation committed as `81227f5`: `opentrack-plugins` catalog/class-ID
+  types and `opentrack-plugin-scan` folder/PE/dedupe/report foundation. 26 tests
+  pass. No VST3 module is loaded and no audio hosting is implemented yet.
+- Next VST code: `opentrack-vst3` host context, class enumeration, scanner
+  timeout/crash isolation/job object, then cache persistence and UI.
 
 ### Probe findings to carry forward
 

@@ -734,7 +734,7 @@ impl Project {
 
         self.selected_track = selected_track_id
             .and_then(|id| self.tracks.iter().position(|track| track.id == id))
-            .or_else(|| (!self.tracks.is_empty()).then_some(track_index.min(self.tracks.len() - 1)))
+            .or_else(|| (!self.tracks.is_empty()).then(|| track_index.min(self.tracks.len() - 1)))
             .and_then(|index| u32::try_from(index).ok());
 
         let selected_part_is_valid = self

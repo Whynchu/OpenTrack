@@ -8,13 +8,13 @@ These are documented results for this scope, not a whole-DAW percentage. Zero ve
 
 | Metric | Result |
 | --- | --- |
-| Implementation coverage | 85.7% |
+| Implementation coverage | 83.5% |
 | Unassessed implementation weight | 0.0% |
-| Runtime validation | 12.7% |
+| Runtime validation | 12.3% |
 | Workflow readiness for review | 0.0% |
 | Confirmed reference parity | 0.0% |
-| Unknown/unmeasured reference coverage | 92.1% |
-| Measured reference coverage | 7.9% |
+| Unknown/unmeasured reference coverage | 92.3% |
+| Measured reference coverage | 7.7% |
 
 ## Requirements
 
@@ -53,7 +53,7 @@ These are documented results for this scope, not a whole-DAW percentage. Zero ve
 | shared-zoom-control-style | 1 | complete | user_specified | pending | pending |
 | pitch-detector-qualification | 3 | partial | user_specified | pending | pending |
 | note-tool-isolation | 3 | complete | user_specified | pending | pending |
-| live-note-audition | 3 | complete | user_specified | pending | pending |
+| live-note-audition | 3 | partial | user_specified | pending | pending |
 | note-gesture-history | 2 | complete | user_specified | pass | pending |
 | context-note-scissors | 2 | complete | user_specified | pending | pending |
 | pitch-inspector-isolation | 2 | complete | user_specified | pending | pending |
@@ -72,6 +72,8 @@ These are documented results for this scope, not a whole-DAW percentage. Zero ve
 | snap-aware-scissor-cursor | 2 | partial | user_specified | pending | pending |
 | shared-view-wheel-map | 2 | partial | user_specified | pending | pending |
 | mixer-fader-and-track-selection | 2 | partial | user_specified | pending | pending |
+| pitch-note-semitone-colors | 2 | complete | user_specified | pending | pending |
+| track-color-cohesion | 2 | absent | user_specified | pending | pending |
 
 ## Essential gates
 
