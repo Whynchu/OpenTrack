@@ -1,6 +1,15 @@
 //! Shared, allocation-free pitch sampling for live playback and offline output.
+#[cfg(test)]
+#[path = "pitch_quality_tests.rs"]
+mod quality_tests;
 use opentrack_core::pitch_time::{PitchNote, PitchTimeEdit};
-use std::sync::atomic::{AtomicBool, Ordering};
+#[path = "pitch_pulses.rs"]
+mod pulses;
+use pulses::make_event_grains;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 const MIN_VOICED_CONFIDENCE: f32 = 0.15;
 const MAX_PITCH_GAP_SECONDS: f64 = 0.025;
@@ -13,16 +22,16 @@ const GRAIN_SEARCH_LIMIT: usize = 64;
 struct Grain {
     destination: f64,
     source: f64,
-    radius: f64,
+    left_radius: f64,
+    right_radius: f64,
     voicing: f32,
 }
 
 #[derive(Debug)]
 struct NotePlan {
     note: PitchNote,
-    grains: Vec<Grain>,
+    grains: Arc<[Grain]>,
     processed: bool,
-    time_changed: bool,
     edge_only: bool,
     incoming_pitch_seconds: f64,
     outgoing_pitch_seconds: f64,
@@ -77,8 +86,6 @@ impl PitchSynthesis {
             return Err("Pitch/time analysis range exceeds its audio source".into());
         }
         let mut transitions = Vec::new();
-        let mut extend_left = vec![0.0_f64; edit.notes.len()];
-        let mut extend_right = vec![0.0_f64; edit.notes.len()];
         let mut incoming_pitch_seconds = vec![0.0_f64; edit.notes.len()];
         let mut outgoing_pitch_seconds = vec![0.0_f64; edit.notes.len()];
         let mut edge_render = vec![false; edit.notes.len()];
@@ -125,10 +132,15 @@ impl PitchSynthesis {
             });
             // Each note must supply audio across the entire transition window:
             // the left note reaches through the right edge, and vice versa.
-            extend_right[left_index] = right_width;
-            extend_left[left_index + 1] = left_width;
         }
 
+        // One source pulse map and one output clock per event. Note cuts must
+        // not restart phase or select a different family of waveform peaks.
+        let grains: Arc<[Grain]> = if edit.notes.iter().any(note_is_processed) {
+            make_event_grains(samples, rate, channels, edit, tempo_bpm, cancel)?.into()
+        } else {
+            Arc::from([])
+        };
         let mut plans = Vec::with_capacity(edit.notes.len());
         for (index, note) in edit.notes.iter().enumerate() {
             if cancel.load(Ordering::Acquire) {
@@ -136,27 +148,10 @@ impl PitchSynthesis {
             }
             let own_edit = note_is_processed(note);
             let processed = own_edit || edge_render[index];
-            let grains = if processed {
-                make_grains(
-                    samples,
-                    rate,
-                    channels,
-                    edit,
-                    index,
-                    note,
-                    extend_left[index],
-                    extend_right[index],
-                    tempo_bpm,
-                    cancel,
-                )?
-            } else {
-                Vec::new()
-            };
             plans.push(NotePlan {
                 note: note.clone(),
-                grains,
+                grains: Arc::clone(&grains),
                 processed,
-                time_changed: note_time_changed(note),
                 edge_only: !own_edit,
                 incoming_pitch_seconds: incoming_pitch_seconds[index],
                 outgoing_pitch_seconds: outgoing_pitch_seconds[index],
@@ -263,8 +258,7 @@ impl PitchSynthesis {
         };
         let offset = self.edit.analysis.source_start_seconds;
         let local_time = frame / self.sample_rate - offset;
-        let source_local = note_source_time(&plan.note, local_time);
-        let base = self.at(samples, (offset + source_local) * self.sample_rate);
+        let base = self.base_at(samples, local_time);
         if !plan.processed || plan.grains.is_empty() {
             return base;
         }
@@ -279,10 +273,16 @@ impl PitchSynthesis {
         let mut total_weight = 0.0_f32;
         for grain in &plan.grains[first..last] {
             let delta = frame - grain.destination;
-            if delta.abs() >= grain.radius {
+            let radius = if delta < 0.0 {
+                grain.left_radius
+            } else {
+                grain.right_radius
+            };
+            if delta.abs() >= radius {
                 continue;
             }
-            let window = (0.5 + 0.5 * (std::f64::consts::PI * delta / grain.radius).cos()) as f32;
+            let phase = std::f64::consts::PI * delta / radius;
+            let window = (0.42 + 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos()).max(0.0) as f32;
             total_weight += window;
             let weight = window * grain.voicing;
             if weight <= 1e-7 {
@@ -296,13 +296,7 @@ impl PitchSynthesis {
 
         let mut result = if voiced_weight > 1e-6 {
             let wet = (sum.0 / voiced_weight, sum.1 / voiced_weight);
-            let mut voice = (voiced_weight / total_weight.max(1e-6)).clamp(0.0, 1.0);
-            // A time-compressed dry signal has a higher pitch than the source.
-            // Mixing it equally with pitch-synchronous grains causes beating
-            // and a bubbly tone, so favor the voiced grains during time edits.
-            if plan.time_changed {
-                voice = voice.sqrt();
-            }
+            let voice = (voiced_weight / total_weight.max(1e-6)).clamp(0.0, 1.0);
             mix(base, wet, voice)
         } else {
             base
@@ -378,129 +372,8 @@ fn note_source_time(note: &PitchNote, destination_time: f64) -> f64 {
             * (note.source_end - note.source_start)
 }
 
-fn make_grains(
-    samples: &[f32],
-    rate: f64,
-    channels: usize,
-    edit: &PitchTimeEdit,
-    note_index: usize,
-    note: &PitchNote,
-    extend_left_seconds: f64,
-    extend_right_seconds: f64,
-    tempo_bpm: f64,
-    cancel: &AtomicBool,
-) -> Result<Vec<Grain>, String> {
-    let offset = edit.analysis.source_start_seconds;
-    let frame_count = samples.len() / channels;
-    let source_per_destination =
-        (note.source_end - note.source_start) / (note.end - note.start).max(1e-9);
-    let render_start = note.start - extend_left_seconds;
-    let render_end = note.end + extend_right_seconds;
-    let source_start = (offset + note_source_time(note, render_start)).max(0.0) * rate;
-    let source_end = (offset + note_source_time(note, render_end))
-        .min((frame_count.saturating_sub(1)) as f64 / rate)
-        * rate;
-    if source_end <= source_start {
-        return Ok(Vec::new());
-    }
-
-    let reference_channel = (0..channels)
-        .max_by(|a, b| {
-            let energy = |channel: usize| {
-                (source_start.max(0.0) as usize..source_end.max(0.0) as usize)
-                    .step_by(8)
-                    .map(|frame| samples[frame * channels + channel].abs())
-                    .sum::<f32>()
-            };
-            energy(*a).total_cmp(&energy(*b))
-        })
-        .unwrap_or(0);
-
-    let fallback = midi_hz(note.detected_midi);
-    let mut marks = Vec::<f64>::new();
-    let mut position = source_start;
-    let mut iterations = 0usize;
-    let max_iterations =
-        (((source_end - source_start) / rate * 1800.0).ceil() as usize).saturating_add(16);
-    while position < source_end + rate / 55.0 && iterations < max_iterations {
-        if cancel.load(Ordering::Acquire) {
-            return Err("Pitch render canceled.".into());
-        }
-        iterations += 1;
-        let (detected, _) = estimate_pitch(edit, position / rate, fallback);
-        let period = rate / f64::from(detected);
-        let radius = period * if marks.is_empty() { 0.5 } else { 0.2 };
-        let low = (position - radius).floor().max(0.0) as usize;
-        let high = (position + radius)
-            .ceil()
-            .max(low as f64 + 1.0)
-            .min(frame_count as f64) as usize;
-        let peak = (low..high)
-            .max_by(|a, b| {
-                samples[*a * channels + reference_channel]
-                    .total_cmp(&samples[*b * channels + reference_channel])
-            })
-            .unwrap_or(position as usize) as f64;
-        let mark = refine_positive_peak(samples, channels, reference_channel, peak, frame_count);
-        if marks.last().is_none_or(|last| mark > *last + 1.0) {
-            marks.push(mark);
-        }
-        position = peak + period;
-    }
-    if marks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut grains = Vec::new();
-    let mut destination = (offset + render_start) * rate;
-    let render_end_frame = (offset + render_end) * rate;
-    let max_grains = ((render_end_frame - destination).max(0.0) / (rate / 27.5)).ceil() as usize
-        + ((render_end_frame - destination).max(0.0) / (rate / 3200.0)).ceil() as usize;
-    let max_grains = max_grains.min(2_000_000).max(1);
-    while destination < render_end_frame && grains.len() < max_grains {
-        if grains.len() % 2048 == 0 && cancel.load(Ordering::Acquire) {
-            return Err("Pitch render canceled.".into());
-        }
-        let local_time = destination / rate - offset;
-        let source_local = note_source_time(note, local_time);
-        let source = (offset + source_local) * rate;
-        let (detected, voicing) = estimate_pitch(edit, source / rate, fallback);
-        let source_midi = 69.0 + 12.0 * (f64::from(detected) / 440.0).log2() as f32;
-        let target_midi = edit.pitch_midi_at(note_index, source_midi, local_time, tempo_bpm);
-        let target_hz = midi_hz(target_midi).clamp(27.5, 3200.0);
-        let mark_index = marks
-            .partition_point(|mark| *mark < source)
-            .min(marks.len() - 1);
-        let mark = if mark_index > 0
-            && (marks[mark_index - 1] - source).abs() < (marks[mark_index] - source).abs()
-        {
-            marks[mark_index - 1]
-        } else {
-            marks[mark_index]
-        };
-        grains.push(Grain {
-            destination,
-            source: mark,
-            // Keep neighboring grains overlapped as source time advances faster
-            // than destination time. Without this, a compressed note can leave
-            // audible holes between pitch-synchronous grains.
-            radius: (rate / f64::from(detected)).max(
-                (source_per_destination * rate / f64::from(target_hz) * 0.65)
-                    .min(rate / f64::from(detected) * 4.0),
-            ),
-            voicing,
-        });
-        destination += rate / f64::from(target_hz);
-    }
-    Ok(grains)
-}
-
 fn note_has_pitch_edit(note: &PitchNote) -> bool {
     note.shift.abs() > 1e-6 || note.straighten > 1e-6
-}
-
-fn note_time_changed(note: &PitchNote) -> bool {
-    (note.start - note.source_start).abs() > 1e-8 || (note.end - note.source_end).abs() > 1e-8
 }
 
 fn estimate_pitch(edit: &PitchTimeEdit, time: f64, fallback: f32) -> (f32, f32) {
@@ -589,10 +462,6 @@ fn refine_positive_peak(
     }
     let fraction = (0.5 * (left - right) / denominator).clamp(-0.5, 0.5);
     index as f64 + f64::from(fraction)
-}
-
-fn midi_hz(midi: f32) -> f32 {
-    440.0 * 2.0_f32.powf((midi - 69.0) / 12.0)
 }
 
 fn smoothstep(value: f32) -> f32 {

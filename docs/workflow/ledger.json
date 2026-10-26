@@ -382,6 +382,18 @@
       "identity": "x64 local-ASIO EXE sha256:AE2E6CCCA4DC6ACD70BF0842A00F23CE849E5C12BF73A26682751C758C677845; workspace app131/audio63/core17/plugin15+11",
       "note": "Edge-only transition endpoints now fade wet-to-dry over 5 ms, audio handoff is a 5 ms boundary crossfade rather than a whole-ramp two-voice blend, and one-edited/one-unchanged pairs resolve to the unchanged edge pitch. New sample-continuity, single-voice and boundary tests pass; listening remains pending."
     },
+    "t042-source-r5": {
+      "kind": "source",
+      "location": "crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-audio/src/pitch_pulses.rs; crates/opentrack-audio/src/pitch_quality_tests.rs; crates/opentrack-core/src/pitch_time.rs; tools/pitch-quality/src/lib.rs; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md",
+      "identity": "x64 local-ASIO EXE sha256:ECB1A99A63297037933EED125AD2FECE0CBA449BFCE6502FF9CFB2C14FE707AC; pitch_synthesis.rs sha256:D247A85BD12FD2A8B6A38EA363C401386A3B3506B372DCC2A218C30B4CEA57A9; pitch_pulses.rs sha256:7FE4E26C8E3DD44DF5365FC3B21B95F0058C604EECBBD1444C7A980D8AEE47D9; pitch_time.rs sha256:DA0EBC8A57A3BD098AF0B6DBE96227FD7E2CDDBD6A3E409E12F58D2225C74032",
+      "note": "Event-wide shared pulse map/clock with voiced-onset peak reacquisition and harmonic/time-warp adaptive windows. The renderer and core boundary contour compile in the x64 local-ASIO build; WASAPI is retained. Headless tests pass, but user listening is pending."
+    },
+    "t042-headless-quality": {
+      "kind": "runtime",
+      "location": "tools/pitch-quality; builds/x64/T042-quality/candidate/synthetic-metrics.json; builds/x64/T042-quality/candidate/vowel-metrics.json; builds/x64/T042-quality/candidate/vocal-metrics.json; docs/workflow/tasks/T042-vocal-quality-and-note-transitions.md#2026-10-26-headless-reconstruction-and-release-build",
+      "identity": "Production Rust synthesis plus production pitch detector; read-only Vocal 01 SHA256:6457409352A59F3BA289FEFBBE3DDA95117C2C49F15BF38542FD291EF6BB07F0; saved analysis: builds/x64/T042-audio-comparisons/Vocal01-PitchTimeEdit.json; x64 executable SHA256:ECB1A99A63297037933EED125AD2FECE0CBA449BFCE6502FF9CFB2C14FE707AC",
+      "note": "Synthetic suite 6 passed; explicit vocal matrix passed. Zero shift reconstructs at -146 dB. Recorded Vocal 01 pitch median is 0.0-0.2 cents and p90 2.3-4.6 cents across tested shifts. Synthetic vowel envelope shape error is 0.43-0.49 dB. Time compression/expansion, source-tail audibility, voiced-onset reacquisition, unvoiced preservation, octave glitches, stereo and note-cut invariance pass. Headless evidence only; no live playback or user listening was performed."
+    },
     "t042-note-audition-source": {
       "kind": "source",
       "location": "crates/opentrack-audio/src/audition.rs; crates/opentrack-audio/src/lib.rs; crates/opentrack-app/src/sample_editor.rs; pitch_editing.rs; app.rs",
@@ -1493,7 +1505,8 @@
         "t042-source-r3",
         "t042-source-r4",
         "t042-synthesis-audit",
-        "t042-crackle-fix-source"
+        "t042-crackle-fix-source",
+        "t042-source-r5"
       ],
       "reference": {
         "status": "user_specified",
@@ -1503,11 +1516,13 @@
       },
       "runtime": {
         "status": "pending",
-        "evidence": []
+        "evidence": [
+          "t042-headless-quality"
+        ]
       },
       "parity": "pending",
       "comparison_evidence": [],
-      "implementation_note": "The audited hard wet-to-dry switch at edge-only endpoints now crossfades over 5 ms. Audio handoff is a 5 ms boundary crossfade instead of a full-ramp two-voice blend, and one-unchanged-note pairs use the unchanged edge pitch. Sample-continuity and single-voice tests pass. Grain-phase and confidence-mix hypotheses remain unproven; user listening is pending."
+      "implementation_note": "Event-wide pulse synthesis avoids restarting phase at note cuts, reacquires waveform peaks at voiced onsets, and adapts overlap windows to harmonic content and time expansion/compression. Synthetic and read-only real-vocal checks confirm pitch tracking and spectral-envelope measures. Headless metrics do not prove transparent listening quality; user listening remains an essential pending gate."
     },
     {
       "id": "pitch-note-transition-blend",
@@ -1518,7 +1533,8 @@
         "t042-source-r2",
         "t042-source-r3",
         "t042-source-r4",
-        "t042-crackle-fix-source"
+        "t042-crackle-fix-source",
+        "t042-source-r5"
       ],
       "reference": {
         "status": "user_specified",
@@ -1528,11 +1544,13 @@
       },
       "runtime": {
         "status": "pending",
-        "evidence": []
+        "evidence": [
+          "t042-headless-quality"
+        ]
       },
       "parity": "pending",
       "comparison_evidence": [],
-      "implementation_note": "The audio handoff is now 5 ms around the boundary while pitch ramps still reach at most one sixteenth-note. One-unchanged-note pairs meet at the unchanged edge pitch. Endpoint and single-voice tests pass; live listening is pending."
+      "implementation_note": "The shared rendered pitch follows the same boundary-aware contour shown in the editor, with ramps limited to one sixteenth-note. Event-wide synthesis preserves phase across note boundaries; endpoint, pitch-target, source-tail, time-retiming and unvoiced tests pass. Audible slide smoothness remains for the user to review."
     },
     {
       "id": "project-event-contextual-scissors",

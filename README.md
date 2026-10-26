@@ -2,9 +2,11 @@
 
 OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide a dependable, expressive environment for recording, editing, arranging, mixing, and finishing music.
 
-![OpenTrack with the EXAMPLE project, Project, Mixer, Sample Editor with Pitch & Time notes, transport, and Channel Settings open](docs/images/opentrack-example.png)
+![OpenTrack Vocal channel with Project, Mixer, Channel Settings and effect insert slots](docs/images/opentrack-example-vocal.png)
 
-*The current Windows development build displaying the EXAMPLE project.*
+![OpenTrack Guitar channel with Sample Editor, Pitch & Time notes and Channel Settings](docs/images/opentrack-example-guitar.png)
+
+*The current Windows development build displaying the EXAMPLE project: Vocal channel editing and the Guitar Sample Editor with Pitch & Time notes.*
 
 ## What we are building
 

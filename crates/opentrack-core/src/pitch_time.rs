@@ -87,6 +87,7 @@ impl PitchTimeEdit {
             let previous = &self.notes[previous_index];
             if (previous.end - note.start).abs() <= tolerance
                 && (note_has_pitch_edit(previous) || note_has_pitch_edit(note))
+                && pitch_rules_differ(previous, note)
             {
                 let boundary = boundary_pitch(self, previous, note);
                 let progress = ((destination_time - note.start) / span).clamp(0.0, 1.0) as f32;
@@ -98,6 +99,7 @@ impl PitchTimeEdit {
         if let Some(next) = self.notes.get(note_index + 1) {
             if (note.end - next.start).abs() <= tolerance
                 && (note_has_pitch_edit(note) || note_has_pitch_edit(next))
+                && pitch_rules_differ(note, next)
             {
                 let boundary = boundary_pitch(self, note, next);
                 let progress = ((note.end - destination_time) / span).clamp(0.0, 1.0) as f32;
@@ -166,6 +168,12 @@ impl PitchTimeEdit {
 
 fn note_has_pitch_edit(note: &PitchNote) -> bool {
     note.shift.abs() > 1e-6 || note.straighten > 1e-6
+}
+
+fn pitch_rules_differ(left: &PitchNote, right: &PitchNote) -> bool {
+    (left.shift - right.shift).abs() > 1e-6
+        || (left.straighten - right.straighten).abs() > 1e-6
+        || (left.straighten > 1e-6 && (left.detected_midi - right.detected_midi).abs() > 1e-6)
 }
 
 fn boundary_pitch(edit: &PitchTimeEdit, left: &PitchNote, right: &PitchNote) -> f32 {
