@@ -492,10 +492,13 @@ impl Vst3Effect {
         Ok(())
     }
 
+    /// Cached latency in samples. Refreshed by `prepare` and after
+    /// `restartComponent` requests observed on the control thread.
     pub fn latency_samples(&self) -> u32 {
         self.latency.load(Ordering::Relaxed)
     }
 
+    /// Cached tail length in samples.
     pub fn tail_samples(&self) -> u32 {
         self.tail.load(Ordering::Relaxed)
     }
@@ -577,6 +580,9 @@ impl Vst3Effect {
     }
 
     /// Saves component and controller state through host `IBStream`s.
+    ///
+    /// Control-thread only. Do not call concurrently with [`Self::load_state`]
+    /// or while the plug-in is being torn down.
     pub fn save_state(&self) -> Result<Vst3State, String> {
         self.sync_restart_flags();
 
@@ -620,6 +626,10 @@ impl Vst3Effect {
 
     /// Restores state in VST3 host order: component chunk, then
     /// `setComponentState` on a separate controller, then controller chunk.
+    ///
+    /// Control-thread only. VST3 expects state changes while the processor is
+    /// stopped or newly created; the caller owns that lifecycle, so this method
+    /// does not deactivate the instance itself.
     pub fn load_state(&self, state: &Vst3State) -> Result<(), String> {
         if state.component.is_empty() && state.controller.is_empty() {
             return Ok(());
@@ -669,6 +679,7 @@ impl Vst3Effect {
         Ok(())
     }
 
+    /// True when the controller created an `"editor"` view during load.
     pub fn has_editor(&self) -> bool {
         self.has_editor
     }

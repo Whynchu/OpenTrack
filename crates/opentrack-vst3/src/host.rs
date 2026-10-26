@@ -266,15 +266,14 @@ impl IHostApplicationTrait for HostApplication {
 
     unsafe fn createInstance(
         &self,
-        cid: *mut TUID,
+        _cid: *mut TUID,
         iid: *mut TUID,
         obj: *mut *mut c_void,
     ) -> tresult {
         // Host services are selected by the requested interface only. This
         // matches the SDK's HostApplication implementation and the behaviour
         // WaveShell children rely on; their class ID does not necessarily equal
-        // the host object's interface ID. `cid` is intentionally ignored.
-        let _ = cid;
+        // the host object's interface ID.
         if iid.is_null() || obj.is_null() {
             return kInvalidArgument;
         }
