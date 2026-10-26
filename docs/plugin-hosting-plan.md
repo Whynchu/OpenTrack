@@ -1,6 +1,6 @@
 # VST3 plug-in hosting plan
 
-- **Status:** planning only. Not active implementation.
+- **Status:** foundation implementation in progress (2026-10-25). Factory class enumeration works; component creation, audio blocks, editors, state, and PDC are not implemented yet.
 - **Date:** 2026-10-25.
 - **Product target:** x86_64 Windows, Rust, egui/eframe.
 - **Scope:** VST3 effects and instruments, catalog/scanner, project state, editors, delay compensation, testing.
@@ -8,7 +8,14 @@
 - **Relationship to current work:** T037/T038 remain the active review. This plan starts only after that review is resolved and the user approves the plan. It is outside the current `transport-v12-pitch-time-v4` ledger. When work starts, create a separate `vst3-hosting-v1` ledger scope and task packets; do not reuse transport metrics for plug-in hosting.
 - **Version meaning:** in this plan, **v1** means milestones M0-M5: catalog/scanner, engine groundwork, VST3 effects, editors, and instruments. M6 (automation/offline/multi-out/sidechain/sandbox) and M7 (format expansion) are post-v1.
 
-This document is a specification and delivery plan, not evidence that any of it works. Every runtime claim below remains pending until a build, audio test, save/reopen test, or user review establishes it.
+This document is a specification and delivery plan. Implementation status is tracked separately:
+
+- `opentrack-plugins` catalog/class-ID/descriptor foundation: committed `81227f5`.
+- `opentrack-vst3` module loading and factory class enumeration: implemented with the optional `InitDll`/`ExitDll` handshake, `LOAD_WITH_ALTERED_SEARCH_PATH`, and a COM apartment. `WaveShell1-VST3 15.0_x64.vst3` enumerates 19 child classes.
+- `opentrack-plugin-scan --enumerate`: loads each x64 module in the scanner process and writes descriptors. The real installed folder yielded 11 modules and 28 unique classes.
+- Not implemented: component/controller creation, bus/parameter/latency introspection, audio processing, editors, state save/restore, block graph, PDC, and per-module timeout/crash attribution. Do not describe the catalog as a working plug-in host yet.
+
+Every runtime claim below remains pending until a build, audio test, save/reopen test, or user review establishes it.
 
 ## 1. Decisions
 

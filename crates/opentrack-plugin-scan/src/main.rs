@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use opentrack_plugin_scan::DiscoveryLimits;
 use opentrack_plugin_scan::SCANNER_VERSION;
 use opentrack_plugin_scan::default_vst3_folders;
-use opentrack_plugin_scan::scan_folders;
+use opentrack_plugin_scan::{scan_folders, scan_folders_enumerating};
 
 const USAGE: &str = "\
 opentrack-plugin-scan - bounded VST3 discovery and PE precheck
@@ -28,6 +28,11 @@ Configured folders:
   --folder PATH           Add a VST3 folder (repeatable). Positional FOLDER
                           arguments are treated the same way.
   --no-default-folders    Do not add the two default per-machine folders.
+
+Enumeration:
+  --enumerate             Load each x64 module and read factory class metadata.
+                          The scanner is a separate process, but per-module
+                          timeout/crash recovery is still pending.
 
 Output:
   --json                  Emit JSON instead of text.
@@ -43,9 +48,10 @@ Other:
   -h, --help              Show this help.
   -V, --version           Show the scanner version.
 
-This build does not load VST3 modules or enumerate classes. x64 modules are
-reported as ready_for_enumeration after the PE precheck; no plug-in hosting is
-implemented or claimed.
+Without --enumerate, x64 modules are reported as ready_for_enumeration after
+the PE precheck and no module is loaded. With --enumerate, factory class
+metadata is read but components are not created, buses/parameters/editors are
+not introspected, and audio hosting is not implemented or claimed.
 ";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +66,7 @@ struct Cli {
     format: OutputFormat,
     output: Option<PathBuf>,
     limits: DiscoveryLimits,
+    enumerate: bool,
     help: bool,
     version: bool,
 }
@@ -103,7 +110,11 @@ fn run() -> Result<(), String> {
         );
     }
 
-    let report = scan_folders(&folders, cli.limits);
+    let report = if cli.enumerate {
+        scan_folders_enumerating(&folders, cli.limits)
+    } else {
+        scan_folders(&folders, cli.limits)
+    };
     let serialized = match cli.format {
         OutputFormat::Text => report.to_text(),
         OutputFormat::Json => report
@@ -136,6 +147,7 @@ fn parse_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Cli,
         format: OutputFormat::Text,
         output: None,
         limits: DiscoveryLimits::default(),
+        enumerate: false,
         help: false,
         version: false,
     };
@@ -146,6 +158,10 @@ fn parse_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Cli,
                 return Err("--folder requires a path".to_owned());
             };
             cli.folders.push(PathBuf::from(path));
+            continue;
+        }
+        if argument == OsStr::new("--enumerate") {
+            cli.enumerate = true;
             continue;
         }
         if argument == OsStr::new("--output") {

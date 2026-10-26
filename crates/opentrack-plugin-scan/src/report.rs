@@ -2,10 +2,10 @@
 
 //! Bounded scan report and JSON/text rendering.
 //!
-//! The report is the scanner's application-facing output. It records discovery
-//! and PE precheck results only. Class enumeration is deliberately absent in
-//! this foundation; every x64 module is marked `ready_for_enumeration` and the
-//! report states that no module was loaded.
+//! The report is the scanner's application-facing output. Discovery and PE
+//! precheck always run. When enumeration is requested, the scanner loads each
+//! x64 module in its own process and records factory class metadata; buses,
+//! parameters, editors and latency remain instance-introspection follow-ups.
 //!
 //! Counts, warnings, and diagnostic text are bounded. Paths remain wide
 //! `PathBuf` values during discovery; report strings are display copies, and a
@@ -17,7 +17,9 @@ use std::path::PathBuf;
 
 use opentrack_plugins::PluginArchitecture;
 use opentrack_plugins::PluginClassId;
+use opentrack_plugins::PluginDescriptor;
 use opentrack_plugins::PluginScanStatus;
+use opentrack_vst3::{Vst3Module, class_descriptor};
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -91,12 +93,12 @@ pub struct ModuleReport {
     /// Raw COFF machine value when the header was readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pe_machine: Option<u16>,
-    /// Discovery/precheck status. Class enumeration is not implemented.
+    /// Discovery/precheck/enumeration status.
     pub status: PluginScanStatus,
     /// File size in bytes when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
-    /// Class IDs are empty until `opentrack-vst3` enumeration exists.
+    /// Audio module class IDs retained from factory enumeration.
     pub class_ids: Vec<PluginClassId>,
     /// Bounded diagnostic for rejection or path conversion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,6 +124,12 @@ pub struct ScanTotals {
     pub unreadable: usize,
     /// Modules with any rejected status.
     pub rejected: usize,
+    /// Modules whose factory was loaded and class metadata read.
+    #[serde(default)]
+    pub enumerated_modules: usize,
+    /// Unique plug-in classes retained after class-ID deduplication.
+    #[serde(default)]
+    pub plugins: usize,
     /// Duplicate paths skipped across all folders.
     pub duplicates_skipped: usize,
     /// True when a configured folder or module limit was reached.
@@ -143,7 +151,10 @@ pub struct ScanReport {
     pub modules: Vec<ModuleReport>,
     /// Aggregate counts.
     pub totals: ScanTotals,
-    /// Fixed explanatory notes, including the enumeration TODO.
+    /// Enumerated classes, deduplicated by class ID.
+    #[serde(default)]
+    pub plugins: Vec<PluginDescriptor>,
+    /// Fixed explanatory notes.
     pub notes: Vec<String>,
 }
 
@@ -190,9 +201,10 @@ impl ScanReport {
 
         let _ = writeln!(
             output,
-            "modules: {} reported, {} ready for enumeration, {} rejected, {} duplicate paths skipped",
+            "modules: {} reported, {} ready, {} enumerated, {} rejected, {} duplicate paths skipped",
             self.totals.modules,
             self.totals.ready_for_enumeration,
+            self.totals.enumerated_modules,
             self.totals.rejected,
             self.totals.duplicates_skipped
         );
@@ -219,6 +231,19 @@ impl ScanReport {
             }
         }
 
+        let _ = writeln!(output, "plugins: {} unique classes", self.plugins.len());
+        for plugin in &self.plugins {
+            let _ = writeln!(
+                output,
+                "  {:?} {} | {} | {} | {}",
+                plugin.category,
+                one_line(&plugin.name),
+                one_line(&plugin.vendor),
+                plugin.class_id,
+                one_line(&plugin.module_path.to_string_lossy())
+            );
+        }
+
         if self.totals.truncated {
             let _ = writeln!(output, "truncated: yes");
         }
@@ -234,6 +259,7 @@ pub fn build_report(
     folders: &[PathBuf],
     limits: DiscoveryLimits,
     generated_at_unix_ms: u64,
+    enumerate: bool,
 ) -> ScanReport {
     let configured_folders = folders.len();
     let reported_folders = &folders[..configured_folders.min(MAX_REPORT_FOLDERS)];
@@ -263,7 +289,82 @@ pub fn build_report(
         })
         .collect::<Vec<_>>();
 
-    let module_reports = batch.modules.iter().map(inspect_module).collect::<Vec<_>>();
+    let mut module_reports = batch.modules.iter().map(inspect_module).collect::<Vec<_>>();
+    let mut plugins = Vec::new();
+    if enumerate {
+        let mut retained = std::collections::HashMap::<PluginClassId, PathBuf>::new();
+        for module in &mut module_reports {
+            if module.status != PluginScanStatus::ReadyForEnumeration
+                || module.architecture != PluginArchitecture::X64
+            {
+                continue;
+            }
+            if !module.path_utf8 {
+                append_diagnostic(
+                    module,
+                    "class enumeration skipped because the module path is not valid UTF-8"
+                        .to_owned(),
+                );
+                continue;
+            }
+            let path = PathBuf::from(&module.path);
+            let loaded = match Vst3Module::open(&path) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    module.status = PluginScanStatus::LoadFailed;
+                    append_diagnostic(module, error.to_string());
+                    continue;
+                }
+            };
+            let enumeration = match loaded.enumerate() {
+                Ok(enumeration) => enumeration,
+                Err(error) => {
+                    module.status = PluginScanStatus::LoadFailed;
+                    append_diagnostic(module, error.to_string());
+                    continue;
+                }
+            };
+
+            for diagnostic in enumeration.diagnostics {
+                append_diagnostic(module, diagnostic);
+            }
+            if enumeration.classes.is_empty() {
+                append_diagnostic(
+                    module,
+                    format!(
+                        "factory loaded (vendor '{}') but exposed no audio module classes",
+                        enumeration.factory_vendor
+                    ),
+                );
+                continue;
+            }
+            let mut class_ids = Vec::new();
+            for class in enumeration.classes {
+                if let Some(existing) = retained.get(&class.class_id) {
+                    append_diagnostic(
+                        module,
+                        format!(
+                            "duplicate class {} ('{}') already enumerated from {}",
+                            class.class_id,
+                            class.name,
+                            existing.display()
+                        ),
+                    );
+                    continue;
+                }
+                retained.insert(class.class_id, path.clone());
+                class_ids.push(class.class_id);
+                plugins.push(class_descriptor(
+                    &path,
+                    module.architecture,
+                    &class,
+                    generated_at_unix_ms,
+                ));
+            }
+            module.class_ids = class_ids;
+            module.status = PluginScanStatus::Enumerated;
+        }
+    }
 
     let ready_for_enumeration = module_reports
         .iter()
@@ -291,9 +392,19 @@ pub fn build_report(
         .filter(|module| module.status.is_rejected())
         .count();
 
-    let mut notes = vec![
-        "Class enumeration is not implemented in this build. No VST3 module was loaded and no plug-in host is claimed; ready entries are PE precheck results only.".to_owned(),
-    ];
+    let enumerated_modules = module_reports
+        .iter()
+        .filter(|module| module.status == PluginScanStatus::Enumerated)
+        .count();
+    let mut notes = if enumerate {
+        vec![
+            "Factory class metadata was enumerated in this scanner process. Buses, parameters, editors, latency and audio hosting require instance introspection and are not implemented yet.".to_owned(),
+        ]
+    } else {
+        vec![
+            "Class enumeration was not requested. No VST3 module was loaded; ready entries are PE precheck results only.".to_owned(),
+        ]
+    };
     if configured_folders > reported_folders.len() {
         notes.push(format!(
             "{} configured folders were omitted by the {MAX_REPORT_FOLDERS}-folder report limit.",
@@ -326,18 +437,32 @@ pub fn build_report(
             invalid_module,
             unreadable,
             rejected,
+            enumerated_modules,
+            plugins: plugins.len(),
             duplicates_skipped: batch.duplicates_skipped,
             truncated: batch.truncated || configured_folders > reported_folders.len(),
         },
         folders: folder_reports,
         modules: module_reports,
+        plugins,
         notes,
     }
 }
 
 /// Discovers folders and builds a report with the current time.
 pub fn scan_folders(folders: &[PathBuf], limits: DiscoveryLimits) -> ScanReport {
-    build_report(folders, limits, crate::unix_time_ms())
+    build_report(folders, limits, crate::unix_time_ms(), false)
+}
+
+/// Discovers folders and performs factory class enumeration in this process.
+pub fn scan_folders_enumerating(folders: &[PathBuf], limits: DiscoveryLimits) -> ScanReport {
+    build_report(folders, limits, crate::unix_time_ms(), true)
+}
+
+fn append_diagnostic(module: &mut ModuleReport, diagnostic: String) {
+    let mut parts = module.diagnostics.take().into_iter().collect::<Vec<_>>();
+    parts.push(diagnostic);
+    module.diagnostics = join_diagnostics(parts);
 }
 
 fn inspect_module(module: &DiscoveredModule) -> ModuleReport {
@@ -357,9 +482,6 @@ fn inspect_module(module: &DiscoveredModule) -> ModuleReport {
         );
     }
 
-    // TODO(vst3): after `opentrack-vst3` exists, run the isolated factory
-    // enumeration here and populate class IDs/descriptors. This foundation
-    // deliberately stops at the PE precheck and never loads the module.
     let (architecture, pe_machine, status) = match read_pe_machine_from_file(&module.path) {
         Ok(machine) => {
             let architecture = machine.architecture();
@@ -463,6 +585,7 @@ mod tests {
             &[temp.path().to_path_buf()],
             DiscoveryLimits::default(),
             1_700_000_000_000,
+            false,
         )
     }
 
@@ -475,6 +598,9 @@ mod tests {
         assert_eq!(report.totals.unsupported_architecture, 1);
         assert_eq!(report.totals.invalid_module, 1);
         assert_eq!(report.totals.rejected, 2);
+        assert_eq!(report.totals.enumerated_modules, 0);
+        assert_eq!(report.totals.plugins, 0);
+        assert!(report.plugins.is_empty());
         assert!(!report.totals.truncated);
 
         let good = report
@@ -500,7 +626,7 @@ mod tests {
     fn report_round_trips_through_json() {
         let report = fixture_report();
         let json = report.to_json_pretty().expect("report serializes");
-        assert!(json.contains("\"protocol_version\": 1"));
+        assert!(json.contains("\"protocol_version\": 2"));
         assert!(json.contains("\"class_ids\": []"));
         assert!(json.contains("\"ready_for_enumeration\": 1"));
         let parsed: ScanReport = serde_json::from_str(&json).expect("report deserializes");
@@ -508,18 +634,47 @@ mod tests {
     }
 
     #[test]
-    fn text_report_does_not_claim_enumeration() {
+    fn text_report_does_not_claim_enumeration_without_the_flag() {
         let text = fixture_report().to_text();
-        assert!(text.contains("Class enumeration is not implemented"));
+        assert!(text.contains("Class enumeration was not requested"));
+        assert!(text.contains("No VST3 module was loaded"));
         assert!(text.contains("READY"));
         assert!(text.contains("REJECT"));
-        assert!(text.contains("no plug-in host is claimed"));
+        assert!(!text.contains("ENUMERATED"));
+        assert!(!text.contains("audio hosting is implemented"));
+    }
+
+    #[test]
+    fn failed_enumeration_is_reported_without_losing_the_precheck() {
+        let temp = TempDir::new("report-enumeration-failure");
+        temp.write(r"Good.vst3", &pe_image(0x8664));
+        let report = build_report(
+            &[temp.path().to_path_buf()],
+            DiscoveryLimits::default(),
+            1_700_000_000_000,
+            true,
+        );
+        assert_eq!(report.totals.modules, 1);
+        assert_eq!(report.totals.enumerated_modules, 0);
+        assert_eq!(report.totals.plugins, 0);
+        assert_eq!(report.modules[0].status, PluginScanStatus::LoadFailed);
+        assert!(
+            report.modules[0]
+                .diagnostics
+                .as_deref()
+                .is_some_and(|text| text.contains("could not open VST3 module"))
+        );
     }
 
     #[test]
     fn missing_folder_is_reported_without_aborting() {
         let temp = TempDir::new("report-missing");
-        let report = build_report(&[temp.path().join("absent")], DiscoveryLimits::default(), 1);
+        let report = build_report(
+            &[temp.path().join("absent")],
+            DiscoveryLimits::default(),
+            1,
+            false,
+        );
         assert_eq!(report.folders.len(), 1);
         assert_eq!(report.folders[0].status, FolderStatus::Missing);
         assert_eq!(report.totals.modules, 0);

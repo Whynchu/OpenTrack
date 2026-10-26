@@ -270,10 +270,18 @@ T042 or Batch 3.
 - No Steinberg-authored files; own Rust host using the `vst3` crate bindings.
 - No `vst-audio`; Apache-2.0/no CLA direction.
 - VST foundation committed as `81227f5`: `opentrack-plugins` catalog/class-ID
-  types and `opentrack-plugin-scan` folder/PE/dedupe/report foundation. 26 tests
-  pass. No VST3 module is loaded and no audio hosting is implemented yet.
-- Next VST code: `opentrack-vst3` host context, class enumeration, scanner
-  timeout/crash isolation/job object, then cache persistence and UI.
+  types and `opentrack-plugin-scan` folder/PE/dedupe/report foundation.
+- `opentrack-vst3` now loads x64 modules and enumerates factory classes,
+  including the `InitDll`/`ExitDll` handshake needed by WaveShell. The scanner
+  has `--enumerate`; the installed folder produced 11 enumerated modules and 28
+  unique classes (19 from WaveShell). Host context skeleton implements
+  `IHostApplication`, `IMessage`, and `IAttributeList`.
+- Not implemented yet: component/controller creation, bus/parameter/latency
+  introspection, audio processing, editors, state save/restore, block graph,
+  PDC, and per-module timeout/crash attribution. The scanner process is a crash
+  boundary but not a security sandbox.
+- Next VST code: instance smoke-test/bus introspection, per-module job-object
+  isolation and timeout, cache persistence, then block graph/PDC before hosting.
 
 ### Probe findings to carry forward
 

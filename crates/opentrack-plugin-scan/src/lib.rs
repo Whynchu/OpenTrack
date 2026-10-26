@@ -2,18 +2,18 @@
 
 #![forbid(unsafe_code)]
 
-//! Bounded VST3 module discovery and precheck helper for OpenTrack.
+//! Bounded VST3 module discovery, precheck, and factory enumeration helper.
 //!
-//! This crate implements the format-neutral part of milestone M1 in
-//! `docs/plugin-hosting-plan.md` section 4.12: configured folder discovery,
-//! bundle/single-file module selection, PE machine rejection, path duplication
-//! control, and a bounded JSON/text report.
+//! This crate implements milestone M1 in `docs/plugin-hosting-plan.md` section
+//! 4.12: configured folder discovery, bundle/single-file module selection, PE
+//! machine rejection, path duplication control, optional factory class
+//! enumeration, and a bounded JSON/text report.
 //!
-//! Current boundary: **no module is loaded and no classes are enumerated.** An
-//! x64 module is reported as [`opentrack_plugins::PluginScanStatus::ReadyForEnumeration`].
-//! Factory enumeration, timeouts, crash quarantine, and the job object belong
-//! to the future `opentrack-vst3` integration. This crate does not host audio
-//! and must not be described as a working plug-in catalog yet.
+//! Without `--enumerate`, no module is loaded and x64 modules remain
+//! [`opentrack_plugins::PluginScanStatus::ReadyForEnumeration`]. With it, the
+//! scanner process loads each module and records factory class metadata through
+//! `opentrack-vst3`. Per-module timeout/crash attribution, quarantine, the job
+//! object, instance introspection, and audio hosting remain future work.
 //!
 //! Discovery keeps [`std::path::PathBuf`] values internally. Report text uses
 //! a display conversion; a path that is not valid UTF-8 is marked in the report
@@ -41,14 +41,14 @@ pub use pe::{
 };
 pub use report::{
     FolderReport, FolderStatus, MAX_REPORT_FOLDERS, ModuleReport, ScanReport, ScanTotals,
-    build_report, scan_folders,
+    build_report, scan_folders, scan_folders_enumerating,
 };
 
 /// Version of the scanner report protocol consumed by the application.
 ///
 /// A future app/scanner handshake must reject a mismatch rather than interpreting
 /// report fields with different semantics.
-pub const SCAN_PROTOCOL_VERSION: u32 = 1;
+pub const SCAN_PROTOCOL_VERSION: u32 = 2;
 
 /// Scanner build version, copied from the crate package version.
 pub const SCANNER_VERSION: &str = env!("CARGO_PKG_VERSION");
