@@ -5,21 +5,28 @@ pub(crate) struct ChannelOwner {
     dialog_open: bool,
 }
 
+pub(crate) fn creation_root(creation: &eframe::CreationContext<'_>) -> Option<isize> {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = creation.window_handle()
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            return Some(handle.hwnd.get());
+        }
+    }
+    let _ = creation;
+    None
+}
+
 impl ChannelOwner {
     pub(crate) fn new(creation: &eframe::CreationContext<'_>) -> Self {
-        #[cfg(windows)]
-        {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = creation.window_handle()
-                && let RawWindowHandle::Win32(handle) = handle.as_raw()
-            {
-                return Self {
-                    root: Some(handle.hwnd.get()),
-                    dialog_open: false,
-                };
-            }
+        if let Some(root) = creation_root(creation) {
+            return Self {
+                root: Some(root),
+                dialog_open: false,
+            };
         }
-        let _ = creation;
         Self::default()
     }
 

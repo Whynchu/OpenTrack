@@ -289,6 +289,27 @@ pub enum InsertEffectKind {
         #[serde(default = "default_true")]
         live: bool,
     },
+    /// Third-party VST3 effect in a normal insert slot.
+    ///
+    /// Identity is the class ID plus module path hint. Component/controller
+    /// state is opaque and versioned only by the plug-in itself.
+    Vst3 {
+        /// Canonical 32-character lowercase class ID.
+        class_id: String,
+        /// Module path at insertion time; used as a discovery hint.
+        module_path: PathBuf,
+        /// Display names retained for missing-plug-in UI.
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        vendor: String,
+        /// Opaque component (processor) state.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        component_state: Vec<u8>,
+        /// Opaque controller state.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        controller_state: Vec<u8>,
+    },
 }
 
 fn default_compressor_hold_ms() -> f32 {
@@ -1387,6 +1408,16 @@ impl Project {
                     {
                         return Err("stereo delay parameters are outside the supported range");
                     }
+                    InsertEffectKind::Vst3 {
+                        ref class_id,
+                        ref module_path,
+                        ..
+                    } if class_id.len() != 32
+                        || !class_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        || module_path.as_os_str().is_empty() =>
+                    {
+                        return Err("VST3 insert identity is incomplete");
+                    }
                     InsertEffectKind::Compressor {
                         threshold_db,
                         ratio,
@@ -1876,6 +1907,36 @@ mod bus_tests {
         assert_eq!(loaded.output_channel, BusChannel::output());
         assert!(loaded.validate().is_ok());
     }
+    #[test]
+    fn vst3_insert_identity_and_state_round_trip() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].inserts.push(InsertEffect {
+            enabled: true,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "0de7aef2de004e4f41414d6137325247".to_owned(),
+                module_path: PathBuf::from(r"C:\Program Files\Common Files\VST3\Gateway.vst3"),
+                name: "Gateway".to_owned(),
+                vendor: "Retro".to_owned(),
+                component_state: vec![1, 2, 3],
+                controller_state: vec![4, 5],
+            },
+        });
+        assert!(project.validate().is_ok());
+        let json = serde_json::to_string(&project).unwrap();
+        let loaded: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, project);
+        project.tracks[0].inserts[0].kind = InsertEffectKind::Vst3 {
+            class_id: "not-a-class".to_owned(),
+            module_path: PathBuf::from("Gateway.vst3"),
+            name: String::new(),
+            vendor: String::new(),
+            component_state: Vec::new(),
+            controller_state: Vec::new(),
+        };
+        assert!(project.validate().is_err());
+    }
+
     #[test]
     fn invalid_bus_settings_and_reserved_track_ids_are_rejected() {
         let mut project = Project::default();

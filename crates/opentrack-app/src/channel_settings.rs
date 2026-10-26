@@ -427,11 +427,15 @@ fn inserts(
                 .inserts
                 .get(i)
                 .is_some_and(|effect| matches!(effect.kind, InsertEffectKind::Compressor { .. }));
+            let is_vst3 = track
+                .inserts
+                .get(i)
+                .is_some_and(|effect| matches!(effect.kind, InsertEffectKind::Vst3 { .. }));
             if let Some(effect) = track.inserts.get(i) {
                 text(
                     ui,
                     body.shrink2(Vec2::new(0.0, 0.0)),
-                    insert_effect_name(&effect.kind),
+                    &insert_effect_name(&effect.kind),
                     10.0,
                     Align2::LEFT_CENTER,
                 );
@@ -441,21 +445,26 @@ fn inserts(
                 compressor.insert_index = i;
                 compressor.window.open = true;
                 compressor.window.focus_requested = true;
+            } else if response.clicked() && is_vst3 {
+                state.vst3_parameter_slot = Some((track.id, i));
             }
             let mut selected = None;
             menu(&type_selector, 200.0, |ui| {
                 show_insert_effect_picker(ui, &mut selected)
             });
             match selected {
-                Some(Some(kind)) => {
+                Some(InsertSelection::Add(kind)) => {
                     if let Some(effect) = track.inserts.get_mut(i) {
                         effect.kind = kind;
                         changed = true;
                     }
                 }
-                Some(None) => {
+                Some(InsertSelection::Remove) => {
                     track.inserts.remove(i);
                     changed = true;
+                }
+                Some(InsertSelection::Vst3) => {
+                    state.vst3_pick_slot = Some((track.id, i));
                 }
                 None => {}
             }
@@ -467,15 +476,21 @@ fn inserts(
             menu(&response, 200.0, |ui| {
                 show_insert_effect_picker(ui, &mut selected)
             });
-            if let Some(Some(kind)) = selected {
-                track.inserts.insert(
-                    i.min(track.inserts.len()),
-                    InsertEffect {
-                        enabled: true,
-                        kind,
-                    },
-                );
-                changed = true;
+            match selected {
+                Some(InsertSelection::Add(kind)) => {
+                    track.inserts.insert(
+                        i.min(track.inserts.len()),
+                        InsertEffect {
+                            enabled: true,
+                            kind,
+                        },
+                    );
+                    changed = true;
+                }
+                Some(InsertSelection::Vst3) => {
+                    state.vst3_pick_slot = Some((track.id, i.min(track.inserts.len())));
+                }
+                Some(InsertSelection::Remove) | None => {}
             }
         }
     }

@@ -166,7 +166,7 @@ impl Vst3Module {
         })
     }
 
-    fn factory(&self) -> &ComPtr<IPluginFactory> {
+    pub(crate) fn factory(&self) -> &ComPtr<IPluginFactory> {
         self.factory.as_ref().expect("factory is alive")
     }
 

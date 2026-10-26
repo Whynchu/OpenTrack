@@ -26,9 +26,11 @@ The user will review pitch quality with Astra while tuning. The current build al
 
 Batch 3 implementation is complete in source: contextual Project cut band, snap-aware cursor/guides, Ctrl+wheel horizontal pan, rectangular Mixer fader caps, and shared Mixer/Project track selection. Its x64 build and live interaction/visual review are pending. Keep the app closed until the user chooses to open it.
 
-## VST3 lane - foundation only
+## VST3 lane - insert hosting in progress
 
-VST3 class enumeration is implemented and committed as `8ce842c`, outside the transport ledger. The scanner enumerated 11 x64 modules and 28 unique classes, including 19 WaveShell child classes. This is not audio hosting: component/controller creation, bus/parameter/latency introspection, block processing, PDC, editors, state, and per-module timeout isolation remain pending. See [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
+VST3 class enumeration is committed as `8ce842c`. T043 now wires real VST3 effects into the existing eight insert slots: component/controller lifecycle, stereo main buses, 64-frame hosted processing, PDC, parameter changes, opaque state, generic sliders and a native editor window. Plans without hosted inserts retain the original per-sample path; built-in effects remain alternative insert choices.
+
+TDR Nova is the first end-to-end smoke target: 75 parameters, 184-sample latency, editor available, audio processed, and 3,608 bytes of state. VST3 instruments, multi-out/sidechain, sandboxing, catalog UI and per-module scanner timeout remain pending. See [T043](tasks/T043-vst3-insert-hosting.md), [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
 
 ## Preserved direction
 

@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! VST3 module loading and factory class enumeration for OpenTrack.
+//! VST3 hosting for OpenTrack.
 //!
-//! This crate owns the VST3 ABI boundary. It currently:
+//! This crate owns the VST3 ABI boundary. It:
 //!
 //! - loads one x64 Windows module on the calling thread;
 //! - reads factory/class metadata, including WaveShell child classes;
-//! - exposes a minimal control-thread host context (`IHostApplication`,
-//!   `IMessage`, `IAttributeList`).
+//! - creates a component/controller pair and negotiates a stereo (or
+//!   mono-in/stereo-out) main audio bus;
+//! - processes prepared stereo blocks through `HostedProcessor`;
+//! - saves and restores component/controller state;
+//! - enumerates normalized parameters and forwards edits without allocating on
+//!   the audio thread;
+//! - attaches an optional native editor to an application-owned HWND.
 //!
-//! It does **not** create components, process audio, host editors, save state,
-//! or implement the block graph/PDC. Those remain later milestones in
-//! `docs/plugin-hosting-plan.md`.
+//! The block graph, delay compensation and bypass policy remain in
+//! `opentrack-audio`/`opentrack-app`; this crate only provides one prepared
+//! effect instance. See `docs/plugin-hosting-plan.md` sections 4.3-4.11.
 //!
 //! Module scanning must still run in the separate `opentrack-plugin-scan`
 //! process because a buggy plug-in can terminate the loader. The scanner is a
@@ -21,13 +26,21 @@
 // below validates null pointers and lengths before touching caller memory.
 #![allow(unsafe_op_in_unsafe_fn)]
 
+mod editor;
+pub mod effect;
 pub mod host;
 pub mod module;
+mod parameter;
+mod services;
+mod stream;
 
 use std::path::Path;
 
 use opentrack_plugins::{PluginArchitecture, PluginDescriptor, PluginFormat, PluginScanStatus};
 
+pub use effect::{
+    MAX_BLOCK_FRAMES, MAX_PARAMETERS, Vst3Effect, Vst3ParameterInfo, Vst3State,
+};
 pub use host::{HostContext, HostMessage};
 pub use module::{ModuleEnumeration, Vst3ClassInfo, Vst3LoadError, Vst3Module};
 

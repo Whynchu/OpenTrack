@@ -30,6 +30,8 @@ mod recording_undo;
 mod sample_editor;
 #[path = "transport_panel.rs"]
 mod transport_panel;
+#[path = "vst3_host.rs"]
+mod vst3_host;
 #[path = "waveform_view.rs"]
 mod waveform_view;
 
@@ -267,6 +269,10 @@ struct ChannelSettingsUiState {
     setup_selected_hidden: Option<ChannelSettingsViewItem>,
     // Per-slot Send activation is currently UI state only; the track/audio model has no Send DSP.
     enabled_sends: HashSet<(u64, usize)>,
+    /// Insert slot waiting for a VST3 module/class choice.
+    vst3_pick_slot: Option<(u64, usize)>,
+    /// Insert slot whose VST3 parameters/editor should be shown.
+    vst3_parameter_slot: Option<(u64, usize)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -666,6 +672,12 @@ pub struct OpenTrackApp {
     sample_editor_active: bool,
     active_note_audition: Option<sample_editor::NoteAuditionRequest>,
     note_audition_stop_at: Option<Instant>,
+    vst3_runtime: vst3_host::Runtime,
+    root_window_handle: Option<isize>,
+    vst3_parameter_window: Option<(u64, usize)>,
+    vst3_module_prompt: Option<(u64, usize)>,
+    vst3_editor_window: Option<(u64, usize)>,
+    vst3_editor_host: Option<vst3_host::EditorWindow>,
     main_window_bounds: Option<WindowBounds>,
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
@@ -1778,6 +1790,12 @@ impl OpenTrackApp {
             sample_editor_active: false,
             active_note_audition: None,
             note_audition_stop_at: None,
+            vst3_runtime: vst3_host::Runtime::default(),
+            root_window_handle: crate::native_windows::creation_root(creation),
+            vst3_parameter_window: None,
+            vst3_module_prompt: None,
+            vst3_editor_window: None,
+            vst3_editor_host: None,
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
@@ -2372,6 +2390,17 @@ impl OpenTrackApp {
 
     fn rebuild_audio_plan(&mut self) {
         let tempo_bpm = self.data.project.tempo_bpm;
+        let (host_rate, host_block) = self.audio_engine.as_ref().map_or(
+            (self.data.project.sample_rate_hz.max(1), 512),
+            |engine| {
+                (
+                    engine.sample_rate.max(1),
+                    engine.output_buffer_frames.max(64),
+                )
+            },
+        );
+        self.vst3_runtime.set_format(host_rate, host_block);
+        self.vst3_runtime.sync(&self.data.project);
         let loop_range_beats = self.data.transport.cycle.then_some((
             self.data.project.loop_start_beats,
             self.data.project.loop_end_beats,
@@ -2391,6 +2420,7 @@ impl OpenTrackApp {
             .retain(|track_id, _| active_track_ids.contains(track_id));
         let project_tracks = &self.data.project.tracks;
         let track_meter_peaks = &mut self.data.track_meter_peaks;
+        let vst3_runtime = &self.vst3_runtime;
         let track_descriptors: Vec<_> = project_tracks
             .iter()
             .map(|track| {
@@ -2410,6 +2440,7 @@ impl OpenTrackApp {
                     track.equalizer.clone(),
                     track.inserts.clone(),
                     track.inserts_bypassed,
+                    vst3_runtime.hosted_inserts(track),
                     track.instrument_waveform,
                     track.monitor || (self.input_monitoring && track.armed),
                     track.input_routing.clone(),
@@ -2506,6 +2537,7 @@ impl OpenTrackApp {
             equalizer,
             inserts,
             inserts_bypassed,
+            hosted_inserts,
             instrument_waveform,
             monitor_enabled,
             input_routing,
@@ -2643,6 +2675,7 @@ impl OpenTrackApp {
                 equalizer,
                 inserts,
                 inserts_bypassed,
+                hosted_inserts,
                 monitor_input: if monitor_enabled {
                     match input_routing.as_deref().unwrap_or("Stereo In") {
                         "Left - Stereo In" => Some(PlaybackInputChannel::Left),
@@ -3184,6 +3217,7 @@ impl OpenTrackApp {
     }
 
     fn write_project(&mut self, mut path: std::path::PathBuf) -> bool {
+        self.vst3_runtime.capture_states(&mut self.data.project);
         if let Err(message) = self.data.project.validate() {
             self.status_message = format!("Could not save project: {message}");
             return false;
@@ -3486,6 +3520,272 @@ impl OpenTrackApp {
             slot_index,
             draft_rgb: rgb,
         });
+    }
+
+    fn show_vst3_windows(&mut self, ctx: &egui::Context) {
+        if self
+            .vst3_editor_host
+            .as_ref()
+            .is_some_and(|window| !window.is_alive())
+        {
+            if let Some((track_id, slot)) = self.vst3_editor_window.take() {
+                self.vst3_runtime.close_editor(track_id, slot);
+            }
+            self.vst3_editor_host = None;
+        }
+        if let Some(target) = self.channel_settings_ui.vst3_pick_slot.take() {
+            self.vst3_module_prompt = Some(target);
+        }
+        if let Some((track_id, slot)) = self.vst3_module_prompt {
+            let mut action = None;
+            let mut cancel = false;
+            egui::Window::new("Add VST3 Plug-in")
+                .id(Id::new("vst3-module-prompt"))
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label("Choose a single-file .vst3 module or a .vst3 bundle folder.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Plug-in file...").clicked() {
+                            action = Some(false);
+                        }
+                        if ui.button("Bundle folder...").clicked() {
+                            action = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if let Some(folder) = action {
+                let selected = if folder {
+                    FileDialog::new().pick_folder()
+                } else {
+                    FileDialog::new()
+                        .add_filter("VST3 plug-in", &["vst3"])
+                        .pick_file()
+                };
+                if let Some(path) = selected {
+                    match vst3_host::resolve_module_selection(&path) {
+                        Ok(module) => self.vst3_runtime.browse_module(track_id, slot, &module),
+                        Err(error) => self.status_message = error,
+                    }
+                }
+                self.vst3_module_prompt = None;
+            } else if cancel {
+                self.vst3_module_prompt = None;
+            }
+        }
+
+        let mut choice = None;
+        let mut close_browser = false;
+        if let Some(browser) = &self.vst3_runtime.browser {
+            let mut open = true;
+            egui::Window::new("Choose VST3 Plug-in")
+                .id(Id::new("vst3-class-browser"))
+                .open(&mut open)
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    ui.label(browser.module_path.display().to_string());
+                    if let Some(error) = &browser.error {
+                        ui.colored_label(theme::RECORD, error);
+                    }
+                    if browser.classes.is_empty() && browser.error.is_none() {
+                        ui.label("No VST3 effects or analyzers were found in this module.");
+                    }
+                    for class in &browser.classes {
+                        let label = if class.vendor.is_empty() {
+                            class.name.clone()
+                        } else {
+                            format!("{}  \u{2014}  {}", class.name, class.vendor)
+                        };
+                        if ui.button(label).clicked() {
+                            choice = Some((
+                                browser.track_id,
+                                browser.slot,
+                                browser.module_path.clone(),
+                                class.clone(),
+                            ));
+                        }
+                    }
+                });
+            close_browser = !open;
+        }
+        if let Some((track_id, slot, module_path, class)) = choice
+            && self.vst3_runtime.choose_class(
+                &mut self.data.project,
+                track_id,
+                slot,
+                &module_path,
+                &class,
+            )
+        {
+            self.rebuild_audio_plan();
+            self.mark_modified();
+        }
+        if close_browser {
+            self.vst3_runtime.browser = None;
+        }
+
+        if let Some(target) = self.channel_settings_ui.vst3_parameter_slot.take() {
+            self.vst3_parameter_window = Some(target);
+        }
+        let Some((track_id, slot)) = self.vst3_parameter_window else {
+            return;
+        };
+        let title = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .and_then(|track| track.inserts.get(slot))
+            .map(|insert| insert_effect_name(&insert.kind))
+            .unwrap_or_else(|| "VST3 Plug-in".to_owned());
+        let parameters = self.vst3_runtime.parameters(track_id, slot);
+        let failure = self.vst3_runtime.failure(track_id, slot).map(str::to_owned);
+        let has_editor = self.vst3_runtime.has_editor(track_id, slot);
+        let mut enabled = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .and_then(|track| track.inserts.get(slot))
+            .is_some_and(|insert| insert.enabled);
+        let mut set_parameter = None;
+        let mut toggle_enabled = false;
+        let mut remove = false;
+        let mut open_editor = false;
+        let mut close_editor = false;
+        let mut open = true;
+        egui::Window::new(format!("VST3 \u{2014} {title}"))
+            .id(Id::new(("vst3-parameters", track_id, slot)))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                if let Some(failure) = &failure {
+                    ui.colored_label(theme::RECORD, failure);
+                }
+                if let Some(engine) = &self.audio_engine {
+                    let diagnostic = engine.hosted_processing_diagnostic();
+                    if diagnostic.error_count > 0 {
+                        ui.colored_label(
+                            theme::WARNING,
+                            format!(
+                                "{} VST3 processing error(s); the channel fell back to dry audio.",
+                                diagnostic.error_count
+                            ),
+                        );
+                    }
+                }
+                if ui.checkbox(&mut enabled, "Enabled / bypass").changed() {
+                    toggle_enabled = true;
+                }
+                if let Some(parameters) = &parameters {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for parameter in parameters {
+                            let mut value = parameter.normalized as f32;
+                            let label = if parameter.units.is_empty() {
+                                parameter.title.clone()
+                            } else {
+                                format!("{} ({})", parameter.title, parameter.units)
+                            };
+                            if ui
+                                .add(egui::Slider::new(&mut value, 0.0..=1.0).text(label))
+                                .changed()
+                            {
+                                set_parameter = Some((parameter.id, f64::from(value)));
+                            }
+                        }
+                    });
+                } else {
+                    ui.label("Parameters are unavailable; the instance may have failed to load.");
+                }
+                ui.horizontal(|ui| {
+                    if has_editor
+                        && ui
+                            .add_enabled(
+                                self.root_window_handle.is_some(),
+                                egui::Button::new("Edit"),
+                            )
+                            .clicked()
+                    {
+                        open_editor = true;
+                    }
+                    if self.vst3_editor_window == Some((track_id, slot))
+                        && ui.button("Close Editor").clicked()
+                    {
+                        close_editor = true;
+                    }
+                    if ui.button("Remove Plug-in").clicked() {
+                        remove = true;
+                    }
+                });
+            });
+        if let Some((id, value)) = set_parameter {
+            self.vst3_runtime.set_parameter(track_id, slot, id, value);
+            self.vst3_runtime.capture_states(&mut self.data.project);
+            self.mark_modified();
+        }
+        if toggle_enabled
+            && let Some(track) = self
+                .data
+                .project
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == track_id)
+            && let Some(insert) = track.inserts.get_mut(slot)
+        {
+            insert.enabled = enabled;
+            self.rebuild_audio_plan();
+            self.mark_modified();
+        }
+        if open_editor {
+            let root = self.root_window_handle.unwrap_or_default();
+            match vst3_host::EditorWindow::create(&title, root) {
+                Ok(window) => match self
+                    .vst3_runtime
+                    .open_editor(track_id, slot, window.hwnd())
+                {
+                    Ok(()) => {
+                        self.vst3_editor_host = Some(window);
+                        self.vst3_editor_window = Some((track_id, slot));
+                    }
+                    Err(error) => self.status_message = format!("VST3 editor: {error}"),
+                },
+                Err(error) => self.status_message = error,
+            }
+        }
+        if close_editor {
+            self.vst3_runtime.close_editor(track_id, slot);
+            self.vst3_editor_host = None;
+            self.vst3_runtime.capture_states(&mut self.data.project);
+            self.vst3_editor_window = None;
+            self.mark_modified();
+        }
+        if remove {
+            if let Some(track) = self
+                .data
+                .project
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == track_id)
+                && slot < track.inserts.len()
+            {
+                track.inserts.remove(slot);
+            }
+            self.vst3_runtime.close_editor(track_id, slot);
+            self.vst3_editor_host = None;
+            self.vst3_editor_window = None;
+            self.vst3_parameter_window = None;
+            self.rebuild_audio_plan();
+            self.mark_modified();
+        } else if !open {
+            self.vst3_parameter_window = None;
+        }
     }
 
     fn show_event_colors_dialog(&mut self, ctx: &egui::Context) {
@@ -9039,6 +9339,9 @@ impl eframe::App for OpenTrackApp {
         self.show_audio_device_setup(&ctx);
         self.show_vst_connections(&ctx);
         if self.project_open {
+            self.show_vst3_windows(&ctx);
+        }
+        if self.project_open {
             self.show_project_setup(&ctx);
         }
         if !self.is_recording() {
@@ -12400,9 +12703,16 @@ fn show_channel_context_menu(response: &egui::Response, state: &mut ChannelSetti
         });
 }
 
-fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<Option<InsertEffectKind>>) {
+#[derive(Clone)]
+pub(super) enum InsertSelection {
+    Add(InsertEffectKind),
+    Remove,
+    Vst3,
+}
+
+fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<InsertSelection>) {
     if ui.button("No Effect").clicked() {
-        *added = Some(None);
+        *added = Some(InsertSelection::Remove);
         ui.close();
     }
     ui.separator();
@@ -12417,14 +12727,14 @@ fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<Option<Insert
             ui.add_enabled(false, egui::Button::new(name));
         }
         if ui.button("StereoDelay").clicked() {
-            *added = Some(Some(InsertEffectKind::default()));
+            *added = Some(InsertSelection::Add(InsertEffectKind::default()));
             ui.close();
         }
     });
     ui.menu_button("Distortion", |ui| show_unimplemented_effect_group(ui));
     ui.menu_button("Dynamics", |ui| {
         if ui.button("Compressor").clicked() {
-            *added = Some(Some(InsertEffectKind::Compressor {
+            *added = Some(InsertSelection::Add(InsertEffectKind::Compressor {
                 threshold_db: -20.0,
                 ratio: 2.0,
                 attack_ms: 1.0,
@@ -12479,7 +12789,7 @@ fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<Option<Insert
     ui.separator();
     ui.menu_button("OpenTrack Effects", |ui| {
         if ui.button("Test Generator").clicked() {
-            *added = Some(Some(InsertEffectKind::TestGenerator {
+            *added = Some(InsertSelection::Add(InsertEffectKind::TestGenerator {
                 waveform: GeneratorWaveform::Sine,
                 frequency_hz: 440.0,
                 gain_db: -18.0,
@@ -12487,17 +12797,24 @@ fn show_insert_effect_picker(ui: &mut egui::Ui, added: &mut Option<Option<Insert
             ui.close();
         }
     });
+    ui.separator();
+    if ui.button("VST3 Plug-in...").clicked() {
+        *added = Some(InsertSelection::Vst3);
+        ui.close();
+    }
 }
 
 fn show_unimplemented_effect_group(ui: &mut egui::Ui) {
     ui.add_enabled(false, egui::Button::new("No implemented effects"));
 }
 
-fn insert_effect_name(effect: &InsertEffectKind) -> &'static str {
+fn insert_effect_name(effect: &InsertEffectKind) -> String {
     match effect {
-        InsertEffectKind::TestGenerator { .. } => "Test Generator",
-        InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
-        InsertEffectKind::Compressor { .. } => "Compressor",
+        InsertEffectKind::TestGenerator { .. } => "Test Generator".to_owned(),
+        InsertEffectKind::StereoDelay { .. } => "Stereo Delay".to_owned(),
+        InsertEffectKind::Compressor { .. } => "Compressor".to_owned(),
+        InsertEffectKind::Vst3 { name, .. } if !name.is_empty() => name.clone(),
+        InsertEffectKind::Vst3 { .. } => "VST3 Plug-in".to_owned(),
     }
 }
 
@@ -13215,6 +13532,7 @@ fn show_mixer_legacy(
                                         InsertEffectKind::TestGenerator { .. } => "Test Generator",
                                         InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
                                         InsertEffectKind::Compressor { .. } => "Compressor",
+                                        InsertEffectKind::Vst3 { .. } => "VST3 Plug-in",
                                     };
                                     modified |=
                                         ui.checkbox(&mut insert.enabled, effect_name).changed();
@@ -13348,6 +13666,13 @@ fn show_mixer_legacy(
                                                     .text("Makeup (dB)"),
                                             )
                                             .changed();
+                                    }
+                                    InsertEffectKind::Vst3 { name, .. } => {
+                                        ui.label(if name.is_empty() {
+                                            "VST3 plug-in"
+                                        } else {
+                                            name.as_str()
+                                        });
                                     }
                                 }
                             });

@@ -285,6 +285,16 @@ T042 or Batch 3.
   boundary but not a security sandbox.
 - Next VST code: instance smoke-test/bus introspection, per-module job-object
   isolation and timeout, cache persistence, then block graph/PDC before hosting.
+- T043 now implements the actual hosting path: VST3s occupy the existing eight
+  insert slots, use a `HostedProcessor` block contract, a 64-frame hosted graph,
+  per-track PDC, opaque component/controller state, generic parameters and a
+  native editor window. See `tasks/T043-vst3-insert-hosting.md`. The existing
+  insert UI and signal chain remain the single path; built-ins are just other
+  insert choices.
+- TDR Nova smoke verification passed: 75 parameters, 184-sample latency, audio
+  block processed, 3,608-byte component state, editor available. The app still
+  needs its final build and live review; VST instruments/multi-out/sandboxing
+  and the catalog manager remain follow-up.
 
 ### Probe findings to carry forward
 

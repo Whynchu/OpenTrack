@@ -39,15 +39,28 @@ scanner process crashed. The loader now performs that handshake. Moving the
 output to an absolute path was also required because a loaded plug-in changed the
 process working directory.
 
+## T043 insert hosting (in progress)
+
+- `InsertEffectKind::Vst3` stores class ID, module hint, display names and
+  opaque component/controller state in the existing insert slots.
+- `Vst3Effect` now creates the component/controller, negotiates stereo main
+  buses, prepares and processes blocks, drains parameter changes, saves/restores
+  state, exposes generic parameters and owns a native editor view.
+- `opentrack-audio` accepts `HostedInsert`/`HostedProcessor`, processes hosted
+  plans in 64-frame blocks and applies per-track PDC. Plans without VSTs retain
+  the original per-sample path.
+- The app registry keeps instances alive across playback-plan rebuilds, captures
+  state before saving, and exposes `VST3 Plug-in...` in the existing insert
+  picker plus a parameter/editor window.
+- Real installed-plugin smoke testing and release verification are still
+  pending. The source path now exists; it is not yet accepted audio hosting.
+
 ## Not implemented
 
-- Component/controller creation, connection points, setup/activate/process.
-- Bus, parameter, latency, tail, and editor introspection.
-- Audio block graph, PDC, live MIDI routing, state save/restore, native editors,
-  missing-plugin handling, cache persistence/UI, per-module timeout/quarantine,
-  and the job object.
-- Universal compatibility. The current evidence covers one installed folder on
-  this machine.
+- Hosted VST3 instruments/MIDI routing, multi-out, sidechain, surround.
+- Offline bounce/tail handling, automation lanes, true sandboxing.
+- Per-module scanner timeout/quarantine/job object, cache persistence/UI.
+- Universal compatibility. Current evidence is one installed folder.
 
 ## Tests
 

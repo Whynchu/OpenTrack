@@ -2585,6 +2585,7 @@ mod tests {
                 equalizer: opentrack_core::project::ChannelEqualizer::default(),
                 inserts: Vec::new(),
                 inserts_bypassed: false,
+                hosted_inserts: Vec::new(),
                 monitor_input: None,
                 output_route: crate::PlaybackOutputRoute::Stereo,
             }],

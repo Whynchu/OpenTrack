@@ -608,6 +608,7 @@ pub(super) fn show(
                                     InsertEffectKind::TestGenerator { .. } => "Test Generator",
                                     InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
                                     InsertEffectKind::Compressor { .. } => "Compressor",
+                                    InsertEffectKind::Vst3 { .. } => "VST3 Plug-in",
                                 };
                                 ui.label(name);
                             }

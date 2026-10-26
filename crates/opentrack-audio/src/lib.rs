@@ -100,6 +100,22 @@ const TEST_TONE_LEVEL: f32 = 0.08;
 const MAX_DECODED_WAV_BYTES: u64 = 512 * 1024 * 1024;
 const PLAYBACK_PARAMETER_FADE_MS: u32 = 10;
 
+/// Maximum frames passed to a hosted processor in one `process` call.
+///
+/// Device callbacks are split into blocks of this size so the host never asks
+/// a prepared plug-in for more frames than it declared, while keeping the
+/// per-track block scratch and PDC look-ahead bounded. The value is a fixed
+/// engine constant rather than a device buffer size because the audio callback
+/// cannot allocate a plan-sized buffer when the device period changes.
+const HOSTED_BLOCK_FRAMES: usize = 64;
+
+/// Upper bound used when a plug-in reports latency for delay compensation.
+///
+/// Reported latency is untrusted input. Clamping it keeps every PDC ring
+/// buffer allocation bounded; the clamped value is still what playback
+/// compensates and what [`PlaybackPlan::hosted_latency_samples`] reports.
+const HOSTED_MAX_LATENCY_SECONDS: u32 = 10;
+
 /// A fully decoded mono or stereo WAV file held in memory.
 #[derive(Clone, Debug)]
 pub struct DecodedWav {
@@ -294,10 +310,88 @@ struct PlaybackTrackRuntime {
     settings: PlaybackTrackSettings,
     processor: std::cell::UnsafeCell<ChannelProcessor>,
     meter_accumulator: std::cell::UnsafeCell<[f32; 2]>,
+    hosted_latency_samples: u32,
+    hosted_delay_samples: u32,
+    hosted_buffers: std::cell::UnsafeCell<HostedTrackBuffers>,
+}
+
+/// Preallocated planar scratch owned by one track for the hosted block path.
+///
+/// `delay_*` is the PDC ring. Its state belongs to this plan snapshot: a plan
+/// rebuild creates a fresh ring and restarts the compensation delay. That is
+/// deliberate because carrying delay state between snapshots would require
+/// mutation or allocation on the audio thread when the plan changes.
+struct HostedTrackBuffers {
+    block_left: Vec<f32>,
+    block_right: Vec<f32>,
+    dry_left: Vec<f32>,
+    dry_right: Vec<f32>,
+    pre_left: Vec<f32>,
+    pre_right: Vec<f32>,
+    delay_left: Vec<f32>,
+    delay_right: Vec<f32>,
+    delay_cursor: usize,
+}
+
+impl HostedTrackBuffers {
+    fn new(block_processing: bool, delay_frames: usize) -> Self {
+        let block = |enabled: bool| {
+            if enabled {
+                vec![0.0; HOSTED_BLOCK_FRAMES]
+            } else {
+                Vec::new()
+            }
+        };
+        Self {
+            block_left: block(block_processing),
+            block_right: block(block_processing),
+            dry_left: block(block_processing),
+            dry_right: block(block_processing),
+            pre_left: block(block_processing),
+            pre_right: block(block_processing),
+            delay_left: vec![0.0; delay_frames],
+            delay_right: vec![0.0; delay_frames],
+            delay_cursor: 0,
+        }
+    }
+
+    /// Returns the compensated sample for this frame and stores the input.
+    /// A zero-length ring is the no-added-delay fast path.
+    fn delay_frame(&mut self, left: f32, right: f32) -> (f32, f32) {
+        if self.delay_left.is_empty() {
+            return (left, right);
+        }
+        let cursor = self.delay_cursor;
+        let delayed = (self.delay_left[cursor], self.delay_right[cursor]);
+        self.delay_left[cursor] = left;
+        self.delay_right[cursor] = right;
+        self.delay_cursor += 1;
+        if self.delay_cursor == self.delay_left.len() {
+            self.delay_cursor = 0;
+        }
+        delayed
+    }
+}
+
+fn hosted_track_latency(inserts: &[HostedInsert], latency_cap: u32) -> u32 {
+    inserts
+        .iter()
+        .filter(|insert| insert.enabled)
+        .fold(0_u32, |total, insert| {
+            total.saturating_add(insert.processor.latency_samples().min(latency_cap))
+        })
+        .min(latency_cap)
 }
 
 impl PlaybackTrackRuntime {
-    fn new(mut settings: PlaybackTrackSettings, tempo_bpm: f64, sample_rate: u32) -> Self {
+    fn new(
+        mut settings: PlaybackTrackSettings,
+        tempo_bpm: f64,
+        sample_rate: u32,
+        hosted_latency_samples: u32,
+        hosted_max_latency_samples: u32,
+        hosted_processing: bool,
+    ) -> Self {
         // Offset the playback schedule, leaving arrange positions untouched.
         let offset_beats = f64::from(settings.track_delay_ms) * tempo_bpm / 60_000.0;
         for clip in &mut settings.clips {
@@ -312,6 +406,9 @@ impl PlaybackTrackRuntime {
         for event in &mut settings.midi_controllers {
             event.position_beats = (event.position_beats + offset_beats).max(0.0);
         }
+        let hosted_delay_samples =
+            hosted_max_latency_samples.saturating_sub(hosted_latency_samples);
+        let hosted_delay_frames = usize::try_from(hosted_delay_samples).unwrap_or(0);
         let processor = ChannelProcessor::new(
             &settings.equalizer,
             &settings.inserts,
@@ -322,10 +419,14 @@ impl PlaybackTrackRuntime {
             tempo_bpm,
             sample_rate,
         );
+        let hosted_buffers = HostedTrackBuffers::new(hosted_processing, hosted_delay_frames);
         Self {
             settings,
             processor: std::cell::UnsafeCell::new(processor),
             meter_accumulator: std::cell::UnsafeCell::new([0.0; 2]),
+            hosted_latency_samples,
+            hosted_delay_samples,
+            hosted_buffers: std::cell::UnsafeCell::new(hosted_buffers),
         }
     }
 }
@@ -374,6 +475,50 @@ impl StereoMeter {
     }
 }
 
+/// One prepared hosted insert in a track's channel strip.
+///
+/// The processor is shared with the control side and must remain valid across
+/// playback-plan snapshots. Disabled inserts are reported but never processed.
+#[derive(Clone)]
+pub struct HostedInsert {
+    pub processor: Arc<dyn opentrack_plugins::HostedProcessor>,
+    pub enabled: bool,
+}
+
+impl HostedInsert {
+    /// Latency contributed to the track path by this insert. Disabled inserts
+    /// contribute nothing.
+    pub fn latency_samples(&self) -> u32 {
+        if self.enabled {
+            self.processor.latency_samples()
+        } else {
+            0
+        }
+    }
+
+    /// Tail length contributed by this insert, for future offline render.
+    pub fn tail_samples(&self) -> u32 {
+        if self.enabled {
+            self.processor.tail_samples()
+        } else {
+            0
+        }
+    }
+}
+
+/// Bounded, allocation-free report of hosted processing failures.
+///
+/// Only the most recent failure is retained. `last_error_code` is an FNV-1a
+/// hash of the processor's error text so the callback can record a diagnostic
+/// without storing or formatting strings.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HostedProcessingDiagnostic {
+    pub error_count: u64,
+    pub last_track: Option<usize>,
+    pub last_insert: Option<usize>,
+    pub last_error_code: Option<u32>,
+}
+
 /// Immutable channel-strip data assembled by the UI thread before publication.
 #[derive(Clone)]
 pub struct PlaybackTrackSettings {
@@ -392,6 +537,8 @@ pub struct PlaybackTrackSettings {
     pub equalizer: ChannelEqualizer,
     pub inserts: Vec<InsertEffect>,
     pub inserts_bypassed: bool,
+    /// Hosted (VST3-style) inserts, processed block-wise after `inserts`.
+    pub hosted_inserts: Vec<HostedInsert>,
     pub monitor_input: Option<PlaybackInputChannel>,
     pub output_route: PlaybackOutputRoute,
 }
@@ -416,6 +563,14 @@ pub enum PlaybackOutputRoute {
 // gate, while the UI reads atomic peaks and replaces the ArcSwap snapshot.
 unsafe impl Sync for PlaybackTrackRuntime {}
 
+const NO_HOSTED_ERROR: u32 = u32::MAX;
+
+fn hosted_error_code(message: &str) -> u32 {
+    message.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    })
+}
+
 /// Immutable audio state read by the device callback.
 pub struct PlaybackPlan {
     metronome: MetronomeSettings,
@@ -429,6 +584,12 @@ pub struct PlaybackPlan {
     cycle_mode: CycleMode,
     generation: u64,
     monitor_mute_mask: Vec<bool>,
+    hosted_processing: bool,
+    hosted_max_latency_samples: u32,
+    hosted_error_count: AtomicU64,
+    hosted_error_track: AtomicU32,
+    hosted_error_insert: AtomicU32,
+    hosted_error_code: AtomicU32,
     transition_from: ArcSwapOption<PlaybackPlan>,
     transition_position: AtomicU32,
     transition_frames: u32,
@@ -452,6 +613,12 @@ impl PlaybackPlan {
             cycle_mode: CycleMode::Loop,
             generation: 0,
             monitor_mute_mask: Vec::new(),
+            hosted_processing: false,
+            hosted_max_latency_samples: 0,
+            hosted_error_count: AtomicU64::new(0),
+            hosted_error_track: AtomicU32::new(NO_HOSTED_ERROR),
+            hosted_error_insert: AtomicU32::new(NO_HOSTED_ERROR),
+            hosted_error_code: AtomicU32::new(0),
             transition_from: ArcSwapOption::empty(),
             transition_position: AtomicU32::new(0),
             transition_frames: 0,
@@ -498,6 +665,15 @@ impl PlaybackPlan {
             .iter()
             .map(|track| track.monitor_input.is_some())
             .collect();
+        let hosted_processing = tracks.iter().any(|track| !track.hosted_inserts.is_empty());
+        // Delay compensation is part of the published plan. Ring buffers are
+        // sized here on the control thread; the callback never allocates.
+        let latency_cap = sample_rate.saturating_mul(HOSTED_MAX_LATENCY_SECONDS);
+        let track_latencies: Vec<u32> = tracks
+            .iter()
+            .map(|track| hosted_track_latency(&track.hosted_inserts, latency_cap))
+            .collect();
+        let hosted_max_latency_samples = track_latencies.iter().copied().max().unwrap_or(0);
         Self {
             output_bus: bus::BusRuntime::new(
                 &opentrack_core::project::BusChannel::output().strip,
@@ -509,13 +685,29 @@ impl PlaybackPlan {
             metronome_downbeat_frequency: MetronomeSettings::default().downbeat_frequency(),
             tracks: tracks
                 .into_iter()
-                .map(|track| PlaybackTrackRuntime::new(track, tempo_bpm, sample_rate))
+                .zip(track_latencies)
+                .map(|(track, latency)| {
+                    PlaybackTrackRuntime::new(
+                        track,
+                        tempo_bpm,
+                        sample_rate,
+                        latency,
+                        hosted_max_latency_samples,
+                        hosted_processing,
+                    )
+                })
                 .collect(),
             any_solo,
             loop_range_frames,
             cycle_mode: CycleMode::Loop,
             generation,
             monitor_mute_mask,
+            hosted_processing,
+            hosted_max_latency_samples,
+            hosted_error_count: AtomicU64::new(0),
+            hosted_error_track: AtomicU32::new(NO_HOSTED_ERROR),
+            hosted_error_insert: AtomicU32::new(NO_HOSTED_ERROR),
+            hosted_error_code: AtomicU32::new(0),
             transition_from: ArcSwapOption::empty(),
             transition_position: AtomicU32::new(0),
             transition_frames: (sample_rate.saturating_mul(PLAYBACK_PARAMETER_FADE_MS) / 1000)
@@ -525,8 +717,75 @@ impl PlaybackPlan {
     }
 
     fn begin_parameter_transition(&self, previous: Arc<PlaybackPlan>) {
+        if self.hosted_processing || previous.hosted_processing {
+            // Hosted processors are shared instances, not per-plan state. A
+            // dual-plan crossfade would call each instance twice per callback
+            // and would run two delay lines for the same track. Swap hosted
+            // plans directly and restart PDC from the new snapshot instead.
+            self.transition_position
+                .store(self.transition_frames, Ordering::Relaxed);
+            self.transition_from.store(None);
+            return;
+        }
         self.transition_position.store(0, Ordering::Relaxed);
         self.transition_from.store(Some(previous));
+    }
+
+    /// True when this plan uses the hosted block path. The legacy per-sample
+    /// path remains in use for plans with no hosted inserts.
+    pub fn hosted_processing_enabled(&self) -> bool {
+        self.hosted_processing
+    }
+
+    /// Maximum hosted insert latency in samples used for playback compensation.
+    pub fn hosted_latency_samples(&self) -> u32 {
+        self.hosted_max_latency_samples
+    }
+
+    /// PDC delay applied to one track, in samples. Returns `None` for an
+    /// unknown track index.
+    pub fn track_hosted_delay_samples(&self, track_index: usize) -> Option<u32> {
+        self.tracks
+            .get(track_index)
+            .map(|track| track.hosted_delay_samples)
+    }
+
+    /// Hosted latency reported by one track's enabled insert chain, in samples.
+    pub fn track_hosted_latency_samples(&self, track_index: usize) -> Option<u32> {
+        self.tracks
+            .get(track_index)
+            .map(|track| track.hosted_latency_samples)
+    }
+
+    /// Reads the bounded hosted-processing failure report.
+    pub fn hosted_processing_diagnostic(&self) -> HostedProcessingDiagnostic {
+        let track = self.hosted_error_track.load(Ordering::Relaxed);
+        let insert = self.hosted_error_insert.load(Ordering::Relaxed);
+        HostedProcessingDiagnostic {
+            error_count: self.hosted_error_count.load(Ordering::Relaxed),
+            last_track: (track != NO_HOSTED_ERROR).then_some(track as usize),
+            last_insert: (insert != NO_HOSTED_ERROR).then_some(insert as usize),
+            last_error_code: (track != NO_HOSTED_ERROR)
+                .then(|| self.hosted_error_code.load(Ordering::Relaxed)),
+        }
+    }
+
+    fn record_hosted_error(&self, track_index: usize, insert_index: usize, message: &str) {
+        let _ = self
+            .hosted_error_count
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                Some(count.saturating_add(1))
+            });
+        self.hosted_error_track.store(
+            u32::try_from(track_index).unwrap_or(NO_HOSTED_ERROR),
+            Ordering::Relaxed,
+        );
+        self.hosted_error_insert.store(
+            u32::try_from(insert_index).unwrap_or(NO_HOSTED_ERROR),
+            Ordering::Relaxed,
+        );
+        self.hosted_error_code
+            .store(hosted_error_code(message), Ordering::Relaxed);
     }
 
     fn detach_completed_transition(&self) -> Option<Arc<PlaybackPlan>> {
@@ -1148,6 +1407,10 @@ impl AudioEngine {
     }
     pub fn take_output_peaks(&self) -> [f32; 2] {
         self.plan.load().output_meter.take()
+    }
+
+    pub fn hosted_processing_diagnostic(&self) -> HostedProcessingDiagnostic {
+        self.plan.load().hosted_processing_diagnostic()
     }
 
     pub fn set_playing(&self, playing: bool) {
@@ -1864,64 +2127,83 @@ fn render_frames<T>(
         plan_snapshot.cycle_mode,
     );
     let mut output_peaks = [0.0_f32; 2];
-    for frame in samples.chunks_mut(channels) {
-        let (monitor_left, monitor_right) = if let Some(monitor) = monitor_snapshot.as_ref() {
-            monitor_reader.next_frame(monitor, sample_rate)
-        } else {
-            monitor_reader.reset();
-            (0.0, 0.0)
-        };
-        let click = plan_snapshot.metronome.sample_with_frequency(
-            output_frame,
+    if plan_snapshot.hosted_processing {
+        render_hosted_blocks(
+            samples,
+            channels,
             sample_rate,
-            plan_snapshot.tempo_bpm,
-            playing,
-            plan_snapshot.metronome_downbeat_frequency,
-        );
-        let mut external_input = (0.0, 0.0);
-        if tone.load(Ordering::Relaxed) {
-            let tone_sample = (*phase * std::f32::consts::TAU).sin() * TEST_TONE_LEVEL;
-            external_input.0 += tone_sample;
-            external_input.1 += tone_sample;
-        }
-        *phase += TEST_TONE_HZ / sample_rate as f32;
-        if *phase >= 1.0 {
-            *phase -= 1.0;
-        }
-        if let Some(midi) = live_midi.as_mut() {
-            let (midi_left, midi_right) = midi.next_frame(sample_rate);
-            external_input.0 += midi_left;
-            external_input.1 += midi_right;
-        }
-        let (bus_left, bus_right) = render_plan_frame(
+            tone,
             &plan_snapshot,
-            output_frame,
-            sample_rate,
-            (monitor_left, monitor_right),
-            external_input,
+            monitor_snapshot.as_deref(),
+            monitor_reader,
+            audition_snapshot.as_deref(),
             playing,
-            &plan_snapshot.monitor_mute_mask,
-            true,
+            &mut output_frame,
+            &mut output_peaks,
+            phase,
+            live_midi.as_deref_mut(),
+            &mut write_sample,
         );
-        // The metronome and note audition are direct monitor/output feeds. They
-        // bypass Stereo Out channel processing and its meter while remaining
-        // audible even when the transport is stopped.
-        let (audition_left, audition_right) = audition_snapshot
-            .as_ref()
-            .map_or((0.0, 0.0), |audition| audition.next_frame(sample_rate));
-        let left = bus_left + click + audition_left;
-        let right = bus_right + click + audition_right;
-        output_peaks[0] = output_peaks[0].max(bus_left.abs());
-        output_peaks[1] = output_peaks[1].max(bus_right.abs());
-        for (channel, sample) in frame.iter_mut().enumerate() {
-            write_sample(sample, channel, left, right);
-        }
-        if playing {
-            output_frame = wrap_playhead_frame(
-                output_frame.saturating_add(1),
-                plan_snapshot.loop_range_frames,
-                plan_snapshot.cycle_mode,
+    } else {
+        for frame in samples.chunks_mut(channels) {
+            let (monitor_left, monitor_right) = if let Some(monitor) = monitor_snapshot.as_ref() {
+                monitor_reader.next_frame(monitor, sample_rate)
+            } else {
+                monitor_reader.reset();
+                (0.0, 0.0)
+            };
+            let click = plan_snapshot.metronome.sample_with_frequency(
+                output_frame,
+                sample_rate,
+                plan_snapshot.tempo_bpm,
+                playing,
+                plan_snapshot.metronome_downbeat_frequency,
             );
+            let mut external_input = (0.0, 0.0);
+            if tone.load(Ordering::Relaxed) {
+                let tone_sample = (*phase * std::f32::consts::TAU).sin() * TEST_TONE_LEVEL;
+                external_input.0 += tone_sample;
+                external_input.1 += tone_sample;
+            }
+            *phase += TEST_TONE_HZ / sample_rate as f32;
+            if *phase >= 1.0 {
+                *phase -= 1.0;
+            }
+            if let Some(midi) = live_midi.as_mut() {
+                let (midi_left, midi_right) = midi.next_frame(sample_rate);
+                external_input.0 += midi_left;
+                external_input.1 += midi_right;
+            }
+            let (bus_left, bus_right) = render_plan_frame(
+                &plan_snapshot,
+                output_frame,
+                sample_rate,
+                (monitor_left, monitor_right),
+                external_input,
+                playing,
+                &plan_snapshot.monitor_mute_mask,
+                true,
+            );
+            // The metronome and note audition are direct monitor/output feeds. They
+            // bypass Stereo Out channel processing and its meter while remaining
+            // audible even when the transport is stopped.
+            let (audition_left, audition_right) = audition_snapshot
+                .as_ref()
+                .map_or((0.0, 0.0), |audition| audition.next_frame(sample_rate));
+            let left = bus_left + click + audition_left;
+            let right = bus_right + click + audition_right;
+            output_peaks[0] = output_peaks[0].max(bus_left.abs());
+            output_peaks[1] = output_peaks[1].max(bus_right.abs());
+            for (channel, sample) in frame.iter_mut().enumerate() {
+                write_sample(sample, channel, left, right);
+            }
+            if playing {
+                output_frame = wrap_playhead_frame(
+                    output_frame.saturating_add(1),
+                    plan_snapshot.loop_range_frames,
+                    plan_snapshot.cycle_mode,
+                );
+            }
         }
     }
     if playing {
@@ -1932,6 +2214,262 @@ fn render_frames<T>(
     drop(plan_snapshot);
     callback_generation.store(generation, Ordering::Release);
     callback_active.store(false, Ordering::SeqCst);
+}
+
+/// Hosted block renderer used only when a plan contains hosted inserts.
+///
+/// Every callback is split into [`HOSTED_BLOCK_FRAMES`] blocks. Each track is
+/// rendered into its preallocated planar scratch, its built-in channel strip is
+/// applied per sample, then enabled hosted inserts run once per block in order.
+/// All buffers are plan-owned or stack arrays; failures fall back to the
+/// post-built-in dry block and are reported through the plan's bounded atomics.
+#[allow(clippy::too_many_arguments)]
+fn render_hosted_blocks<T>(
+    samples: &mut [T],
+    channels: usize,
+    sample_rate: u32,
+    tone: &AtomicBool,
+    plan: &PlaybackPlan,
+    monitor: Option<&AudioMonitorBuffer>,
+    monitor_reader: &mut AudioMonitorReader,
+    audition: Option<&NoteAudition>,
+    playing: bool,
+    output_frame: &mut u64,
+    output_peaks: &mut [f32; 2],
+    phase: &mut f32,
+    mut live_midi: Option<&mut LiveMidiRenderer>,
+    write_sample: &mut impl FnMut(&mut T, usize, f32, f32),
+) {
+    let frame_count = samples.len() / channels;
+    let mut monitor_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
+    let mut monitor_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+    let mut frames = [0_u64; HOSTED_BLOCK_FRAMES];
+    let mut block_start = 0;
+    while block_start < frame_count {
+        let count = (frame_count - block_start).min(HOSTED_BLOCK_FRAMES);
+        for frame in frames[..count].iter_mut() {
+            *frame = *output_frame;
+            if playing {
+                *output_frame = wrap_playhead_frame(
+                    (*output_frame).saturating_add(1),
+                    plan.loop_range_frames,
+                    plan.cycle_mode,
+                );
+            }
+        }
+        if let Some(monitor) = monitor {
+            for index in 0..count {
+                let (left, right) = monitor_reader.next_frame(monitor, sample_rate);
+                monitor_left[index] = left;
+                monitor_right[index] = right;
+            }
+        } else {
+            monitor_reader.reset();
+            monitor_left[..count].fill(0.0);
+            monitor_right[..count].fill(0.0);
+        }
+
+        for (track_index, track) in plan.tracks.iter().enumerate() {
+            let inaudible = track.settings.muted
+                || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+            if inaudible && !track.settings.meter_peak.spectrum_enabled() {
+                continue;
+            }
+            render_hosted_track_block(
+                plan,
+                track,
+                track_index,
+                &frames[..count],
+                &monitor_left[..count],
+                &monitor_right[..count],
+                playing,
+                sample_rate,
+            );
+        }
+
+        for index in 0..count {
+            let output_frame = frames[index];
+            let mut left = 0.0;
+            let mut right = 0.0;
+            for track in plan.tracks.iter() {
+                let inaudible = track.settings.muted
+                    || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+                if inaudible && !track.settings.meter_peak.spectrum_enabled() {
+                    continue;
+                }
+                // SAFETY: callback_active admits exactly one renderer, which is
+                // the only writer of this track's block buffers and delay ring.
+                let buffers = unsafe { &mut *track.hosted_buffers.get() };
+                if buffers.block_left.len() < count {
+                    continue;
+                }
+                let pre = (buffers.pre_left[index], buffers.pre_right[index]);
+                let post = (buffers.block_left[index], buffers.block_right[index]);
+                track
+                    .settings
+                    .meter_peak
+                    .record_spectrum(pre, post, sample_rate);
+                if inaudible {
+                    continue;
+                }
+                let (track_left, track_right) = buffers.delay_frame(post.0, post.1);
+                // Linear stereo balance matches the legacy per-sample path.
+                let output_left =
+                    track_left * track.settings.gain * (1.0 - track.settings.pan.max(0.0));
+                let output_right =
+                    track_right * track.settings.gain * (1.0 + track.settings.pan.min(0.0));
+                // SAFETY: the same serialized callback owns this accumulator.
+                let accumulator = unsafe { &mut *track.meter_accumulator.get() };
+                accumulator[0] = accumulator[0].max(output_left.abs());
+                accumulator[1] = accumulator[1].max(output_right.abs());
+                match track.settings.output_route {
+                    PlaybackOutputRoute::Stereo => {
+                        left += output_left;
+                        right += output_right;
+                    }
+                    PlaybackOutputRoute::Left => left += (output_left + output_right) * 0.5,
+                    PlaybackOutputRoute::Right => right += (output_left + output_right) * 0.5,
+                    PlaybackOutputRoute::Disconnected => {}
+                }
+            }
+
+            let click = plan.metronome.sample_with_frequency(
+                output_frame,
+                sample_rate,
+                plan.tempo_bpm,
+                playing,
+                plan.metronome_downbeat_frequency,
+            );
+            let mut external_input = (0.0, 0.0);
+            if tone.load(Ordering::Relaxed) {
+                let tone_sample = (*phase * std::f32::consts::TAU).sin() * TEST_TONE_LEVEL;
+                external_input.0 += tone_sample;
+                external_input.1 += tone_sample;
+            }
+            *phase += TEST_TONE_HZ / sample_rate as f32;
+            if *phase >= 1.0 {
+                *phase -= 1.0;
+            }
+            if let Some(midi) = live_midi.as_mut() {
+                let (midi_left, midi_right) = midi.next_frame(sample_rate);
+                external_input.0 += midi_left;
+                external_input.1 += midi_right;
+            }
+            let (bus_left, bus_right) = finish_plan_frame(
+                plan,
+                output_frame,
+                left,
+                right,
+                sample_rate,
+                (monitor_left[index], monitor_right[index]),
+                external_input,
+                playing,
+                &plan.monitor_mute_mask,
+                true,
+            );
+            let (audition_left, audition_right) =
+                audition.map_or((0.0, 0.0), |audition| audition.next_frame(sample_rate));
+            let left = bus_left + click + audition_left;
+            let right = bus_right + click + audition_right;
+            output_peaks[0] = output_peaks[0].max(bus_left.abs());
+            output_peaks[1] = output_peaks[1].max(bus_right.abs());
+            let sample_start = (block_start + index) * channels;
+            for (channel, sample) in samples[sample_start..sample_start + channels]
+                .iter_mut()
+                .enumerate()
+            {
+                write_sample(sample, channel, left, right);
+            }
+        }
+        block_start += count;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_hosted_track_block(
+    plan: &PlaybackPlan,
+    track: &PlaybackTrackRuntime,
+    track_index: usize,
+    frames: &[u64],
+    monitor_left: &[f32],
+    monitor_right: &[f32],
+    playing: bool,
+    sample_rate: u32,
+) {
+    // SAFETY: callback_active admits exactly one renderer, which is the only
+    // writer of this track's processor, block buffers, and delay ring.
+    let buffers = unsafe { &mut *track.hosted_buffers.get() };
+    if buffers.block_left.len() < frames.len() {
+        return;
+    }
+    let processor = unsafe { &mut *track.processor.get() };
+    let monitor_only = track.settings.monitor_input.is_some()
+        || plan
+            .monitor_mute_mask
+            .get(track_index)
+            .copied()
+            .unwrap_or(false);
+    for (index, &output_frame) in frames.iter().enumerate() {
+        let timeline_beats =
+            output_frame as f64 * plan.tempo_bpm / (f64::from(sample_rate.max(1)) * 60.0);
+        let (mut track_left, mut track_right) = if playing && !monitor_only {
+            mix_track_frame(plan, track, timeline_beats)
+        } else {
+            (0.0, 0.0)
+        };
+        if let Some(input) = track.settings.monitor_input {
+            match input {
+                PlaybackInputChannel::Stereo => {
+                    track_left += monitor_left[index];
+                    track_right += monitor_right[index];
+                }
+                PlaybackInputChannel::Left => {
+                    track_left += monitor_left[index];
+                    track_right += monitor_left[index];
+                }
+                PlaybackInputChannel::Right => {
+                    track_left += monitor_right[index];
+                    track_right += monitor_right[index];
+                }
+            }
+        }
+        let (instrument_left, instrument_right) = if playing && !monitor_only {
+            processor.instrument.next_frame(output_frame)
+        } else {
+            (0.0, 0.0)
+        };
+        track_left += instrument_left;
+        track_right += instrument_right;
+        buffers.pre_left[index] = track_left;
+        buffers.pre_right[index] = track_right;
+    }
+
+    for index in 0..frames.len() {
+        let mut left = buffers.pre_left[index];
+        let mut right = buffers.pre_right[index];
+        processor.process(&mut left, &mut right);
+        buffers.block_left[index] = left;
+        buffers.block_right[index] = right;
+        // The post-built-in signal is the dry fallback if a hosted insert fails.
+        buffers.dry_left[index] = left;
+        buffers.dry_right[index] = right;
+    }
+
+    let count = frames.len();
+    for (insert_index, insert) in track.settings.hosted_inserts.iter().enumerate() {
+        if !insert.enabled {
+            continue;
+        }
+        if let Err(error) = insert.processor.process(
+            &mut buffers.block_left[..count],
+            &mut buffers.block_right[..count],
+        ) {
+            plan.record_hosted_error(track_index, insert_index, &error);
+            buffers.block_left[..count].copy_from_slice(&buffers.dry_left[..count]);
+            buffers.block_right[..count].copy_from_slice(&buffers.dry_right[..count]);
+            break;
+        }
+    }
 }
 
 fn publish_track_meters(plan: &PlaybackPlan) {
@@ -2073,7 +2611,7 @@ fn render_plan_frame(
     monitor_mute_mask: &[bool],
     analyze: bool,
 ) -> (f32, f32) {
-    let (mut left, mut right) = mix_frame_with_policy(
+    let (left, right) = mix_frame_with_policy(
         plan,
         output_frame,
         output_rate,
@@ -2082,6 +2620,37 @@ fn render_plan_frame(
         analyze,
         monitor_mute_mask,
     );
+    finish_plan_frame(
+        plan,
+        output_frame,
+        left,
+        right,
+        output_rate,
+        monitor_input,
+        external_input,
+        playing,
+        monitor_mute_mask,
+        analyze,
+    )
+}
+
+/// Applies external input, the output bus, and any parameter crossfade to an
+/// already mixed stereo frame. The hosted block path uses this after summing
+/// its block-rendered tracks, so output-bus processing and metering stay
+/// identical to the legacy per-sample path.
+#[allow(clippy::too_many_arguments)]
+fn finish_plan_frame(
+    plan: &PlaybackPlan,
+    output_frame: u64,
+    mut left: f32,
+    mut right: f32,
+    output_rate: u32,
+    monitor_input: (f32, f32),
+    external_input: (f32, f32),
+    playing: bool,
+    monitor_mute_mask: &[bool],
+    analyze: bool,
+) -> (f32, f32) {
     left += external_input.0;
     right += external_input.1;
     if analyze {
@@ -2771,6 +3340,10 @@ enum InsertProcessor {
         release_coefficient: f32,
         detector_envelope: f32,
     },
+    /// A project-level VST3 slot that is not attached to a hosted runtime.
+    /// Hosted audio runs through [`HostedInsert`] instead; this arm keeps the
+    /// built-in chain neutral until the project slot is bound.
+    Vst3Passthrough { enabled: bool },
 }
 
 #[cfg(test)]
@@ -2820,6 +3393,7 @@ mod processing_tests {
                     equalizer: ChannelEqualizer::default(),
                     inserts: vec![],
                     inserts_bypassed: false,
+                    hosted_inserts: Vec::new(),
                     monitor_input: None,
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
@@ -2911,6 +3485,7 @@ mod processing_tests {
                 equalizer: ChannelEqualizer::default(),
                 inserts: Vec::new(),
                 inserts_bypassed: false,
+                hosted_inserts: Vec::new(),
                 monitor_input: None,
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -2942,6 +3517,7 @@ mod processing_tests {
                     equalizer: ChannelEqualizer::default(),
                     inserts: Vec::new(),
                     inserts_bypassed: false,
+                    hosted_inserts: Vec::new(),
                     monitor_input: Some(PlaybackInputChannel::Stereo),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
@@ -3018,6 +3594,7 @@ mod processing_tests {
                     equalizer: ChannelEqualizer::default(),
                     inserts: vec![],
                     inserts_bypassed: false,
+                    hosted_inserts: Vec::new(),
                     monitor_input: None,
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
@@ -3100,6 +3677,7 @@ mod processing_tests {
                 equalizer: ChannelEqualizer::default(),
                 inserts: vec![],
                 inserts_bypassed: false,
+                hosted_inserts: Vec::new(),
                 monitor_input: None,
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -3679,6 +4257,7 @@ mod processing_tests {
                 equalizer: ChannelEqualizer::default(),
                 inserts: Vec::new(),
                 inserts_bypassed: false,
+                hosted_inserts: Vec::new(),
                 monitor_input: Some(PlaybackInputChannel::Stereo),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -3783,6 +4362,7 @@ mod processing_tests {
                     equalizer: ChannelEqualizer::default(),
                     inserts: Vec::new(),
                     inserts_bypassed: false,
+                    hosted_inserts: Vec::new(),
                     monitor_input: Some(PlaybackInputChannel::Stereo),
                     output_route: route,
                 }],
@@ -3864,6 +4444,7 @@ mod processing_tests {
                 equalizer: ChannelEqualizer::default(),
                 inserts: Vec::new(),
                 inserts_bypassed: false,
+                hosted_inserts: Vec::new(),
                 monitor_input: None,
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -3994,6 +4575,9 @@ impl InsertProcessor {
                     detector_envelope: 0.0,
                 }
             }
+            InsertEffectKind::Vst3 { .. } => Self::Vst3Passthrough {
+                enabled: insert.enabled,
+            },
         }
     }
 
@@ -4001,7 +4585,8 @@ impl InsertProcessor {
         match self {
             Self::TestGenerator { enabled, .. }
             | Self::StereoDelay { enabled, .. }
-            | Self::Compressor { enabled, .. } => *enabled,
+            | Self::Compressor { enabled, .. }
+            | Self::Vst3Passthrough { enabled } => *enabled,
         }
     }
 
@@ -4060,6 +4645,351 @@ impl InsertProcessor {
                 *left *= gain;
                 *right *= gain;
             }
+            Self::Vst3Passthrough { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod hosted_processing_tests {
+    use super::*;
+
+    struct GainProcessor {
+        gain: f32,
+        offset: f32,
+        latency: u32,
+        calls: AtomicU64,
+        fail: bool,
+    }
+
+    impl GainProcessor {
+        fn new(gain: f32, offset: f32, latency: u32, fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                gain,
+                offset,
+                latency,
+                calls: AtomicU64::new(0),
+                fail,
+            })
+        }
+    }
+
+    impl opentrack_plugins::HostedProcessor for GainProcessor {
+        fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(left.len(), right.len());
+            if self.fail {
+                return Err("synthetic hosted failure".to_owned());
+            }
+            for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+                *left = *left * self.gain + self.offset;
+                *right = *right * self.gain + self.offset;
+            }
+            Ok(())
+        }
+
+        fn latency_samples(&self) -> u32 {
+            self.latency
+        }
+
+        fn tail_samples(&self) -> u32 {
+            0
+        }
+    }
+
+    struct DelayState {
+        left: Vec<f32>,
+        right: Vec<f32>,
+        cursor: usize,
+    }
+
+    struct DelayProcessor {
+        latency: u32,
+        state: std::cell::UnsafeCell<DelayState>,
+        calls: AtomicU64,
+    }
+
+    // SAFETY: the test processor is only called by one serialized test render.
+    unsafe impl Sync for DelayProcessor {}
+
+    impl DelayProcessor {
+        fn new(latency: u32) -> Arc<Self> {
+            Arc::new(Self {
+                latency,
+                state: std::cell::UnsafeCell::new(DelayState {
+                    left: vec![0.0; latency as usize],
+                    right: vec![0.0; latency as usize],
+                    cursor: 0,
+                }),
+                calls: AtomicU64::new(0),
+            })
+        }
+    }
+
+    impl opentrack_plugins::HostedProcessor for DelayProcessor {
+        fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(left.len(), right.len());
+            // SAFETY: one serialized renderer owns this test processor.
+            let state = unsafe { &mut *self.state.get() };
+            if state.left.is_empty() {
+                return Ok(());
+            }
+            for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+                let cursor = state.cursor;
+                let delayed_left = state.left[cursor];
+                let delayed_right = state.right[cursor];
+                state.left[cursor] = *left;
+                state.right[cursor] = *right;
+                state.cursor += 1;
+                if state.cursor == state.left.len() {
+                    state.cursor = 0;
+                }
+                *left = delayed_left;
+                *right = delayed_right;
+            }
+            Ok(())
+        }
+
+        fn latency_samples(&self) -> u32 {
+            self.latency
+        }
+
+        fn tail_samples(&self) -> u32 {
+            0
+        }
+    }
+
+    fn source(samples: Vec<f32>) -> PlaybackSource {
+        PlaybackSource::Decoded(Arc::new(DecodedWav {
+            samples: samples.into(),
+            waveform_peaks: Arc::new(Vec::new()),
+            waveform: Arc::new(Waveform::default()),
+            channels: 1,
+            sample_rate: 48_000,
+        }))
+    }
+
+    fn constant_source(level: f32, frames: usize) -> PlaybackSource {
+        source(vec![level; frames])
+    }
+
+    fn track(source: PlaybackSource, hosted_inserts: Vec<HostedInsert>) -> PlaybackTrackSettings {
+        PlaybackTrackSettings {
+            clips: vec![PlaybackClip {
+                source_fades: Vec::new(),
+                source,
+                start_beats: 0.0,
+                source_offset_seconds: 0.0,
+                duration_seconds: 2.0,
+                fade_in_seconds: 0.0,
+                fade_out_seconds: 0.0,
+                gain: 1.0,
+                muted: false,
+                solo: false,
+            }],
+            midi_notes: Vec::new(),
+            midi_controllers: Vec::new(),
+            instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+            meter_peak: Arc::new(StereoMeter::default()),
+            gain: 1.0,
+            pan: 0.0,
+            track_delay_ms: 0.0,
+            muted: false,
+            solo: false,
+            solo_defeat: false,
+            equalizer: ChannelEqualizer::default(),
+            inserts: Vec::new(),
+            inserts_bypassed: false,
+            hosted_inserts,
+            monitor_input: None,
+            output_route: PlaybackOutputRoute::Stereo,
+        }
+    }
+
+    fn render(plan: Arc<PlaybackPlan>, frames: usize) -> Vec<f32> {
+        let plan = ArcSwap::from(plan);
+        let tone = AtomicBool::new(false);
+        let playing = AtomicBool::new(true);
+        let playhead = AtomicU64::new(0);
+        let generation = AtomicU64::new(0);
+        let active = AtomicBool::new(false);
+        let monitor = Arc::new(ArcSwapOption::empty());
+        let mut reader = AudioMonitorReader::default();
+        let mut phase = 0.0;
+        let mut samples = vec![0.0_f32; frames * 2];
+        render_f32(
+            &mut samples,
+            2,
+            48_000,
+            &tone,
+            &playing,
+            &playhead,
+            &plan,
+            &generation,
+            &active,
+            &monitor,
+            &mut reader,
+            &mut phase,
+        );
+        samples
+    }
+
+    #[test]
+    fn hosted_insert_processes_each_block_once_and_applies_gain() {
+        let gain = GainProcessor::new(2.0, 0.0, 0, false);
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![track(
+                constant_source(0.125, 256),
+                vec![HostedInsert {
+                    processor: gain.clone(),
+                    enabled: true,
+                }],
+            )],
+            1,
+            48_000,
+            None,
+        ));
+        let output = render(Arc::clone(&plan), 128);
+        assert_eq!(gain.calls.load(Ordering::Relaxed), 2);
+        assert!(plan.hosted_processing_enabled());
+        for sample in output {
+            assert!((sample - 0.25).abs() < 1.0e-6, "sample was {sample}");
+        }
+    }
+
+    #[test]
+    fn hosted_plan_transitions_do_not_process_the_shared_instance_twice() {
+        let gain = GainProcessor::new(2.0, 0.0, 0, false);
+        let settings = || {
+            vec![track(
+                constant_source(0.125, 256),
+                vec![HostedInsert {
+                    processor: gain.clone(),
+                    enabled: true,
+                }],
+            )]
+        };
+        let previous = Arc::new(PlaybackPlan::new(120.0, settings(), 1, 48_000, None));
+        let current = Arc::new(PlaybackPlan::new(120.0, settings(), 2, 48_000, None));
+        current.begin_parameter_transition(previous);
+        let output = render(Arc::clone(&current), 64);
+        assert_eq!(gain.calls.load(Ordering::Relaxed), 1);
+        for sample in output {
+            assert!((sample - 0.25).abs() < 1.0e-6, "sample was {sample}");
+        }
+    }
+
+    #[test]
+    fn pdc_delays_the_lower_latency_track_to_align_an_impulse() {
+        let mut impulse = vec![0.0_f32; 256];
+        impulse[0] = 0.5;
+        let delay = DelayProcessor::new(4);
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![
+                track(
+                    source(impulse.clone()),
+                    vec![HostedInsert {
+                        processor: delay.clone(),
+                        enabled: true,
+                    }],
+                ),
+                track(source(impulse), Vec::new()),
+            ],
+            1,
+            48_000,
+            None,
+        ));
+        assert_eq!(plan.hosted_latency_samples(), 4);
+        assert_eq!(plan.track_hosted_latency_samples(0), Some(4));
+        assert_eq!(plan.track_hosted_latency_samples(1), Some(0));
+        assert_eq!(plan.track_hosted_delay_samples(0), Some(0));
+        assert_eq!(plan.track_hosted_delay_samples(1), Some(4));
+        let output = render(Arc::clone(&plan), 16);
+        for (frame, pair) in output.chunks_exact(2).enumerate() {
+            let expected = if frame == 4 { 1.0 } else { 0.0 };
+            assert!(
+                (pair[0] - expected).abs() < 1.0e-6,
+                "frame {frame} left was {}",
+                pair[0]
+            );
+            assert!(
+                (pair[1] - expected).abs() < 1.0e-6,
+                "frame {frame} right was {}",
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn plan_without_hosted_inserts_keeps_the_legacy_path_and_zero_delay() {
+        let mut impulse = vec![0.0_f32; 256];
+        impulse[0] = 0.5;
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![track(source(impulse), Vec::new())],
+            1,
+            48_000,
+            None,
+        ));
+        assert!(!plan.hosted_processing_enabled());
+        assert_eq!(plan.hosted_latency_samples(), 0);
+        assert_eq!(plan.track_hosted_delay_samples(0), Some(0));
+        let output = render(plan, 16);
+        assert!((output[0] - 0.5).abs() < 1.0e-6);
+        assert!(output[2..].iter().all(|sample| sample.abs() < 1.0e-6));
+    }
+
+    #[test]
+    fn disabled_hosted_insert_is_skipped() {
+        let gain = GainProcessor::new(10.0, 0.0, 0, false);
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![track(
+                constant_source(0.125, 256),
+                vec![HostedInsert {
+                    processor: gain.clone(),
+                    enabled: false,
+                }],
+            )],
+            1,
+            48_000,
+            None,
+        ));
+        let output = render(plan, 128);
+        assert_eq!(gain.calls.load(Ordering::Relaxed), 0);
+        for sample in output {
+            assert!((sample - 0.125).abs() < 1.0e-6, "sample was {sample}");
+        }
+    }
+
+    #[test]
+    fn hosted_processor_error_falls_back_to_dry_without_panicking() {
+        let gain = GainProcessor::new(10.0, 0.0, 0, true);
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![track(
+                constant_source(0.125, 256),
+                vec![HostedInsert {
+                    processor: gain.clone(),
+                    enabled: true,
+                }],
+            )],
+            1,
+            48_000,
+            None,
+        ));
+        let output = render(Arc::clone(&plan), 128);
+        assert_eq!(gain.calls.load(Ordering::Relaxed), 2);
+        for sample in output {
+            assert!((sample - 0.125).abs() < 1.0e-6, "sample was {sample}");
+        }
+        let diagnostic = plan.hosted_processing_diagnostic();
+        assert_eq!(diagnostic.error_count, 2);
+        assert_eq!(diagnostic.last_track, Some(0));
+        assert_eq!(diagnostic.last_insert, Some(0));
+        assert!(diagnostic.last_error_code.is_some());
     }
 }

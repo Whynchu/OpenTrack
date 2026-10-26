@@ -23,6 +23,7 @@
 pub mod catalog;
 pub mod class_id;
 pub mod descriptor;
+pub mod runtime;
 
 pub use catalog::{
     AddPluginOutcome, CATALOG_FILE_NAME, CATALOG_SCHEMA_VERSION, PluginCacheKey, PluginCatalog,
@@ -34,3 +35,4 @@ pub use descriptor::{
     PluginBusDirection, PluginBusKind, PluginBusSummary, PluginCategory, PluginDescriptor,
     PluginFormat, PluginParameterSummary, PluginScanStatus,
 };
+pub use runtime::HostedProcessor;

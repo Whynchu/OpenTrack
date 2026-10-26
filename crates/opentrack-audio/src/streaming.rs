@@ -873,6 +873,7 @@ mod tests {
                 equalizer: super::super::ChannelEqualizer::default(),
                 inserts: Vec::new(),
                 inserts_bypassed: false,
+                hosted_inserts: Vec::new(),
                 monitor_input: None,
                 output_route: super::super::PlaybackOutputRoute::Stereo,
             }],
