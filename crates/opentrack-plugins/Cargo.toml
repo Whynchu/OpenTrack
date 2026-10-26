@@ -1,0 +1,16 @@
+[package]
+name = "opentrack-plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Format-neutral plug-in descriptors, catalog, and cache schema for OpenTrack"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
