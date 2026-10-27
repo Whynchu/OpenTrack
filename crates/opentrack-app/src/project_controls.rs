@@ -270,12 +270,40 @@ pub(super) fn label_ink(color: Color32) -> Color32 {
 pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
     let rect = Rect::from_center_size(center, Vec2::new(18.0, 16.0));
     let ink = theme::palette(ui).text;
-    let icon = match track.kind {
-        TrackKind::Audio => crate::icon_system::IconId::TrackAudio,
-        TrackKind::Midi => crate::icon_system::IconId::TrackMidi,
-        TrackKind::Instrument => crate::icon_system::IconId::TrackInstrument,
-    };
-    crate::icon_system::paint_app_icon(ui, rect, icon, ink);
+    if track.kind == TrackKind::Audio {
+        // Compact waveform glyph retained from the earlier Project track header.
+        let waveform = [
+            (-7.0, 0.0),
+            (-6.0, -2.0),
+            (-5.0, 3.0),
+            (-4.0, -4.0),
+            (-3.0, 5.0),
+            (-2.0, -6.0),
+            (-1.0, 3.0),
+            (0.0, 0.0),
+            (1.0, -4.0),
+            (2.0, 6.0),
+            (3.0, -5.0),
+            (4.0, 4.0),
+            (5.0, -3.0),
+            (6.0, 2.0),
+            (7.0, 0.0),
+        ];
+        ui.painter().add(egui::Shape::line(
+            waveform
+                .into_iter()
+                .map(|(x, y)| center + Vec2::new(x, y))
+                .collect(),
+            Stroke::new(1.4, ink),
+        ));
+    } else {
+        let icon = match track.kind {
+            TrackKind::Instrument => crate::icon_system::IconId::TrackMidi,
+            TrackKind::Midi => crate::icon_system::IconId::TrackInstrument,
+            TrackKind::Audio => unreachable!("audio icon is drawn above"),
+        };
+        crate::icon_system::paint_app_icon(ui, rect, icon, ink);
+    }
     ui.interact(rect, Id::new(("track-type-icon", track.id)), Sense::hover())
         .on_hover_text(match track.kind {
             TrackKind::Audio => "Audio Track",
@@ -283,7 +311,6 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
             TrackKind::Midi => "MIDI Track",
         });
 }
-
 pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) -> bool {
     let mut changed = false;
     let p = theme::palette(ui);

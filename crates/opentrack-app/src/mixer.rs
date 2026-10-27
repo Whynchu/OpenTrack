@@ -48,8 +48,13 @@ fn icon(ui: &egui::Ui, rect: Rect, icon: Icon, ink: Color32) {
         Icon::Edit => {
             let mut font = theme::control_label_font(ui, rect);
             font.size = (rect.height() * 0.68).clamp(10.0, 14.0);
-            ui.painter()
-                .text(rect.center(), Align2::CENTER_CENTER, "e", font, ink);
+            ui.painter().text(
+                rect.center() + Vec2::new(0.0, -1.0),
+                Align2::CENTER_CENTER,
+                "e",
+                font,
+                ink,
+            );
         }
         Icon::Record => crate::icon_system::paint_app_icon(ui, rect, IconId::Record, ink),
         other => {
@@ -1256,7 +1261,12 @@ fn fader_impl(
         Pos2::new(r.left() + 39.0, rail.top() - 18.0),
         Pos2::new(r.left() + 61.0, rail.bottom() + 18.0),
     );
-    ui.painter().rect_filled(well, 3.0, p.canvas);
+    let well_fill = if ui.visuals().dark_mode {
+        Color32::from_gray(145)
+    } else {
+        Color32::from_gray(205)
+    };
+    ui.painter().rect_filled(well, 3.0, well_fill);
     ui.painter().rect_stroke(
         well,
         3.0,
@@ -1280,16 +1290,17 @@ fn fader_impl(
     }
     super::paint_track_meter_channels(ui, meter, peaks, color, channels);
     super::paint_peak_markers_channels(ui, meter, held_peak.markers, channels);
+    let guide_color = Color32::from_gray(if ui.visuals().dark_mode { 48 } else { 72 });
     for db in [6.0206_f32, 0.0, -6.0, -12.0, -18.0, -24.0, -30.0] {
         let fraction = channel_gain::gain_to_position(10.0_f32.powf(db / 20.0));
         let y = egui::lerp(rail.y_range(), fraction);
         ui.painter().line_segment(
             [Pos2::new(r.left() + 41.0, y), Pos2::new(r.left() + 46.0, y)],
-            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, p.muted),
+            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, guide_color),
         );
         ui.painter().line_segment(
             [Pos2::new(r.left() + 54.0, y), Pos2::new(r.left() + 59.0, y)],
-            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, p.muted),
+            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, guide_color),
         );
     }
     let fraction = channel_gain::gain_to_position(*gain);
