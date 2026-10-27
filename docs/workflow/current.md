@@ -12,7 +12,10 @@ README use the new SVG mark; the menu row has no extra logo. Startup displays
 the dark splash artwork briefly and allows click-to-dismiss. The GitHub banner
 is in `docs/images/opentrack-github-banner.svg` for the repository social image.
 The native window/taskbar icon is rasterized at 256px for cleaner Windows
-downsampling.
+downsampling and uses a tighter SVG viewBox to make the mark fill more of the
+icon. The transparent GitHub wordmark is displayed at 440px in a dark README
+band. The README screenshots now show the supplied Project/VST and Sample
+Editor/Pitch & Time views.
 
 Tabler v3.49.0 (commit bbed884) is pinned and only required verified SVGs are
 vendored, with MIT notice. The central renderer and resvg cache cover toolbar,
@@ -26,7 +29,7 @@ full source inventory, mapping and screenshot limitation. The enlarged state
 specimen is `docs/reviews/tabler-toolbar-specimen.svg`. Source validation and
 the staged x64 local-ASIO build pass. Current executable: `builds/x64/OpenTrack.exe`,
 x64 with local ASIO, SHA-256
-`3DEE4E460FBC060ED7662100C3256CDC2FFE44262AB8BC345DADF0E88B6010B8`. Live
+`CA89FF580C3B9C9F7B2E04DE0AA0A699D02C2240C5136738F72D42CBF57B793B`. Live
 desktop screenshot and cursor hotspot review await the user's screenshot
 because this session cannot capture the Windows desktop. Audio and editing
 behavior are unchanged.
