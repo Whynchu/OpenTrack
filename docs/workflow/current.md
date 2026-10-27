@@ -1,4 +1,24 @@
-# Current assignment - T051
+# Current assignment - T052
+
+Updated: 2026-10-27. Implementer: GPT-6.1 Sol. User review pending.
+
+## T052 - Mixer meters, fader rail and numeric gain
+
+Mono Mixer and Channel Settings tracks now draw one full-width meter lane;
+stereo tracks retain independent L/R lanes and their separator. The shared
+fader has a dark inset slot with shorter travel capped at 240 logical pixels.
+Its thumb and gain mapping retain the existing range and fine-drag behavior.
+Double-clicking the current dB readout opens an inline editor: Enter/focus loss
+commits, Escape cancels, invalid input leaves gain unchanged, and -inf mutes.
+Gain commits use the existing Track::gain and project history/persistence path.
+
+Packet: `docs/workflow/tasks/T052-mixer-meter-fader-editing.md`. Ten targeted
+checks, formatting and ledger validation pass. The x64 local-ASIO build is
+staged at `builds/x64/OpenTrack.exe`, SHA-256
+`7E7D3BF349F418ECD9528734CAD0FC58714655FF66B7570AD8923EFD498983D9`.
+Live visual/audio review is pending.
+
+## Prior assignment - T051
 
 Updated: 2026-10-27. Implementer: GPT-6.1 Sol. User visual review pending.
 

@@ -13654,8 +13654,18 @@ fn meter_fill_fraction(peak: f32) -> f32 {
     ((20.0 * peak.log10() + 60.0) / (60.0 + channel_gain::MAX_DB)).clamp(0.0, 1.0)
 }
 fn paint_peak_markers(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
-    let width = ((rect.width() - 1.0) * 0.5).max(1.0);
-    for (i, peak) in peaks.into_iter().enumerate() {
+    paint_peak_markers_channels(ui, rect, peaks, 2);
+}
+
+fn paint_peak_markers_channels(ui: &egui::Ui, rect: Rect, peaks: [f32; 2], channels: u8) {
+    let count = usize::from(channels.clamp(1, 2));
+    let width = ((rect.width() - (count - 1) as f32) / count as f32).max(1.0);
+    for i in 0..count {
+        let peak = if count == 1 {
+            peaks[0].max(peaks[1])
+        } else {
+            peaks[i]
+        };
         if peak <= 0.001 {
             continue;
         }
@@ -13677,12 +13687,28 @@ fn paint_peak_markers(ui: &egui::Ui, rect: Rect, peaks: [f32; 2]) {
 }
 
 fn paint_track_meter(ui: &egui::Ui, rect: Rect, peaks: [f32; 2], color: Color32) {
+    paint_track_meter_channels(ui, rect, peaks, color, 2);
+}
+
+fn paint_track_meter_channels(
+    ui: &egui::Ui,
+    rect: Rect,
+    peaks: [f32; 2],
+    color: Color32,
+    channels: u8,
+) {
     let palette = theme::palette(ui);
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 0.0, palette.canvas);
-    let width = ((rect.width() - 1.0) * 0.5).max(1.0);
+    let count = usize::from(channels.clamp(1, 2));
+    let width = ((rect.width() - (count - 1) as f32) / count as f32).max(1.0);
     let zero_y = rect.bottom() - rect.height() * meter_fill_fraction(1.0);
-    for (index, peak) in peaks.into_iter().enumerate() {
+    for index in 0..count {
+        let peak = if count == 1 {
+            peaks[0].max(peaks[1])
+        } else {
+            peaks[index]
+        };
         let channel = Rect::from_min_size(
             rect.min + Vec2::new(index as f32 * (width + 1.0), 0.0),
             Vec2::new(width, rect.height()),
@@ -13723,6 +13749,36 @@ fn paint_track_meter(ui: &egui::Ui, rect: Rect, peaks: [f32; 2], color: Color32)
 #[cfg(test)]
 mod meter_tests {
     use super::*;
+    #[test]
+    fn mono_meter_is_one_full_lane_and_stereo_keeps_two_separated_lanes() {
+        for channels in [1, 2] {
+            let ctx = egui::Context::default();
+            let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(16.0, 100.0));
+            let color = Color32::from_rgb(41, 179, 102);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                paint_track_meter_channels(ui, rect, [0.5, 0.25], color, channels);
+            });
+            let lanes: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(shape) if shape.fill == color => Some(shape.rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(lanes.len(), usize::from(channels));
+            if channels == 1 {
+                assert_eq!(lanes[0].width(), rect.width());
+                assert!(
+                    (lanes[0].height() - rect.height() * meter_fill_fraction(0.5)).abs() < 0.001
+                );
+            } else {
+                assert_eq!(lanes[1].left() - lanes[0].right(), 1.0);
+                assert!(lanes[0].height() > lanes[1].height());
+            }
+            output.textures_delta.clear();
+        }
+    }
     #[test]
     fn stereo_meter_only_lights_red_above_unity() {
         let ctx = egui::Context::default();

@@ -1,12 +1,23 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "transport-v18-native-transport-window",
+    "version": "transport-v19-mixer-gain-entry",
     "description": "Project transport/navigation, clipboard, monophonic Pitch & Time editing/processing, Project event controls, take lanes, shared Mixer interaction, native Transport window, child-window shortcuts, and window pinning; whole DAW inventory remains separate.",
     "baseline_complete": true,
     "change_reason": "T041 added Shift activation during a held pitch drag, neighbor stretching and reset behavior. T047 adds anchored pitch-edge bending, dedicated note timing handles, and Project take-lane visibility and controls. No existing requirement was removed. T048 adds a branded native window icon, focused child-window transport shortcuts, and a persisted always-on-top Transport window. No existing requirement was removed."
   },
   "evidence": {
+    "t052-user": {
+      "kind": "user",
+      "location": "docs/workflow/tasks/T052-mixer-meter-fader-editing.md",
+      "note": "Mono Mixer strips require one meter lane, stereo retains L/R lanes, shorter fader travel retains the gain range, and double-click gain readout supports numeric editing."
+    },
+    "t052-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T052-mixer-meter-fader-editing.md",
+      "identity": "git:a097613 plus T052 diff; exe:sha256:7E7D3BF349F418ECD9528734CAD0FC58714655FF66B7570AD8923EFD498983D9",
+      "note": "Ten targeted checks pass, including simulated numeric edit commit/cancel/focus loss, invalid input, channel lane geometry, gain endpoints and fine drag. Live visual/audio acceptance remains pending."
+    },
     "intent-2026-10-24": {
       "kind": "user",
       "location": "docs/workflow/README.md#recorded-user-intent--2026-10-24",
@@ -1763,17 +1774,19 @@
     {
       "id": "mixer-fader-and-track-selection",
       "weight": 2,
-      "outcome": "Mixer fader caps are rectangular and clicking anywhere on a track channel strip selects the same shared track in Project and Inspector.",
+      "outcome": "Mixer fader caps are rectangular; track strip clicks select the shared Project/Inspector track. Mono meters use one lane and stereo retains L/R lanes. Shorter fader travel retains the gain range, and double-clicking the gain readout supports numeric entry, mute, commit and cancel.",
       "implementation": "complete",
       "source_evidence": [
         "t039-source",
         "batch3-source",
-        "t049-source"
+        "t049-source",
+        "t052-source"
       ],
       "reference": {
         "status": "user_specified",
         "evidence": [
-          "t041-intent"
+          "t041-intent",
+          "t052-user"
         ]
       },
       "runtime": {

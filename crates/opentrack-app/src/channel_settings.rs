@@ -1528,6 +1528,7 @@ fn strip(
             virtual_rect,
             &mut track.gain,
             peak,
+            track.audio_channels,
             track.id,
             held_peak,
             fader_color,

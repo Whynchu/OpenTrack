@@ -952,7 +952,16 @@ fn strip(
             modified = true;
         }
         let fader_color = project_controls::track_color(track);
-        modified |= fader(ui, r, &mut track.gain, peak, true, held_peak, fader_color);
+        modified |= fader(
+            ui,
+            r,
+            &mut track.gain,
+            peak,
+            track.audio_channels,
+            true,
+            held_peak,
+            fader_color,
+        );
         let name_rect = Rect::from_min_size(
             Pos2::new(r.left(), r.bottom() - 29.0),
             Vec2::new(r.width(), 16.0),
@@ -1041,16 +1050,163 @@ fn footer(
     changed
 }
 
+fn fader_rail(r: Rect) -> Rect {
+    let top = r.top() + 104.0;
+    let bottom = r.bottom() - 69.0;
+    let travel = (bottom - top - 40.0).clamp(24.0, 240.0);
+    Rect::from_center_size(
+        Pos2::new(r.left() + 50.0, (top + bottom) * 0.5),
+        Vec2::new(2.0, travel),
+    )
+}
+
+#[derive(Clone)]
+struct GainEdit {
+    text: String,
+    original_text: String,
+    original_gain: f32,
+    focus: bool,
+    invalid: bool,
+}
+
+fn parse_gain_value(text: &str) -> Option<f32> {
+    let text = text.trim().to_lowercase().replace('\u{2212}', "-");
+    let text = text.trim_end_matches("db").trim();
+    if matches!(text, "-inf" | "-infinity" | "-\u{221e}") {
+        return Some(0.0);
+    }
+    let db = text.parse::<f32>().ok()?;
+    db.is_finite().then(|| {
+        if db >= channel_gain::MAX_DB {
+            opentrack_core::project::MAX_CHANNEL_GAIN
+        } else {
+            10.0_f32.powf(db.max(channel_gain::MIN_DB) / 20.0)
+        }
+    })
+}
+
+fn gain_value(ui: &mut egui::Ui, rect: Rect, gain: &mut f32, enabled: bool, id: egui::Id) -> bool {
+    let edit = ui.data(|data| data.get_temp::<GainEdit>(id));
+    if let Some(mut edit) = edit.filter(|_| enabled) {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        let mut out = egui::TextEdit::singleline(&mut edit.text)
+            .id(id.with("text"))
+            .font(FontId::proportional(11.0))
+            .margin(Vec2::new(2.0, 0.0))
+            .desired_width(rect.width())
+            .show(&mut child);
+        let focusing = edit.focus;
+        if edit.focus {
+            out.response.request_focus();
+            out.state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(edit.text.chars().count()),
+                )));
+            out.state.store(ui.ctx(), out.response.id);
+            edit.focus = false;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ui.data_mut(|data| data.remove::<GainEdit>(id));
+            return false;
+        }
+        let commit = ui.input(|i| i.key_pressed(egui::Key::Enter))
+            || (!focusing && out.response.lost_focus());
+        if commit {
+            let value = if edit.text == edit.original_text {
+                Some(edit.original_gain)
+            } else {
+                parse_gain_value(&edit.text)
+            };
+            if let Some(value) = value {
+                ui.data_mut(|data| data.remove::<GainEdit>(id));
+                let changed = *gain != value;
+                *gain = value;
+                return changed;
+            }
+            edit.invalid = true;
+            out.response.request_focus();
+        } else if out.response.changed() {
+            edit.invalid = false;
+        }
+        if edit.invalid {
+            ui.painter().rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.0, theme::RECORD),
+                egui::StrokeKind::Inside,
+            );
+        }
+        egui::Response::clone(&out.response)
+            .on_hover_text("Enter dB or -inf; Enter to apply, Escape to cancel");
+        ui.data_mut(|data| data.insert_temp(id, edit));
+        return false;
+    }
+    let value = if *gain <= 0.0 {
+        "\u{2212}\u{221e}".to_owned()
+    } else {
+        format!("{:.2}", super::linear_gain_db(*gain))
+    };
+    text(
+        ui,
+        rect,
+        &value,
+        11.0,
+        theme::control_ink(theme::palette(ui).canvas, enabled),
+        Align2::LEFT_CENTER,
+    );
+    let response = ui
+        .interact(
+            rect,
+            id,
+            if enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        )
+        .on_hover_text("Channel Level (double-click to enter dB)");
+    if response.double_clicked() {
+        ui.data_mut(|data| {
+            data.insert_temp(
+                id,
+                GainEdit {
+                    original_text: value.clone(),
+                    text: value,
+                    original_gain: *gain,
+                    focus: true,
+                    invalid: false,
+                },
+            )
+        });
+        ui.ctx().request_repaint();
+    }
+    false
+}
+
 fn fader(
     ui: &mut egui::Ui,
     r: Rect,
     gain: &mut f32,
     peak: [f32; 2],
+    channels: u8,
     enabled: bool,
     held_peak: &mut metering::Hold,
     color: Color32,
 ) -> bool {
-    fader_impl(ui, r, gain, peak, enabled, "mixer-fader", held_peak, color).0
+    fader_impl(
+        ui,
+        r,
+        gain,
+        peak,
+        channels,
+        enabled,
+        "mixer-fader",
+        held_peak,
+        color,
+    )
+    .0
 }
 
 pub(super) fn channel_settings_fader(
@@ -1058,6 +1214,7 @@ pub(super) fn channel_settings_fader(
     r: Rect,
     gain: &mut f32,
     peak: [f32; 2],
+    channels: u8,
     track_id: u64,
     held_peak: &mut metering::Hold,
     color: Color32,
@@ -1067,6 +1224,7 @@ pub(super) fn channel_settings_fader(
         r,
         gain,
         peak,
+        channels,
         true,
         ("channel-settings-fader", track_id),
         held_peak,
@@ -1083,29 +1241,31 @@ fn fader_impl(
     r: Rect,
     gain: &mut f32,
     peaks: [f32; 2],
+    channels: u8,
     enabled: bool,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     held_peak: &mut metering::Hold,
     color: Color32,
 ) -> (bool, Option<egui::Response>) {
     let p = theme::palette(ui);
+    let fader_id = ui.id().with(id_salt);
     let top = r.top() + 104.0;
     let bottom = r.bottom() - 69.0;
-    let plate = Rect::from_min_max(
-        Pos2::new(r.left() + 39.0, top - 3.0),
-        Pos2::new(r.right() - 2.0, bottom + 3.0),
+    let rail = fader_rail(r);
+    let well = Rect::from_min_max(
+        Pos2::new(r.left() + 39.0, rail.top() - 18.0),
+        Pos2::new(r.left() + 61.0, rail.bottom() + 18.0),
     );
-    let plate_color = if ui.visuals().dark_mode {
-        Color32::from_gray(145)
-    } else {
-        Color32::from_gray(205)
-    };
-    ui.painter().rect_filled(plate, 2.0, plate_color);
-    let rail = Rect::from_min_max(
-        Pos2::new(r.left() + 49.0, top + 5.0),
-        Pos2::new(r.left() + 51.0, bottom - 5.0),
+    ui.painter().rect_filled(well, 3.0, p.canvas);
+    ui.painter().rect_stroke(
+        well,
+        3.0,
+        Stroke::new(0.75, p.muted.gamma_multiply(0.3)),
+        egui::StrokeKind::Inside,
     );
-    ui.painter().rect_filled(rail, 0.0, p.surface);
+    ui.painter()
+        .rect_filled(rail.expand(1.0), 2.0, p.surface_raised);
+    ui.painter().rect_filled(rail, 1.0, p.canvas);
     let meter = Rect::from_min_max(
         Pos2::new(r.left() + 62.0, top + 1.0),
         Pos2::new(r.right() - 5.0, bottom - 1.0),
@@ -1118,14 +1278,18 @@ fn fader_impl(
             Stroke::new(0.6, p.surface_raised),
         );
     }
-    super::paint_track_meter(ui, meter, peaks, color);
-    super::paint_peak_markers(ui, meter, held_peak.markers);
+    super::paint_track_meter_channels(ui, meter, peaks, color, channels);
+    super::paint_peak_markers_channels(ui, meter, held_peak.markers, channels);
     for db in [6.0206_f32, 0.0, -6.0, -12.0, -18.0, -24.0, -30.0] {
         let fraction = channel_gain::gain_to_position(10.0_f32.powf(db / 20.0));
         let y = egui::lerp(rail.y_range(), fraction);
         ui.painter().line_segment(
-            [Pos2::new(r.left() + 42.0, y), Pos2::new(r.left() + 59.0, y)],
-            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, p.surface),
+            [Pos2::new(r.left() + 41.0, y), Pos2::new(r.left() + 46.0, y)],
+            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, p.muted),
+        );
+        ui.painter().line_segment(
+            [Pos2::new(r.left() + 54.0, y), Pos2::new(r.left() + 59.0, y)],
+            Stroke::new(if db == 0.0 { 1.2 } else { 0.7 }, p.muted),
         );
     }
     let fraction = channel_gain::gain_to_position(*gain);
@@ -1153,14 +1317,7 @@ fn fader_impl(
     );
     let mut changed = false;
     let response = if enabled {
-        let response = ui.interact(
-            Rect::from_min_max(
-                Pos2::new(r.left() + 39.0, top),
-                Pos2::new(r.left() + 61.0, bottom),
-            ),
-            ui.id().with(id_salt),
-            Sense::click_and_drag(),
-        );
+        let response = ui.interact(well, fader_id, Sense::click_and_drag());
         let drag_id = response.id.with("fader-drag-position");
         if response.drag_started() {
             ui.data_mut(|data| data.insert_temp(drag_id, channel_gain::gain_to_position(*gain)));
@@ -1241,23 +1398,16 @@ fn fader_impl(
         *held_peak = metering::Hold::default();
     }
 
-    text(
+    changed |= gain_value(
         ui,
         Rect::from_min_size(
             level.min + Vec2::new(2.0, 11.0),
             Vec2::new(level.width() - 4.0, 17.0),
         ),
-        &if *gain <= 0.0 {
-            "\u{2212}\u{221e}".to_owned()
-        } else {
-            format!("{:.2}", super::linear_gain_db(*gain))
-        },
-        11.0,
-        p.text,
-        Align2::LEFT_CENTER,
+        gain,
+        enabled,
+        fader_id.with("channel-level-edit"),
     );
-    ui.interact(level, ui.id().with("channel-level"), Sense::hover())
-        .on_hover_text("Channel Level");
     (changed, response)
 }
 
@@ -1265,12 +1415,110 @@ fn fader_impl(
 mod bus_tests {
     use super::*;
     #[test]
+    fn numeric_fader_gain_accepts_db_and_mute_but_rejects_nonfinite_input() {
+        assert!((parse_gain_value("-6 dB").unwrap() - 10.0_f32.powf(-6.0 / 20.0)).abs() < 0.00001);
+        assert_eq!(parse_gain_value("0"), Some(1.0));
+        assert_eq!(parse_gain_value("-inf"), Some(0.0));
+        assert_eq!(parse_gain_value("\u{2212}\u{221e}"), Some(0.0));
+        assert_eq!(
+            parse_gain_value("+90"),
+            Some(opentrack_core::project::MAX_CHANNEL_GAIN)
+        );
+        assert!((20.0 * parse_gain_value("-90").unwrap().log10() + 30.0).abs() < 0.001);
+        for value in ["NaN", "inf", "abc", ""] {
+            assert!(parse_gain_value(value).is_none());
+        }
+    }
+
+    #[test]
+    fn fader_travel_is_bounded_and_retains_full_gain_range() {
+        for height in [320.0, 500.0, 900.0] {
+            let strip = Rect::from_min_size(Pos2::ZERO, Vec2::new(84.0, height));
+            let rail = fader_rail(strip);
+            assert!(rail.height() <= 240.0);
+            assert!(rail.top() - 15.5 > strip.top() + 104.0);
+            assert!(rail.bottom() + 15.5 < strip.bottom() - 69.0);
+            assert_eq!(channel_gain::position_to_gain(1.0), 0.0);
+            assert!((channel_gain::position_to_gain(0.0) - 2.0).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn double_click_level_edits_real_gain_with_enter_escape_and_invalid_input() {
+        fn edit(initial_gain: f32, value: &str, key: egui::Key) -> (f32, bool) {
+            let ctx = egui::Context::default();
+            let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(60.0, 18.0));
+            let mut gain = initial_gain;
+            let mut active = false;
+            let click = |pressed| {
+                vec![
+                    egui::Event::PointerMoved(rect.center()),
+                    egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            let frames = vec![
+                vec![],
+                vec![],
+                click(true),
+                click(false),
+                click(true),
+                click(false),
+                vec![],
+                vec![egui::Event::Text(value.to_owned())],
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                vec![],
+            ];
+            for (frame, events) in frames.into_iter().enumerate() {
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
+                        time: Some(frame as f64 * 0.05),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let id = ui.id().with("channel-level-edit");
+                        gain_value(ui, rect, &mut gain, true, id);
+                        active = ui.data(|data| {
+                            data.get_temp::<GainEdit>(ui.id().with("channel-level-edit"))
+                                .is_some()
+                        });
+                    },
+                );
+                out.textures_delta.clear();
+            }
+            (gain, active)
+        }
+        let (gain, active) = edit(1.0, "-6", egui::Key::Enter);
+        assert!((20.0 * gain.log10() + 6.0).abs() < 0.001);
+        assert!(!active);
+        assert_eq!(edit(1.0, "-12", egui::Key::Escape), (1.0, false));
+        assert_eq!(edit(1.0, "invalid", egui::Key::Enter), (1.0, true));
+        let (gain, active) = edit(1.0, "-9", egui::Key::Tab);
+        assert!((20.0 * gain.log10() + 9.0).abs() < 0.001);
+        assert!(!active, "focus loss commits valid numeric input");
+        assert_eq!(edit(0.001, "-60.00", egui::Key::Tab), (0.001, false));
+    }
+
+    #[test]
     fn fader_click_endpoints_and_shift_drag_control_real_gain() {
         fn drag(shift: bool, start_gain: f32, delta: f32) -> f32 {
             let ctx = egui::Context::default();
             let mut gain = start_gain;
             let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(84.0, 500.0));
-            let y = 109.0 + channel_gain::gain_to_position(gain) * 317.0;
+            let rail = fader_rail(rect);
+            let y = egui::lerp(rail.y_range(), channel_gain::gain_to_position(gain));
             for (i, events) in [
                 vec![],
                 vec![],
@@ -1315,6 +1563,7 @@ mod bus_tests {
                             rect,
                             &mut gain,
                             [0.0; 2],
+                            2,
                             true,
                             "test-fader",
                             &mut metering::Hold::default(),
