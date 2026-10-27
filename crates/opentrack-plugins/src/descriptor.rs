@@ -62,7 +62,7 @@ impl fmt::Display for PluginFormat {
 /// Architecture recorded for a module or class.
 ///
 /// This is the architecture read from the module image, not the current host
-/// process. The x64 host only accepts [`Self::X64`] for loading.
+/// process. A process can load only a module with its own CPU architecture.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginArchitecture {
@@ -80,9 +80,32 @@ pub enum PluginArchitecture {
 }
 
 impl PluginArchitecture {
-    /// True when the primary x64 Windows host can load this architecture.
+    /// Architecture of the current build target when it is supported here.
+    pub const fn current_host() -> Self {
+        #[cfg(target_arch = "x86")]
+        {
+            return Self::X86;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            return Self::X64;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            return Self::Arm64;
+        }
+        #[allow(unreachable_code)]
+        Self::Other
+    }
+
+    /// True when the current process can load this CPU architecture.
     pub const fn is_host_compatible(self) -> bool {
-        matches!(self, Self::X64)
+        match self {
+            Self::X86 => cfg!(target_arch = "x86"),
+            Self::X64 => cfg!(target_arch = "x86_64"),
+            Self::Arm64 => cfg!(target_arch = "aarch64"),
+            Self::Other => false,
+        }
     }
 
     /// Short stable label for reports and diagnostics.
@@ -112,7 +135,7 @@ impl fmt::Display for PluginArchitecture {
 pub enum PluginScanStatus {
     /// No scan has been attempted.
     NotScanned,
-    /// The module passed the PE precheck; class enumeration has not run yet.
+    /// The module passed the native executable precheck; class enumeration has not run yet.
     ReadyForEnumeration,
     /// The factory and class metadata were read successfully.
     Enumerated,
@@ -319,7 +342,7 @@ pub struct PluginDescriptor {
 impl PluginDescriptor {
     /// True when the catalog may offer this class for insertion.
     pub const fn is_usable(&self) -> bool {
-        self.scan_status.is_enumerated() && matches!(self.architecture, PluginArchitecture::X64)
+        self.scan_status.is_enumerated() && self.architecture.is_host_compatible()
     }
 
     /// First main output bus, which is the v1 stereo-main policy target.
@@ -334,9 +357,20 @@ mod tests {
 
     #[test]
     fn architecture_compatibility_is_explicit() {
-        assert!(PluginArchitecture::X64.is_host_compatible());
-        assert!(!PluginArchitecture::X86.is_host_compatible());
-        assert!(!PluginArchitecture::Arm64.is_host_compatible());
+        let host = PluginArchitecture::current_host();
+        assert!(host.is_host_compatible());
+        assert_eq!(
+            PluginArchitecture::X86.is_host_compatible(),
+            host == PluginArchitecture::X86
+        );
+        assert_eq!(
+            PluginArchitecture::X64.is_host_compatible(),
+            host == PluginArchitecture::X64
+        );
+        assert_eq!(
+            PluginArchitecture::Arm64.is_host_compatible(),
+            host == PluginArchitecture::Arm64
+        );
         assert!(!PluginArchitecture::Other.is_host_compatible());
     }
 
@@ -359,7 +393,7 @@ mod tests {
             category: PluginCategory::Effect,
             subcategories: vec!["Fx".to_owned(), "Dynamics".to_owned()],
             module_path: PathBuf::from("Example.vst3"),
-            architecture: PluginArchitecture::X64,
+            architecture: PluginArchitecture::current_host(),
             buses: Vec::new(),
             parameter_count: 0,
             parameters: Vec::new(),

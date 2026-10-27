@@ -4,12 +4,11 @@
 
 //! Bounded VST3 module discovery, precheck, and factory enumeration helper.
 //!
-//! This crate implements milestone M1 in `docs/plugin-hosting-plan.md` section
-//! 4.12: configured folder discovery, bundle/single-file module selection, PE
-//! machine rejection, path duplication control, optional factory class
-//! enumeration, and a bounded JSON/text report.
+//! This crate implements configured folder discovery, native bundle/single-file
+//! module selection, executable architecture prechecks, path duplication
+//! control, optional factory class enumeration, and a bounded JSON/text report.
 //!
-//! Without `--enumerate`, no module is loaded and x64 modules remain
+//! Without `--enumerate`, no module is loaded and host-compatible modules remain
 //! [`opentrack_plugins::PluginScanStatus::ReadyForEnumeration`]. With it, the
 //! scanner process loads each module and records factory class metadata through
 //! `opentrack-vst3`. Per-module timeout/crash attribution, quarantine, the job
@@ -20,6 +19,7 @@
 //! and produces a diagnostic instead of being silently treated as equivalent.
 
 pub mod discovery;
+pub mod image;
 pub mod pe;
 pub mod report;
 
@@ -33,8 +33,9 @@ use std::time::UNIX_EPOCH;
 pub use discovery::{
     DEFAULT_MAX_DEPTH, DEFAULT_MAX_MODULES, DiscoveredModule, DiscoveryBatch, DiscoveryLimits,
     FolderDiscovery, FolderOutcome, MAX_DEPTH_LIMIT, MAX_MODULES_LIMIT, ModuleKind, discover_all,
-    discover_folder,
+    discover_folder, resolve_vst3_bundle,
 };
+pub use image::{ModuleImageError, ModuleImageFormat, ModuleImageInfo, read_module_image};
 pub use pe::{
     PeFileError, PeHeaderError, PeMachine, classify_pe_machine, parse_pe_machine,
     read_pe_machine_from_file,
@@ -53,36 +54,62 @@ pub const SCAN_PROTOCOL_VERSION: u32 = 2;
 /// Scanner build version, copied from the crate package version.
 pub const SCANNER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Returns the default VST3 folders proposed by the hosting plan.
-///
-/// - `%ProgramFiles%\Common Files\VST3`
-/// - `%LOCALAPPDATA%\Programs\Common\VST3`
+/// Returns this platform's standard user and system VST3 folders.
 ///
 /// Folders are returned even when they do not exist; discovery reports the
 /// missing folder without aborting the scan. Reference-install folders under
 /// `G:\dev\Opentrack` are intentionally never included.
 pub fn default_vst3_folders() -> Vec<PathBuf> {
     let mut folders = Vec::new();
-    if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        folders.push(
-            PathBuf::from(program_files)
-                .join("Common Files")
-                .join("VST3"),
-        );
-    } else if let Some(program_files) = std::env::var_os("ProgramW6432") {
-        folders.push(
-            PathBuf::from(program_files)
-                .join("Common Files")
-                .join("VST3"),
-        );
+    #[cfg(windows)]
+    {
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            folders.push(
+                PathBuf::from(program_files)
+                    .join("Common Files")
+                    .join("VST3"),
+            );
+        } else if let Some(program_files) = std::env::var_os("ProgramW6432") {
+            folders.push(
+                PathBuf::from(program_files)
+                    .join("Common Files")
+                    .join("VST3"),
+            );
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            folders.push(
+                PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("Common")
+                    .join("VST3"),
+            );
+        }
     }
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        folders.push(
-            PathBuf::from(local_app_data)
-                .join("Programs")
-                .join("Common")
-                .join("VST3"),
-        );
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            folders.push(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Audio")
+                    .join("Plug-ins")
+                    .join("VST3"),
+            );
+        }
+        folders.push(PathBuf::from("/Library/Audio/Plug-ins/VST3"));
+        folders.push(PathBuf::from("/Network/Library/Audio/Plug-ins/VST3"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            folders.push(PathBuf::from(home).join(".vst3"));
+        }
+        folders.extend([
+            PathBuf::from("/usr/lib64/vst3"),
+            PathBuf::from("/usr/lib/vst3"),
+            PathBuf::from("/usr/local/lib64/vst3"),
+            PathBuf::from("/usr/local/lib/vst3"),
+        ]);
     }
     folders
 }

@@ -791,6 +791,13 @@ fn strip(
     let is_bus = track.id >= opentrack_core::project::INPUT_BUS_ID;
     let p = theme::palette(ui);
     ui.painter().rect_filled(r, 0.0, p.surface);
+    // The strip background selects its track; the interactive controls below
+    // register later and keep their own click/drag behavior.
+    let strip_select = ui.interact(
+        r,
+        ui.id().with(("select-channel-strip", track.id)),
+        Sense::click(),
+    );
     let at = |x, y, w, h| Rect::from_min_size(r.min + Vec2::new(x, y), Vec2::new(w, h));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -1086,6 +1093,7 @@ fn strip(
         select |= ui
             .interact(name_rect, ui.id().with("select-channel"), Sense::click())
             .clicked();
+        select |= strip_select.clicked() && !is_bus;
         if select && is_bus {
             settings.channel_bus = Some(track.id == opentrack_core::project::INPUT_BUS_ID);
             select = false;

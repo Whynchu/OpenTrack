@@ -5,17 +5,16 @@
 //! Discovery follows `docs/plugin-hosting-plan.md` section 4.12:
 //!
 //! - recursively find `.vst3` bundles and single-file modules;
-//! - inside a bundle, look under `Contents\x86_64-win` first, then the
-//!   incompatible platform directories so the scanner can report them;
+//! - inside a bundle, select the native VST3 binary directory for this target;
 //! - never recurse into `Contents\Resources` or documentation;
 //! - deduplicate canonical module paths, including overlapping configured
 //!   folders;
 //! - bound traversal depth, module count, warnings, and diagnostic text.
 //!
-//! No module is loaded here. The PE precheck happens after discovery in
-//! [`crate::report`]. Symbolic links are skipped to avoid cycles; Windows
-//! junctions are reported by the file system as reparse points and are skipped
-//! by the same rule.
+//! No module is loaded here. The executable-header precheck happens after
+//! discovery in [`crate::report`]. Symbolic links are skipped to avoid cycles;
+//! Windows junctions are reported by the file system as reparse points and
+//! are skipped by the same rule.
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -43,7 +42,7 @@ pub const MAX_MODULES_LIMIT: usize = 16_384;
 
 const MAX_WARNINGS: usize = 64;
 
-const PLATFORM_DIRECTORIES: [&str; 3] = ["x86_64-win", "x86-win", "arm64-win"];
+const WINDOWS_PLATFORM_DIRECTORIES: [&str; 3] = ["x86_64-win", "x86-win", "arm64-win"];
 
 /// Traversal bounds for one scan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,7 +311,7 @@ impl Discoverer {
 
             if file_type.is_dir() {
                 if is_vst3_name(&path) {
-                    match find_bundle_module(&path) {
+                    match find_bundle_module(&path, true) {
                         Ok(Some(module)) => {
                             if self.add_module(module) {
                                 return true;
@@ -374,18 +373,23 @@ impl Discoverer {
     }
 }
 
+/// Resolves a `.vst3` bundle to its native executable module, if present.
+/// Resources and arbitrary subdirectories are never walked.
+pub fn resolve_vst3_bundle(bundle: &Path) -> Result<Option<PathBuf>, String> {
+    find_bundle_module(bundle, false).map(|module| module.map(|module| module.path))
+}
+
 /// Finds the module selected from a `.vst3` bundle.
-///
-/// The x86_64 platform directory wins. The other platform directories are
-/// considered only so an incompatible bundle is still reported and rejected at
-/// the PE precheck. Resources and arbitrary subdirectories are never walked.
-fn find_bundle_module(bundle: &Path) -> Result<Option<DiscoveredModule>, String> {
+fn find_bundle_module(
+    bundle: &Path,
+    _include_incompatible_architectures: bool,
+) -> Result<Option<DiscoveredModule>, String> {
     let contents = bundle.join("Contents");
     let preferred_stem = bundle.file_stem();
 
     if contents.is_dir() {
         let platform_directories = read_platform_directories(&contents)?;
-        for wanted in PLATFORM_DIRECTORIES {
+        for wanted in preferred_platform_directories() {
             let Some((actual_name, directory)) = platform_directories
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
@@ -401,16 +405,43 @@ fn find_bundle_module(bundle: &Path) -> Result<Option<DiscoveredModule>, String>
                 }));
             }
         }
+        #[cfg(windows)]
+        if _include_incompatible_architectures {
+            for wanted in WINDOWS_PLATFORM_DIRECTORIES {
+                if preferred_platform_directories().contains(&wanted) {
+                    continue;
+                }
+                let Some((actual_name, directory)) = platform_directories
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                else {
+                    continue;
+                };
+                if let Some(module) = select_module(directory, preferred_stem)? {
+                    return Ok(Some(DiscoveredModule {
+                        path: module,
+                        kind: ModuleKind::Bundle,
+                        bundle_path: Some(bundle.to_path_buf()),
+                        platform_directory: Some(actual_name.clone()),
+                    }));
+                }
+            }
+        }
     }
 
-    // Non-standard bundles occasionally place the module at the bundle root.
-    if let Some(module) = select_module(bundle, preferred_stem)? {
-        return Ok(Some(DiscoveredModule {
-            path: module,
-            kind: ModuleKind::Bundle,
-            bundle_path: Some(bundle.to_path_buf()),
-            platform_directory: None,
-        }));
+    // Preserve the older Windows single-file bundle layout. On macOS and
+    // Linux, bundle roots contain metadata and resources, so treating an
+    // arbitrary root file as executable would select the wrong payload.
+    #[cfg(windows)]
+    {
+        if let Some(module) = select_module(bundle, preferred_stem)? {
+            return Ok(Some(DiscoveredModule {
+                path: module,
+                kind: ModuleKind::Bundle,
+                bundle_path: Some(bundle.to_path_buf()),
+                platform_directory: None,
+            }));
+        }
     }
 
     Ok(None)
@@ -450,7 +481,7 @@ fn select_module(
         let file_type = entry
             .file_type()
             .map_err(|error| format!("cannot inspect module entry: {error}"))?;
-        if file_type.is_file() && is_vst3_name(&entry.path()) {
+        if file_type.is_file() && is_native_module_file(&entry.path()) {
             candidates.push(entry.path());
         }
     }
@@ -468,6 +499,60 @@ fn select_module(
     }
 
     Ok(candidates.into_iter().next())
+}
+
+fn preferred_platform_directories() -> Vec<&'static str> {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        return vec!["x86_64-win"];
+    }
+    #[cfg(all(windows, target_arch = "x86"))]
+    {
+        return vec!["x86-win"];
+    }
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    {
+        return vec!["arm64-win"];
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return vec!["MacOS"];
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        return vec!["x86_64-linux"];
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        return vec!["aarch64-linux"];
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86"))]
+    {
+        return vec!["i386-linux", "i686-linux"];
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
+fn is_native_module_file(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        return is_vst3_name(path);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The VST3 format puts the Mach-O payload in Contents/MacOS without
+        // requiring a filename extension.
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return path.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("so") || extension.eq_ignore_ascii_case("vst3")
+        });
+    }
+    #[allow(unreachable_code)]
+    is_vst3_name(path)
 }
 
 fn is_vst3_name(path: &Path) -> bool {
@@ -493,7 +578,7 @@ mod tests {
             .map(|module| {
                 module
                     .path
-                    .file_name()
+                    .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned()
@@ -501,20 +586,60 @@ mod tests {
             .collect()
     }
 
+    fn native_platform_directory() -> &'static str {
+        preferred_platform_directories()
+            .first()
+            .copied()
+            .expect("this target has a VST3 platform directory")
+    }
+
+    #[cfg(windows)]
+    fn native_module_filename(stem: &str) -> String {
+        format!("{stem}.vst3")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_module_filename(stem: &str) -> String {
+        stem.to_owned()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn native_module_filename(stem: &str) -> String {
+        format!("{stem}.so")
+    }
+
+    #[cfg(windows)]
+    fn incompatible_windows_platform_directory() -> &'static str {
+        WINDOWS_PLATFORM_DIRECTORIES
+            .iter()
+            .copied()
+            .find(|directory| !preferred_platform_directories().contains(directory))
+            .expect("Windows has another known VST3 platform directory")
+    }
+
     #[test]
     fn finds_bundles_singles_and_ignores_resources() {
         let temp = TempDir::new("discovery");
-        temp.write(r"Bundle.vst3\Contents\x86-win\Bundle.vst3", b"x86 fixture");
+        let native_directory = native_platform_directory();
+        let native_filename = native_module_filename("Bundle");
         temp.write(
-            r"Bundle.vst3\Contents\x86_64-win\Bundle.vst3",
-            b"x64 fixture",
+            &format!("Bundle.vst3/Contents/{native_directory}/{native_filename}"),
+            b"native fixture",
         );
+        #[cfg(windows)]
+        {
+            let incompatible_directory = incompatible_windows_platform_directory();
+            temp.write(
+                &format!("Bundle.vst3/Contents/{incompatible_directory}/Bundle.vst3"),
+                b"incompatible fixture",
+            );
+        }
         temp.write(
-            r"Bundle.vst3\Contents\Resources\documentation.vst3",
+            "Bundle.vst3/Contents/Resources/documentation.vst3",
             b"must not be discovered",
         );
-        temp.write(r"Singles\Effect.vst3", b"single fixture");
-        temp.write(r"Singles\Nested\Instrument.vst3", b"nested fixture");
+        temp.write("Singles/Effect.vst3", b"single fixture");
+        temp.write("Singles/Nested/Instrument.vst3", b"nested fixture");
 
         let result = discover_folder(temp.path(), DiscoveryLimits::default());
 
@@ -523,7 +648,7 @@ mod tests {
         assert_eq!(result.modules.len(), 3);
         assert_eq!(
             names(&result.modules),
-            vec!["Bundle.vst3", "Effect.vst3", "Instrument.vst3"]
+            vec!["Bundle", "Effect", "Instrument"]
         );
 
         let bundle = result
@@ -531,13 +656,15 @@ mod tests {
             .iter()
             .find(|module| module.kind == ModuleKind::Bundle)
             .expect("bundle module");
-        assert!(
+        assert_eq!(
             bundle
                 .path
-                .to_string_lossy()
-                .contains(r"Contents\x86_64-win")
+                .parent()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str()),
+            Some(native_directory)
         );
-        assert_eq!(bundle.platform_directory.as_deref(), Some("x86_64-win"));
+        assert_eq!(bundle.platform_directory.as_deref(), Some(native_directory));
         assert_eq!(bundle.bundle_path, Some(temp.path().join("Bundle.vst3")));
         assert!(
             !result
@@ -547,17 +674,22 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
-    fn reports_incompatible_platform_bundle_for_pe_rejection() {
+    fn retains_incompatible_windows_bundle_for_precheck() {
         let temp = TempDir::new("x86-bundle");
-        temp.write(r"Legacy.vst3\Contents\x86-win\Legacy.vst3", b"x86 fixture");
+        let incompatible_directory = incompatible_windows_platform_directory();
+        temp.write(
+            &format!("Legacy.vst3/Contents/{incompatible_directory}/Legacy.vst3"),
+            b"incompatible fixture",
+        );
 
         let result = discover_folder(temp.path(), DiscoveryLimits::default());
 
         assert_eq!(result.modules.len(), 1);
         assert_eq!(
             result.modules[0].platform_directory.as_deref(),
-            Some("x86-win")
+            Some(incompatible_directory)
         );
     }
 
@@ -565,7 +697,7 @@ mod tests {
     fn deduplicates_overlapping_folders() {
         let temp = TempDir::new("dedupe");
         temp.write(r"One.vst3", b"one");
-        temp.write(r"Nested\Two.vst3", b"two");
+        temp.write("Nested/Two.vst3", b"two");
 
         let folders = vec![
             temp.path().to_path_buf(),
@@ -609,7 +741,7 @@ mod tests {
 
         let nested = TempDir::new("depth");
         nested.write(r"Top.vst3", b"top");
-        nested.write(r"Deep\Lower\Nested.vst3", b"nested");
+        nested.write("Deep/Lower/Nested.vst3", b"nested");
         let depth_zero = discover_folder(
             nested.path(),
             DiscoveryLimits {
@@ -617,7 +749,7 @@ mod tests {
                 max_modules: 10,
             },
         );
-        assert_eq!(names(&depth_zero.modules), vec!["Top.vst3"]);
+        assert_eq!(names(&depth_zero.modules), vec!["Top"]);
 
         let depth_two = discover_folder(
             nested.path(),
@@ -626,7 +758,7 @@ mod tests {
                 max_modules: 10,
             },
         );
-        assert_eq!(names(&depth_two.modules), vec!["Nested.vst3", "Top.vst3"]);
+        assert_eq!(names(&depth_two.modules), vec!["Nested", "Top"]);
     }
 
     #[test]
@@ -647,7 +779,10 @@ mod tests {
     #[test]
     fn warns_about_bundle_without_module() {
         let temp = TempDir::new("empty-bundle");
-        temp.mkdir(r"Empty.vst3\Contents\x86_64-win");
+        temp.mkdir(&format!(
+            "Empty.vst3/Contents/{}",
+            native_platform_directory()
+        ));
 
         let result = discover_folder(temp.path(), DiscoveryLimits::default());
 

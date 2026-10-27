@@ -1,6 +1,6 @@
-# Cubase 5 reverse-engineering status
+# CPR project-format research
 
-These observations support OpenTrack-, a full Rust reimplementation. Static file observations are not proof of runtime behavior or compatibility. Keep REA evidence and manual-derived behavior distinct from implementation claims.
+These observations record early structural research for OpenTrack's project-format interoperability work. Static file observations do not establish import/export support. Compatibility is verified separately for each format version using real projects and round trips.
 
 ## REA installation inventory
 

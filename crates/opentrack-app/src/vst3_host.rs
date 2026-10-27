@@ -28,27 +28,13 @@ pub fn resolve_module_selection(selection: &Path) -> Result<PathBuf, String> {
             .ok_or_else(|| "Select a .vst3 module file or bundle folder".to_owned());
     }
     if selection.is_dir() {
-        let platform = selection.join("Contents").join("x86_64-win");
-        for folder in [platform, selection.to_path_buf()] {
-            let Ok(entries) = std::fs::read_dir(&folder) else {
-                continue;
-            };
-            let mut candidates = entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.is_file()
-                        && path
-                            .extension()
-                            .is_some_and(|extension| extension.eq_ignore_ascii_case("vst3"))
-                })
-                .collect::<Vec<_>>();
-            candidates.sort();
-            if let Some(module) = candidates.into_iter().next() {
-                return Ok(module);
-            }
+        if let Some(module) = opentrack_plugin_scan::resolve_vst3_bundle(selection)? {
+            return Ok(module);
         }
-        return Err(format!("No x64 module found under {}", selection.display()));
+        return Err(format!(
+            "No native VST3 module found under {}",
+            selection.display()
+        ));
     }
     Err(format!("{} does not exist", selection.display()))
 }
@@ -70,23 +56,106 @@ pub struct EditorWindow {
 }
 
 #[cfg(windows)]
+const VST_EDITOR_ALWAYS_ON_TOP_COMMAND: usize = 0xF100;
+
+// Keep the parent alive until IPlugView::removed has run on the UI thread.
+#[cfg(windows)]
+unsafe extern "system" fn editor_window_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CheckMenuItem, DefWindowProcW, GetMenuState, GetSystemMenu, HWND_BOTTOM, HWND_TOP,
+        MF_BYCOMMAND, MF_CHECKED, MF_UNCHECKED, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SetWindowPos, ShowWindow, WM_CLOSE, WM_SYSCOMMAND,
+    };
+    if message == WM_CLOSE {
+        unsafe {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+        return 0;
+    }
+    if message == WM_SYSCOMMAND && wparam & 0xFFF0 == VST_EDITOR_ALWAYS_ON_TOP_COMMAND {
+        unsafe {
+            let menu = GetSystemMenu(hwnd, 0);
+            let was_checked =
+                GetMenuState(menu, VST_EDITOR_ALWAYS_ON_TOP_COMMAND as u32, MF_BYCOMMAND)
+                    & MF_CHECKED
+                    != 0;
+            let now_checked = !was_checked;
+            let check = MF_BYCOMMAND
+                | if now_checked {
+                    MF_CHECKED
+                } else {
+                    MF_UNCHECKED
+                };
+            CheckMenuItem(menu, VST_EDITOR_ALWAYS_ON_TOP_COMMAND as u32, check);
+            // Stay in the ordinary application z-order band so dialogs and
+            // other applications can still cover the editor.
+            SetWindowPos(
+                hwnd,
+                if now_checked { HWND_TOP } else { HWND_BOTTOM },
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        return 0;
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+// The plug-in owns the drawing inside this container. Unlike the system
+// STATIC control, it must not paint a white background over the native view.
+#[cfg(windows)]
+unsafe extern "system" fn editor_surface_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    use windows_sys::Win32::{
+        Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
+        UI::WindowsAndMessaging::{DefWindowProcW, WM_ERASEBKGND, WM_PAINT},
+    };
+    match message {
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            unsafe {
+                BeginPaint(hwnd, &mut paint);
+                EndPaint(hwnd, &paint);
+            }
+            0
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(windows)]
 impl EditorWindow {
     pub fn create(title: &str, owner: isize) -> Result<Self, String> {
         use windows_sys::Win32::{
             Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError},
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{
-                CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, RegisterClassW, WNDCLASSW,
-                WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                AppendMenuW, CW_USEDEFAULT, CreateWindowExW, GetSystemMenu, MF_SEPARATOR,
+                MF_STRING, RegisterClassW, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+                WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_SYSMENU, WS_VISIBLE,
             },
         };
         static REGISTERED: OnceLock<()> = OnceLock::new();
         let class: Vec<u16> = "OpenTrackVst3Editor\0".encode_utf16().collect();
+        let surface_class: Vec<u16> = "OpenTrackVst3Surface\0".encode_utf16().collect();
         REGISTERED.get_or_init(|| unsafe {
             let instance = GetModuleHandleW(std::ptr::null());
             let class = WNDCLASSW {
                 style: 0,
-                lpfnWndProc: Some(DefWindowProcW),
+                lpfnWndProc: Some(editor_window_proc),
                 cbClsExtra: 0,
                 cbWndExtra: 0,
                 hInstance: instance,
@@ -100,15 +169,20 @@ impl EditorWindow {
             if registered == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 // The CreateWindow call below will report the concrete failure.
             }
+            let surface = WNDCLASSW {
+                lpfnWndProc: Some(editor_surface_proc),
+                lpszClassName: surface_class.as_ptr(),
+                ..class
+            };
+            let _ = RegisterClassW(&surface);
         });
         let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
-        let static_class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         let hwnd = unsafe {
             CreateWindowExW(
-                0,
+                WS_EX_TOOLWINDOW,
                 class.as_ptr(),
                 title.as_ptr(),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 960,
@@ -125,14 +199,27 @@ impl EditorWindow {
                 unsafe { GetLastError() }
             ));
         }
+        let menu = unsafe { GetSystemMenu(hwnd, 0) };
+        let pin_label: Vec<u16> = "Always on Top\0".encode_utf16().collect();
+        if !menu.is_null() {
+            unsafe {
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    VST_EDITOR_ALWAYS_ON_TOP_COMMAND,
+                    pin_label.as_ptr(),
+                );
+            }
+        }
         // VST3 hosts normally attach the view to a child of their frame, not
         // directly to the top-level window. Waves editors are sensitive to this.
         let child = unsafe {
             CreateWindowExW(
                 0,
-                static_class.as_ptr(),
+                surface_class.as_ptr(),
                 std::ptr::null(),
-                WS_CHILD | WS_VISIBLE,
+                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE,
                 0,
                 0,
                 900,
@@ -162,8 +249,94 @@ impl EditorWindow {
         self.hwnd
     }
 
+    pub fn focus(&self) {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::SetFocus,
+            WindowsAndMessaging::{
+                GW_CHILD, GetWindow, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+                SetForegroundWindow, SetWindowPos,
+            },
+        };
+        unsafe {
+            SetWindowPos(
+                self.frame as _,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+            SetForegroundWindow(self.frame as _);
+            let child = GetWindow(self.hwnd as _, GW_CHILD);
+            if !child.is_null() {
+                SetFocus(child);
+            }
+        }
+    }
+
+    /// Dispatch messages for the editor frame and the plug-in's own child
+    /// windows. winit normally drains the whole thread queue, but a busy frame
+    /// can return before messages for foreign windows are dispatched. Pumping
+    /// the editor's subtree here keeps plug-in timers, paint requests and input
+    /// moving independently of the application's redraw cadence.
+    pub fn pump_messages(&self) {
+        use windows_sys::Win32::{
+            Foundation::{HWND, LPARAM},
+            UI::WindowsAndMessaging::{
+                DispatchMessageW, EnumChildWindows, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+            },
+        };
+
+        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> i32 {
+            // SAFETY: `lparam` points at the live Vec for this synchronous call.
+            unsafe { &mut *(lparam as *mut Vec<isize>) }.push(hwnd as isize);
+            1
+        }
+
+        let mut handles = vec![self.frame, self.hwnd];
+        unsafe {
+            EnumChildWindows(
+                self.frame as _,
+                Some(collect),
+                &mut handles as *mut _ as LPARAM,
+            );
+        }
+        let mut message = MSG::default();
+        for hwnd in handles {
+            loop {
+                // SAFETY: the handles belong to this editor's window tree and
+                // remain alive until the app releases the editor host.
+                let available = unsafe { PeekMessageW(&mut message, hwnd as _, 0, 0, PM_REMOVE) };
+                if available == 0 {
+                    break;
+                }
+                unsafe {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+        }
+    }
+
+    /// Ask the plug-in's window tree for another paint. Some plug-ins only
+    /// repaint their GL surface when the host invalidates it after input.
+    pub fn request_repaint(&self) {
+        use windows_sys::Win32::Graphics::Gdi::{RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow};
+        unsafe {
+            RedrawWindow(
+                self.hwnd as _,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ALLCHILDREN,
+            );
+        }
+    }
+
     pub fn is_alive(&self) -> bool {
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.frame as _) != 0 }
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.frame as _) != 0
+        }
     }
 }
 
@@ -174,6 +347,169 @@ impl Drop for EditorWindow {
             windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.frame as _);
         }
     }
+}
+
+#[cfg(windows)]
+enum EditorCommand {
+    Focus,
+    Close,
+}
+
+/// Native editor hosted on a dedicated STA thread.
+///
+/// The view is created from the live audio effect's controller, so meters and
+/// processing displays remain connected to the actual processor. The editor
+/// thread owns its own window message loop, keeping plug-in input and paint
+/// independent from OpenTrack's main UI cadence.
+#[cfg(windows)]
+pub struct EditorHost {
+    commands: std::sync::mpsc::Sender<EditorCommand>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(windows)]
+impl EditorHost {
+    pub fn open(title: &str, owner: isize, effect: Arc<Vst3Effect>) -> Result<Self, String> {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let title = title.to_owned();
+        let alive = Arc::new(AtomicBool::new(false));
+        let thread_alive = Arc::clone(&alive);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (command_tx, command_rx) = mpsc::channel();
+
+        let thread = std::thread::Builder::new()
+            .name("opentrack-vst3-editor".to_owned())
+            .spawn(move || {
+                let result =
+                    editor_thread(title, owner, effect, thread_alive, command_rx, ready_tx);
+                if let Err(error) = result {
+                    eprintln!("VST3 editor thread: {error}");
+                }
+            })
+            .map_err(|error| format!("could not start the VST3 editor thread: {error}"))?;
+
+        match ready_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ok(())) => Ok(Self {
+                commands: command_tx,
+                thread: Some(thread),
+                alive,
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(error) => {
+                let _ = command_tx.send(EditorCommand::Close);
+                let _ = thread.join();
+                Err(format!("the VST3 editor did not become ready: {error}"))
+            }
+        }
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
+    }
+
+    pub fn focus(&self) {
+        let _ = self.commands.send(EditorCommand::Focus);
+    }
+
+    pub fn close(mut self) {
+        let _ = self.commands.send(EditorCommand::Close);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(windows)]
+impl Drop for EditorHost {
+    fn drop(&mut self) {
+        let _ = self.commands.send(EditorCommand::Close);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(windows)]
+fn editor_thread(
+    title: String,
+    owner: isize,
+    effect: Arc<Vst3Effect>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+    commands: std::sync::mpsc::Receiver<EditorCommand>,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let result = (|| -> Result<(), String> {
+        let window = EditorWindow::create(&title, owner)?;
+        let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
+        window.focus();
+        alive.store(true, Ordering::Release);
+        let _ = ready.send(Ok(()));
+
+        let mut last_repaint = Instant::now();
+        loop {
+            let mut close = false;
+            while let Ok(command) = commands.try_recv() {
+                match command {
+                    EditorCommand::Focus => window.focus(),
+                    EditorCommand::Close => close = true,
+                }
+            }
+            if close || !window.is_alive() {
+                break;
+            }
+            window.pump_messages();
+            if last_repaint.elapsed() >= Duration::from_millis(16) {
+                window.request_repaint();
+                last_repaint = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        drop(editor);
+        drop(window);
+        Ok(())
+    })();
+
+    alive.store(false, Ordering::Release);
+    if result.is_err() {
+        let _ = ready.send(result.clone());
+    }
+    result
+}
+
+#[cfg(not(windows))]
+pub struct EditorHost;
+
+#[cfg(not(windows))]
+impl EditorHost {
+    pub fn open(_title: &str, _owner: isize, _effect: Arc<Vst3Effect>) -> Result<Self, String> {
+        Err("native VST3 editors are only supported on Windows".to_owned())
+    }
+
+    pub fn is_alive(&self) -> bool {
+        false
+    }
+
+    pub fn focus(&self) {}
+
+    pub fn close(self) {}
 }
 
 #[cfg(not(windows))]
@@ -189,12 +525,35 @@ impl EditorWindow {
         0
     }
 
+    pub fn focus(&self) {}
+
     pub fn is_alive(&self) -> bool {
         false
     }
 }
 
 impl Runtime {
+    pub fn matches_insert(
+        &self,
+        project: &Project,
+        track_id: u64,
+        slot: usize,
+        rate: u32,
+        block: u32,
+    ) -> bool {
+        self.sample_rate == rate && self.max_block == block
+            && project.tracks.iter().find(|track| track.id == track_id)
+                .and_then(|track| track.inserts.get(slot))
+                .is_some_and(|insert| matches!(&insert.kind, InsertEffectKind::Vst3 { class_id, .. }
+                    if self.instances.get(&(track_id, slot)).is_some_and(|instance| instance.class_id == *class_id)))
+    }
+
+    pub fn take_dirty(&self) -> bool {
+        self.instances.values().fold(false, |dirty, instance| {
+            instance.effect.take_dirty() || dirty
+        })
+    }
+
     pub fn set_format(&mut self, sample_rate: u32, max_block: u32) -> bool {
         if self.sample_rate == sample_rate && self.max_block == max_block {
             return false;
@@ -309,7 +668,7 @@ impl Runtime {
                 let processor: Arc<dyn HostedProcessor> = instance.effect.clone();
                 Some(HostedInsert {
                     processor,
-                    enabled: insert.enabled,
+                    enabled: insert.enabled && !track.inserts_bypassed,
                 })
             })
             .collect()
@@ -393,6 +752,92 @@ mod tests {
     use super::*;
     use opentrack_core::project::{InsertEffect, TrackKind};
 
+    /// Run one installed class per process so an ABI crash is attributable.
+    #[test]
+    #[ignore = "requires OPENTRACK_VST3_PROBE_MODULE and OPENTRACK_VST3_PROBE_CLASS"]
+    fn installed_class_editor_lifecycle() {
+        let module = PathBuf::from(std::env::var("OPENTRACK_VST3_PROBE_MODULE").expect("module"));
+        let class =
+            PluginClassId::from_hex(&std::env::var("OPENTRACK_VST3_PROBE_CLASS").expect("class"))
+                .unwrap();
+        eprintln!("stage: load first");
+        let first = Vst3Effect::load(&module, class, 48_000, 64).expect("first instance");
+        eprintln!("stage: open first editor");
+        let window = EditorWindow::create("OpenTrack compatibility probe", 0).unwrap();
+        first
+            .open_editor(window.hwnd() as *mut std::ffi::c_void)
+            .expect("native editor");
+        pump_editor_messages();
+        if let Ok(seconds) = std::env::var("OPENTRACK_VST3_PROBE_VIEW_SECONDS") {
+            let started = std::time::Instant::now();
+            while started.elapsed().as_secs() < seconds.parse::<u64>().unwrap_or(0).min(120) {
+                pump_editor_messages();
+            }
+        }
+        eprintln!("stage: load overlapping instance");
+        let second = Vst3Effect::load(&module, class, 48_000, 64).expect("second instance");
+        eprintln!("stage: process");
+        use opentrack_plugins::HostedProcessor;
+        let mut left = [0.01; 64];
+        let mut right = [0.01; 64];
+        first.process(&mut left, &mut right).unwrap();
+        second.process(&mut left, &mut right).unwrap();
+        assert!(left.iter().chain(&right).all(|v| v.is_finite()));
+        eprintln!("stage: drop overlapping instance");
+        drop(second);
+        pump_editor_messages();
+        eprintln!("stage: save/restore");
+        let state = first.save_state().unwrap();
+        first.load_state(&state).unwrap();
+        first.close_editor();
+        drop(window);
+        eprintln!("stage: reopen editor");
+        let window = EditorWindow::create("OpenTrack compatibility reopen", 0).unwrap();
+        first
+            .open_editor(window.hwnd() as *mut std::ffi::c_void)
+            .unwrap();
+        pump_editor_messages();
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetParent, IsWindow, SendMessageW, WM_CLOSE,
+            };
+            let parent = GetParent(window.hwnd() as _);
+            SendMessageW(parent, WM_CLOSE, 0, 0);
+            assert!(!window.is_alive(), "close is observed by the app");
+            assert!(
+                IsWindow(window.hwnd() as _) != 0,
+                "plugin parent survives until removed"
+            );
+        }
+        first.close_editor();
+        drop(window);
+        drop(first);
+        eprintln!("stage: complete");
+    }
+
+    fn pump_editor_messages() {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+            };
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_millis(250) {
+                let mut message = MSG::default();
+                while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) }
+                    != 0
+                {
+                    unsafe {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
     #[test]
     fn module_selection_accepts_a_single_module_file() {
         let path = std::env::temp_dir().join("opentrack-selection.vst3");
@@ -436,6 +881,61 @@ mod tests {
             .process(&mut left, &mut right)
             .expect("WaveShell child processes a block");
         assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    #[ignore = "requires installed Waves CLA-76"]
+    fn installed_cla76_passes_audio_and_respects_track_insert_bypass() {
+        let module = Path::new(r"C:\Program Files\Common Files\VST3\WaveShell1-VST3 15.0_x64.vst3");
+        for (name, class) in [
+            ("mono", "375453564336634D6C612D3736206D6F"),
+            ("stereo", "37545356433663536C612D3736207374"),
+        ] {
+            let mut project = Project::default();
+            project.add_track(TrackKind::Audio);
+            project.tracks[0].inserts.push(InsertEffect {
+                enabled: true,
+                kind: InsertEffectKind::Vst3 {
+                    class_id: class.to_owned(),
+                    module_path: module.to_path_buf(),
+                    name: format!("CLA-76 {name}"),
+                    vendor: "Waves".to_owned(),
+                    component_state: Vec::new(),
+                    controller_state: Vec::new(),
+                },
+            });
+            let mut runtime = Runtime::default();
+            runtime.set_format(48_000, 64);
+            runtime.sync(&project);
+            assert_eq!(runtime.failure(project.tracks[0].id, 0), None);
+            let hosted = runtime.hosted_inserts(&project.tracks[0]);
+            assert!(hosted[0].enabled);
+            let mut sum = 0.0_f64;
+            let mut count = 0;
+            for block in 0..512 {
+                let mut left = [0.0_f32; 64];
+                for (frame, sample) in left.iter_mut().enumerate() {
+                    *sample = (std::f32::consts::TAU * 440.0 * (block * 64 + frame) as f32
+                        / 48_000.0)
+                        .sin()
+                        * 0.1;
+                }
+                let mut right = left;
+                hosted[0].processor.process(&mut left, &mut right).unwrap();
+                if block >= 128 {
+                    for sample in left.iter().chain(&right) {
+                        assert!(sample.is_finite());
+                        sum += f64::from(*sample) * f64::from(*sample);
+                        count += 1;
+                    }
+                }
+            }
+            let rms = (sum / count as f64).sqrt();
+            eprintln!("CLA-76 {name}: processed output RMS {rms:.6}");
+            assert!(rms > 0.001, "CLA-76 {name} returned silence");
+            project.tracks[0].inserts_bypassed = true;
+            assert!(!runtime.hosted_inserts(&project.tracks[0])[0].enabled);
+        }
     }
 
     #[test]
@@ -513,6 +1013,9 @@ mod tests {
                         DispatchMessageW(&message);
                     }
                 }
+                // Match the full app's parameter window, which polls the
+                // controller while the native editor is open.
+                let _ = runtime.parameters(track_id, 0);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
@@ -643,5 +1146,26 @@ mod tests {
             .save_state()
             .expect("restored state saves");
         assert!(!restored.component.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires installed Waves CLA-76"]
+    fn installed_waves_editor_runs_on_a_dedicated_sta_thread() {
+        let module = Path::new(r"C:\Program Files\Common Files\VST3\WaveShell1-VST3 15.0_x64.vst3");
+        let effect = Arc::new(
+            Vst3Effect::load(
+                module,
+                PluginClassId::from_hex("37545356433663536C612D3736207374").unwrap(),
+                48_000,
+                512,
+            )
+            .expect("load Waves"),
+        );
+        let host = EditorHost::open("OpenTrack dedicated editor test", 0, effect)
+            .expect("editor host starts");
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        assert!(host.is_alive());
+        host.focus();
+        host.close();
     }
 }

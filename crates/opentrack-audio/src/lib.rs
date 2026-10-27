@@ -3331,15 +3331,9 @@ enum InsertProcessor {
         feedback: f32,
         mix: f32,
     },
-    Compressor {
-        enabled: bool,
-        threshold_db: f32,
-        ratio: f32,
-        makeup_gain: f32,
-        attack_coefficient: f32,
-        release_coefficient: f32,
-        detector_envelope: f32,
-    },
+    /// Preserved project slot for the removed OpenTrack compressor. It has no
+    /// processor and deliberately leaves audio unchanged.
+    UnavailableLegacy,
     /// A project-level VST3 slot that is not attached to a hosted runtime.
     /// Hosted audio runs through [`HostedInsert`] instead; this arm keeps the
     /// built-in chain neutral until the project slot is bound.
@@ -3972,41 +3966,6 @@ mod processing_tests {
     }
 
     #[test]
-    fn compressor_reduces_levels_and_preserves_stereo_balance() {
-        let effect = InsertEffect {
-            enabled: true,
-            kind: InsertEffectKind::Compressor {
-                threshold_db: -18.0,
-                ratio: 4.0,
-                attack_ms: 1.0,
-                hold_ms: 1.0,
-                release_ms: 100.0,
-                analysis: 80.0,
-                makeup_db: 0.0,
-                soft_knee: true,
-                auto_makeup: true,
-                auto_release: false,
-                rms_mode: false,
-                live: true,
-            },
-        };
-        let mut compressor = InsertProcessor::new(&effect, 48_000);
-        let mut left = 0.5;
-        let mut right = 0.25;
-        for _ in 0..5_000 {
-            left = 0.5;
-            right = 0.25;
-            compressor.process(&mut left, &mut right);
-        }
-
-        assert!(
-            (0.175..=0.181).contains(&left),
-            "compressed level was {left}"
-        );
-        assert!((left / right - 2.0).abs() < 1.0e-5);
-    }
-
-    #[test]
     fn disabled_eq_and_empty_insert_chain_leave_audio_unchanged() {
         let instrument_factory = oscillator_instrument_factory(InstrumentWaveform::Sine);
         let mut processor = ChannelProcessor::new(
@@ -4556,25 +4515,7 @@ impl InsertProcessor {
                     mix: *mix,
                 }
             }
-            InsertEffectKind::Compressor {
-                threshold_db,
-                ratio,
-                attack_ms,
-                release_ms,
-                makeup_db,
-                ..
-            } => {
-                let rate = sample_rate.max(1) as f32;
-                Self::Compressor {
-                    enabled: insert.enabled,
-                    threshold_db: *threshold_db,
-                    ratio: *ratio,
-                    makeup_gain: 10.0_f32.powf(*makeup_db / 20.0),
-                    attack_coefficient: (-1.0 / (rate * attack_ms * 0.001)).exp(),
-                    release_coefficient: (-1.0 / (rate * release_ms * 0.001)).exp(),
-                    detector_envelope: 0.0,
-                }
-            }
+            InsertEffectKind::LegacyUnavailableCompressor { .. } => Self::UnavailableLegacy,
             InsertEffectKind::Vst3 { .. } => Self::Vst3Passthrough {
                 enabled: insert.enabled,
             },
@@ -4585,8 +4526,8 @@ impl InsertProcessor {
         match self {
             Self::TestGenerator { enabled, .. }
             | Self::StereoDelay { enabled, .. }
-            | Self::Compressor { enabled, .. }
             | Self::Vst3Passthrough { enabled } => *enabled,
+            Self::UnavailableLegacy => false,
         }
     }
 
@@ -4616,35 +4557,7 @@ impl InsertProcessor {
                     *cursor = 0;
                 }
             }
-            Self::Compressor {
-                threshold_db,
-                ratio,
-                makeup_gain,
-                attack_coefficient,
-                release_coefficient,
-                detector_envelope,
-                ..
-            } => {
-                // A single peak detector keeps the stereo image centered while
-                // attack and release smoothing remain bounded and allocation-free.
-                let input_peak = left.abs().max(right.abs());
-                let coefficient = if input_peak > *detector_envelope {
-                    *attack_coefficient
-                } else {
-                    *release_coefficient
-                };
-                *detector_envelope =
-                    coefficient * *detector_envelope + (1.0 - coefficient) * input_peak;
-                let level_db = 20.0 * detector_envelope.max(1.0e-9).log10();
-                let reduction_db = if level_db > *threshold_db {
-                    *threshold_db + (level_db - *threshold_db) / *ratio - level_db
-                } else {
-                    0.0
-                };
-                let gain = *makeup_gain * 10.0_f32.powf(reduction_db / 20.0);
-                *left *= gain;
-                *right *= gain;
-            }
+            Self::UnavailableLegacy => {}
             Self::Vst3Passthrough { .. } => {}
         }
     }

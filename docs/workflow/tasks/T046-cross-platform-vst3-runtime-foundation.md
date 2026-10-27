@@ -1,0 +1,29 @@
+# T046 — Cross-platform VST3 runtime foundation
+
+- Status: review_pending
+- Scope version and requirement IDs: future `vst3-platform-v1`; outside the frozen transport scope in `ledger.json`
+- Desired observable outcome: Prepare the host for macOS and Linux module loading and ensure target-specific source is compile-checked by a hosted native-platform matrix, while preserving existing Windows behavior.
+- Reference evidence: User direction to prepare macOS/Linux support without those machines. Steinberg specifies required `bundleEntry`/`bundleExit` on macOS and `ModuleEntry`/`ModuleExit` on Linux, called around factory access and unload in its [VST module architecture](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/VST%2BModule%2BArchitecture/Index.html). The [VST3 SDK API reference](https://steinbergmedia.github.io/vst3_doc/vstsdk/VST3Plugin_8mm.html) declares the macOS functions as `bool`. GitHub lists hosted [macOS, Linux and Windows runner labels](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job); this supports compile coverage, not plugin runtime qualification.
+- Dependencies and decisions needed: Uses `core-foundation-sys` for macOS bundle APIs. Existing `eframe` and `rfd` dependencies now explicitly enable Linux X11/Wayland and XDG portal support. No decision on plugin isolation or production sandboxing is made. Native editor parenting/runloops and audio/MIDI APIs remain separate work.
+- Code scope and architecture boundaries: `opentrack-vst3` owns module lifecycle and factory loading; `opentrack-app` enables Linux desktop backends; `.github/workflows/platform-check.yml` checks the workspace on Windows x64, Linux x64/ARM64, and macOS x64/ARM64. Windows keeps optional `InitDll`/`ExitDll`; Linux and macOS reject modules missing required lifecycle exports. The existing native Windows editor remains unchanged.
+- Acceptance checks:
+  - Compile the full workspace and all target-specific test code on each hosted matrix target with `cargo check --locked --workspace --all-targets --target <target>`.
+  - On macOS, load a known native VST3 bundle, verify `bundleEntry` precedes factory access, enumerate classes, then verify `bundleExit` occurs before unload for both normal close and factory errors.
+  - On Linux, repeat for x64 and ARM64 with a native VST3 package; verify the `dlopen` handle passed to `ModuleEntry` is the module handle and that `ModuleExit` runs before `dlclose`.
+  - Re-run Windows x64 Waves/Gateway editor and audio regressions after all shared-host changes.
+  - Native plugin editor appearance, resizing, focus, keyboard input and close behavior remain a separate OS-specific acceptance gate in T047.
+- Affected regressions: Existing Windows Waves insert-crash and native editor checks from T044; Windows scanning and processing must remain unchanged. The fixture helper now maps either slash style to native path separators so scanner tests are portable.
+- Essential gates: The Windows x64 workspace all-target compile passed locally. Scanner/catalog/VST3 test code compiles on Windows x86. No test binaries were run. No macOS/Linux Rust target is installed here, and the new hosted workflow has not run; therefore macOS/Linux source compilation and every native runtime claim remain pending.
+- Review owner and milestone stop: Review the source and workflow now; do not mark cross-platform runtime support accepted until hosted builds and native-machine plugin checks pass.
+
+## Handoff
+
+- Actual implementer/reviewer model: Codex GPT-6; no independent reviewer.
+- Source identity (commit plus dirty diff/artifact identity) and build hash: Active working tree based on `caddff3`; source identities recorded as `t046-source` in `ledger.json`. No release executable built.
+- Changes and reasons: Added Linux `ModuleEntry`/`ModuleExit` loading through `dlopen`, macOS `CFBundle` loading and required `bundleEntry`/`bundleExit`, and ordered shutdown so factory releases before the platform exit callback and module unload. Added Linux GUI/file-dialog backend features and a native-platform compile workflow. The portable fixture-path update is recorded in T045 and was explicitly approved by the user.
+- Commands/checks and actual results: `cargo check --offline --workspace --all-targets --target x86_64-pc-windows-msvc` passed. `cargo check --locked --tests --target i686-pc-windows-msvc -p opentrack-plugin-scan -p opentrack-plugins -p opentrack-vst3` passed. These compile test code but do not execute it. No tests were run. The hosted workflow was added but has not run.
+- Runtime environment and evidence paths: Windows x64 development workspace; `rustup target list --installed` contains only Windows x86/x64. No macOS/Linux host is available. Workflow: `.github/workflows/platform-check.yml`.
+- Ledger IDs updated; report command/result: `t046-source` records the new platform foundation as source evidence, separate from transport requirements. See `docs/workflow/metrics.md` after `python scripts/parity_report.py`.
+- Review findings, rework, elapsed effort if available: Pending source and workflow review. macOS/Linux-specific code cannot be type-checked in this local environment.
+- Failures/unknowns/pending acceptance: Native editor surfaces are still Windows-only; `midi_input.rs` currently exposes WinMM devices only; audio device behavior, native package scanning/loading, and real plugin compatibility must be verified on supported systems. Runtime isolation and crash containment remain unimplemented.
+- Next work, if pursued: create a separately numbered task for native plug-in editor parenting and event-loop integration on macOS/Linux, then run native acceptance. T047 is the independent pitch-edge and Project take-lane review packet.

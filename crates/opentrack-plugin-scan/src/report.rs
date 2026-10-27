@@ -2,9 +2,10 @@
 
 //! Bounded scan report and JSON/text rendering.
 //!
-//! The report is the scanner's application-facing output. Discovery and PE
-//! precheck always run. When enumeration is requested, the scanner loads each
-//! x64 module in its own process and records factory class metadata; buses,
+//! The report is the scanner's application-facing output. Discovery and native
+//! executable-header prechecks always run. When enumeration is requested, the
+//! scanner loads each host-compatible module in its own process and records
+//! factory class metadata; buses,
 //! parameters, editors and latency remain instance-introspection follow-ups.
 //!
 //! Counts, warnings, and diagnostic text are bounded. Paths remain wide
@@ -31,8 +32,8 @@ use crate::discovery::DiscoveryLimits;
 use crate::discovery::FolderOutcome;
 use crate::discovery::ModuleKind;
 use crate::discovery::discover_all;
-use crate::pe::PeFileError;
-use crate::pe::read_pe_machine_from_file;
+use crate::image::ModuleImageError;
+use crate::image::read_module_image;
 
 /// Maximum configured folders represented in one report.
 pub const MAX_REPORT_FOLDERS: usize = 64;
@@ -88,9 +89,9 @@ pub struct ModuleReport {
     /// Selected `Contents\<platform>` directory for a bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_directory: Option<String>,
-    /// Architecture derived from the PE header.
+    /// Architecture derived from the PE, ELF, or Mach-O header.
     pub architecture: PluginArchitecture,
-    /// Raw COFF machine value when the header was readable.
+    /// Raw COFF machine value for PE modules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pe_machine: Option<u16>,
     /// Discovery/precheck/enumeration status.
@@ -114,11 +115,11 @@ pub struct ScanTotals {
     pub folders_reported: usize,
     /// Unique modules reported.
     pub modules: usize,
-    /// Modules that passed the x64 PE precheck.
+    /// Modules that passed the current host architecture precheck.
     pub ready_for_enumeration: usize,
     /// Modules rejected because their machine type is not x64.
     pub unsupported_architecture: usize,
-    /// Modules rejected because they are not valid PE images.
+    /// Modules rejected because their executable header is invalid.
     pub invalid_module: usize,
     /// Modules that could not be read.
     pub unreadable: usize,
@@ -295,7 +296,7 @@ pub fn build_report(
         let mut retained = std::collections::HashMap::<PluginClassId, PathBuf>::new();
         for module in &mut module_reports {
             if module.status != PluginScanStatus::ReadyForEnumeration
-                || module.architecture != PluginArchitecture::X64
+                || !module.architecture.is_host_compatible()
             {
                 continue;
             }
@@ -402,7 +403,7 @@ pub fn build_report(
         ]
     } else {
         vec![
-            "Class enumeration was not requested. No VST3 module was loaded; ready entries are PE precheck results only.".to_owned(),
+            "Class enumeration was not requested. No VST3 module was loaded; ready entries passed the native executable-header precheck only.".to_owned(),
         ]
     };
     if configured_folders > reported_folders.len() {
@@ -502,35 +503,43 @@ fn inspect_module(module: &DiscoveredModule) -> ModuleReport {
         );
     }
 
-    let (architecture, pe_machine, status) = match read_pe_machine_from_file(&module.path) {
-        Ok(machine) => {
-            let architecture = machine.architecture();
-            if architecture.is_host_compatible() {
-                (
-                    architecture,
-                    Some(machine.raw()),
-                    PluginScanStatus::ReadyForEnumeration,
-                )
-            } else {
+    let (architecture, pe_machine, status) = match read_module_image(&module.path) {
+        Ok(image) => {
+            let architecture = image.architecture;
+            let mut host_compatible = true;
+            if !image.format.is_host_compatible() {
                 diagnostics.push(format!(
-                    "PE machine {machine} is {architecture}; the x64 host accepts only x64 modules"
+                    "module format {} is not native to this host",
+                    image.format
                 ));
-                (
-                    architecture,
-                    Some(machine.raw()),
-                    PluginScanStatus::UnsupportedArchitecture,
-                )
+                host_compatible = false;
             }
+            if !architecture.is_host_compatible() {
+                diagnostics.push(format!(
+                    "module architecture is {architecture}; this host accepts only {} modules",
+                    PluginArchitecture::current_host()
+                ));
+                host_compatible = false;
+            }
+            (
+                architecture,
+                image.pe_machine,
+                if host_compatible {
+                    PluginScanStatus::ReadyForEnumeration
+                } else {
+                    PluginScanStatus::UnsupportedArchitecture
+                },
+            )
         }
-        Err(PeFileError::Io(error)) => {
-            diagnostics.push(format!("cannot read module: {error}"));
+        Err(ModuleImageError::Io(error)) => {
+            diagnostics.push(error.to_string());
             (
                 PluginArchitecture::Other,
                 None,
                 PluginScanStatus::Unreadable,
             )
         }
-        Err(PeFileError::Header(error)) => {
+        Err(ModuleImageError::Invalid(error)) => {
             diagnostics.push(format!("invalid module: {error}"));
             (
                 PluginArchitecture::Other,
@@ -587,6 +596,7 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
 
+    #[cfg(windows)]
     fn pe_image(machine: u16) -> Vec<u8> {
         let mut bytes = vec![0u8; 0x80];
         bytes[..2].copy_from_slice(b"MZ");
@@ -596,11 +606,73 @@ mod tests {
         bytes
     }
 
+    fn other_architecture() -> PluginArchitecture {
+        match PluginArchitecture::current_host() {
+            PluginArchitecture::X86 => PluginArchitecture::X64,
+            PluginArchitecture::X64 | PluginArchitecture::Other => PluginArchitecture::X86,
+            PluginArchitecture::Arm64 => PluginArchitecture::X64,
+        }
+    }
+
+    fn image_for_architecture(architecture: PluginArchitecture) -> (Vec<u8>, Option<u16>) {
+        #[cfg(windows)]
+        {
+            let machine: u16 = match architecture {
+                PluginArchitecture::X86 => 0x014c,
+                PluginArchitecture::X64 => 0x8664,
+                PluginArchitecture::Arm64 => 0xaa64,
+                PluginArchitecture::Other => 0xffff,
+            };
+            return (pe_image(machine), Some(machine));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let machine: u16 = match architecture {
+                PluginArchitecture::X86 => 3,
+                PluginArchitecture::X64 => 62,
+                PluginArchitecture::Arm64 => 183,
+                PluginArchitecture::Other => 0xffff,
+            };
+            let mut bytes = vec![0u8; 20];
+            bytes[..4].copy_from_slice(b"\x7fELF");
+            bytes[4] = u8::from(architecture != PluginArchitecture::X86) + 1;
+            bytes[5] = 1;
+            bytes[18..20].copy_from_slice(&machine.to_le_bytes());
+            return (bytes, None);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let cpu_type: u32 = match architecture {
+                PluginArchitecture::X86 => 7,
+                PluginArchitecture::X64 => 0x0100_0007,
+                PluginArchitecture::Arm64 => 0x0100_000c,
+                PluginArchitecture::Other => 0xffff,
+            };
+            let mut bytes = vec![0u8; 32];
+            bytes[..4].copy_from_slice(&0xcffa_edfeu32.to_be_bytes());
+            bytes[4..8].copy_from_slice(&cpu_type.to_le_bytes());
+            return (bytes, None);
+        }
+
+        #[allow(unreachable_code)]
+        (Vec::new(), None)
+    }
+
+    fn host_image() -> (Vec<u8>, Option<u16>) {
+        image_for_architecture(PluginArchitecture::current_host())
+    }
+
+    fn incompatible_image() -> (Vec<u8>, Option<u16>) {
+        image_for_architecture(other_architecture())
+    }
+
     fn fixture_report() -> ScanReport {
         let temp = TempDir::new("report");
-        temp.write(r"Good.vst3", &pe_image(0x8664));
-        temp.write(r"Legacy.vst3", &pe_image(0x014c));
-        temp.write(r"Broken.vst3", b"not a PE image");
+        temp.write(r"Good.vst3", &host_image().0);
+        temp.write(r"Legacy.vst3", &incompatible_image().0);
+        temp.write(r"Broken.vst3", b"not a native image");
         build_report(
             &[temp.path().to_path_buf()],
             DiscoveryLimits::default(),
@@ -627,19 +699,19 @@ mod tests {
             .modules
             .iter()
             .find(|module| module.path.ends_with("Good.vst3"))
-            .expect("x64 module report");
+            .expect("host module report");
         assert_eq!(good.status, PluginScanStatus::ReadyForEnumeration);
-        assert_eq!(good.architecture, PluginArchitecture::X64);
-        assert_eq!(good.pe_machine, Some(0x8664));
+        assert_eq!(good.architecture, PluginArchitecture::current_host());
+        assert_eq!(good.pe_machine, host_image().1);
         assert!(good.class_ids.is_empty());
 
         let legacy = report
             .modules
             .iter()
             .find(|module| module.path.ends_with("Legacy.vst3"))
-            .expect("x86 module report");
+            .expect("incompatible module report");
         assert_eq!(legacy.status, PluginScanStatus::UnsupportedArchitecture);
-        assert_eq!(legacy.architecture, PluginArchitecture::X86);
+        assert_eq!(legacy.architecture, other_architecture());
     }
 
     #[test]
@@ -696,7 +768,7 @@ mod tests {
     #[test]
     fn failed_enumeration_is_reported_without_losing_the_precheck() {
         let temp = TempDir::new("report-enumeration-failure");
-        temp.write(r"Good.vst3", &pe_image(0x8664));
+        temp.write(r"Good.vst3", &host_image().0);
         let report = build_report(
             &[temp.path().to_path_buf()],
             DiscoveryLimits::default(),

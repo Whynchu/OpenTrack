@@ -243,6 +243,9 @@ pub(super) struct Lane {
     pub channels: u8,
     pub audio: bool,
     pub rect: Rect,
+    pub take_lanes_visible: bool,
+    pub take_lane_count: usize,
+    pub take_lane_indices: HashMap<u64, usize>,
     pub automation: Option<Rect>,
     pub color: Color32,
 }
@@ -250,13 +253,54 @@ pub(super) struct Outcome {
     pub changed: bool,
     pub scroll: f32,
 }
+pub(super) fn take_lane_layout(
+    track: &opentrack_core::project::Track,
+    tempo_bpm: f64,
+) -> (usize, HashMap<u64, usize>) {
+    if track.kind != TrackKind::Audio {
+        return (1, HashMap::new());
+    }
+    let tempo = if tempo_bpm.is_finite() && tempo_bpm > 0.0 {
+        tempo_bpm
+    } else {
+        120.0
+    };
+    let mut lanes = HashMap::with_capacity(track.clips.len());
+    let mut highest_lane = 0usize;
+    for (index, clip) in track.clips.iter().enumerate() {
+        let clip_end = clip.start_beats + clip.duration_seconds * tempo / 60.0;
+        let lane = track.clips[..index]
+            .iter()
+            .filter(|previous| {
+                let previous_end = previous.start_beats + previous.duration_seconds * tempo / 60.0;
+                previous.start_beats < clip_end && clip.start_beats < previous_end
+            })
+            .filter_map(|previous| lanes.get(&previous.id).copied())
+            .max()
+            .map_or(0, |previous_lane| previous_lane + 1);
+        highest_lane = highest_lane.max(lane);
+        lanes.insert(clip.id, lane);
+    }
+    (highest_lane + 1, lanes)
+}
+
 fn event_rect(c: &AudioClip, lane: &Lane, origin: f32, px: f32, tempo: f64) -> Rect {
+    let lane_height = if lane.take_lanes_visible {
+        lane.rect.height() / lane.take_lane_count.max(1) as f32
+    } else {
+        lane.rect.height()
+    };
+    let lane_index = if lane.take_lanes_visible {
+        lane.take_lane_indices.get(&c.id).copied().unwrap_or(0) as f32
+    } else {
+        0.0
+    };
     Rect::from_min_size(
-        Pos2::new(origin + c.start_beats as f32 * px, lane.rect.top()),
-        Vec2::new(
-            (c.duration_seconds * tempo / 60.0) as f32 * px,
-            lane.rect.height(),
+        Pos2::new(
+            origin + c.start_beats as f32 * px,
+            lane.rect.top() + lane_index * lane_height,
         ),
+        Vec2::new((c.duration_seconds * tempo / 60.0) as f32 * px, lane_height),
     )
 }
 fn wave_rect(r: Rect) -> Rect {
@@ -886,25 +930,6 @@ pub(super) fn show_with_tool(
                 continue;
             }
             let response = ui.interact(r, Id::new(("audio-event", c.id)), Sense::click_and_drag());
-            // Contextual cutting lives in the lower fifth of the waveform body,
-            // above the black name strip, and only for the selected track.
-            let wave = wave_rect(r);
-            let cut_band = Rect::from_min_max(
-                Pos2::new(
-                    wave.left(),
-                    (wave.bottom() - wave.height() * 0.20).max(wave.top() + 1.0),
-                ),
-                Pos2::new(wave.right(), wave.bottom().max(wave.top() + 2.0)),
-            );
-            let track_selected = project
-                .selected_track
-                .and_then(|row| project.tracks.get(row as usize))
-                .is_some_and(|track| track.id == lane.id);
-            let contextual_cut = *edit_tool == EditTool::Select
-                && track_selected
-                && response
-                    .hover_pos()
-                    .is_some_and(|pos| cut_band.contains(pos));
             if let Some((track, id, text, focus)) = &mut state.rename
                 && *id == c.id
             {
@@ -960,10 +985,6 @@ pub(super) fn show_with_tool(
                     if let Some(pos) = response.interact_pointer_pos() {
                         split = Some((lane.id, c.id, snap(((pos.x - origin) / px) as f64, grid)));
                     }
-                } else if contextual_cut {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        split = Some((lane.id, c.id, snap(((pos.x - origin) / px) as f64, grid)));
-                    }
                 } else if ui.input(|i| i.modifiers.shift || i.modifiers.ctrl) {
                     if state.selected != Some(c.id) && !state.extra_selected.insert(c.id) {
                         state.extra_selected.remove(&c.id);
@@ -974,7 +995,7 @@ pub(super) fn show_with_tool(
                 }
                 ui.ctx().request_repaint();
             }
-            if response.hovered() && (*edit_tool == EditTool::Split || contextual_cut) {
+            if response.hovered() && *edit_tool == EditTool::Split {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                 if let Some(pos) = response.hover_pos() {
                     let beat = snap(((pos.x - origin) / px) as f64, grid);
@@ -984,7 +1005,7 @@ pub(super) fn show_with_tool(
                     }
                 }
             }
-            if response.hovered() && *edit_tool != EditTool::Split && !contextual_cut {
+            if response.hovered() && *edit_tool != EditTool::Split {
                 if let Some(pos) = response.hover_pos() {
                     let hovered = hit(c, event_rect(c, lane, origin, px, tempo), pos, selected);
                     ui.ctx().set_cursor_icon(if hovered == Tool::Move {
@@ -1018,7 +1039,6 @@ pub(super) fn show_with_tool(
             }
             if response.double_clicked()
                 && *edit_tool == EditTool::Select
-                && !contextual_cut
                 && input.0.is_some_and(|pos| {
                     hit(c, event_rect(c, lane, origin, px, tempo), pos, selected) != Tool::Gain
                 })
@@ -1031,7 +1051,6 @@ pub(super) fn show_with_tool(
                 }
             }
             if *edit_tool == EditTool::Select
-                && !contextual_cut
                 && response.drag_started_by(egui::PointerButton::Primary)
                 && state.gesture.is_none()
                 && state.group_gesture.is_none()
@@ -1125,9 +1144,7 @@ pub(super) fn show_with_tool(
     }
     if let Some(beat) = cut_preview {
         let x = origin + beat as f32 * px;
-        let pointer = ui
-            .input(|i| i.pointer.hover_pos())
-            .map(|p| Pos2::new(x, p.y));
+        let pointer = ui.input(|i| i.pointer.hover_pos());
         if grid.is_some() {
             crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, pointer);
             ui.painter().with_clip_rect(visible).line_segment(
@@ -1314,6 +1331,9 @@ mod tests {
                         Pos2::new(100.0, i as f32 * 70.0),
                         Vec2::new(1100.0, 70.0),
                     ),
+                    take_lanes_visible: false,
+                    take_lane_count: 1,
+                    take_lane_indices: HashMap::new(),
                     automation: None,
                     color: Color32::from_rgb(110, 80, 150),
                 })
@@ -1417,33 +1437,6 @@ mod tests {
             Some((f.project.tracks[0].id, f.project.tracks[0].clips[1].id))
         );
     }
-    #[test]
-    fn select_tool_contextual_cut_band_splits_at_the_snapped_guide() {
-        let mut f = Fixture::new();
-        f.tool = EditTool::Select;
-        f.project.selected_track = Some(0);
-        // The waveform body ends at y=57; the cut band is its lower fifth.
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 52.0))]);
-        assert_eq!(f.guide, Some(450.0));
-        f.button(Pos2::new(445.0, 52.0), true);
-        assert!(f.button(Pos2::new(445.0, 52.0), false));
-        assert_eq!(f.project.tracks[0].clips.len(), 2);
-        assert_eq!(f.project.tracks[0].clips[1].start_beats, 3.5);
-        assert_eq!(f.project.tracks[0].clips[1].source_offset_seconds, 1.25);
-    }
-
-    #[test]
-    fn contextual_cut_is_hidden_for_an_unselected_track() {
-        let mut f = Fixture::new();
-        f.tool = EditTool::Select;
-        f.project.selected_track = None;
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(445.0, 52.0))]);
-        assert_eq!(f.guide, None);
-        f.button(Pos2::new(445.0, 52.0), true);
-        assert!(!f.button(Pos2::new(445.0, 52.0), false));
-        assert_eq!(f.project.tracks[0].clips.len(), 1);
-    }
-
     #[test]
     fn snap_off_cut_preview_has_scissors_without_a_guide() {
         let mut f = Fixture::new();

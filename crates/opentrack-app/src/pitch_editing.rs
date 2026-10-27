@@ -9,6 +9,9 @@ use std::collections::BTreeSet;
 const MIN_NOTE_LENGTH_SECONDS: f64 = 0.01;
 const FINE_PITCH_SENSITIVITY: f32 = 0.25;
 const ATTACHED_NOTE_TOLERANCE_SECONDS: f64 = 1e-6;
+const PITCH_HANDLE_MODE_LEFT: u8 = 3;
+const PITCH_HANDLE_MODE_RIGHT: u8 = 4;
+const PITCH_ANCHOR_MODE: u8 = 5;
 const NOTE_COLORS: [Color32; 4] = [
     Color32::from_rgb(216, 125, 120),
     Color32::from_rgb(179, 146, 225),
@@ -66,11 +69,81 @@ fn note_screen_rect(
     )
 }
 
+fn note_handle_mode(note_rect: Rect, pos: Pos2) -> Option<u8> {
+    if note_rect.width() < 20.0 {
+        return None;
+    }
+    let handle = 7.0_f32.min(note_rect.width() * 0.30).max(4.0);
+    for (mode, center) in [
+        (
+            PITCH_HANDLE_MODE_LEFT,
+            note_rect.left_top() + Vec2::new(handle * 0.5, -handle * 0.5),
+        ),
+        (
+            PITCH_HANDLE_MODE_RIGHT,
+            note_rect.right_top() - Vec2::splat(handle * 0.5),
+        ),
+        (1, note_rect.left_bottom() + Vec2::splat(handle * 0.5)),
+        (
+            2,
+            note_rect.right_bottom() + Vec2::new(-handle * 0.5, handle * 0.5),
+        ),
+    ] {
+        let hit_rect = if mode == PITCH_HANDLE_MODE_LEFT || mode == PITCH_HANDLE_MODE_RIGHT {
+            // Keep the pitch targets above the note so a normal body drag at
+            // its top edge still starts broad pitch tuning.
+            Rect::from_center_size(center, Vec2::new(handle + 5.0, handle))
+        } else {
+            Rect::from_center_size(center, Vec2::splat(handle + 5.0))
+        };
+        if hit_rect.contains(pos) {
+            return Some(mode);
+        }
+    }
+    let anchor_line = Rect::from_min_max(
+        Pos2::new(note_rect.left() + handle + 5.0, note_rect.top()),
+        Pos2::new(note_rect.right() - handle - 5.0, note_rect.top() + 7.0),
+    );
+    anchor_line
+        .is_positive()
+        .then_some(PITCH_ANCHOR_MODE)
+        .filter(|_| anchor_line.contains(pos))
+}
+
+fn split_pitch_shape(original: &PitchNote, left: &mut PitchNote, right: &mut PitchNote, at: f64) {
+    let at = at.clamp(0.0, 1.0);
+    let old_anchor = original.pitch_anchor.clamp(0.0, 1.0);
+    let split_bend = original.pitch_bend_at_fraction(at);
+    if old_anchor <= at {
+        left.pitch_start_bend = original.pitch_start_bend;
+        left.pitch_anchor = if at > 0.0 { old_anchor / at } else { 1.0 };
+        left.pitch_anchor_bend = original.pitch_anchor_bend;
+        left.pitch_end_bend = split_bend;
+        right.pitch_start_bend = split_bend;
+        right.pitch_anchor = 0.0;
+        right.pitch_anchor_bend = split_bend;
+        right.pitch_end_bend = original.pitch_end_bend;
+    } else {
+        left.pitch_start_bend = original.pitch_start_bend;
+        left.pitch_anchor = 1.0;
+        left.pitch_anchor_bend = split_bend;
+        left.pitch_end_bend = split_bend;
+        right.pitch_start_bend = split_bend;
+        right.pitch_anchor = ((old_anchor - at) / (1.0 - at)).clamp(0.0, 1.0);
+        right.pitch_anchor_bend = original.pitch_anchor_bend;
+        right.pitch_end_bend = original.pitch_end_bend;
+    }
+}
+
 fn reset_selected_notes(notes: &mut [PitchNote], selected: &BTreeSet<u64>, duration: f64) -> bool {
     let before = notes.to_vec();
     for note in notes.iter_mut().filter(|note| selected.contains(&note.id)) {
         note.shift = 0.0;
         note.straighten = 0.0;
+        note.pitch_start_bend = 0.0;
+        note.pitch_anchor = 0.5;
+        note.pitch_anchor_bend = 0.0;
+        note.pitch_end_bend = 0.0;
         note.start = note.source_start;
         note.end = note.source_end;
     }
@@ -154,6 +227,10 @@ fn reset_note(
     let before = notes.to_vec();
     notes[index].shift = 0.0;
     notes[index].straighten = 0.0;
+    notes[index].pitch_start_bend = 0.0;
+    notes[index].pitch_anchor = 0.5;
+    notes[index].pitch_anchor_bend = 0.0;
+    notes[index].pitch_end_bend = 0.0;
     if let Some(center) =
         measured_center(analysis, notes[index].source_start, notes[index].source_end)
     {
@@ -167,6 +244,14 @@ fn reset_note(
         return false;
     }
     true
+}
+
+fn reset_pitch_edge(notes: &mut [PitchNote], index: usize, mode: u8) {
+    if mode == PITCH_HANDLE_MODE_LEFT {
+        notes[index].pitch_start_bend = notes[index].pitch_anchor_bend;
+    } else {
+        notes[index].pitch_end_bend = notes[index].pitch_anchor_bend;
+    }
 }
 
 fn resize_note_edge(
@@ -345,6 +430,10 @@ impl NoteEditor {
                             let last = edit.notes[b].clone();
                             edit.notes[a].end=last.end;
                             edit.notes[a].source_end=last.source_end;
+                            edit.notes[a].pitch_start_bend = 0.0;
+                            edit.notes[a].pitch_anchor = 0.5;
+                            edit.notes[a].pitch_anchor_bend = 0.0;
+                            edit.notes[a].pitch_end_bend = 0.0;
                             if let Some(center) = measured_center(&edit.analysis,edit.notes[a].source_start,last.source_end) { edit.notes[a].detected_midi=center; }
                             edit.notes.drain(a+1..=b);
                             self.selected=BTreeSet::from([edit.notes[a].id]);
@@ -391,6 +480,7 @@ impl NoteEditor {
         let x = |t: f64| wave.left() + ((t - start) / (end - start)) as f32 * wave.width();
         let painter = ui.painter().with_clip_rect(wave);
         let mut action = None;
+        let mut anchor_action = None;
         let mut reset_action = None;
         let mut fine_readout = None;
         let mut pressed_note = false;
@@ -447,9 +537,13 @@ impl NoteEditor {
                         (pos.y - view.y(corrected_midi, wave)).abs() < h * 0.5 + 3.0
                     })
             });
+            let handle_mode = pointer
+                .filter(|pos| wave.contains(*pos))
+                .and_then(|pos| note_handle_mode(note_rect, pos));
             let hovered = pointer
                 .is_some_and(|p| wave.contains(p) && rect.expand2(Vec2::new(0.0, 4.0)).contains(p))
-                || trace_hit;
+                || trace_hit
+                || handle_mode.is_some();
             let dragging = down && (captured || (pressed && hovered));
             let hint = !fine_modifier
                 && pointer.is_some_and(|p| {
@@ -461,6 +555,7 @@ impl NoteEditor {
                 });
             let cut_active = hovered
                 && !fine_modifier
+                && handle_mode.is_none()
                 && (tool == EditTool::Split
                     || (pointer.is_some_and(|p| {
                         rect.contains(p)
@@ -485,6 +580,78 @@ impl NoteEditor {
                 Stroke::new(if selected || hovered { 1.7 } else { 1.0 }, color),
                 egui::StrokeKind::Inside,
             );
+            let handle_size = 7.0_f32.min((note_rect.width() * 0.30).max(4.0));
+            let handle_fill = if selected { Color32::WHITE } else { color };
+            let handle_stroke = Stroke::new(1.0, if selected { color } else { Color32::WHITE });
+            if note_rect.width() >= 20.0 {
+                painter.line_segment(
+                    [
+                        Pos2::new(note_rect.left() + handle_size, note_rect.top() + 1.0),
+                        Pos2::new(note_rect.right() - handle_size, note_rect.top() + 1.0),
+                    ],
+                    Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.75)),
+                );
+                let anchor_x = note_rect.left() + note_rect.width() * note.pitch_anchor as f32;
+                painter.line_segment(
+                    [
+                        Pos2::new(anchor_x, note_rect.top()),
+                        Pos2::new(anchor_x, note_rect.top() + 6.0),
+                    ],
+                    Stroke::new(1.2, Color32::WHITE),
+                );
+                painter.circle_filled(Pos2::new(anchor_x, note_rect.top() + 3.0), 2.0, handle_fill);
+                let handles = [
+                    (
+                        PITCH_HANDLE_MODE_LEFT,
+                        Rect::from_min_size(
+                            note_rect.left_top() - Vec2::new(0.0, handle_size),
+                            Vec2::splat(handle_size),
+                        ),
+                        "Bend pitch at the note start",
+                    ),
+                    (
+                        PITCH_HANDLE_MODE_RIGHT,
+                        Rect::from_min_size(
+                            note_rect.right_top() - Vec2::splat(handle_size),
+                            Vec2::new(handle_size, handle_size),
+                        ),
+                        "Bend pitch at the note end",
+                    ),
+                    (
+                        1,
+                        Rect::from_min_size(note_rect.left_bottom(), Vec2::splat(handle_size)),
+                        "Move the note start in time",
+                    ),
+                    (
+                        2,
+                        Rect::from_min_size(
+                            note_rect.right_bottom() - Vec2::new(handle_size, 0.0),
+                            Vec2::splat(handle_size),
+                        ),
+                        "Move the note end in time",
+                    ),
+                ];
+                for (mode, handle, tooltip) in handles {
+                    ui.interact(
+                        handle,
+                        Id::new(("pitch-note-handle", note.id, mode)),
+                        Sense::hover(),
+                    )
+                    .on_hover_text(tooltip);
+                    painter.rect_filled(handle, 0.0, handle_fill);
+                    painter.rect_stroke(handle, 0.0, handle_stroke, egui::StrokeKind::Inside);
+                }
+                let anchor_band = Rect::from_min_max(
+                    Pos2::new(note_rect.left() + handle_size + 5.0, note_rect.top()),
+                    Pos2::new(note_rect.right() - handle_size - 5.0, note_rect.top() + 7.0),
+                );
+                ui.interact(
+                    anchor_band,
+                    Id::new(("pitch-note-anchor", note.id)),
+                    Sense::hover(),
+                )
+                .on_hover_text("Set the anchor point for the two pitch edges");
+            }
             if hint {
                 let y = rect.bottom() - h * 0.25;
                 painter.line_segment(
@@ -509,18 +676,18 @@ impl NoteEditor {
                 if t > note.start + 0.02 && t < note.end - 0.02 {
                     let guide = x(t);
                     if grid.is_some() {
-                        painter.line_segment(
+                        let guide_area = Rect::from_min_max(
+                            Pos2::new(wave.left(), wave.top() - 22.0),
+                            wave.right_bottom(),
+                        );
+                        painter.with_clip_rect(guide_area).line_segment(
                             [
-                                Pos2::new(guide, rect.top()),
-                                Pos2::new(guide, rect.bottom()),
+                                Pos2::new(guide, guide_area.top()),
+                                Pos2::new(guide, guide_area.bottom()),
                             ],
                             Stroke::new(1.0, Color32::WHITE),
                         );
-                        crate::system_tool_icons::tool_cursor_at(
-                            ui,
-                            ToolbarIcon::Split,
-                            Some(Pos2::new(guide, pos.y)),
-                        );
+                        crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, Some(pos));
                     } else {
                         crate::system_tool_icons::tool_cursor_only_at(
                             ui,
@@ -532,22 +699,34 @@ impl NoteEditor {
             }
             if hovered && !cut_active {
                 let pos = pointer.unwrap();
-                ui.ctx().set_cursor_icon(
-                    if !fine_modifier
+                ui.ctx().set_cursor_icon(match handle_mode {
+                    Some(1 | 2) => egui::CursorIcon::ResizeHorizontal,
+                    Some(PITCH_HANDLE_MODE_LEFT | PITCH_HANDLE_MODE_RIGHT) => {
+                        egui::CursorIcon::ResizeVertical
+                    }
+                    Some(PITCH_ANCHOR_MODE) => egui::CursorIcon::Crosshair,
+                    _ if !fine_modifier
                         && ((pos.x - note_rect.left()).abs() < edge_width
-                            || (pos.x - note_rect.right()).abs() < edge_width)
+                            || (pos.x - note_rect.right()).abs() < edge_width) =>
                     {
                         egui::CursorIcon::ResizeHorizontal
-                    } else {
-                        egui::CursorIcon::ResizeVertical
-                    },
-                );
+                    }
+                    _ => egui::CursorIcon::ResizeVertical,
+                });
             }
             if !interactive {
                 continue;
             }
             if pressed && hovered {
                 pressed_note = true;
+                if !cut_active
+                    && handle_mode == Some(PITCH_ANCHOR_MODE)
+                    && let Some(pos) = pointer
+                {
+                    let fraction = ((pos.x - note_rect.left()) / note_rect.width().max(1.0))
+                        .clamp(0.05, 0.95) as f64;
+                    anchor_action = Some((index, fraction, note.pitch_bend_at_fraction(fraction)));
+                }
                 if cut_active && pressed {
                     if let Some(pos) = pointer {
                         let mut t = start
@@ -575,20 +754,23 @@ impl NoteEditor {
                 let pos = ui
                     .input(|i| i.pointer.press_origin())
                     .unwrap_or(rect.center());
-                let mode = if fine_modifier {
-                    0
-                } else if (pos.x - note_rect.left()).abs() < edge_width {
-                    1
-                } else if (note_rect.right() - pos.x).abs() < edge_width {
-                    2
-                } else {
-                    0
-                };
+                let mode = handle_mode.unwrap_or_else(|| {
+                    if fine_modifier {
+                        0
+                    } else if (pos.x - note_rect.left()).abs() < edge_width {
+                        1
+                    } else if (note_rect.right() - pos.x).abs() < edge_width {
+                        2
+                    } else {
+                        0
+                    }
+                });
                 self.drag_origin = pointer;
                 self.drag_fine = fine_modifier;
                 self.drag_pitch_active = false;
                 self.drag_pitch_base_shifts = edit.notes.iter().map(|note| note.shift).collect();
-                self.drag = Some((note.id, mode, edit.notes.clone()));
+                self.drag =
+                    (mode != PITCH_ANCHOR_MODE).then(|| (note.id, mode, edit.notes.clone()));
             }
             if dragging && self.drag.as_ref().is_some_and(|(id, _, _)| *id == note.id) {
                 self.audition_note = Some(note.id);
@@ -659,8 +841,17 @@ impl NoteEditor {
                             center_pitch_cents(&changed[index]),
                         ));
                     }
-                } else if *mode == 1 {
+                } else if *mode == 1 || *mode == 2 {
                     resize_note_edge(&mut changed, index, *mode, dt, clip.duration_seconds);
+                } else if *mode == PITCH_HANDLE_MODE_LEFT || *mode == PITCH_HANDLE_MODE_RIGHT {
+                    let pitch_delta = -delta.y * view.span / wave.height().max(1.0);
+                    if *mode == PITCH_HANDLE_MODE_LEFT {
+                        changed[index].pitch_start_bend =
+                            (before[index].pitch_start_bend + pitch_delta).clamp(-12.0, 12.0);
+                    } else {
+                        changed[index].pitch_end_bend =
+                            (before[index].pitch_end_bend + pitch_delta).clamp(-12.0, 12.0);
+                    }
                 } else {
                     resize_note_edge(&mut changed, index, *mode, dt, clip.duration_seconds);
                 }
@@ -730,6 +921,12 @@ impl NoteEditor {
         {
             edit.notes = changed;
         }
+        if let Some((index, fraction, bend)) = anchor_action
+            && let Some(note) = edit.notes.get_mut(index)
+        {
+            note.pitch_anchor = fraction;
+            note.pitch_anchor_bend = bend;
+        }
         if let Some((index, mode)) = reset_action {
             let success = if mode == 0 {
                 reset_note(
@@ -738,6 +935,9 @@ impl NoteEditor {
                     clip.duration_seconds,
                     &edit.analysis,
                 )
+            } else if mode == PITCH_HANDLE_MODE_LEFT || mode == PITCH_HANDLE_MODE_RIGHT {
+                reset_pitch_edge(&mut edit.notes, index, mode);
+                true
             } else {
                 reset_note_edge(&mut edit.notes, index, mode, clip.duration_seconds)
             };
@@ -745,6 +945,8 @@ impl NoteEditor {
                 self.selected = BTreeSet::from([edit.notes[index].id]);
                 self.message = if mode == 0 {
                     "Note returned to its analyzed pitch and source timing.".into()
+                } else if mode == PITCH_HANDLE_MODE_LEFT || mode == PITCH_HANDLE_MODE_RIGHT {
+                    "Note pitch edge returned to its anchor.".into()
                 } else {
                     "Note edge returned to its source boundary.".into()
                 };
@@ -763,14 +965,23 @@ impl NoteEditor {
         }
         if let Some((index, t)) = action {
             let mut right = edit.notes[index].clone();
+            let split_fraction =
+                (t - edit.notes[index].start) / (edit.notes[index].end - edit.notes[index].start);
             let cut = right.source_start
                 + (t - right.start) / (right.end - right.start)
                     * (right.source_end - right.source_start);
             right.id = edit.notes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+            let original = edit.notes[index].clone();
             edit.notes[index].end = t;
             edit.notes[index].source_end = cut;
             right.start = t;
             right.source_start = cut;
+            split_pitch_shape(
+                &original,
+                &mut edit.notes[index],
+                &mut right,
+                split_fraction,
+            );
             self.selected = BTreeSet::from([right.id]);
             edit.notes.insert(index + 1, right);
             for n in &mut edit.notes[index..=index + 1] {
@@ -1146,6 +1357,10 @@ mod tests {
                 detected_midi: 60.0,
                 shift: 0.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             },
             PitchNote {
                 id: 11,
@@ -1156,6 +1371,10 @@ mod tests {
                 detected_midi: 62.0,
                 shift: 0.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             },
             PitchNote {
                 id: 12,
@@ -1166,6 +1385,10 @@ mod tests {
                 detected_midi: 64.0,
                 shift: 0.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             },
         ];
         let previous_far_edge = notes[0].start;
@@ -1210,6 +1433,10 @@ mod tests {
                     detected_midi: 60.0,
                     shift: 0.0,
                     straighten: 0.0,
+                    pitch_start_bend: 0.0,
+                    pitch_anchor: 0.5,
+                    pitch_anchor_bend: 0.0,
+                    pitch_end_bend: 0.0,
                 },
                 PitchNote {
                     id: 11,
@@ -1220,6 +1447,10 @@ mod tests {
                     detected_midi: 62.0,
                     shift: 0.0,
                     straighten: 0.0,
+                    pitch_start_bend: 0.0,
+                    pitch_anchor: 0.5,
+                    pitch_anchor_bend: 0.0,
+                    pitch_end_bend: 0.0,
                 },
                 PitchNote {
                     id: 12,
@@ -1230,6 +1461,10 @@ mod tests {
                     detected_midi: 64.0,
                     shift: 0.0,
                     straighten: 0.0,
+                    pitch_start_bend: 0.0,
+                    pitch_anchor: 0.5,
+                    pitch_anchor_bend: 0.0,
+                    pitch_end_bend: 0.0,
                 },
             ]
         };
@@ -1563,6 +1798,10 @@ mod tests {
                 detected_midi: 69.0,
                 shift: 0.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             }],
             rendered_source: None,
             enabled: true,
@@ -1579,6 +1818,10 @@ mod tests {
             detected_midi,
             shift,
             straighten: 0.0,
+            pitch_start_bend: 0.0,
+            pitch_anchor: 0.5,
+            pitch_anchor_bend: 0.0,
+            pitch_end_bend: 0.0,
         }
     }
 

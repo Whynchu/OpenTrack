@@ -1,6 +1,6 @@
-# Basic track workflow: reference specification
+# Historical basic-track workflow study
 
-Status: L1 evidence collection; the current reference capture was accepted for continued investigation. No workflow step currently has verified OpenTrack/Cubase parity.
+This document records an earlier workflow study. Its screenshot archive has been removed at the user's direction; it is not an active specification or acceptance gate. Current feature work follows [the delivery workflow](workflow/README.md) and the user's requirements.
 
 ## Target and capture environment
 

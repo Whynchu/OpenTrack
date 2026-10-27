@@ -112,6 +112,8 @@ pub(crate) struct ArrangeViewState {
     pub(crate) track_heights: std::collections::BTreeMap<u64, f32>,
     #[serde(default)]
     pub(crate) automation_visible: std::collections::BTreeSet<u64>,
+    #[serde(default)]
+    pub(crate) take_lanes_visible: std::collections::BTreeSet<u64>,
     #[serde(default = "default_true")]
     pub(crate) show_inspector: bool,
     #[serde(default = "default_true")]
@@ -147,6 +149,7 @@ impl Default for ArrangeViewState {
             ruler_bars_beats_linear: false,
             track_heights: Default::default(),
             automation_visible: Default::default(),
+            take_lanes_visible: Default::default(),
             show_inspector: true,
             show_track_colors: true,
             selected_track_ids: Default::default(),
@@ -1337,7 +1340,7 @@ mod tests {
         });
         track.inserts.push(opentrack_core::project::InsertEffect {
             enabled: true,
-            kind: opentrack_core::project::InsertEffectKind::Compressor {
+            kind: opentrack_core::project::InsertEffectKind::LegacyUnavailableCompressor {
                 threshold_db: -18.0,
                 ratio: 3.0,
                 attack_ms: 10.0,

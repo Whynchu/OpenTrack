@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! One prepared stereo VST3 effect instance.
+//! One prepared mono or stereo VST3 effect instance.
 //!
 //! Lifecycle, bus negotiation, block processing and state follow
 //! `docs/plugin-hosting-plan.md` sections 4.3-4.11. The implementation keeps
@@ -181,9 +181,27 @@ pub struct Vst3Effect {
 // use separate COM objects/atomics and are documented as control-thread work.
 unsafe impl Sync for Vst3Effect {}
 
+/// A native editor view created on the calling thread and detached from the
+/// effect's normal editor slot. The application keeps this on its editor
+/// thread so the plug-in's message loop is independent from the main UI.
+pub struct DetachedEditor {
+    session: Option<EditorSession>,
+    _plug_frame: ComPtr<IPlugFrame>,
+    shared: Arc<HostShared>,
+}
+
+impl Drop for DetachedEditor {
+    fn drop(&mut self) {
+        self.shared.editor_hwnd.store(0, Ordering::Release);
+        if let Some(session) = self.session.take() {
+            editor::close_session(session);
+        }
+    }
+}
+
 impl Vst3Effect {
-    /// Loads `module_path`, instantiates `class_id`, negotiates a stereo (or
-    /// mono-in/stereo-out) main bus and prepares it for block processing.
+    /// Loads `module_path`, instantiates `class_id`, preserves its native mono
+    /// or stereo main buses and prepares it for block processing.
     pub fn load(
         module_path: &Path,
         class_id: PluginClassId,
@@ -194,7 +212,7 @@ impl Vst3Effect {
 
         let module = Vst3Module::open(module_path)
             .map_err(|error| format!("could not load {}: {error}", module_path.display()))?;
-        let factory = module.factory().clone();
+        let factory = module.factory();
 
         // IPluginFactory3 wants the host application context before classes are
         // instantiated. The context is moved into the effect below and stays
@@ -220,7 +238,7 @@ impl Vst3Effect {
             .to_com_ptr::<IParameterChanges>()
             .ok_or_else(|| String::from("could not create input parameter changes"))?;
 
-        let component = create_component(&factory, class_id)?;
+        let component = create_component(factory, class_id)?;
         // Some WaveShell-style single-component wrappers only expose
         // IEditController after initialize; initialize before resolving the
         // controller. The component already owns the host context.
@@ -232,7 +250,7 @@ impl Vst3Effect {
         let mut controller_cid = [0 as c_char; 16];
         let controller_result = unsafe { component.getControllerClassId(&mut controller_cid) };
         let (controller, separate_controller) = if controller_result == kResultOk {
-            match create_controller(&factory, &controller_cid) {
+            match create_controller(factory, &controller_cid) {
                 Ok(controller) => (controller, true),
                 Err(error) => {
                     unsafe {
@@ -262,6 +280,8 @@ impl Vst3Effect {
             ));
         };
 
+        // Borrow the module's factory above: no independent factory reference
+        // may survive module unload when this partially built effect fails.
         let mut effect = Self {
             editor: Mutex::new(None),
             shared,
@@ -306,6 +326,7 @@ impl Vst3Effect {
             effect.shutdown();
             return Err(error);
         }
+        effect.has_editor = probe_editor(&effect.controller);
         Ok(effect)
     }
 
@@ -369,8 +390,21 @@ impl Vst3Effect {
             ));
         }
 
+        if self.separate_controller {
+            let stream = MemoryStream::empty();
+            let ptr = stream
+                .to_com_ptr::<IBStream>()
+                .ok_or("could not create initial state stream")?;
+            if unsafe { self.component.getState(ptr.as_ptr()) } == kResultOk {
+                let stream = MemoryStream::from_slice(&stream.contents());
+                let ptr = stream
+                    .to_com_ptr::<IBStream>()
+                    .ok_or("could not create controller state stream")?;
+                let _ = unsafe { self.controller.setComponentState(ptr.as_ptr()) };
+            }
+        }
         self.layout = negotiate_buses(&self.component, &self.processor)?;
-        self.has_editor = probe_editor(&self.controller);
+
         Ok(())
     }
 
@@ -446,7 +480,9 @@ impl Vst3Effect {
         self.active = true;
 
         let result = unsafe { self.processor.setProcessing(1) };
-        if result != kResultOk {
+        // Legacy processors may implement this notification as a no-op.
+        // kNotImplemented is not a preparation failure (e.g. iZotope Ozone 8).
+        if result != kResultOk && result != kNotImplemented {
             unsafe {
                 let _ = self.component.setActive(0);
             }
@@ -677,7 +713,7 @@ impl Vst3Effect {
         Ok(())
     }
 
-    /// True when the controller created an `"editor"` view during load.
+    /// True when the controller created an `"editor"` view after preparation.
     pub fn has_editor(&self) -> bool {
         self.has_editor
     }
@@ -710,6 +746,38 @@ impl Vst3Effect {
                 Err(error)
             }
         }
+    }
+
+    /// Opens the editor on the calling thread without using the effect's
+    /// built-in editor slot. Callback edits and meters continue to use the
+    /// live audio component, so the editor shows the actual processing state.
+    pub fn open_detached_editor(
+        &self,
+        parent_window: *mut c_void,
+    ) -> Result<DetachedEditor, String> {
+        if parent_window.is_null() {
+            return Err(String::from("editor parent window handle is null"));
+        }
+        let shared = Arc::clone(&self.shared);
+        shared
+            .editor_hwnd
+            .store(parent_window as isize, Ordering::Release);
+        let services = HostServices::new(Arc::clone(&self.shared));
+        let plug_frame = services
+            .to_com_ptr::<IPlugFrame>()
+            .ok_or_else(|| String::from("could not create the detached host IPlugFrame"))?;
+        let session = match editor::open_session(&self.controller, &plug_frame, parent_window) {
+            Ok(session) => session,
+            Err(error) => {
+                shared.editor_hwnd.store(0, Ordering::Release);
+                return Err(error);
+            }
+        };
+        Ok(DetachedEditor {
+            session: Some(session),
+            _plug_frame: plug_frame,
+            shared,
+        })
     }
 
     /// Detaches and releases the native editor, if any.
@@ -898,7 +966,11 @@ impl Vst3Effect {
         }
 
         left.copy_from_slice(&buffers.output_left[..frames]);
-        right.copy_from_slice(&buffers.output_right[..frames]);
+        if self.layout.output_channels == 1 {
+            right.copy_from_slice(&buffers.output_left[..frames]);
+        } else {
+            right.copy_from_slice(&buffers.output_right[..frames]);
+        }
         buffers.frames_processed = buffers.frames_processed.wrapping_add(frames as u64);
         Ok(())
     }
@@ -1067,6 +1139,18 @@ fn negotiated_channel_count(
     })
 }
 
+// Preserve fixed mono/stereo variants. Some legacy wrappers cannot safely be
+// coerced to stereo; adapt the host signal at the format boundary instead.
+fn native_arrangement(channels: i32) -> Result<SpeakerArrangement, String> {
+    match channels {
+        1 => Ok(SpeakerArr::kMono),
+        2 => Ok(SpeakerArr::kStereo),
+        _ => Err(format!(
+            "unsupported main bus channel count {channels}; expected mono or stereo"
+        )),
+    }
+}
+
 fn negotiate_buses(
     component: &ComPtr<IComponent>,
     processor: &ComPtr<IAudioProcessor>,
@@ -1112,10 +1196,10 @@ fn negotiate_buses(
 
     let mut input_arrangements = vec![SpeakerArr::kEmpty; input_count as usize];
     let mut output_arrangements = vec![SpeakerArr::kEmpty; output_count as usize];
-    input_arrangements[*input_index as usize] = SpeakerArr::kStereo;
-    output_arrangements[*output_index as usize] = SpeakerArr::kStereo;
+    input_arrangements[*input_index as usize] = native_arrangement(input_info.channelCount)?;
+    output_arrangements[*output_index as usize] = native_arrangement(output_info.channelCount)?;
 
-    let mut set_result = unsafe {
+    let set_result = unsafe {
         processor.setBusArrangements(
             input_arrangements.as_mut_ptr(),
             input_count,
@@ -1123,19 +1207,6 @@ fn negotiate_buses(
             output_count,
         )
     };
-    if set_result != kResultOk && input_info.channelCount <= 1 {
-        // Mono-in/stereo-out plug-ins commonly reject a stereo input.
-        input_arrangements[*input_index as usize] = SpeakerArr::kMono;
-        set_result = unsafe {
-            processor.setBusArrangements(
-                input_arrangements.as_mut_ptr(),
-                input_count,
-                output_arrangements.as_mut_ptr(),
-                output_count,
-            )
-        };
-    }
-
     let input_channels =
         negotiated_channel_count(processor, kInput, *input_index, input_info.channelCount)?;
     let output_channels =
@@ -1146,20 +1217,15 @@ fn negotiate_buses(
             "unsupported main input channel count {input_channels}; expected mono or stereo"
         ));
     }
-    if output_channels != 2 {
+    if !(1..=2).contains(&output_channels) {
         return Err(format!(
-            "unsupported main output channel count {output_channels}; expected stereo"
+            "unsupported main output channel count {output_channels}; expected mono or stereo"
         ));
     }
-    if set_result != kResultOk {
-        // Some plug-ins have fixed layouts and return false even when the
-        // current arrangement is exactly what the host asked for. Accept that
-        // only when both main buses already match.
-        if input_channels > 2 || output_channels != 2 {
-            return Err(format!(
-                "plug-in rejected stereo bus negotiation ({input_channels} in, {output_channels} out) with 0x{set_result:08x}"
-            ));
-        }
+    // A false response may leave a usable fixed native layout. Other errors
+    // are explicit failures; the queried channel counts above remain bounded.
+    if set_result != kResultOk && set_result != kResultFalse && set_result != kNotImplemented {
+        return Err(format!("bus negotiation failed with 0x{set_result:08x}"));
     }
 
     Ok(BusLayout {

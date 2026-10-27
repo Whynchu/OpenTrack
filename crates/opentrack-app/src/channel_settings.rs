@@ -135,7 +135,6 @@ pub(super) fn show(
     project: &mut Project,
     meters: &HashMap<u64, [f32; 2]>,
     peak_holds: &mut HashMap<u64, metering::Hold>,
-    compressor: &mut CompressorEditorState,
     state: &mut ChannelSettingsUiState,
     bus_target: &mut Option<bool>,
     input_peaks: [f32; 2],
@@ -235,7 +234,7 @@ pub(super) fn show(
         child.spacing_mut().item_spacing = Vec2::ZERO;
         match item {
             ChannelSettingsViewItem::Inserts => {
-                changed |= inserts(&mut child, r, track, compressor, state, vst3_plugin_catalog)
+                changed |= inserts(&mut child, r, track, state, vst3_plugin_catalog)
             }
             ChannelSettingsViewItem::Sends | ChannelSettingsViewItem::SendRouting => {
                 if track.id >= opentrack_core::project::INPUT_BUS_ID {
@@ -370,7 +369,6 @@ fn inserts(
     ui: &mut egui::Ui,
     r: Rect,
     track: &mut Track,
-    compressor: &mut CompressorEditorState,
     state: &mut ChannelSettingsUiState,
     vst3_plugin_catalog: &[PluginDescriptor],
 ) -> bool {
@@ -379,7 +377,14 @@ fn inserts(
         ui,
         r,
         "Inserts",
-        !track.inserts_bypassed && track.inserts.iter().any(|i| i.enabled),
+        !track.inserts_bypassed
+            && track.inserts.iter().any(|insert| {
+                insert.enabled
+                    && !matches!(
+                        &insert.kind,
+                        InsertEffectKind::LegacyUnavailableCompressor { .. }
+                    )
+            }),
         state,
     ) {
         track.inserts_bypassed = !track.inserts_bypassed;
@@ -390,19 +395,29 @@ fn inserts(
         let cell = at(r, 0.0, 24.0 + i as f32 * row, r.width(), row - 3.0);
         slot_frame(ui, cell, &format!("i {}", i + 1));
         let enabled = track.inserts.get(i).is_some_and(|effect| effect.enabled);
+        let is_legacy_compressor = track.inserts.get(i).is_some_and(|effect| {
+            matches!(
+                &effect.kind,
+                InsertEffectKind::LegacyUnavailableCompressor { .. }
+            )
+        });
         let p = power(
             ui,
             at(cell, 1.0, 1.0, 14.0, 13.0),
             ("insert-power", i),
-            enabled,
+            enabled && !is_legacy_compressor,
         )
-        .on_hover_text(format!(
-            "{} Insert {}",
-            if enabled { "Deactivate" } else { "Activate" },
-            i + 1
-        ));
+        .on_hover_text(if is_legacy_compressor {
+            "Removed built-in effect; replace it with a VST3 plug-in or remove the slot.".to_owned()
+        } else {
+            format!(
+                "{} Insert {}",
+                if enabled { "Deactivate" } else { "Activate" },
+                i + 1
+            )
+        });
         context(&p, state);
-        if p.clicked() {
+        if p.clicked() && !is_legacy_compressor {
             if let Some(effect) = track.inserts.get_mut(i) {
                 effect.enabled = !effect.enabled;
                 changed = true;
@@ -425,14 +440,10 @@ fn inserts(
         let response = ui.interact(body, ui.id().with(("insert", i)), Sense::click());
         context(&response, state);
         if has_effect {
-            let is_compressor = track
-                .inserts
-                .get(i)
-                .is_some_and(|effect| matches!(effect.kind, InsertEffectKind::Compressor { .. }));
             let is_vst3 = track
                 .inserts
                 .get(i)
-                .is_some_and(|effect| matches!(effect.kind, InsertEffectKind::Vst3 { .. }));
+                .is_some_and(|effect| matches!(&effect.kind, InsertEffectKind::Vst3 { .. }));
             if let Some(effect) = track.inserts.get(i) {
                 text(
                     ui,
@@ -442,12 +453,14 @@ fn inserts(
                     Align2::LEFT_CENTER,
                 );
             }
-            if response.clicked() && is_compressor {
-                compressor.track_id = Some(track.id);
-                compressor.insert_index = i;
-                compressor.window.open = true;
-                compressor.window.focus_requested = true;
-            } else if response.clicked() && is_vst3 {
+            let response = if is_legacy_compressor {
+                response.on_hover_text(
+                    "This removed built-in effect is inactive. Replace it with a VST3 plug-in.",
+                )
+            } else {
+                response
+            };
+            if response.clicked() && is_vst3 {
                 state.vst3_parameter_slot = Some((track.id, i));
             }
             let mut selected = None;
@@ -460,6 +473,7 @@ fn inserts(
                         let enable = matches!(kind, InsertEffectKind::Vst3 { .. });
                         effect.kind = kind;
                         if enable {
+                            state.vst3_parameter_slot = Some((track.id, i));
                             effect.enabled = true;
                         }
                         changed = true;
@@ -481,6 +495,9 @@ fn inserts(
             });
             match selected {
                 Some(InsertSelection::Add(kind)) => {
+                    if matches!(kind, InsertEffectKind::Vst3 { .. }) {
+                        state.vst3_parameter_slot = Some((track.id, i));
+                    }
                     track.inserts.insert(
                         i.min(track.inserts.len()),
                         InsertEffect {
@@ -1812,7 +1829,6 @@ mod bus_tests {
     fn both_bus_editors_render_with_no_arrange_tracks_or_selected_track() {
         let ctx = egui::Context::default();
         let mut project = Project::default();
-        let mut compressor = CompressorEditorState::default();
         let mut state = ChannelSettingsUiState::default();
         let meters = HashMap::new();
         for input in [true, false] {
@@ -1829,7 +1845,6 @@ mod bus_tests {
                             &mut project,
                             &meters,
                             &mut HashMap::new(),
-                            &mut compressor,
                             &mut state,
                             &mut target,
                             [0.1, 0.2],
@@ -1869,7 +1884,6 @@ mod bus_tests {
                     &mut project,
                     &meters,
                     &mut HashMap::new(),
-                    &mut compressor,
                     &mut state,
                     &mut target,
                     [0.0; 2],

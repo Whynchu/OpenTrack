@@ -108,6 +108,19 @@ mod platform {
                 );
             }
             EnableWindow(window, (!modal) as i32);
+            if modal {
+                // Detaching the owner alone leaves this window above the main
+                // viewport, where it can cover an egui confirmation dialog.
+                SetWindowPos(
+                    window,
+                    HWND_BOTTOM,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
         }
     }
 
@@ -149,6 +162,11 @@ mod platform {
                     windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(editor),
                     0
                 );
+                let mut below = GetWindow(root, GW_HWNDNEXT);
+                while !below.is_null() && below != editor {
+                    below = GetWindow(below, GW_HWNDNEXT);
+                }
+                assert_eq!(below, editor, "modal confirmation must be above the editor");
                 apply_to_window(root, editor, true, false);
                 assert_eq!(GetWindowLongPtrW(editor, GWLP_HWNDPARENT), root as isize);
                 apply_to_window(root, editor, false, false);

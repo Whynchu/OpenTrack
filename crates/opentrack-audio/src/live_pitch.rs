@@ -237,6 +237,10 @@ mod tests {
                 detected_midi: 57.0,
                 shift: 7.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             }],
         };
         let prepared = LivePitchSource::new(source, &edit, 120.0).unwrap();

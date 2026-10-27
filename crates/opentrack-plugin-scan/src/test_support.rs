@@ -34,7 +34,7 @@ impl TempDir {
     }
 
     pub fn write(&self, relative: &str, contents: &[u8]) -> PathBuf {
-        let path = self.path.join(relative);
+        let path = self.path.join(portable_relative_path(relative));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create fixture parent");
         }
@@ -43,10 +43,17 @@ impl TempDir {
     }
 
     pub fn mkdir(&self, relative: &str) -> PathBuf {
-        let path = self.path.join(relative);
+        let path = self.path.join(portable_relative_path(relative));
         std::fs::create_dir_all(&path).expect("create fixture directory");
         path
     }
+}
+
+fn portable_relative_path(relative: &str) -> PathBuf {
+    relative
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+        .collect()
 }
 
 impl Drop for TempDir {

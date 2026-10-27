@@ -254,7 +254,9 @@ pub struct InsertEffect {
     pub kind: InsertEffectKind,
 }
 
-/// Effect implementations available in the first processing milestone.
+/// Effects persisted in an insert slot. Reusable effects are VST3 plug-ins;
+/// `LegacyUnavailableCompressor` only preserves projects that used the removed
+/// OpenTrack built-in compressor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InsertEffectKind {
@@ -268,14 +270,17 @@ pub enum InsertEffectKind {
         feedback: f32,
         mix: f32,
     },
-    Compressor {
+    /// Legacy project data only. This keeps older project files readable but
+    /// is not offered in the UI and has no audio processor.
+    #[serde(rename = "compressor")]
+    LegacyUnavailableCompressor {
         threshold_db: f32,
         ratio: f32,
         attack_ms: f32,
-        #[serde(default = "default_compressor_hold_ms")]
+        #[serde(default = "default_legacy_compressor_hold_ms")]
         hold_ms: f32,
         release_ms: f32,
-        #[serde(default = "default_compressor_analysis")]
+        #[serde(default = "default_legacy_compressor_analysis")]
         analysis: f32,
         makeup_db: f32,
         #[serde(default = "default_true")]
@@ -312,11 +317,11 @@ pub enum InsertEffectKind {
     },
 }
 
-fn default_compressor_hold_ms() -> f32 {
+fn default_legacy_compressor_hold_ms() -> f32 {
     1.0
 }
 
-fn default_compressor_analysis() -> f32 {
+fn default_legacy_compressor_analysis() -> f32 {
     80.0
 }
 
@@ -1418,7 +1423,7 @@ impl Project {
                     {
                         return Err("VST3 insert identity is incomplete");
                     }
-                    InsertEffectKind::Compressor {
+                    InsertEffectKind::LegacyUnavailableCompressor {
                         threshold_db,
                         ratio,
                         attack_ms,
@@ -1442,7 +1447,7 @@ impl Project {
                         || !makeup_db.is_finite()
                         || !(0.0..=24.0).contains(&makeup_db) =>
                     {
-                        return Err("compressor parameters are outside the supported range");
+                        return Err("legacy compressor parameters are outside the supported range");
                     }
                     _ => {}
                 }
@@ -1862,7 +1867,7 @@ mod tests {
             Err("stereo delay parameters are outside the supported range")
         );
 
-        project.tracks[0].inserts[0].kind = InsertEffectKind::Compressor {
+        project.tracks[0].inserts[0].kind = InsertEffectKind::LegacyUnavailableCompressor {
             threshold_db: -18.0,
             ratio: 21.0,
             attack_ms: 10.0,
@@ -1878,7 +1883,7 @@ mod tests {
         };
         assert_eq!(
             project.validate(),
-            Err("compressor parameters are outside the supported range")
+            Err("legacy compressor parameters are outside the supported range")
         );
     }
 }

@@ -1,10 +1,10 @@
-# Fidelity delivery plan
+# Historical UI review notes
 
-> Current scope and status: [workflow/current.md](workflow/current.md). The successive current-position sections below are historical records, not concurrent instructions. The 2026-10-24 [user intent and delivery workflow](workflow/README.md) supersede old plugin-rewrite mandates and old scope restrictions. Preserve their evidence; use the active task for execution.
+> This file summarizes earlier feature-specific UI reviews. Current product direction and acceptance criteria are in [workflow/current.md](workflow/current.md) and the [workflow guide](workflow/README.md). The screenshot archive has been removed; future screenshots supplied by the user are task inputs and are not archived by default.
 
 ## Working principle
 
-Observe a complete Cubase 5 workflow, document its visible states and behavior, reproduce it in original Rust code and graphics, then compare it before expanding it. The full product goal remains unchanged, including CPR investigation and optional legacy plug-in hosting.
+Earlier feature batches used a reference workflow to inform specific UI choices. Their observations remain historical notes; future feature work is specified and reviewed around the intended OpenTrack workflow. Project-format interoperability is tracked separately by format and version.
 
 ## Evidence rules
 
@@ -15,7 +15,7 @@ Observe a complete Cubase 5 workflow, document its visible states and behavior, 
 - **Parity verified:** reference and OpenTrack sequences agree at the same display conditions, including persistence and audio where applicable.
 - **Unknown:** missing or contradictory evidence. Keep this visible until resolved.
 
-Reference screenshots are analysis material in `../_analysis-tools/reports/workflow-L1/`, not product graphics. Store source citations and relative capture paths in the workflow specification. Record logical/physical display dimensions and scaling separately; do not infer DPI from image size.
+Screenshots supplied for an individual task may be used as design input. Do not archive them or derived comparisons by default.
 
 ## Review landmarks
 
@@ -31,23 +31,23 @@ Pause at each landmark before the next substantial UI batch. A review pause pres
 
 ## Batch definition
 
-Before editing product behavior, name the workflow step IDs, reference captures/manual pages, current mismatch, and acceptance result needed. During implementation, limit changes to those steps and necessary foundations. Each batch ends with a named build, appropriate checks, comparison notes, and unresolved mismatches. Keep fresh graphics while matching structure, placement, density, hierarchy, focus, shortcuts, and window behavior.
+Before editing product behavior, name the user-visible outcome, expected behavior, persistence, relevant failure cases, and acceptance result. During implementation, limit changes to that feature and necessary foundations. Each batch ends with appropriate checks and unresolved limitations. Use screenshots only when supplied for the task; screenshot comparison is not a default acceptance step.
 
-Do not expand feature breadth to avoid a difficult fidelity mismatch. CPR and legacy hosting remain separate evidence-backed investigation tracks; they must not silently redefine the first workflow's acceptance criteria or imply CPR compatibility.
+CPR remains a project-interoperability feature. Verify support against real files and round trips for each named version, preserve unknown data where possible, and report limitations.
 
-## Current position
+## Historical L1 checkpoint
 
-The user accepted the expanded L1 reference capture as a sound basis and asked for a systematic tooltip sweep before implementation. The ordered capture ledger is [tooltip-sweep-log.md](reviews/tooltip-sweep-log.md). A separate Rust helper under `_analysis-tools/cubase-hover-mcp/` adds the hover-only MCP action. The user reported that its original `SetCursorPos` movement did not move the visible cursor reliably. A corrected `SendInput` build now verifies cursor position, and the saved Codex config points at it; the currently loaded MCP server still holds the old binary and must be reloaded before capture resumes. The user clarified that top-level menu labels have no tooltips, so the ordered tooltip sweep begins at the Project window power-symbol button. Automated movement and tooltip visibility remain unverified. The original prototype was archived under `target/review-baselines/L0-2026-10-22/`; that build archive was removed when the user requested deletion of all old build folders. Reference captures and source documentation remain outside build output. No product UI changes had been made during that capture pass. See [basic-track-workflow.md](basic-track-workflow.md) and [the L1 capture review](reviews/L1-menu-and-project-capture.md) for the specification, evidence and remaining unknowns.
+The earlier L1 study used user-supplied Cubase screenshots to inventory menu and tooltip behavior. Its screenshot archive and prototype build were later removed. This note is retained as historical context; no capture sweep is active or required. The product behavior and feature verification in [the roadmap](implementation-roadmap.md) and [current workflow](workflow/current.md) take precedence.
 
-## Current position — M2 in progress
+## Historical M2 checkpoint
 
-The user accepted the previous M1 review and asked to proceed to L2. The x64 Project and Inspector build now contains original level, pan and track-delay symbols and controls. Per-track pan and delay save in RWP; their playback processing is implemented, but reference pan law and audio parity remain unknown. Opening the earlier RWP, editing these controls, saving and reopening were exercised live through Sky. Current source and screenshot details are in the [M2 review report](../../_analysis-tools/reports/opentrack-comparisons/M2-review-report.md). M2 is incomplete: Inspector spacing and typography, Add Track dialog sizing, enabled states, tooltip hover presentation and other window/track checks remain. Native desktop access works through `node_repl` and `@oai/sky`; use the [remote review workflow](reviews/remote-review-workflow.md). Stop at this M2 review checkpoint; wait for screenshot feedback before M3.
+Earlier Project and Inspector work added persisted per-track pan and delay with playback processing. A previous review recorded save/reopen behavior and identified UI and pan-law questions; its screenshot attachments were removed. These historical details do not set current feature requirements.
 
-## Active Windows theme and menu fidelity batch
+## Historical Windows theme and menu review
 
-The user rejected the forced steel-blue appearance and requested the Windows app light/dark setting and Windows look. This supersedes the prior fixed palette direction. The layout reference remains the L1 menu inventory, `10-file-menu`, `13-edit-menu` through `43-about-cubase`, and approved arrangement `04-preferred-approved-0.png` in `../_analysis-tools/reports/workflow-L1/`.
+Earlier theme work followed the user's request for Windows light/dark settings and the Windows look. The task-specific screenshots used then were removed; the delivered theme behavior is summarized below.
 
-The implementation follows Windows theme events through eframe/winit, restores the system preference over persisted app theme overrides, uses installed Segoe UI, and derives custom-drawn surfaces/text from the active palette. Menus inherit that same theme. OS window borders/title bars remain native. egui still draws the application controls; full native widget fidelity, Windows accent color, and high contrast remain separate work. Targeted theme tests cover both palettes and live light/dark/light event transitions. Runtime Windows-settings and screenshot comparison remain pending.
+The implementation follows Windows theme events through eframe/winit, restores the system preference over persisted app theme overrides, uses installed Segoe UI, and derives custom-drawn surfaces/text from the active palette. Menus inherit that theme. OS window borders/title bars remain native. egui still draws the application controls; Windows accent color and high contrast remain separate work. Runtime Windows-setting acceptance was pending in this historical note.
 
 Only `builds/x64/OpenTrack.exe` and `builds/x86/OpenTrack.exe` are current deliverables. `build.ps1` refreshes these paths, using one ignored `.build-cache` for intermediate files. Old `target` build trees, verification outputs, review builds and baseline archives are removed at the user's request. Historical build paths in older review notes are no longer available. x64 remains primary; x86 is an experimental compilation target with no old-OS or hardware acceptance claim.
 
@@ -55,41 +55,41 @@ Cleanup completed after the user closed the old review build. The helper validat
 
 Acceptance: change Windows Settings > Personalization > Colors > app mode between Light and Dark while OpenTrack is open, inspect File and nested menus, Arrange, Mixer, Channel Settings and MIDI editor for matching theme and readable text, then restart to confirm persisted settings do not force a theme. Also exercise Save/Discard close handling. Pause at this review checkpoint before another substantial UI batch.
 
-## Current position — M3 polish review
+## Historical M3 polish review
 
-User requested polish of the existing pieces, excluding Compressor. The current x64 build has fixed-position Mixer track and Channel Settings controls, footer names, taller racks, and original labelled EQ axes. Live Sky checks exercised F3, channel e and Mute on/off; reference comparisons and remaining gaps are in [M3 polish review](../../_analysis-tools/reports/opentrack-comparisons/M3-polish-review.md). M3 remains in progress: bus strips, routing typography, fader scale, exact bounds, tooltip presentation and floating Transport still need work. Compressor code/DSP were excluded. Stop for screenshot review before the next substantial batch; L4 is untouched.
+An earlier Mixer/Channel Settings polish pass added fixed-position controls, footer names, taller racks, and labelled EQ axes. The historical [M3 review](../../_analysis-tools/reports/opentrack-comparisons/M3-polish-review.md) records behavior checks and gaps at that time. Compressor was excluded from that pass; this checkpoint is no longer an active scope gate.
 
-## Current position — exclusive Mixer fidelity
+## Historical Mixer review
 
-The user narrowed work exclusively to Mixer. Its measured renderer is now isolated in crates/opentrack-app/src/mixer.rs, with corrected fader/meter order, full channel button stacks and two-column sidebar. Live Mixer bounds match(5,579),1881x449. The user accepted the visual direction and requested the e glyph be raised slightly; the final build moves it up1.5px. [Mixer review](../../_analysis-tools/reports/opentrack-comparisons/M3-mixer-focus-review.md) and its97-observation coverage table separate working controls from disabled backend gaps. Channel Settings, Compressor and Transport were excluded; L4 remains untouched. Pause for the updated glyph screenshot review. Keep subsequent work exclusive to Mixer unless the user changes scope.
+The earlier Mixer pass adjusted fader/meter order, channel button stacks, sidebar layout, and the e glyph. Its [review notes](../../_analysis-tools/reports/opentrack-comparisons/M3-mixer-focus-review.md) retain the behavior audit and backend gaps. The old exclusive-Mixer scope and screenshot review checkpoint are historical only.
 
-### Mixer optical centering and feature audit
+### Mixer feature audit
 
-The latest user correction raises the Mixer e glyph another1px (total offset-2.5px), selected using captured ink bounds. The rebuilt live capture and horizontal comparisons are recorded in [Mixer feature audit](../../_analysis-tools/reports/opentrack-comparisons/M3-mixer-button-features.md). Source audit clarifies that Listen, Monitor, automation R/W, input phase and input gain currently store UI state without audio processing consumers; bus/send backends and several sidebar actions are also missing. Prior UI-toggle checks do not establish those features as implemented. This pass adds no backend functionality and changes no other panels. Pause for the requested screenshot/feature review; scope remains exclusively Mixer.
+The earlier Mixer feature audit found that Listen, Monitor, automation R/W, input phase, and input gain stored UI state without audio-processing consumers; bus/send backends and several sidebar actions were also missing. Preserve this as an implementation finding: UI toggles alone do not establish feature behavior. The [text review](../../_analysis-tools/reports/opentrack-comparisons/M3-mixer-button-features.md) remains available; its screenshot attachments were removed.
 
-## Current position — Mixer checkpoint accepted; Project visual pass authorized
+## Historical Project review checkpoint
 
-The user accepted the Mixer checkpoint and explicitly requested commit/push, then a focused Project-window comparison covering the timeline grid and surrounding layout. This supersedes the exclusive Mixer scope above. Preserve Mixer and Compressor during the Project pass. Use approved L1 frame 04-preferred-approved-0.png and the existing Project tooltip captures; record differences and display conditions outside Git, rebuild and capture the bounded visual slice, then stop for screenshot review. No audio/backend parity or L4 completion is implied.
+An earlier review moved from Mixer to a focused Project-window pass. Its implementation history is retained in the linked task reports; screenshot-based comparisons and capture gates are not current acceptance criteria.
 
 
 ## Project visual review checkpoint
 
-The latest bounded Project pass replaces the Inspector grouping with original vector controls, corrects the ruler/track boundary, and refines the flow-based toolbar after the rejected absolute-position pass was removed. The live two-track capture, comparison images, 90-observation manifest coverage and remaining feature/geometry gaps are recorded outside Git in Project-review-report.md under opentrack-comparisons. Mute and Record Enable UI synchronization were exercised and restored; no audio parity is claimed. Main Project fidelity is incomplete, including lower navigation and detailed toolbar alignment. Pause for screenshot review before continuing the next substantial batch.
+An earlier Project pass replaced Inspector grouping with original vector controls, corrected the ruler/track boundary, and refined the flow-based toolbar. Mute and Record Enable UI synchronization were exercised. Historical visual gaps included lower navigation and toolbar alignment; the screenshot attachments were removed and those gaps do not set current acceptance.
 
 
 ## Live Project interaction evidence
 
-The user opened Cubase for a targeted study and clarified the clickable right-edge track color strip and the distinct below-tracks Track List context menu. Fifteen capture manifests and images remain outside Git in Project-live-study. See [Project interaction study](reviews/project-interaction-study.md) for the region-specific menus, ruler drag observations, unknowns and bounded implementation acceptance. This study changes no product code; do not confuse the Track List background with the timeline background.
+An earlier Project interaction study recorded the right-edge track color strip, the separate below-tracks Track List context menu, and ruler-drag behavior. Screenshot attachments and capture manifests were removed; the [text study](reviews/project-interaction-study.md) retains the feature observations and open questions.
 
 
 
 ## Inspector and Project header audit
 
-The user requested analysis before implementation. [Project layout audit](reviews/project-layout-audit.md) records the left inset, parameter wells, label contrast, Inspector grouping and top toolbar mismatches, with external matched-region comparison captures and a bounded correction order. No product changes were made in this audit.
+An earlier [Project layout audit](reviews/project-layout-audit.md) records observations about the left inset, parameter wells, label contrast, Inspector grouping, and toolbar organization. Its screenshot attachments were removed; the written findings remain historical design context.
 
-## Current desktop-capture limitation — M2 visual iteration
+## Historical desktop-capture limitation
 
-This session’s computer-use `getState()` currently reports no native apps or browser tabs, and the enabled tool inventory has no OpenTrack window-control endpoint. Windows process inspection confirms the latest OpenTrack executable is running with a nonzero main-window handle, but Sky cannot enumerate it for a screenshot or interaction. The current request is for the user to bring OpenTrack to the foreground once. Do not use direct OS window/message injection as a workaround, and do not operate Cubase; continue source and review-note work while the desktop tool is unavailable. Before the next build, close the running OpenTrack process as the user requested. The latest build is `C3E31E57F789B644044B0135E7A019B65086CC408EB7DFE4AE4A5B2A730AF8C8`; current source has unbuilt toolbar-ink and Inspector clock-icon refinements.
+Earlier desktop review was limited by window-enumeration problems. That tool setup note is historical and does not affect current feature acceptance.
 ## 2026-10-24 recovery and single-instance rule
 
-A stale direct Node session returned an old window inventory while get_window's recovery error listed current windows. Resetting `node_repl`, reimporting `@oai/sky`, and re-enumerating returned the current OpenTrack and native picker windows. A zero process MainWindowHandle also failed to reflect a GUI visible to the user. Neither signal authorizes another launch. Keep one OpenTrack instance; recover/reset the tool first, bind exact returned windows, and close OpenTrack through its UI before rebuilding and at review end. For the native picker, bind its separate returned window instead of clicking the dialog as if it were the root app screenshot. The final E955D248 review closed without a prompt after selection-only activity; no process remained.
+Earlier review notes also recorded a desktop-tool recovery procedure. It is retained only as historical context; current desktop work follows the applicable task and user instructions.

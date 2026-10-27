@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "scope": {
-    "version": "transport-v16-pitch-time-editing-workflows",
-    "description": "Project transport/navigation, clipboard, monophonic Pitch & Time editing/processing, Project event controls and shared Mixer interaction; whole DAW inventory remains separate.",
+    "version": "transport-v18-native-transport-window",
+    "description": "Project transport/navigation, clipboard, monophonic Pitch & Time editing/processing, Project event controls, take lanes, shared Mixer interaction, native Transport window, child-window shortcuts, and window pinning; whole DAW inventory remains separate.",
     "baseline_complete": true,
-    "change_reason": "T041 review adds Shift activation during a held pitch drag, bidirectional stretching of already-attached note boundaries, and double-click reset behavior for note edges and bodies. No existing requirement was removed."
+    "change_reason": "T041 added Shift activation during a held pitch drag, neighbor stretching and reset behavior. T047 adds anchored pitch-edge bending, dedicated note timing handles, and Project take-lane visibility and controls. No existing requirement was removed. T048 adds a branded native window icon, focused child-window transport shortcuts, and a persisted always-on-top Transport window. No existing requirement was removed."
   },
   "evidence": {
     "intent-2026-10-24": {
@@ -410,7 +410,58 @@
       "kind": "source",
       "location": "crates/opentrack-app/src/audio_events.rs; view_controls.rs; system_tool_icons.rs; mixer.rs; app.rs",
       "identity": "x64 local-ASIO EXE sha256:0D8ED3CC5052109B003E55EE6E3A15660A69534EB48F0EF9A3ACE814B7615140; app suite 135 pass",
-      "note": "Select tool exposes a contextual cut band directly above the event name strip and previews/commits the same snapped cut. Snap-off split uses a scissors-only cursor and no guide; Draw uses pencil-only. Ctrl+wheel is HorizontalPan in Project and Sample Editor. Mixer caps are rectangular and channel selection returns a shared selection request that syncs arrange/Inspector selection."
+      "note": "Historical Batch 3 source snapshot: Select tool exposed a contextual cut band above the event name strip. T049 removes that band; current Project cuts use the Scissors toolbar tool only. Snap-off split uses a scissors-only cursor and no guide; Draw uses pencil-only. Ctrl+wheel is HorizontalPan in Project and Sample Editor. Mixer caps are rectangular and channel selection returns a shared selection request that syncs arrange/Inspector selection."
+    },
+    "t049-intent": {
+      "kind": "user",
+      "location": "User request in conversation, 2026-10-26; docs/workflow/tasks/T049-project-scissors-mixer-vst-review.md",
+      "note": "User requested toolbar-only Project cutting, a full-height Sample Editor cut guide, Project-synchronized Mixer track selection, native VST Always on Top, a fix for blank Waves editor graphics and reported missing insert routing, and restoration of the earlier tape-track-like OpenTrack logo."
+    },
+    "t049-source": {
+      "kind": "source",
+      "location": "crates/opentrack-app/src/audio_events.rs; sample_editor.rs; pitch_editing.rs; mixer.rs; vst3_host.rs; icons.rs; crates/opentrack-vst3/src/editor.rs; Cargo.toml",
+      "identity": "x64 local-ASIO EXE sha256:E33339F17AB0C57C6E4C11A0525C2E19107917AF494571B778DD968D2F94A46D",
+      "note": "T049 source changes compiled in the x64 local-ASIO release. Project event cutting is Scissors-toolbar-only; the Sample Editor guide spans ruler to edit area; Mixer track-strip clicks select the shared Project track; native VST editor system menu has an ordinary-z-order Always on Top toggle and the host requests repaint after attachment. Hosted processing route was inspected and an editor-specific processing failure is surfaced with dry fallback. The historical tape logo asset was absent, so the mark is an approximation based on the user's description. Runtime and user review remain pending."
+    },
+    "vst3-t044-compatibility": {
+      "kind": "runtime",
+      "location": "docs/workflow/tasks/T044-vst3-native-editors-and-compatibility.md",
+      "identity": "41A77567F6EEE6F0A4D40B19A6ADA82CD115C5F13DC507E2C5361EECD7B01AFE",
+      "note": "Separate from transport scope: 25 installed effects pass bounded native editor/process/state checks; three instruments unsupported. Visual/listening/user acceptance pending."
+    },
+    "vst3-t045-discovery-foundation": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T045-cross-platform-vst3-discovery.md",
+      "identity": "working tree; image.rs sha256:E8779F69433370BC14EE88CBDCFF1D8C0BDED60354F8C5D6502DF15DFC8AD60E; descriptor.rs sha256:91F48B407A66B522E701C185B594E57791D8B788395621C36EB7B45F1DFB732A; discovery.rs sha256:20B4FDB9AA10454E0DE36C3939EEBCD1D324E89E8210350FF454BD844BDD5015; test_support.rs sha256:1207D7B01F906AE0207964E302C4FEBC93CDB31BCDC38E565F8E28F910C76C14; report.rs sha256:40D9A0B04C38B70AB11208C9967A65CD6514561730A0B9D1FCACEF2C91D73A9E",
+      "note": "Native VST3 bundle paths, standard scan roots, and PE/ELF/Mach-O CPU and container prechecks are implemented; report fixtures now use native path separators, host image formats, and CPU. Scanner/catalog test code compiles on Windows x64 and x86 without test execution. A broader x86 app test-code check fails on i32/isize mismatches in native_windows.rs. T046 adds the OS module lifecycle and a hosted native compile matrix; editor embedding and native runtime acceptance remain open."
+    },
+    "t046-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T046-cross-platform-vst3-runtime-foundation.md",
+      "identity": "working tree; module.rs sha256:64181C0D83E968A76F0F8844920E9B38A452110CCC29EB7991B1748AD4A56020; opentrack-vst3 Cargo.toml sha256:B33446A083FC61B67F9F2440CF715FCA365F00B26483FAB9B7A385AE31DDE0BA; opentrack-app Cargo.toml sha256:5BCDF0AE4F16DACD2D2B3C7BB03EB102ABB1320D7CC0BEAE1CD8A2110379CA71; Cargo.lock sha256:C8D247BF3308CE5EA915764A5B64590A975042852B20CC6678625B64C8B19E1E; platform-check.yml sha256:076CBA11F3CCCCA12F3643ED67BC0280DA1B9ABE9E19485928E73E4766372DAB",
+      "note": "Adds required Linux ModuleEntry/ModuleExit and macOS bundleEntry/bundleExit sequencing, Linux GUI backends, and a hosted five-target compile workflow. Windows x64 all-target compilation and Windows x86 scanner/catalog/VST3 test-code compilation pass; tests were not executed. Hosted macOS/Linux compile checks and native plugin/editor/audio/MIDI acceptance are pending."
+    },
+    "t047-intent": {
+      "kind": "user",
+      "location": "docs/workflow/README.md#t047-direction-2026-10-26",
+      "note": "User requests top-corner pitch bending from a chosen anchor, separate bottom-corner timing edits, an expandable Project take-lane view with the bottom lane played, and replacing the Project R/W controls with Effects and Take Lanes."
+    },
+    "t047-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T047-pitch-edge-handles-and-take-lanes.md; crates/opentrack-core/src/pitch_time.rs; crates/opentrack-app/src/pitch_editing.rs; crates/opentrack-app/src/sample_editor.rs; crates/opentrack-app/src/app.rs; crates/opentrack-app/src/audio_events.rs; crates/opentrack-app/src/project_file.rs; crates/opentrack-audio/src/pitch_analysis.rs; crates/opentrack-audio/src/pitch_quality_tests.rs; crates/opentrack-audio/src/pitch_render.rs; crates/opentrack-audio/src/pitch_synthesis.rs; crates/opentrack-audio/src/live_pitch.rs",
+      "identity": "x64 local-ASIO release exe sha256:3E1A39B3D90EF52CE8688BBC3C387706265E6868B395A680484F7904CD457411; pitch_time.rs sha256:0376D9961A4C7FB7C55C082B370DFEB98E176470A47D616F6A54B6B7E26BF8D4; pitch_editing.rs sha256:A16CB448143B681E85BA314111C0620B95F5F88756399D3A448A90C152525D94; sample_editor.rs sha256:48CEFF6FBD1598E251364FBBE11E28DFEF948943BAF17D501D56169FF37129CA; app.rs sha256:78B6D79655504FD419D0CEE25269F8772AD4F6DC14046BA793935D2AA5F12B7C; audio_events.rs sha256:D9005593B2926011C7D4885472B77DE4722734217A1B68ADE12C934D2A38C6AF; project_file.rs sha256:B01C1424CAC6334E5D7FFCD2293D990A27C170B6A795B47F6FE0B1CFA8543E7A; pitch_analysis.rs sha256:6E211C98C12B232F49C29C4EF33669EBFFD6AC239CC8B304B21F95C40543CC15; pitch_quality_tests.rs sha256:EDBA9057FCDBB4BA27DE83B8C4116190C973BCC4373E2785602E9092FE4F2386; pitch_render.rs sha256:68521BD6F752822E6B9534FD381A585C3BE23878513BA7265FA01DD55F09579F; pitch_synthesis.rs sha256:09BD31C64200B182685686B741413EF8F1444761728581A5100806D35811B505; live_pitch.rs sha256:37CA4A078D3475D1B86D63FC15A518DA62090AD75087040A71C215911362961D",
+      "note": "Source implementation and isolated x64 local-ASIO release build succeeded; cargo fmt check and parity report validation passed. No tests or live review were run; visual, listening, playback, undo and persistence acceptance remain pending. Existing builds/x64/OpenTrack.exe was preserved."
+    },
+    "t048-intent": {
+      "kind": "user",
+      "location": "docs/workflow/README.md#t048-direction-2026-10-26",
+      "note": "User requests the OpenTrack icon on VST Audio Channel Settings, transport shortcuts in focused child windows, and a right-click Transport always-on-top option above Channel Settings."
+    },
+    "t048-source": {
+      "kind": "source",
+      "location": "docs/workflow/tasks/T048-transport-window-branding-focus-and-pinning.md; crates/opentrack-app/src/app.rs; crates/opentrack-app/src/icons.rs; crates/opentrack-app/src/main.rs; crates/opentrack-app/src/transport_panel.rs",
+      "identity": "x64 local-ASIO exe sha256:A91EA6C01C8652A0C9AA1987C9109CE8D1CA1AC4D55957DF6397890989327461; app.rs sha256:2966E99F6683ED0B8ED647695522C91F25AA21CAA88F5D7EA196B636257BAC0A; icons.rs sha256:396E0B45F4261BE40EAFB3F793E48A5132320755EA023E1161BB2A32FE61D024; main.rs sha256:6234724FA06ADB80F4A9A19F4B751BC6C50779B3491A11F98178D8D8B463DCDE; transport_panel.rs sha256:568A55148DE8A8D27FBF524A32A2C5C7554942C6CB30FD4EA3231108A1B0A8E1",
+      "note": "Source implementation and x64 local-ASIO release build passed; build-info.json confirms local_asio=true. Formatting and parity report passed. No tests or GUI review were run; focus, icon appearance, topmost stacking and preference persistence remain user acceptance checks. The separate T047 executable remains unchanged."
     }
   },
   "requirements": [
@@ -1377,6 +1428,72 @@
       "comparison_evidence": []
     },
     {
+      "id": "pitch-note-edge-bend-anchor",
+      "weight": 3,
+      "outcome": "Persisted top-left/top-right handles bend only the corresponding note edge in semitones relative to a selectable anchor; the shared Sample Editor trace and audio renderer use the same contour, while broad body dragging remains distinct.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t047-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t047-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "New serialized values default old project notes to zero bends and a midpoint anchor. Live gesture, audible contour, split/reset, Undo and OPR round-trip review remain pending."
+    },
+    {
+      "id": "pitch-note-bottom-time-handles",
+      "weight": 2,
+      "outcome": "Distinct bottom-left/bottom-right handles move note start/end in time with the existing snap, minimum-length and attached-neighbor rules; they do not edit pitch.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t047-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t047-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Dedicated square targets sit below the note; live pointer and neighbor behavior remains pending."
+    },
+    {
+      "id": "project-track-take-lanes",
+      "weight": 3,
+      "outcome": "Project Take Lanes expands overlapping audio events into vertically stacked edit rows ordered so the bottom overlapping event matches the current playback winner; the view state persists, and Project R/W header controls become Effects and Take Lanes.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t047-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t047-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Lane indices are deterministically derived from event overlap and track order, which matches the existing last-active-event playback rule. Visual, playback and save/reopen review remains pending."
+    },
+    {
       "id": "note-click-boundary-stability",
       "weight": 3,
       "outcome": "Selecting and dragging touching notes tolerates floating-point seams; invalid time bounds preserve existing values rather than panicking.",
@@ -1553,12 +1670,38 @@
       "implementation_note": "The shared rendered pitch follows the same boundary-aware contour shown in the editor, with ramps limited to one sixteenth-note. Event-wide synthesis preserves phase across note boundaries; endpoint, pitch-target, source-tail, time-retiming and unvoiced tests pass. Audible slide smoothness remains for the user to review."
     },
     {
-      "id": "project-event-contextual-scissors",
+      "id": "project-scissors-toolbar-only",
       "weight": 2,
-      "outcome": "Project event hover above the black name strip exposes a contextual cut zone that splits at the actual snapped guide.",
+      "outcome": "Project event cuts require the Scissors tool; selecting a track or hovering its lower waveform area never starts a cut.",
       "implementation": "complete",
       "source_evidence": [
-        "batch3-source"
+        "batch3-source",
+        "t049-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t041-intent",
+          "t049-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "snap-aware-scissor-cursor",
+      "weight": 2,
+      "outcome": "Project and Sample Editor keep the scissors at the true pointer; when Snap is on, a separate vertical guide marks the committed cut. Snap off shows scissors without a guide.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t039-source",
+        "t040-source",
+        "batch3-source",
+        "t049-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1574,19 +1717,17 @@
       "comparison_evidence": []
     },
     {
-      "id": "snap-aware-scissor-cursor",
-      "weight": 2,
-      "outcome": "Project and Sample Editor show scissors alone when Snap is off and pencil alone for loop/skip drawing; snapped cut cursor follows the committed guide.",
+      "id": "sample-editor-full-height-cut-guide",
+      "weight": 1,
+      "outcome": "With snapped Scissors active in the Sample Editor, the committed cut guide runs from the ruler through the waveform or Pitch & Time grid.",
       "implementation": "complete",
       "source_evidence": [
-        "t039-source",
-        "t040-source",
-        "batch3-source"
+        "t049-source"
       ],
       "reference": {
         "status": "user_specified",
         "evidence": [
-          "t041-intent"
+          "t049-intent"
         ]
       },
       "runtime": {
@@ -1622,11 +1763,12 @@
     {
       "id": "mixer-fader-and-track-selection",
       "weight": 2,
-      "outcome": "Mixer fader caps are rectangular and clicking a Mixer channel selects the same shared track in Project and Inspector.",
+      "outcome": "Mixer fader caps are rectangular and clicking anywhere on a track channel strip selects the same shared track in Project and Inspector.",
       "implementation": "complete",
       "source_evidence": [
         "t039-source",
-        "batch3-source"
+        "batch3-source",
+        "t049-source"
       ],
       "reference": {
         "status": "user_specified",
@@ -1684,6 +1826,137 @@
       "parity": "pending",
       "comparison_evidence": [],
       "implementation_note": "Meters, EQ parameter bars, response curve/nodes and the owned spectrum use the channel color; red over-unity and the orange comparison trace remain. Stereo In/Out use a blue default and expose the palette selector in the Mixer footer. Live visual review is pending."
+    },
+    {
+      "id": "transport-child-window-shortcuts",
+      "weight": 2,
+      "outcome": "Focused child windows, including VST Audio Channel Settings and Transport, resolve the shared transport keymap; Space starts/stops playback.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t048-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t048-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "The root HWND physical-key adapter is used only for the root viewport. Child viewports route focused egui key events through the shared shortcut dispatcher. Manual focus and Space checks remain pending."
+    },
+    {
+      "id": "transport-window-always-on-top",
+      "weight": 2,
+      "outcome": "Right-clicking Transport exposes an Always on Top toggle; enabled Transport stays above Channel Settings, and the pin and window bounds persist in app preferences.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t048-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t048-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Transport is a borderless native viewport whose window level follows the persisted pin preference. Live z-order and restart checks remain pending."
+    },
+    {
+      "id": "opentrack-window-icon",
+      "weight": 1,
+      "outcome": "VST Audio Channel Settings displays the OpenTrack mark in the native title bar at its top left.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t048-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t048-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "The app root and native child viewports share a 64x64 tape-reel mark based on the user's description of the earlier logo; the old artwork itself was not present in the repository. Live appearance remains pending."
+    },
+    {
+      "id": "vst3-editor-always-on-top",
+      "weight": 1,
+      "outcome": "Native VST3 editor system menu provides an Always on Top option within the normal application z-order band, so dialogs and other applications can cover it.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t049-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t049-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": []
+    },
+    {
+      "id": "vst3-native-editor-repaint",
+      "weight": 1,
+      "outcome": "After VST3 editor attachment and initial sizing, the native view hierarchy is invalidated and painted to display its interface.",
+      "implementation": "complete",
+      "source_evidence": [
+        "t049-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t049-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "A post-attach RedrawWindow pass requests painting for the attached native view and its children. Waves visual acceptance is pending."
+    },
+    {
+      "id": "vst3-audio-insert-routing",
+      "weight": 2,
+      "outcome": "Enabled VST3 inserts receive the track's routed audio; processing failures are visible and return the track to dry audio.",
+      "implementation": "partial",
+      "source_evidence": [
+        "t049-source"
+      ],
+      "reference": {
+        "status": "user_specified",
+        "evidence": [
+          "t049-intent"
+        ]
+      },
+      "runtime": {
+        "status": "pending",
+        "evidence": []
+      },
+      "parity": "pending",
+      "comparison_evidence": [],
+      "implementation_note": "Source inspection confirms the hosted insert path is in the playback plan and processing failures fall back to dry. A current-editor status message exposes a matching processor failure. Actual Waves playback and routing remain unverified."
     }
   ],
   "gates": {
@@ -1760,7 +2033,27 @@
       "evidence": []
     },
     "project-mixer-interaction-review": {
-      "description": "User verifies contextual Project cuts, Snap-dependent cursor artwork, shared wheel bindings, rectangular Mixer faders and shared channel selection on the built app.",
+      "description": "User verifies toolbar-only Project cuts, the snapped Sample Editor guide, true-pointer scissors, shared wheel bindings, rectangular Mixer faders and full-strip track selection on the built app.",
+      "status": "pending",
+      "evidence": []
+    },
+    "pitch-edge-listening-and-persistence": {
+      "description": "Verify corner bends and timing handles in the Sample Editor, shared trace/playback contour, anchor selection, Undo/Redo, split/reset, old OPR compatibility and save/reopen on the built app.",
+      "status": "pending",
+      "evidence": []
+    },
+    "take-lane-playback-review": {
+      "description": "Verify Project overlap stacking, bottom-most priority within overlaps, Effects and Take Lanes controls, retained crossfades, and view persistence on the built app.",
+      "status": "pending",
+      "evidence": []
+    },
+    "transport-window-focus-review": {
+      "description": "User verifies the title-bar icon, Space and other shortcuts in focused child windows, Transport context menu, topmost stacking over Channel Settings, and pin/bounds persistence.",
+      "status": "pending",
+      "evidence": []
+    },
+    "vst-native-editor-review": {
+      "description": "User checks Waves native editor graphics and always-on-top menu behavior, then plays routed audio through the insert and confirms failures display the dry fallback message.",
       "status": "pending",
       "evidence": []
     }
@@ -2041,14 +2334,73 @@
       "id": "project-mixer-editing-interaction",
       "weight": 2,
       "requirements": [
-        "project-event-contextual-scissors",
+        "project-scissors-toolbar-only",
         "snap-aware-scissor-cursor",
         "shared-view-wheel-map",
+        "sample-editor-full-height-cut-guide",
         "mixer-fader-and-track-selection",
         "track-color-cohesion"
       ],
       "gates": [
         "project-mixer-interaction-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "pitch-edge-handles-and-take-lanes",
+      "weight": 3,
+      "requirements": [
+        "pitch-note-edge-bend-anchor",
+        "pitch-note-bottom-time-handles",
+        "project-track-take-lanes"
+      ],
+      "gates": [
+        "pitch-edge-listening-and-persistence",
+        "take-lane-playback-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "native-transport-window-controls",
+      "weight": 2,
+      "requirements": [
+        "transport-child-window-shortcuts",
+        "transport-window-always-on-top",
+        "opentrack-window-icon"
+      ],
+      "gates": [
+        "transport-window-focus-review",
+        "accepted-ui"
+      ],
+      "scenario": {
+        "status": "pending",
+        "evidence": []
+      },
+      "user_accepted": false,
+      "acceptance_evidence": []
+    },
+    {
+      "id": "native-vst3-editor-and-routing",
+      "weight": 2,
+      "requirements": [
+        "vst3-editor-always-on-top",
+        "vst3-native-editor-repaint",
+        "vst3-audio-insert-routing"
+      ],
+      "gates": [
+        "vst-native-editor-review",
         "accepted-ui"
       ],
       "scenario": {

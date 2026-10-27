@@ -4,7 +4,7 @@
 
 //! `opentrack-plugin-scan` entry point.
 //!
-//! This build performs folder discovery and a PE architecture precheck only.
+//! This build performs native folder discovery and executable-header checks.
 //! It does not load plug-in code or enumerate classes. See the crate library
 //! docs and `docs/plugin-hosting-plan.md` section 4.12.
 
@@ -19,7 +19,7 @@ use opentrack_plugin_scan::default_vst3_folders;
 use opentrack_plugin_scan::{scan_folders, scan_folders_enumerating};
 
 const USAGE: &str = "\
-opentrack-plugin-scan - bounded VST3 discovery and PE precheck
+opentrack-plugin-scan - bounded VST3 discovery and native image precheck
 
 Usage:
   opentrack-plugin-scan [FOLDER...] [OPTIONS]
@@ -27,10 +27,10 @@ Usage:
 Configured folders:
   --folder PATH           Add a VST3 folder (repeatable). Positional FOLDER
                           arguments are treated the same way.
-  --no-default-folders    Do not add the two default per-machine folders.
+  --no-default-folders    Do not add the platform's default VST3 folders.
 
 Enumeration:
-  --enumerate             Load each x64 module and read factory class metadata.
+  --enumerate             Load each host-compatible module and read factory class metadata.
                           The scanner is a separate process, but per-module
                           timeout/crash recovery is still pending.
 
@@ -48,8 +48,9 @@ Other:
   -h, --help              Show this help.
   -V, --version           Show the scanner version.
 
-Without --enumerate, x64 modules are reported as ready_for_enumeration after
-the PE precheck and no module is loaded. With --enumerate, factory class
+Without --enumerate, host-compatible modules are reported as
+ready_for_enumeration after the native image precheck and no module is loaded.
+With --enumerate, factory class
 metadata is read but components are not created, buses/parameters/editors are
 not introspected, and audio hosting is not implemented or claimed.
 ";

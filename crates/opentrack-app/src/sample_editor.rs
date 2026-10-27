@@ -1180,11 +1180,7 @@ pub(super) fn show(
             {
                 let x = wave.left() + ((local - start) / (end - start)) as f32 * wave.width();
                 if grid.is_some() {
-                    crate::system_tool_icons::tool_cursor_at(
-                        ui,
-                        ToolbarIcon::Split,
-                        Some(Pos2::new(x, pos.y)),
-                    );
+                    crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, Some(pos));
                     ui.painter().with_clip_rect(wave.union(ruler)).line_segment(
                         [Pos2::new(x, ruler.top()), Pos2::new(x, wave.bottom())],
                         Stroke::new(1.0, theme::PLAYHEAD),
@@ -1574,6 +1570,10 @@ pub(super) mod tests {
                     detected_midi: 69.234,
                     shift: 0.321,
                     straighten: 0.4,
+                    pitch_start_bend: 0.0,
+                    pitch_anchor: 0.5,
+                    pitch_anchor_bend: 0.0,
+                    pitch_end_bend: 0.0,
                 },
                 opentrack_core::pitch_time::PitchNote {
                     id: 18,
@@ -1584,6 +1584,10 @@ pub(super) mod tests {
                     detected_midi: 71.876,
                     shift: -0.127,
                     straighten: 0.65,
+                    pitch_start_bend: 0.0,
+                    pitch_anchor: 0.5,
+                    pitch_anchor_bend: 0.0,
+                    pitch_end_bend: 0.0,
                 },
             ],
             rendered_source: None,

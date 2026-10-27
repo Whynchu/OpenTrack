@@ -1,6 +1,76 @@
-# Current assignment
+# Current assignment - T049
 
-Updated: 2026-10-26. Actual implementer: Codex session; no independent review.
+Updated: 2026-10-26. Actual implementer: OpenCode session (DeepSeek V4.1 Flash); no independent review.
+
+## T044 continuation - native VST editor thread and live processing display
+
+The installed Waves editor was reproduced as a white/stalled window on the main
+UI thread, with controls that did not move. The cause was the native view sharing
+the application's eframe/winit message and paint cadence. Native VST editors now
+run on a dedicated STA thread with their own message pump, focus handling and
+repaint requests. The view is created from the live audio effect's controller
+(`DetachedEditor`) rather than a second plug-in instance, so the CLA-76 VU/GR
+meters and processing displays follow the actual audio callback. Parameter edits
+still use the effect's lock-free host queue, and track-wide insert bypass still
+applies.
+
+A standalone CLA-76 probe with a continuous test tone showed the meter moving and
+the controls responding. The installed mono/stereo audio checks pass, as do the
+hosted-audio and dedicated-editor regressions. The user reported that the
+controls work in the application; final in-app meter and save/reopen review
+remains pending.
+
+Logo follow-up: the user-supplied reel mark is now stored as
+`docs/images/opentrack-logo-source.png`. White and black variants are used in the
+application header and README, and a matching taskbar icon is generated from the
+same artwork.
+
+Final candidate: x64 local-ASIO `84CCD48A721567199C6D6730E2716EC468EE803A8AD18F86EC03A11EB9D52836`.
+The full app suite has 133 passes, 8 ignored opt-in tests and six pre-existing
+pitch-editing failures owned by the separate pitch track. VST3, scanner,
+plug-in-catalog, hosted-audio and installed CLA-76 checks pass. The app was not
+launched by this session after the final build.
+
+## T049 - Project scissors, Sample Editor guide, Mixer selection, and VST review
+
+The Project's lower-waveform cut zone was removed; users cut only after choosing
+the Scissors tool. The Sample Editor keeps the scissor cursor at the real pointer
+and draws its snapped guide through the ruler and waveform or Pitch & Time grid.
+Clicking anywhere on an ordinary Mixer track strip selects the shared Project
+track. Native VST editor windows now run on a dedicated STA thread, use the live
+audio instance's controller, and report a matching processing failure while
+passing dry audio through.
+
+Source inspection confirms the hosted VST insert path is included in each track's
+playback plan and reaches the configured output route. Installed CLA-76 mono and
+stereo processing checks produce finite output with the track path intact. The
+reported Waves blank editor, stalled input and dead meter were addressed by the
+dedicated editor thread and live-controller view; a continuous-tone probe showed
+the meter moving and controls responding. Final in-app meter and save/reopen
+review remain pending. The supplied reel mark is now the white/black application
+and repository logo.
+
+The x64 local-ASIO release build completed successfully (SHA-256:
+`84CCD48A721567199C6D6730E2716EC468EE803A8AD18F86EC03A11EB9D52836`). The app
+was not launched by this session after that build. Formatting and whitespace
+checks pass; VST3, scanner, catalog and hosted-audio checks pass. Six pitch tests
+remain failing in the separate in-progress pitch track. Runtime Project, Mixer,
+final Waves meter display, z-order, and audible routing acceptance remain
+pending.
+
+## Product direction — feature-led open-source DAW and project interchange
+
+OpenTrack development is organized around user workflows and concrete DAW features, with the running application as the primary design surface. User-provided screenshots are optional inputs for specific tasks and are not archived by default. Project interoperability remains a product capability: implement format- and version-specific adapters, map supported features, preserve unknown project data as unchanged opaque stubs where possible, and report unsupported content.
+
+## Product direction — effects and plug-ins (2026-10-26)
+
+The user clarified that new effects should be VST plug-ins rather than built-in OpenTrack processors. The native OpenTrack Compressor was removed from insert pickers and audio processing. Existing projects preserve its serialized insert as an inactive legacy slot labeled unavailable; users can replace it with an external VST3 effect or remove it. External VST3 compressors are unaffected. Future first-party effects and instruments should be designed with the user and built as separately loadable VST3 plug-ins. This direction does not change the active Project/transport review gate.
+
+## T048 - Transport viewport focus and pinning
+
+The user requested an OpenTrack icon on VST Audio Channel Settings, transport shortcuts in focused child windows, and a right-click Always on Top toggle for the compact Transport that keeps it above Channel Settings. T048 moves Transport into a separate borderless native viewport, routes child-window keys through egui, sets the app icon on native windows, and stores the pin and bounds in app preferences. The x64 local-ASIO release build passed (SHA-256 `A91EA6C01C8652A0C9AA1987C9109CE8D1CA1AC4D55957DF6397890989327461`). Visual, focus, stacking, and restart review remain pending; see [T048](tasks/T048-transport-window-branding-focus-and-pinning.md).
+
+T047's pitch edge handles and Project take lanes remain pending the separate user review documented in [T047](tasks/T047-pitch-edge-handles-and-take-lanes.md). T042 likewise remains awaiting the user's listening review as documented below. Neither review is resolved by T048.
 
 ## Current review - T042 Batch 2
 
@@ -14,24 +84,57 @@ This checkpoint also adds semitone-row note colors, track-color cohesion for met
 
 ## Build and checks
 
-- x64 release build with local ASIO succeeded; WASAPI remains available. OpenCode's completed Batch 3 and VST3 work is included.
-- Executable SHA-256: `BE2E7B5A80D374DE2C535D683D288DA516E78C8A8A6EF6289163E63353CD2BA2`.
-- Full Windows x64 workspace tests pass: app 136, audio 78, core 18, plug-in scan 16, plug-ins 11, VST3 13; hardware/manual VST smoke tests remain ignored.
+- x64 release build with local ASIO succeeded; WASAPI remains available. Batch 3, VST3 and the native-editor thread work are included.
+- Executable SHA-256: `84CCD48A721567199C6D6730E2716EC468EE803A8AD18F86EC03A11EB9D52836`.
+- App suite: 133 passed, 8 ignored opt-in tests, six pre-existing pitch-editing failures. VST3 suite, 6 hosted-audio checks, scanner/catalog tests and installed CLA-76 mono/stereo audio checks pass.
+- Native CLA-76 editor test passes on the dedicated STA thread. A continuous-tone probe showed the meter moving and controls responding.
 - Headless production-renderer suite: 6 passed; 1 explicit-source test ignored in the ordinary run. Read-only Vocal 01 matrix passed separately. Details and artifacts are in T042.
-- OpenTrack was checked closed before the build and was not launched afterward. No desktop, device, or user-listening review has been performed.
+- OpenTrack was checked closed before the final build and was not launched afterward. Final desktop, device and user-listening review remain pending.
 
 ## User review checkpoint - pending
 
 The user will review pitch quality with their own audio. The current build also includes note colors, track-color cohesion (including blue default Stereo In/Out and the Mixer color picker), note-drag audition, and Batch 3.
 
-Batch 3 implementation is complete in source: contextual Project cut band, snap-aware cursor/guides, Ctrl+wheel horizontal pan, rectangular Mixer fader caps, and shared Mixer/Project track selection. Follow-up: the cut band now lives in the selected track's lower waveform fifth with a white guide, and Project event waveforms use a 1.75× display boost. Its x64 build and live interaction/visual review are pending.
+Batch 3 implementation is complete in source: toolbar Scissors cuts, snap-aware guides, Ctrl+wheel horizontal pan, rectangular Mixer fader caps, and shared Mixer/Project track selection. T049 removes the selected-track cut band, extends the Sample Editor cut guide through its edit area, and makes ordinary Mixer track-strip clicks select the same Project track. The x64 build succeeded; live interaction, Waves graphics, audio routing, native pin behavior, and visual review remain pending.
 
-## VST3 lane - insert hosting source complete; review pending
+## VST3 lane — native editor and effect compatibility corrections
 
-VST3 class enumeration is committed as `8ce842c`. T043 now wires real VST3 effects into the existing eight insert slots: component/controller lifecycle, stereo main buses, 64-frame hosted processing, PDC, parameter changes, opaque state, generic sliders and a native editor window. Plans without hosted inserts retain the original per-sample path; built-in effects remain alternative insert choices.
+2026-10-26 user follow-up rejects generic sliders as the default plugin UI and
+reports Waves insert crashes. Insert add/click now opens the plugin's native
+editor. Fixed Waves mono bus coercion, factory release after module unload on
+initialization failure, native editor close/replacement lifetime, frame sizing,
+and iZotope's no-op processing notification. Native editor edits mark projects
+modified. Fresh installed-folder sweep: 25/25 effects pass native editor lifecycle,
+overlapping instances, processing and state restore, including 19/19 Waves
+classes. Retrologue, Superior Drummer 3 and sforzando remain unsupported instruments;
+this is not universal hosting or production sandboxing.
 
-TDR Nova, Gateway, and a WaveShell CLA-76 Stereo child load and process in the smoke checks. Gateway's optional `setHostContext` refusal is no longer fatal. The Waves native editor crash was reproduced and fixed by loading/editing in an STA COM apartment and attaching the view to a child of the host frame. External VST3s now appear in the normal insert category menus, and Devices > Plug-in Information is a real folder/catalog manager with persisted plugin folders and background scanning. VST3 instruments, multi-out/sidechain, sandboxing, isolated scanner process and per-module scanner timeout remain pending. The updated x64 local-ASIO executable is `BE2E7B5A80D374DE2C535D683D288DA516E78C8A8A6EF6289163E63353CD2BA2`. See [T043](tasks/T043-vst3-insert-hosting.md), [vst3-status](vst3-status.md) and [plugin-hosting-plan](../plugin-hosting-plan.md).
+The later dedicated-thread editor work uses the live audio effect's controller so
+controls and VU/GR meters follow processing. App suite: 133 passed, 8 opt-in
+probes ignored, six pre-existing pitch failures. VST3/catalog/scanner and six
+hosted-audio regressions pass. x64 local-ASIO release SHA-256:
+`84CCD48A721567199C6D6730E2716EC468EE803A8AD18F86EC03A11EB9D52836`. Final in-app
+meter and release end-to-end acceptance remain pending. See
+[T044](tasks/T044-vst3-native-editors-and-compatibility.md) for reproduction,
+per-class sweep command, evidence and remaining limits. T043 remains historical.
+
+## Cross-platform VST3 foundation — T045/T046
+
+The scanner and insert picker share native VST3 bundle resolution for Windows,
+macOS and Linux layouts. Scanner defaults include standard macOS/Linux user and
+system folders, and the architecture precheck recognizes PE, ELF and Mach-O
+images, including universal Mach-O slices. T046 adds required Linux
+`ModuleEntry`/`ModuleExit` and macOS `bundleEntry`/`bundleExit` loading, explicit
+Linux X11/Wayland and portal dependencies, and a hosted compile matrix for
+Windows x64, Linux x64/ARM64 and macOS x64/ARM64. The matrix is prepared but has
+not run. Locally, Windows x64 workspace all-target compilation passes, and the
+scanner/catalog/VST3 test code compiles for Windows x86; no test binaries were
+run. This workspace has no macOS/Linux Rust targets installed, so their code
+still needs the hosted compile check. Native editor parent surfaces and event
+loops, audio/MIDI device paths, and plug-in runtime validation remain open. See
+[T045](tasks/T045-cross-platform-vst3-discovery.md) and
+[T046](tasks/T046-cross-platform-vst3-runtime-foundation.md).
 
 ## Preserved direction
 
-Keep pitch analysis/editing/processing in Rust, preserve original audio and the accepted Mixer, and maintain the gated sequence: Batch 1 accepted; Batch 2 listening review now; Batch 3 Project scissors/wheel behavior and Mixer fader/selection only after Batch 2 acceptance. Scope remains `transport-v16-pitch-time-editing-workflows`; workflow readiness and reference parity remain separate from implementation and build success. See [metrics](metrics.md) and [T042](tasks/T042-vocal-quality-and-note-transitions.md).
+Keep pitch analysis/editing/processing in Rust, preserve original audio and the accepted Mixer, and maintain the gated sequence: Batch 1 accepted; Batch 2 listening review now; Batch 3 Project scissors/wheel behavior and Mixer fader/selection only after Batch 2 acceptance. Scope remains `transport-v16-pitch-time-editing-workflows`; implementation, feature verification, and user acceptance remain separate statuses. See [the historical feature report](metrics.md) and [T042](tasks/T042-vocal-quality-and-note-transitions.md).

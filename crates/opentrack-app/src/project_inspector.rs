@@ -607,7 +607,9 @@ pub(super) fn show(
                                 let name = match &insert.kind {
                                     InsertEffectKind::TestGenerator { .. } => "Test Generator",
                                     InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
-                                    InsertEffectKind::Compressor { .. } => "Compressor",
+                                    InsertEffectKind::LegacyUnavailableCompressor { .. } => {
+                                        "Unavailable Compressor"
+                                    }
                                     InsertEffectKind::Vst3 { .. } => "VST3 Plug-in",
                                 };
                                 ui.label(name);

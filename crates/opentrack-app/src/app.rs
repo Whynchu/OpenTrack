@@ -128,6 +128,13 @@ struct NativeWindowState {
     focus_requested: bool,
 }
 
+#[derive(Default)]
+struct TransportWindowState {
+    bounds: Option<WindowBounds>,
+    viewport_live: bool,
+    always_on_top: bool,
+}
+
 impl NativeWindowState {
     fn request_channel_settings(&mut self, bus: Option<bool>) {
         if !self.open || !self.viewport_live {
@@ -138,13 +145,6 @@ impl NativeWindowState {
         self.open = true;
         self.focus_requested = true;
     }
-}
-
-#[derive(Default)]
-struct CompressorEditorState {
-    window: NativeWindowState,
-    track_id: Option<u64>,
-    insert_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -590,7 +590,8 @@ fn viewport_builder(
         .with_title(title)
         .with_inner_size(default_size)
         .with_min_inner_size(minimum_size)
-        .with_resizable(true);
+        .with_resizable(true)
+        .with_icon(crate::icons::opentrack_icon());
     if let Some(bounds) = restore_bounds {
         builder = builder
             .with_position(Pos2::new(bounds.left as f32, bounds.top as f32))
@@ -682,10 +683,11 @@ pub struct OpenTrackApp {
     root_window_handle: Option<isize>,
     vst3_parameter_window: Option<(u64, usize)>,
     vst3_editor_window: Option<(u64, usize)>,
-    vst3_editor_host: Option<vst3_host::EditorWindow>,
+    vst3_editor_host: Option<vst3_host::EditorHost>,
     main_window_bounds: Option<WindowBounds>,
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
+    transport_window: TransportWindowState,
     metronome_enabled: bool,
     metronome_level: f32,
     metronome_pitch_midi: u8,
@@ -742,7 +744,6 @@ pub struct OpenTrackApp {
     channel_settings_ui: ChannelSettingsUiState,
     channel_window_owner: crate::native_windows::ChannelOwner,
     mixer_window: NativeWindowState,
-    compressor_editor: CompressorEditorState,
     media_window: NativeWindowState,
     track_rename_dialog: Option<TrackRenameDialog>,
     track_add_dialog: Option<TrackAddDialog>,
@@ -1835,6 +1836,18 @@ impl OpenTrackApp {
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
+            transport_window: TransportWindowState {
+                bounds: creation
+                    .storage
+                    .and_then(|storage| eframe::get_value(storage, "transport-window-bounds-v1")),
+                viewport_live: false,
+                always_on_top: creation
+                    .storage
+                    .and_then(|storage| {
+                        eframe::get_value(storage, "transport-window-always-on-top-v1")
+                    })
+                    .unwrap_or(false),
+            },
             metronome_enabled: creation
                 .storage
                 .and_then(|s| eframe::get_value(s, "metronome-enabled"))
@@ -1907,7 +1920,6 @@ impl OpenTrackApp {
             },
             channel_window_owner: crate::native_windows::ChannelOwner::new(creation),
             mixer_window: NativeWindowState::default(),
-            compressor_editor: CompressorEditorState::default(),
             media_window: NativeWindowState::default(),
             track_rename_dialog: None,
             track_add_dialog: None,
@@ -2435,6 +2447,17 @@ impl OpenTrackApp {
                 )
             },
         );
+        if self.vst3_editor_window.is_some_and(|(track_id, slot)| {
+            !self.vst3_runtime.matches_insert(
+                &self.data.project,
+                track_id,
+                slot,
+                host_rate,
+                host_block,
+            )
+        }) {
+            self.close_vst3_editor();
+        }
         self.vst3_runtime.set_format(host_rate, host_block);
         self.vst3_runtime.sync(&self.data.project);
         let loop_range_beats = self.data.transport.cycle.then_some((
@@ -3558,19 +3581,93 @@ impl OpenTrackApp {
         });
     }
 
+    fn close_vst3_editor(&mut self) {
+        if let Some(host) = self.vst3_editor_host.take() {
+            host.close();
+        }
+        if let Some((track_id, slot)) = self.vst3_editor_window.take() {
+            self.vst3_runtime.close_editor(track_id, slot);
+            self.vst3_runtime.capture_states(&mut self.data.project);
+        }
+    }
+
+    fn open_vst3_editor(&mut self, track_id: u64, slot: usize) -> Result<(), String> {
+        if self.vst3_editor_window == Some((track_id, slot))
+            && let Some(window) = &self.vst3_editor_host
+            && window.is_alive()
+        {
+            window.focus();
+            return Ok(());
+        }
+        self.close_vst3_editor();
+        let title = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .and_then(|track| track.inserts.get(slot))
+            .map(|insert| insert_effect_name(&insert.kind))
+            .unwrap_or_else(|| "VST3 Plug-in".to_owned());
+        let effect = self
+            .vst3_runtime
+            .instance(track_id, slot)
+            .ok_or_else(|| "the VST3 instance is unavailable".to_owned())?;
+        // The editor has its own STA thread; a cross-thread owner would make
+        // window creation wait on the application's message loop.
+        let window = vst3_host::EditorHost::open(&title, 0, effect)?;
+        self.vst3_editor_host = Some(window);
+        self.vst3_editor_window = Some((track_id, slot));
+        Ok(())
+    }
+
     fn show_vst3_windows(&mut self, ctx: &egui::Context) {
+        if self.vst3_runtime.take_dirty() {
+            self.mark_modified();
+        }
+
+        if let (Some((track_id, slot)), Some(engine)) =
+            (self.vst3_editor_window, self.audio_engine.as_ref())
+        {
+            let track_index = self
+                .data
+                .project
+                .tracks
+                .iter()
+                .position(|track| track.id == track_id);
+            let diagnostic = engine.hosted_processing_diagnostic();
+            if let Some(track_index) = track_index
+                && diagnostic.error_count > 0
+                && diagnostic.last_track == Some(track_index)
+                && diagnostic.last_insert == Some(slot)
+            {
+                let message = format!(
+                    "VST3 audio processing failed on {} (insert {}); dry audio is passing through",
+                    self.data.project.tracks[track_index].name,
+                    slot + 1
+                );
+                if self.status_message != message {
+                    self.status_message = message;
+                }
+            }
+        }
         if self
             .vst3_editor_host
             .as_ref()
             .is_some_and(|window| !window.is_alive())
         {
-            if let Some((track_id, slot)) = self.vst3_editor_window.take() {
-                self.vst3_runtime.close_editor(track_id, slot);
+            if self.vst3_editor_window.take().is_some() {
+                self.vst3_runtime.capture_states(&mut self.data.project);
+                self.mark_modified();
             }
             self.vst3_editor_host = None;
         }
         if let Some(target) = self.channel_settings_ui.vst3_parameter_slot.take() {
-            self.vst3_parameter_window = Some(target);
+            self.vst3_parameter_window = None;
+            if let Err(error) = self.open_vst3_editor(target.0, target.1) {
+                self.status_message = format!("Native VST3 editor unavailable: {error}");
+                self.vst3_parameter_window = Some(target);
+            }
         }
         let Some((track_id, slot)) = self.vst3_parameter_window else {
             return;
@@ -3693,20 +3790,13 @@ impl OpenTrackApp {
             self.mark_modified();
         }
         if open_editor {
-            let root = self.root_window_handle.unwrap_or_default();
-            match vst3_host::EditorWindow::create(&title, root) {
-                Ok(window) => match self.vst3_runtime.open_editor(track_id, slot, window.hwnd()) {
-                    Ok(()) => {
-                        self.vst3_editor_host = Some(window);
-                        self.vst3_editor_window = Some((track_id, slot));
-                    }
-                    Err(error) => self.status_message = format!("VST3 editor: {error}"),
-                },
-                Err(error) => self.status_message = error,
+            if let Err(error) = self.open_vst3_editor(track_id, slot) {
+                self.status_message = format!("VST3 editor: {error}");
+            } else {
+                self.vst3_parameter_window = None;
             }
         }
         if close_editor {
-            self.vst3_runtime.close_editor(track_id, slot);
             self.vst3_editor_host = None;
             self.vst3_runtime.capture_states(&mut self.data.project);
             self.vst3_editor_window = None;
@@ -4225,15 +4315,24 @@ impl OpenTrackApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let native_key_events = self
-            .native_key_capture
-            .as_ref()
-            .map(NativeKeyCapture::take_events)
-            .unwrap_or_default();
+        // The Win32 subclass is installed on the root HWND only. Child
+        // viewports must use egui's focused-window events instead of draining
+        // the root queue (which loses keys such as Space in Channel Settings).
+        let use_native_key_events = cfg!(windows)
+            && ctx.viewport_id() == egui::ViewportId::ROOT
+            && self.native_key_capture.is_some();
+        let native_key_events = if use_native_key_events {
+            self.native_key_capture
+                .as_ref()
+                .map(NativeKeyCapture::take_events)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        let chords = if cfg!(windows) && self.native_key_capture.is_some() {
+        let chords = if use_native_key_events {
             native_key_events
                 .into_iter()
                 .map(|event| event.chord)
@@ -6431,6 +6530,13 @@ impl OpenTrackApp {
     }
 
     fn show_menu(&mut self, ui: &mut egui::Ui) {
+        let logo = crate::icons::logo_texture(ui.ctx());
+        ui.add(
+            egui::Image::from_texture(egui::load::SizedTexture::new(logo.id(), Vec2::splat(18.0)))
+                .sense(Sense::hover()),
+        )
+        .on_hover_text("OpenTrack");
+        ui.add_space(4.0);
         if !self.project_open {
             self.show_empty_project_menu(ui);
             return;
@@ -7478,7 +7584,6 @@ impl OpenTrackApp {
                             true,
                             false,
                             &mut self.channel_settings_window,
-                            &mut self.compressor_editor,
                             &mut self.channel_settings_ui,
                             &self.vst3_plugin_catalog,
                         );
@@ -7661,6 +7766,69 @@ impl OpenTrackApp {
             .update(owner, choices, taps, rate);
     }
 
+    fn show_transport_window(&mut self, ctx: &egui::Context) {
+        if !self.project_open || !self.show_transport {
+            self.transport_window.viewport_live = false;
+            return;
+        }
+
+        const SIZE: Vec2 = Vec2::new(837.0, 69.0);
+        let restore_bounds = if self.transport_window.viewport_live {
+            None
+        } else {
+            self.transport_window.bounds.as_ref()
+        };
+        let reopening = !self.transport_window.viewport_live;
+        let id = egui::ViewportId::from_hash_of("floating-transport-panel-m1-position-v5");
+        let mut builder = viewport_builder("Transport Panel", SIZE, SIZE, restore_bounds)
+            .with_visible(true)
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_window_level(if self.transport_window.always_on_top {
+                egui::viewport::WindowLevel::AlwaysOnTop
+            } else {
+                egui::viewport::WindowLevel::Normal
+            });
+        if restore_bounds.is_none() {
+            builder = builder.with_position(Pos2::new(552.0, 663.0));
+        }
+
+        let mut open = true;
+        let mut rendered = false;
+        let mut bounds = None;
+        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+            rendered = true;
+            if reopening {
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            }
+            open &= reopening || !window_ctx.input(|input| input.viewport().close_requested());
+            self.handle_native_window_input(window_ctx);
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::central_panel(&window_ctx.style())
+                        .inner_margin(egui::Margin::ZERO),
+                )
+                .show(window_ctx, |ui| self.show_transport(ui));
+            bounds = native_window_bounds(window_ctx);
+        });
+
+        if !rendered {
+            open = false;
+            self.status_message =
+                "Transport window could not be created; reopen it from the Window menu".to_owned();
+        }
+        self.show_transport &= open;
+        self.transport_window.viewport_live = open && self.show_transport;
+        if let Some(bounds) = bounds {
+            self.transport_window.bounds = Some(bounds);
+        }
+        if self.transport_window.viewport_live {
+            ctx.request_repaint_after(Duration::from_millis(30));
+        }
+    }
+
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
         self.update_channel_analyzer();
         if !self.channel_settings_window.open {
@@ -7737,7 +7905,6 @@ impl OpenTrackApp {
                         false,
                         true,
                         &mut self.channel_settings_window,
-                        &mut self.compressor_editor,
                         &mut self.channel_settings_ui,
                         &self.vst3_plugin_catalog,
                     );
@@ -7964,121 +8131,6 @@ impl OpenTrackApp {
             self.data.project = candidate;
             self.status_message = format!("Loaded mixer settings from {}", path.display());
             true
-        }
-    }
-
-    fn show_compressor_editor_window(&mut self, ctx: &egui::Context) {
-        if !self.compressor_editor.window.open {
-            self.compressor_editor.window.viewport_live = false;
-            return;
-        }
-        let Some(track_id) = self.compressor_editor.track_id else {
-            self.compressor_editor.window.open = false;
-            self.compressor_editor.window.viewport_live = false;
-            return;
-        };
-        let insert_index = self.compressor_editor.insert_index;
-        let track_name = self
-            .data
-            .project
-            .channels()
-            .find(|track| track.id == track_id)
-            .map(|track| track.name.clone());
-        let Some(track_name) = track_name else {
-            self.compressor_editor.window.open = false;
-            self.compressor_editor.window.viewport_live = false;
-            return;
-        };
-        let restore_bounds = if self.compressor_editor.window.viewport_live {
-            None
-        } else {
-            self.compressor_editor
-                .window
-                .restore_bounds
-                .clone()
-                .or_else(|| self.compressor_editor.window.bounds.clone())
-        };
-        let id = egui::ViewportId::from_hash_of((
-            "compressor-editor",
-            self.compressor_editor.window.epoch,
-        ));
-        if self.compressor_editor.window.focus_requested
-            && self.compressor_editor.window.viewport_live
-        {
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
-        }
-        self.compressor_editor.window.focus_requested = false;
-        let title = format!("{track_name}: Ins. {} - Compressor", insert_index + 1);
-        let mut builder = viewport_builder(
-            title,
-            Vec2::new(464.0, 227.0),
-            Vec2::new(430.0, 210.0),
-            restore_bounds.as_ref(),
-        );
-        if restore_bounds.is_none() {
-            builder = builder.with_position(Pos2::new(1326.0, 330.0));
-        }
-        let mut open = true;
-        let mut modified = false;
-        let mut bounds = None;
-        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
-            self.handle_native_window_input(window_ctx);
-            open &= !window_ctx.input(|input| input.viewport().close_requested());
-            egui::CentralPanel::default().show(window_ctx, |ui| {
-                if let Some(track) = self.data.project.channel_by_id_mut(track_id) {
-                    if let Some(insert) = track.inserts.get_mut(insert_index) {
-                        if let InsertEffectKind::Compressor {
-                            threshold_db,
-                            ratio,
-                            attack_ms,
-                            hold_ms,
-                            release_ms,
-                            analysis,
-                            makeup_db,
-                            soft_knee,
-                            auto_makeup,
-                            auto_release,
-                            rms_mode,
-                            live,
-                        } = &mut insert.kind
-                        {
-                            modified |= show_compressor_editor(
-                                ui,
-                                threshold_db,
-                                ratio,
-                                attack_ms,
-                                hold_ms,
-                                release_ms,
-                                analysis,
-                                makeup_db,
-                                soft_knee,
-                                auto_makeup,
-                                auto_release,
-                                rms_mode,
-                                live,
-                                &mut insert.enabled,
-                            );
-                        } else {
-                            ui.label("The selected insert is not a Compressor.");
-                        }
-                    } else {
-                        ui.label("The selected insert is no longer available.");
-                    }
-                }
-            });
-            bounds = native_window_bounds(window_ctx);
-        });
-        self.compressor_editor.window.open = open;
-        self.compressor_editor.window.viewport_live = open;
-        if restore_bounds.is_some() {
-            self.compressor_editor.window.restore_bounds = None;
-        }
-        if let Some(bounds) = bounds {
-            self.compressor_editor.window.bounds = Some(bounds);
-        }
-        if modified {
-            self.rebuild_audio_plan();
-            self.mark_modified();
         }
     }
 
@@ -9228,24 +9280,6 @@ impl eframe::App for OpenTrackApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| self.show_menu(ui));
-        if self.project_open && self.show_transport {
-            egui::Window::new("Transport Panel")
-                .id(egui::Id::new("floating-transport-panel-m1-position-v5"))
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .movable(true)
-                .constrain(false)
-                .default_pos(Pos2::new(552.0, 663.0))
-                .fixed_size(Vec2::new(837.0, 69.0))
-                .frame(
-                    egui::Frame::new()
-                        .fill(theme::palette(ui).surface_raised)
-                        .stroke(Stroke::new(1.0, theme::palette(ui).grid))
-                        .inner_margin(egui::Margin::ZERO),
-                )
-                .show(ui.ctx(), |ui| self.show_transport(ui));
-        }
         let hide_status_bar = self.mixer_window.open;
         if self.project_open && !hide_status_bar {
             egui::Panel::bottom("status-bar")
@@ -9268,13 +9302,13 @@ impl eframe::App for OpenTrackApp {
             self.show_track_add_dialog(&ctx);
             self.show_event_colors_dialog(&ctx);
             self.show_channel_settings_window(&ctx);
-            self.show_compressor_editor_window(&ctx);
             self.show_media_window(&ctx);
             self.show_midi_editor_window(&ctx);
             self.show_workspace_organizer(&ctx);
             self.show_track_rename_dialog(&ctx);
             self.show_track_delete_prompt(&ctx);
         }
+        self.show_transport_window(&ctx);
         self.show_key_commands_window(&ctx);
         self.show_unsaved_prompt(&ctx);
         self.show_project_open_error(&ctx);
@@ -9318,6 +9352,16 @@ impl eframe::App for OpenTrackApp {
             &self.sample_editor.pitch_view,
         );
         eframe::set_value(storage, "dock-state", &self.dock_state);
+        eframe::set_value(
+            storage,
+            "transport-window-bounds-v1",
+            &self.transport_window.bounds,
+        );
+        eframe::set_value(
+            storage,
+            "transport-window-always-on-top-v1",
+            &self.transport_window.always_on_top,
+        );
         eframe::set_value(
             storage,
             "channel-settings-preferences-v1",
@@ -10043,10 +10087,20 @@ fn show_project(
     let visible_rows = project.tracks.len();
     let row_heights = (0..visible_rows)
         .map(|row| {
+            let take_lane_count = project
+                .tracks
+                .get(row)
+                .map(|track| audio_events::take_lane_layout(track, project.tempo_bpm).0)
+                .unwrap_or(1);
             track_ids
                 .get(row)
                 .map(|track_id| {
                     arrange_view_state.track_height(*track_id)
+                        * if arrange_view_state.take_lanes_visible.contains(track_id) {
+                            take_lane_count as f32
+                        } else {
+                            1.0
+                        }
                         + if arrange_view_state.automation_visible.contains(track_id) {
                             42.0
                         } else {
@@ -10872,7 +10926,21 @@ fn show_project(
 
             for row in 0..visible_rows {
                 let lane_height = row_heights[row];
-                let media_lane_height = arrange_view_state.track_height(track_ids[row]);
+                let base_track_height = arrange_view_state.track_height(track_ids[row]);
+                let take_lane_count = project
+                    .tracks
+                    .get(row)
+                    .map(|track| audio_events::take_lane_layout(track, project.tempo_bpm).0)
+                    .unwrap_or(1);
+                let take_lanes_expanded = arrange_view_state
+                    .take_lanes_visible
+                    .contains(&track_ids[row]);
+                let media_lane_height = base_track_height
+                    * if take_lanes_expanded {
+                        take_lane_count as f32
+                    } else {
+                        1.0
+                    };
                 let top = canvas.min.y + ruler_height + row_offsets[row];
                 let row_rect = Rect::from_min_size(
                     Pos2::new(header_left, top),
@@ -11157,7 +11225,49 @@ fn show_project(
                         );
                         modified |= project_controls::automation_lane(ui, ar, track);
                     }
-                    let compact_controls = (lane_height - if expanded { 42.0 } else { 0.0 }) < 54.0;
+                    if take_lanes_expanded {
+                        for take in 0..take_lane_count {
+                            let lane_top = top + take as f32 * base_track_height;
+                            if take > 0 {
+                                let line_y = lane_top;
+                                painter.line_segment(
+                                    [
+                                        Pos2::new(grid_clip.left(), line_y),
+                                        Pos2::new(grid_clip.right(), line_y),
+                                    ],
+                                    Stroke::new(1.0, theme::palette(ui).grid),
+                                );
+                                painter.line_segment(
+                                    [
+                                        Pos2::new(row_rect.left(), line_y),
+                                        Pos2::new(color_rect.left(), line_y),
+                                    ],
+                                    Stroke::new(1.0, theme::palette(ui).grid),
+                                );
+                            }
+                            let label = if take + 1 == take_lane_count {
+                                format!("Take {} · current", take + 1)
+                            } else {
+                                format!("Take {}", take + 1)
+                            };
+                            painter.text(
+                                Pos2::new(
+                                    row_rect.left() + 35.0,
+                                    lane_top + base_track_height * 0.5,
+                                ),
+                                Align2::LEFT_CENTER,
+                                label,
+                                FontId::proportional(9.0),
+                                if take + 1 == take_lane_count {
+                                    theme::palette(ui).text
+                                } else {
+                                    theme::palette(ui).muted
+                                },
+                            );
+                        }
+                    }
+                    let compact_controls =
+                        (media_lane_height - if expanded { 42.0 } else { 0.0 }) < 54.0;
                     let text_painter = painter.with_clip_rect(Rect::from_min_size(
                         Pos2::new(row_rect.min.x + 32.0, top),
                         Vec2::new(lane_header_width - 32.0, lane_height),
@@ -11183,14 +11293,17 @@ fn show_project(
                         TrackKind::Audio => "stereo",
                         _ => track_kind_label(track.kind),
                     };
-                    text_painter.text(
-                        Pos2::new(row_rect.min.x + 35.0, top + 26.0),
-                        Align2::LEFT_CENTER,
-                        channel_label,
-                        FontId::proportional(theme::type_size::SMALL),
-                        track_color,
-                    );
+                    if !take_lanes_expanded {
+                        text_painter.text(
+                            Pos2::new(row_rect.min.x + 35.0, top + 26.0),
+                            Align2::LEFT_CENTER,
+                            channel_label,
+                            FontId::proportional(theme::type_size::SMALL),
+                            track_color,
+                        );
+                    }
                     let button_height = 14.0;
+                    let take_lanes_supported = track.kind == TrackKind::Audio;
                     for (button_index, (label, active, _fill, tooltip)) in [
                         ("M", track.muted, theme::WARNING, "Mute"),
                         (
@@ -11207,30 +11320,26 @@ fn show_project(
                             "Monitor",
                         ),
                         (
-                            "R",
-                            track.automation_read,
-                            theme::palette(ui).surface_raised,
-                            "Read Enable",
-                        ),
-                        (
-                            "W",
-                            track.automation_write,
-                            theme::palette(ui).surface_raised,
-                            "Write Enable",
-                        ),
-                        (
-                            "e",
+                            "E",
                             false,
                             theme::palette(ui).surface_raised,
-                            "Edit Channel Settings",
+                            "Open Track Effects",
+                        ),
+                        (
+                            "▤",
+                            take_lanes_supported
+                                && arrange_view_state.take_lanes_visible.contains(&track.id),
+                            theme::palette(ui).surface_raised,
+                            if take_lanes_supported {
+                                "Show/Hide Track Take Lanes"
+                            } else {
+                                "Take Lanes are available on audio tracks"
+                            },
                         ),
                     ]
                     .into_iter()
                     .enumerate()
                     {
-                        if compact_controls && button_index == 6 {
-                            continue;
-                        }
                         let (offset, control_top, width) = match button_index {
                             0 => (37.0, 3.0, 22.0),
                             1 => (61.0, 3.0, 22.0),
@@ -11251,7 +11360,7 @@ fn show_project(
                             if button_index == 3 { "◀" } else { label },
                             tooltip,
                             active,
-                            true,
+                            button_index != 5 || take_lanes_supported,
                             button_index == 2,
                         );
                         if response.clicked() {
@@ -11287,20 +11396,18 @@ fn show_project(
                                     modified = true;
                                 }
                                 4 => {
-                                    track.automation_read = !track.automation_read;
-                                    modified = true;
-                                }
-                                5 => {
-                                    track.automation_write = !track.automation_write;
-                                    modified = true;
-                                }
-                                6 => {
                                     project.selected_track = Some(row as u32);
                                     project.selected_midi_part_id = None;
                                     arrange_view_state.selected_track_ids.clear();
                                     arrange_view_state.selected_track_ids.insert(track.id);
                                     arrange_view_state.selection_anchor_track_id = Some(track.id);
                                     channel_settings_window.request_channel_settings(None);
+                                    modified = true;
+                                }
+                                5 => {
+                                    if !arrange_view_state.take_lanes_visible.remove(&track.id) {
+                                        arrange_view_state.take_lanes_visible.insert(track.id);
+                                    }
                                     modified = true;
                                 }
                                 _ => {}
@@ -11400,34 +11507,46 @@ fn show_project(
                 .tracks
                 .iter()
                 .enumerate()
-                .map(|(row, t)| audio_events::Lane {
-                    id: t.id,
-                    channels: t.audio_channels,
-                    audio: t.kind == TrackKind::Audio,
-                    rect: Rect::from_min_size(
-                        Pos2::new(grid_left, canvas.top() + ruler_height + row_offsets[row]),
-                        Vec2::new(grid_clip.width(), arrange_view_state.track_height(t.id)),
-                    ),
-                    automation: arrange_view_state
-                        .automation_visible
-                        .contains(&t.id)
-                        .then(|| {
-                            let top = canvas.top()
-                                + ruler_height
-                                + row_offsets[row]
-                                + arrange_view_state.track_height(t.id);
-                            Rect::from_min_max(
-                                Pos2::new(grid_left, top),
-                                Pos2::new(
-                                    grid_clip.right(),
-                                    canvas.top()
-                                        + ruler_height
-                                        + row_offsets[row]
-                                        + row_heights[row],
-                                ),
-                            )
-                        }),
-                    color: project_controls::track_color(t),
+                .map(|(row, t)| {
+                    let (take_lane_count, take_lane_indices) =
+                        audio_events::take_lane_layout(t, project.tempo_bpm);
+                    let take_lanes_visible = arrange_view_state.take_lanes_visible.contains(&t.id);
+                    let base_height = arrange_view_state.track_height(t.id);
+                    let media_height = base_height
+                        * if take_lanes_visible {
+                            take_lane_count as f32
+                        } else {
+                            1.0
+                        };
+                    audio_events::Lane {
+                        id: t.id,
+                        channels: t.audio_channels,
+                        audio: t.kind == TrackKind::Audio,
+                        rect: Rect::from_min_size(
+                            Pos2::new(grid_left, canvas.top() + ruler_height + row_offsets[row]),
+                            Vec2::new(grid_clip.width(), media_height),
+                        ),
+                        take_lanes_visible,
+                        take_lane_count,
+                        take_lane_indices,
+                        automation: arrange_view_state.automation_visible.contains(&t.id).then(
+                            || {
+                                let top =
+                                    canvas.top() + ruler_height + row_offsets[row] + media_height;
+                                Rect::from_min_max(
+                                    Pos2::new(grid_left, top),
+                                    Pos2::new(
+                                        grid_clip.right(),
+                                        canvas.top()
+                                            + ruler_height
+                                            + row_offsets[row]
+                                            + row_heights[row],
+                                    ),
+                                )
+                            },
+                        ),
+                        color: project_controls::track_color(t),
+                    }
                 })
                 .collect::<Vec<_>>();
             let outcome = audio_events::show_with_tool(
@@ -12479,7 +12598,6 @@ fn show_mixer(
     show_strips: bool,
     show_settings: bool,
     channel_settings_window: &mut NativeWindowState,
-    compressor_editor: &mut CompressorEditorState,
     channel_settings_ui: &mut ChannelSettingsUiState,
     vst3_plugin_catalog: &[PluginDescriptor],
 ) -> (bool, bool) {
@@ -12500,7 +12618,6 @@ fn show_mixer(
                 project,
                 meter_levels,
                 peak_holds,
-                compressor_editor,
                 channel_settings_ui,
                 &mut channel_settings_window.channel_bus,
                 input_meter_peaks,
@@ -12943,23 +13060,6 @@ fn show_insert_effect_picker(
         show_catalog_insert_items(ui, catalog, InsertMenuCategory::Distortion, added);
     });
     ui.menu_button("Dynamics", |ui| {
-        if ui.button("Compressor").clicked() {
-            *added = Some(InsertSelection::Add(InsertEffectKind::Compressor {
-                threshold_db: -20.0,
-                ratio: 2.0,
-                attack_ms: 1.0,
-                hold_ms: 1.0,
-                release_ms: 500.0,
-                analysis: 80.0,
-                makeup_db: 0.0,
-                soft_knee: true,
-                auto_makeup: true,
-                auto_release: false,
-                rms_mode: false,
-                live: true,
-            }));
-            ui.close();
-        }
         for name in [
             "DeEsser",
             "EnvelopeShaper",
@@ -13034,7 +13134,7 @@ fn insert_effect_name(effect: &InsertEffectKind) -> String {
     match effect {
         InsertEffectKind::TestGenerator { .. } => "Test Generator".to_owned(),
         InsertEffectKind::StereoDelay { .. } => "Stereo Delay".to_owned(),
-        InsertEffectKind::Compressor { .. } => "Compressor".to_owned(),
+        InsertEffectKind::LegacyUnavailableCompressor { .. } => "Unavailable Compressor".to_owned(),
         InsertEffectKind::Vst3 { name, .. } if !name.is_empty() => name.clone(),
         InsertEffectKind::Vst3 { .. } => "VST3 Plug-in".to_owned(),
     }
@@ -13078,314 +13178,6 @@ fn linear_gain_db(gain: f32) -> f32 {
     }
 }
 
-fn show_compressor_editor(
-    ui: &mut egui::Ui,
-    threshold_db: &mut f32,
-    ratio: &mut f32,
-    attack_ms: &mut f32,
-    hold_ms: &mut f32,
-    release_ms: &mut f32,
-    analysis: &mut f32,
-    makeup_db: &mut f32,
-    soft_knee: &mut bool,
-    auto_makeup: &mut bool,
-    auto_release: &mut bool,
-    rms_mode: &mut bool,
-    live: &mut bool,
-    enabled: &mut bool,
-) -> bool {
-    let mut modified = false;
-    let (canvas, _) = ui.allocate_exact_size(Vec2::new(450.0, 212.0), Sense::hover());
-    let origin = canvas.min;
-    let graph_threshold = *threshold_db;
-    let graph_ratio = *ratio;
-    let graph_makeup = *makeup_db;
-    let power = Rect::from_min_size(origin, Vec2::new(22.0, 20.0));
-    let response = ui.put(power, egui::Button::new("").selected(*enabled));
-    crate::icons::power(
-        ui.painter(),
-        power.shrink2(Vec2::new(2.0, 2.0)),
-        ui.visuals().text_color(),
-    );
-    if response.clicked() {
-        *enabled = !*enabled;
-        modified = true;
-    }
-    for (label, x) in [("▤", 26.0), ("R", 48.0), ("W", 70.0), ("↔", 92.0)] {
-        ui.put(
-            Rect::from_min_size(origin + Vec2::new(x, 0.0), Vec2::new(18.0, 20.0)),
-            egui::Button::new(label),
-        );
-    }
-    ui.put(
-        Rect::from_min_size(origin + Vec2::new(128.0, 0.0), Vec2::new(132.0, 20.0)),
-        egui::Button::new(" "),
-    );
-
-    for (label, value, range, decimals, center_x) in [
-        ("Threshold", threshold_db, -60.0..=0.0, 1, 32.0),
-        ("Ratio", ratio, 1.0..=20.0, 2, 92.0),
-        ("Make-Up", makeup_db, 0.0..=24.0, 1, 152.0),
-    ] {
-        modified |= show_compressor_knob(
-            ui, origin, label, value, range, decimals, center_x, 19.0, 72.0, 31.0,
-        );
-    }
-    modified |= show_compressor_toggle(ui, origin, soft_knee, "soft knee", 72.0, 101.0);
-    modified |= show_compressor_toggle(ui, origin, auto_makeup, "auto", 132.0, 101.0);
-
-    for (label, value, range, decimals, center_x) in [
-        ("Attack", attack_ms, 0.1..=200.0, 1, 32.0),
-        ("Hold", hold_ms, 0.0..=500.0, 0, 92.0),
-        ("Release", release_ms, 5.0..=2_000.0, 0, 152.0),
-        ("Analysis", analysis, 0.0..=100.0, 0, 212.0),
-    ] {
-        modified |= show_compressor_knob(
-            ui, origin, label, value, range, decimals, center_x, 119.0, 174.0, 133.0,
-        );
-    }
-    modified |= show_compressor_toggle(ui, origin, auto_release, "auto", 132.0, 199.0);
-    modified |= show_compressor_toggle(ui, origin, rms_mode, "peak - rms", 195.0, 199.0);
-    modified |= show_compressor_toggle(ui, origin, live, "live", 370.0, 199.0);
-
-    let graph = Rect::from_min_size(origin + Vec2::new(250.0, 20.0), Vec2::new(198.0, 174.0));
-    draw_compressor_curve(ui, graph, graph_threshold, graph_ratio, graph_makeup);
-    modified
-}
-
-fn show_compressor_toggle(
-    ui: &mut egui::Ui,
-    origin: Pos2,
-    value: &mut bool,
-    label: &str,
-    x: f32,
-    y: f32,
-) -> bool {
-    let button = Rect::from_min_size(origin + Vec2::new(x, y), Vec2::new(12.0, 12.0));
-    let response = ui.put(button, egui::Button::new(if *value { "●" } else { "○" }));
-    let label_rect =
-        Rect::from_min_size(origin + Vec2::new(x + 14.0, y - 1.0), Vec2::new(64.0, 14.0));
-    ui.put(
-        label_rect,
-        egui::Label::new(
-            egui::RichText::new(label)
-                .italics()
-                .size(8.0)
-                .color(theme::palette(ui).muted),
-        ),
-    );
-    if response.clicked() {
-        *value = !*value;
-        true
-    } else {
-        false
-    }
-}
-
-fn show_compressor_knob(
-    ui: &mut egui::Ui,
-    origin: Pos2,
-    label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    decimals: usize,
-    center_x: f32,
-    label_y: f32,
-    center_y: f32,
-    value_y: f32,
-) -> bool {
-    let mut modified = false;
-    let min = *range.start();
-    let max = *range.end();
-    let label_rect = Rect::from_min_size(
-        origin + Vec2::new(center_x - 30.0, label_y),
-        Vec2::new(60.0, 12.0),
-    );
-    ui.painter().text(
-        label_rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(9.0),
-        theme::palette(ui).text,
-    );
-    let knob_rect =
-        Rect::from_center_size(origin + Vec2::new(center_x, center_y), Vec2::splat(42.0));
-    let knob = ui.interact(
-        knob_rect,
-        egui::Id::new(("compressor-knob", label)),
-        Sense::click_and_drag(),
-    );
-    let drag_start = knob.id.with("drag-start");
-    if knob.drag_started() {
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(drag_start, *value));
-    }
-    if knob.dragged() {
-        let start = ui
-            .ctx()
-            .data(|data| data.get_temp::<f32>(drag_start))
-            .unwrap_or(*value);
-        let next = start - knob.drag_delta().y * (max - min) / 120.0;
-        let next = next.clamp(min, max);
-        modified |= (next - *value).abs() > f32::EPSILON;
-        *value = next;
-    }
-    if knob.drag_stopped() {
-        ui.ctx().data_mut(|data| data.remove::<f32>(drag_start));
-    }
-    let palette = theme::palette(ui);
-    let painter = ui.painter().with_clip_rect(ui.clip_rect());
-    let center = knob_rect.center();
-    let radius = 18.0;
-    painter.circle_filled(center, radius, palette.surface_raised);
-    painter.circle_stroke(center, radius, Stroke::new(1.0, palette.grid));
-    let start_angle = 3.0 * std::f32::consts::PI / 4.0;
-    let end_angle = 9.0 * std::f32::consts::PI / 4.0;
-    let normalized = ((*value - min) / (max - min)).clamp(0.0, 1.0);
-    let pointer_angle = start_angle + (end_angle - start_angle) * normalized;
-    let mut previous = None;
-    for step in 0..=24 {
-        let t = step as f32 / 24.0;
-        let angle = start_angle + (end_angle - start_angle) * t;
-        let point = center + Vec2::new(angle.cos(), angle.sin()) * 18.0;
-        if let Some(previous) = previous {
-            painter.line_segment(
-                [previous, point],
-                Stroke::new(
-                    2.0,
-                    if t <= normalized {
-                        palette.accent
-                    } else {
-                        palette.grid
-                    },
-                ),
-            );
-        }
-        previous = Some(point);
-    }
-    let pointer = center + Vec2::new(pointer_angle.cos(), pointer_angle.sin()) * 10.0;
-    painter.line_segment([center, pointer], Stroke::new(2.0, palette.text));
-    let value_rect = Rect::from_min_size(
-        origin + Vec2::new(center_x - 30.0, value_y),
-        Vec2::new(60.0, 14.0),
-    );
-    let value_response = ui
-        .scope(|ui| {
-            let palette = theme::palette(ui);
-            let fill = egui::Color32::from_rgb(4, 12, 20);
-            let visuals = ui.visuals_mut();
-            for state in [
-                &mut visuals.widgets.inactive,
-                &mut visuals.widgets.hovered,
-                &mut visuals.widgets.active,
-            ] {
-                state.bg_fill = fill;
-                state.weak_bg_fill = fill;
-                state.bg_stroke = Stroke::NONE;
-                state.fg_stroke = Stroke::new(1.0, palette.text);
-                state.corner_radius = egui::CornerRadius::ZERO;
-            }
-            ui.put(
-                value_rect,
-                egui::DragValue::new(value)
-                    .range(min..=max)
-                    .speed((max - min) / 500.0)
-                    .fixed_decimals(decimals),
-            )
-        })
-        .inner;
-    modified |= value_response.changed();
-    modified
-}
-
-fn draw_compressor_curve(ui: &egui::Ui, rect: Rect, threshold: f32, ratio: f32, makeup: f32) {
-    let palette = theme::palette(ui);
-    let painter = ui.painter();
-    let plot_rect = Rect::from_min_size(
-        Pos2::new(rect.left() + 29.0, rect.top() + 22.0),
-        Vec2::new(126.0, 126.0),
-    );
-    for (label, x) in [
-        ("IN", rect.left() + 3.0),
-        ("GR", rect.left() + 167.0),
-        ("OUT", rect.left() + 186.0),
-    ] {
-        painter.text(
-            Pos2::new(x + 5.0, rect.top() + 9.0),
-            Align2::CENTER_CENTER,
-            label,
-            FontId::proportional(7.5),
-            palette.muted,
-        );
-    }
-    for x in [rect.left() + 3.0, rect.left() + 164.0, rect.left() + 184.0] {
-        let bar = Rect::from_min_size(
-            Pos2::new(x, plot_rect.top()),
-            Vec2::new(14.0, plot_rect.height()),
-        );
-        painter.rect_filled(bar, egui::CornerRadius::same(1), palette.surface_raised);
-        painter.rect_stroke(
-            bar,
-            egui::CornerRadius::same(1),
-            Stroke::new(1.0, palette.grid),
-            egui::StrokeKind::Inside,
-        );
-    }
-    painter.rect_filled(plot_rect, egui::CornerRadius::same(1), palette.canvas);
-    painter.rect_stroke(
-        plot_rect,
-        egui::CornerRadius::same(1),
-        Stroke::new(1.0, palette.grid),
-        egui::StrokeKind::Inside,
-    );
-    let mut points = Vec::with_capacity(65);
-    for step in 0..=64 {
-        let input = -60.0 + 60.0 * step as f32 / 64.0;
-        let output = if input <= threshold {
-            input
-        } else {
-            threshold + (input - threshold) / ratio.max(1.0)
-        } + makeup;
-        let x = plot_rect.left() + plot_rect.width() * (input + 60.0) / 60.0;
-        let y = plot_rect.bottom() - plot_rect.height() * (output + 60.0).clamp(0.0, 60.0) / 60.0;
-        points.push(Pos2::new(x, y));
-    }
-    let mut fill_points = points.clone();
-    fill_points.push(Pos2::new(plot_rect.right(), plot_rect.bottom()));
-    fill_points.push(Pos2::new(plot_rect.left(), plot_rect.bottom()));
-    painter.add(egui::Shape::convex_polygon(
-        fill_points,
-        Color32::from_rgba_unmultiplied(
-            palette.accent.r(),
-            palette.accent.g(),
-            palette.accent.b(),
-            42,
-        ),
-        Stroke::NONE,
-    ));
-    for step in 0..=4 {
-        let t = step as f32 / 4.0;
-        let x = plot_rect.left() + plot_rect.width() * t;
-        let y = plot_rect.top() + plot_rect.height() * t;
-        painter.line_segment(
-            [
-                Pos2::new(x, plot_rect.top()),
-                Pos2::new(x, plot_rect.bottom()),
-            ],
-            Stroke::new(1.0, palette.surface_raised),
-        );
-        painter.line_segment(
-            [
-                Pos2::new(plot_rect.left(), y),
-                Pos2::new(plot_rect.right(), y),
-            ],
-            Stroke::new(1.0, palette.surface_raised),
-        );
-    }
-    painter.add(egui::Shape::line(points, Stroke::new(2.0, palette.accent)));
-}
-
-#[allow(dead_code)]
 fn show_mixer_legacy(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -13721,26 +13513,6 @@ fn show_mixer_legacy(
                             });
                             modified = true;
                         }
-                        if ui.button("+ Compressor").clicked() {
-                            track.inserts.push(InsertEffect {
-                                enabled: true,
-                                kind: InsertEffectKind::Compressor {
-                                    threshold_db: -18.0,
-                                    ratio: 3.0,
-                                    attack_ms: 10.0,
-                                    hold_ms: 1.0,
-                                    release_ms: 120.0,
-                                    analysis: 80.0,
-                                    makeup_db: 0.0,
-                                    soft_knee: true,
-                                    auto_makeup: true,
-                                    auto_release: false,
-                                    rms_mode: false,
-                                    live: true,
-                                },
-                            });
-                            modified = true;
-                        }
                     });
                     let mut remove_insert = None;
                     let mut move_insert = None;
@@ -13753,11 +13525,20 @@ fn show_mixer_legacy(
                                     let effect_name = match &insert.kind {
                                         InsertEffectKind::TestGenerator { .. } => "Test Generator",
                                         InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
-                                        InsertEffectKind::Compressor { .. } => "Compressor",
+                                        InsertEffectKind::LegacyUnavailableCompressor { .. } => {
+                                            "Unavailable Compressor"
+                                        }
                                         InsertEffectKind::Vst3 { .. } => "VST3 Plug-in",
                                     };
-                                    modified |=
-                                        ui.checkbox(&mut insert.enabled, effect_name).changed();
+                                    if matches!(
+                                        &insert.kind,
+                                        InsertEffectKind::LegacyUnavailableCompressor { .. }
+                                    ) {
+                                        ui.label("Unavailable Compressor (inactive)");
+                                    } else {
+                                        modified |=
+                                            ui.checkbox(&mut insert.enabled, effect_name).changed();
+                                    }
                                     if ui
                                         .add_enabled(
                                             insert_index > 0,
@@ -13851,43 +13632,10 @@ fn show_mixer_legacy(
                                             .add(egui::Slider::new(mix, 0.0..=1.0).text("Wet"))
                                             .changed();
                                     }
-                                    InsertEffectKind::Compressor {
-                                        threshold_db,
-                                        ratio,
-                                        attack_ms,
-                                        release_ms,
-                                        makeup_db,
-                                        ..
-                                    } => {
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(threshold_db, -60.0..=0.0)
-                                                    .text("Threshold (dB)"),
-                                            )
-                                            .changed();
-                                        modified |= ui
-                                            .add(egui::Slider::new(ratio, 1.0..=20.0).text("Ratio"))
-                                            .changed();
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(attack_ms, 0.1..=200.0)
-                                                    .logarithmic(true)
-                                                    .text("Attack (ms)"),
-                                            )
-                                            .changed();
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(release_ms, 5.0..=2_000.0)
-                                                    .logarithmic(true)
-                                                    .text("Release (ms)"),
-                                            )
-                                            .changed();
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(makeup_db, 0.0..=24.0)
-                                                    .text("Makeup (dB)"),
-                                            )
-                                            .changed();
+                                    InsertEffectKind::LegacyUnavailableCompressor { .. } => {
+                                        ui.label(
+                                            "Removed built-in effect: replace it with a VST3 plug-in or remove this slot.",
+                                        );
                                     }
                                     InsertEffectKind::Vst3 { name, .. } => {
                                         ui.label(if name.is_empty() {

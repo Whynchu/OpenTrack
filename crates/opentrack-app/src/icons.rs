@@ -2,6 +2,42 @@
 use crate::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
+/// Reel-and-tape OpenTrack mark for native application windows.
+pub(crate) fn opentrack_icon() -> egui::IconData {
+    const SIZE: u32 = 64;
+    egui::IconData {
+        rgba: include_bytes!("../assets/opentrack-icon.rgba").to_vec(),
+        width: SIZE,
+        height: SIZE,
+    }
+}
+
+const LOGO_SIZE: u32 = 96;
+
+/// Theme-aware OpenTrack mark for the application menu bar.
+pub(crate) fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    let name = if dark {
+        "opentrack-logo-dark"
+    } else {
+        "opentrack-logo-light"
+    };
+    let id = egui::Id::new(name);
+    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(id)) {
+        return texture;
+    }
+    let rgba: &[u8] = if dark {
+        include_bytes!("../assets/opentrack-logo-dark.rgba")
+    } else {
+        include_bytes!("../assets/opentrack-logo-light.rgba")
+    };
+    let image =
+        egui::ColorImage::from_rgba_unmultiplied([LOGO_SIZE as usize, LOGO_SIZE as usize], rgba);
+    let texture = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
+    texture
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum ToolbarIcon {
     Power,

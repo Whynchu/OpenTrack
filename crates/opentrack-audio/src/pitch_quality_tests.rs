@@ -154,6 +154,10 @@ fn fixture(shift: f32, confidence: f32, pieces: usize) -> PitchTimeEdit {
                 detected_midi: 57.0,
                 shift,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             })
             .collect(),
         rendered_source: None,

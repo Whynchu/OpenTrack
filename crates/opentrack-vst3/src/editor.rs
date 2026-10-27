@@ -95,6 +95,31 @@ pub(crate) fn open_session(
         return Err(String::from("plug-in failed to attach its editor view"));
     }
 
+    let mut attached_size = ViewRect {
+        left: 0,
+        top: 0,
+        right: width as i32,
+        bottom: height as i32,
+    };
+    unsafe {
+        // Some views determine their final size only once attached.
+        let _ = view.getSize(&mut attached_size);
+    }
+    let attached_width = attached_size.right.wrapping_sub(attached_size.left);
+    let attached_height = attached_size.bottom.wrapping_sub(attached_size.top);
+    if (1..=16_384).contains(&attached_width) && (1..=16_384).contains(&attached_height) {
+        let _ = resize_native_window(hwnd, attached_width as u32, attached_height as u32);
+        unsafe {
+            let _ = view.onSize(&mut attached_size);
+        }
+    }
+    // Let views that draw directly into the supplied HWND know that they own
+    // focus. This also starts editor-side timers in some plug-ins.
+    unsafe {
+        let _ = view.onFocus(1);
+    }
+    redraw_editor_surface(hwnd);
+
     Ok(EditorSession {
         view,
         hwnd,
@@ -104,10 +129,33 @@ pub(crate) fn open_session(
     })
 }
 
+#[cfg(windows)]
+fn redraw_editor_surface(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow,
+    };
+
+    // Request an initial paint after attachment and sizing. Some views paint
+    // asynchronously, so this request alone does not establish visual success.
+    unsafe {
+        let _ = RedrawWindow(
+            Some(HWND(hwnd as *mut c_void)),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn redraw_editor_surface(_hwnd: isize) {}
+
 /// Detaches and releases an attached view.
 pub(crate) fn close_session(session: EditorSession) {
     // SAFETY: both calls are UI-thread calls on a live, attached view.
     unsafe {
+        let _ = session.view.onFocus(0);
         let _ = session.view.removed();
         let _ = session.view.setFrame(std::ptr::null_mut());
     }
@@ -161,7 +209,8 @@ pub(crate) fn resize_native_window(hwnd: isize, width: u32, height: u32) -> Resu
     {
         use windows::Win32::Foundation::{HWND, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
+            GWL_STYLE, GetClientRect, GetParent, GetWindowLongW, GetWindowRect, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, WS_CHILD,
         };
 
         if hwnd == 0 || width == 0 || height == 0 {
@@ -203,6 +252,13 @@ pub(crate) fn resize_native_window(hwnd: isize, width: u32, height: u32) -> Resu
             )
         }
         .map_err(|error| format!("could not resize editor window: {error}"))?;
+        // The supplied HWND is the view container. Resize its enclosing host
+        // frame as well, preserving the plugin's requested native client size.
+        if unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32 & WS_CHILD.0 != 0 {
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                resize_native_window(parent.0 as isize, width, height)?;
+            }
+        }
         Ok(())
     }
     #[cfg(not(windows))]

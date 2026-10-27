@@ -9,7 +9,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use libloading::Library;
 use opentrack_plugins::{PluginCategory, PluginClassId};
 use vst3::ComPtr;
 use vst3::Steinberg::{
@@ -19,6 +18,16 @@ use vst3::Steinberg::{
 
 type GetPluginFactory = unsafe extern "system" fn() -> *mut IPluginFactory;
 
+#[cfg(windows)]
+type PlatformLibrary = libloading::os::windows::Library;
+#[cfg(target_os = "linux")]
+type PlatformLibrary = libloading::os::unix::Library;
+
+#[cfg(windows)]
+type ExitModule = unsafe extern "system" fn() -> bool;
+#[cfg(not(windows))]
+type ExitModule = unsafe extern "C" fn() -> bool;
+
 /// Failure while loading a module or reading its factory.
 #[derive(Debug)]
 pub enum Vst3LoadError {
@@ -26,8 +35,12 @@ pub enum Vst3LoadError {
     Open(String),
     /// `GetPluginFactory` is missing.
     MissingEntryPoint(String),
+    /// A required platform-specific entry or exit function is missing.
+    MissingLifecycleEntryPoint(&'static str),
     /// The optional module `InitDll` export returned false.
     InitFailed,
+    /// The required platform-specific module entry function returned false.
+    ModuleEntryFailed(&'static str),
     /// `GetPluginFactory` returned null.
     NullFactory,
     /// A factory metadata call failed.
@@ -43,7 +56,19 @@ impl fmt::Display for Vst3LoadError {
             Self::MissingEntryPoint(message) => {
                 write!(formatter, "missing GetPluginFactory export: {message}")
             }
+            Self::MissingLifecycleEntryPoint(name) => {
+                write!(
+                    formatter,
+                    "missing required VST3 module lifecycle export: {name}"
+                )
+            }
             Self::InitFailed => formatter.write_str("module InitDll returned false"),
+            Self::ModuleEntryFailed(name) => {
+                write!(
+                    formatter,
+                    "VST3 module entry function {name} returned false"
+                )
+            }
             Self::NullFactory => formatter.write_str("GetPluginFactory returned null"),
             Self::Factory(message) => write!(formatter, "factory metadata failed: {message}"),
             Self::InvalidClassCount(count) => {
@@ -116,11 +141,14 @@ pub struct ModuleEnumeration {
 
 /// A loaded VST3 module and its factory.
 pub struct Vst3Module {
-    // Drop releases the factory and calls ExitDll before the library unloads.
+    // Drop releases the factory, calls the module exit function, then unloads.
     factory: Option<ComPtr<IPluginFactory>>,
-    exit_dll: Option<unsafe extern "system" fn() -> bool>,
+    lifecycle: ModuleLifecycle,
+    #[cfg(target_os = "macos")]
+    _bundle: mac_bundle::MacBundle,
     original_dir: Option<PathBuf>,
-    _library: Library,
+    #[cfg(any(windows, target_os = "linux"))]
+    _library: PlatformLibrary,
     _com: ComApartment,
 }
 
@@ -129,29 +157,75 @@ impl Vst3Module {
         let original_dir = std::env::current_dir().ok();
         let com = ComApartment::new();
         #[cfg(windows)]
-        let library: Library = unsafe {
+        let library = unsafe {
             libloading::os::windows::Library::load_with_flags(
                 path,
                 libloading::os::windows::LOAD_WITH_ALTERED_SEARCH_PATH,
             )
         }
-        .map_err(|error| Vst3LoadError::Open(error.to_string()))?
-        .into();
-        #[cfg(not(windows))]
-        let library = unsafe { Library::new(path) }
+        .map_err(|error| Vst3LoadError::Open(error.to_string()))?;
+        #[cfg(target_os = "linux")]
+        let library = unsafe { libloading::os::unix::Library::new(path) }
             .map_err(|error| Vst3LoadError::Open(error.to_string()))?;
-        let init_dll: Option<unsafe extern "system" fn() -> bool> =
-            unsafe { library.get(b"InitDll\0").ok().map(|symbol| *symbol) };
-        if let Some(init) = init_dll
-            && !unsafe { init() }
-        {
-            return Err(Vst3LoadError::InitFailed);
-        }
-        let exit_dll: Option<unsafe extern "system" fn() -> bool> =
-            unsafe { library.get(b"ExitDll\0").ok().map(|symbol| *symbol) };
-        let get_factory: libloading::Symbol<'_, GetPluginFactory> =
-            unsafe { library.get(b"GetPluginFactory\0") }
-                .map_err(|error| Vst3LoadError::MissingEntryPoint(error.to_string()))?;
+
+        #[cfg(target_os = "macos")]
+        let bundle = mac_bundle::MacBundle::open(path)?;
+
+        #[cfg(windows)]
+        let lifecycle = {
+            let init_dll: Option<unsafe extern "system" fn() -> bool> =
+                unsafe { library.get(b"InitDll\0").ok().map(|symbol| *symbol) };
+            if let Some(init) = init_dll
+                && !unsafe { init() }
+            {
+                return Err(Vst3LoadError::InitFailed);
+            }
+            let exit_dll: Option<ExitModule> =
+                unsafe { library.get(b"ExitDll\0").ok().map(|symbol| *symbol) };
+            ModuleLifecycle::new(exit_dll)
+        };
+
+        #[cfg(target_os = "linux")]
+        let (library, lifecycle) = {
+            let entry: unsafe extern "C" fn(*mut std::ffi::c_void) -> bool =
+                unsafe { library.get(b"ModuleEntry\0") }
+                    .map(|symbol| *symbol)
+                    .map_err(|_| Vst3LoadError::MissingLifecycleEntryPoint("ModuleEntry"))?;
+            let exit: ExitModule = unsafe { library.get(b"ModuleExit\0") }
+                .map(|symbol| *symbol)
+                .map_err(|_| Vst3LoadError::MissingLifecycleEntryPoint("ModuleExit"))?;
+            let handle = library.into_raw();
+            let initialized = unsafe { entry(handle) };
+            // SAFETY: `handle` came from this loaded library and is restored
+            // immediately, so it remains owned and unloadable on every path.
+            let library = unsafe { libloading::os::unix::Library::from_raw(handle) };
+            if !initialized {
+                return Err(Vst3LoadError::ModuleEntryFailed("ModuleEntry"));
+            }
+            (library, ModuleLifecycle::new(Some(exit)))
+        };
+
+        #[cfg(target_os = "macos")]
+        let lifecycle = {
+            type BundleEntry =
+                unsafe extern "C" fn(core_foundation_sys::bundle::CFBundleRef) -> bool;
+            let entry = unsafe { bundle.function::<BundleEntry>(c"bundleEntry") }
+                .map_err(|_| Vst3LoadError::MissingLifecycleEntryPoint("bundleEntry"))?;
+            let exit = unsafe { bundle.function::<ExitModule>(c"bundleExit") }
+                .map_err(|_| Vst3LoadError::MissingLifecycleEntryPoint("bundleExit"))?;
+            if !unsafe { entry(bundle.as_raw()) } {
+                return Err(Vst3LoadError::ModuleEntryFailed("bundleEntry"));
+            }
+            ModuleLifecycle::new(Some(exit))
+        };
+
+        #[cfg(any(windows, target_os = "linux"))]
+        let get_factory: GetPluginFactory = unsafe { library.get(b"GetPluginFactory\0") }
+            .map(|symbol| *symbol)
+            .map_err(|error| Vst3LoadError::MissingEntryPoint(error.to_string()))?;
+        #[cfg(target_os = "macos")]
+        let get_factory: GetPluginFactory = unsafe { bundle.function(c"GetPluginFactory") }
+            .map_err(Vst3LoadError::MissingEntryPoint)?;
         let raw = unsafe { get_factory() };
         let factory = unsafe { ComPtr::from_raw(raw) }.ok_or(Vst3LoadError::NullFactory)?;
         if let Some(dir) = &original_dir {
@@ -159,8 +233,11 @@ impl Vst3Module {
         }
         Ok(Self {
             factory: Some(factory),
-            exit_dll,
+            lifecycle,
+            #[cfg(target_os = "macos")]
+            _bundle: bundle,
             original_dir,
+            #[cfg(any(windows, target_os = "linux"))]
             _library: library,
             _com: com,
         })
@@ -297,12 +374,163 @@ impl Vst3Module {
     }
 }
 
+struct ModuleLifecycle {
+    exit: Option<ExitModule>,
+}
+
+impl ModuleLifecycle {
+    fn new(exit: Option<ExitModule>) -> Self {
+        Self { exit }
+    }
+
+    fn close(&mut self) {
+        if let Some(exit) = self.exit.take() {
+            unsafe { exit() };
+        }
+    }
+}
+
+impl Drop for ModuleLifecycle {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac_bundle {
+    use std::ffi::{CStr, c_void};
+    use std::mem::size_of;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+
+    use core_foundation_sys::base::{CFRelease, kCFAllocatorDefault};
+    use core_foundation_sys::bundle::{
+        CFBundleCreate, CFBundleGetFunctionPointerForName, CFBundleLoadExecutable, CFBundleRef,
+        CFBundleUnloadExecutable,
+    };
+    use core_foundation_sys::string::{CFStringCreateWithCString, kCFStringEncodingASCII};
+    use core_foundation_sys::url::CFURLCreateFromFileSystemRepresentation;
+
+    use super::Vst3LoadError;
+
+    /// Loaded VST3 bundle. It remains alive until the module exit function runs.
+    pub(super) struct MacBundle {
+        raw: CFBundleRef,
+        executable_loaded: bool,
+    }
+
+    impl MacBundle {
+        pub(super) fn open(module_path: &Path) -> Result<Self, Vst3LoadError> {
+            let bundle_path = containing_vst3_bundle(module_path).ok_or_else(|| {
+                Vst3LoadError::Open(format!(
+                    "module is not inside a macOS .vst3 bundle: {}",
+                    module_path.display()
+                ))
+            })?;
+            let bundle_path = if bundle_path.is_absolute() {
+                bundle_path
+            } else {
+                std::env::current_dir()
+                    .map_err(|error| Vst3LoadError::Open(error.to_string()))?
+                    .join(bundle_path)
+            };
+            let path_bytes = bundle_path.as_os_str().as_bytes();
+            let url = unsafe {
+                CFURLCreateFromFileSystemRepresentation(
+                    kCFAllocatorDefault,
+                    path_bytes.as_ptr(),
+                    path_bytes.len() as isize,
+                    1,
+                )
+            };
+            if url.is_null() {
+                return Err(Vst3LoadError::Open(format!(
+                    "could not create a Core Foundation URL for {}",
+                    bundle_path.display()
+                )));
+            }
+            let raw = unsafe { CFBundleCreate(kCFAllocatorDefault, url) };
+            unsafe { CFRelease(url.cast::<c_void>()) };
+            if raw.is_null() {
+                return Err(Vst3LoadError::Open(format!(
+                    "could not create a Core Foundation bundle for {}",
+                    bundle_path.display()
+                )));
+            }
+            if unsafe { CFBundleLoadExecutable(raw) } == 0 {
+                unsafe { CFRelease(raw.cast::<c_void>()) };
+                return Err(Vst3LoadError::Open(format!(
+                    "Core Foundation could not load the VST3 bundle {}",
+                    bundle_path.display()
+                )));
+            }
+            Ok(Self {
+                raw,
+                executable_loaded: true,
+            })
+        }
+
+        pub(super) fn as_raw(&self) -> CFBundleRef {
+            self.raw
+        }
+
+        /// Resolves a required function exported by the loaded bundle.
+        ///
+        /// # Safety
+        /// `T` must be the function pointer type declared by the VST3 ABI for
+        /// the requested symbol.
+        pub(super) unsafe fn function<T: Copy>(&self, name: &CStr) -> Result<T, String> {
+            let cf_name = unsafe {
+                CFStringCreateWithCString(
+                    kCFAllocatorDefault,
+                    name.as_ptr(),
+                    kCFStringEncodingASCII,
+                )
+            };
+            if cf_name.is_null() {
+                return Err("could not allocate a Core Foundation symbol name".to_owned());
+            }
+            let pointer = unsafe { CFBundleGetFunctionPointerForName(self.raw, cf_name) };
+            unsafe { CFRelease(cf_name.cast::<c_void>()) };
+            if pointer.is_null() {
+                return Err(format!("bundle does not export {}", name.to_string_lossy()));
+            }
+            if size_of::<T>() != size_of::<*const c_void>() {
+                return Err("resolved VST3 symbol has an incompatible pointer size".to_owned());
+            }
+            // SAFETY: callers pair each symbol name with its exact VST3
+            // function-pointer type, and function/data pointers have the same
+            // representation on supported macOS targets.
+            Ok(unsafe { std::mem::transmute_copy(&pointer) })
+        }
+    }
+
+    impl Drop for MacBundle {
+        fn drop(&mut self) {
+            if self.executable_loaded {
+                unsafe { CFBundleUnloadExecutable(self.raw) };
+            }
+            unsafe { CFRelease(self.raw.cast::<c_void>()) };
+        }
+    }
+
+    fn containing_vst3_bundle(module_path: &Path) -> Option<PathBuf> {
+        module_path
+            .ancestors()
+            .find(|ancestor| {
+                ancestor.is_dir()
+                    && ancestor.extension().is_some_and(|extension| {
+                        extension.to_string_lossy().eq_ignore_ascii_case("vst3")
+                    })
+            })
+            .map(Path::to_path_buf)
+    }
+}
+
 impl Drop for Vst3Module {
     fn drop(&mut self) {
         let _ = self.factory.take();
-        if let Some(exit) = self.exit_dll.take() {
-            unsafe { exit() };
-        }
+        self.lifecycle.close();
         if let Some(dir) = self.original_dir.take() {
             let _ = std::env::set_current_dir(dir);
         }
@@ -382,59 +610,16 @@ mod tests {
             eprintln!("set OPENTRACK_VST3_PROBE to a module path");
             return;
         };
-        let _com = ComApartment::new();
         eprintln!("opening {}", Path::new(&path).display());
-        #[cfg(windows)]
-        let library: Library = unsafe {
-            libloading::os::windows::Library::load_with_flags(
-                &path,
-                libloading::os::windows::LOAD_WITH_ALTERED_SEARCH_PATH,
-            )
-        }
-        .expect("library opens")
-        .into();
-        #[cfg(not(windows))]
-        let library = unsafe { Library::new(&path) }.expect("library opens");
-        eprintln!("library opened");
-        let init_dll: Option<unsafe extern "system" fn() -> bool> =
-            unsafe { library.get(b"InitDll\0").ok().map(|symbol| *symbol) };
-        eprintln!("InitDll present: {}", init_dll.is_some());
-        if let Some(init) = init_dll {
-            eprintln!("InitDll result: {}", unsafe { init() });
-        }
-        let get_factory: libloading::Symbol<'_, GetPluginFactory> =
-            unsafe { library.get(b"GetPluginFactory\0") }.expect("factory export");
-        eprintln!("export found");
-        let raw = unsafe { get_factory() };
-        eprintln!("factory pointer {raw:p}");
-        let factory = unsafe { ComPtr::from_raw(raw) }.expect("non-null factory");
-        eprintln!("factory owned");
-        let mut info = PFactoryInfo {
-            vendor: [0; 64],
-            url: [0; 256],
-            email: [0; 128],
-            flags: 0,
-        };
-        let result = unsafe { factory.getFactoryInfo(&mut info) };
-        eprintln!("factory info result 0x{result:08x}");
-        let count = unsafe { factory.countClasses() };
-        eprintln!("class count {count}");
-        let factory3 = factory.cast::<IPluginFactory3>();
-        eprintln!("factory3 {}", factory3.is_some());
-        if let Some(factory3) = factory3 {
-            let mut class = PClassInfoW {
-                cid: [0; 16],
-                cardinality: 0,
-                category: [0; 32],
-                name: [0; 64],
-                classFlags: 0,
-                subCategories: [0; 128],
-                vendor: [0; 64],
-                version: [0; 64],
-                sdkVersion: [0; 64],
-            };
-            let result = unsafe { factory3.getClassInfoUnicode(0, &mut class) };
-            eprintln!("class 0 result 0x{result:08x}");
+        let module = Vst3Module::open(Path::new(&path)).expect("module opens");
+        let enumeration = module.enumerate().expect("factory enumerates");
+        eprintln!(
+            "factory '{}' exposed {} audio module classes",
+            enumeration.factory_vendor,
+            enumeration.classes.len()
+        );
+        for class in enumeration.classes {
+            eprintln!("  {} | {}", class.name, class.class_id);
         }
         eprintln!("probe complete");
     }

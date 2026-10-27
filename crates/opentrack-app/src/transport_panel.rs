@@ -173,7 +173,20 @@ fn seek(app: &mut OpenTrackApp, beat: f64) {
 }
 
 pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui) {
-    let (panel, _) = ui.allocate_exact_size(SIZE, Sense::hover());
+    let (panel, panel_response) = ui.allocate_exact_size(SIZE, Sense::click_and_drag());
+    if panel_response.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    panel_response.context_menu(|ui| {
+        theme::menu_popup_style(ui.style_mut());
+        ui.set_min_width(190.0);
+        if ui
+            .checkbox(&mut app.transport_window.always_on_top, "Always on Top")
+            .changed()
+        {
+            ui.close();
+        }
+    });
     let o = panel.min;
     let p = theme::palette(ui);
     ui.painter().rect_filled(panel, 1.0, p.surface_raised);

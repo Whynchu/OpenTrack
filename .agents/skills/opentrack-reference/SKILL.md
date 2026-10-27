@@ -1,13 +1,13 @@
 ---
 name: opentrack-reference
-description: Resolve named OpenTrack fidelity unknowns using existing Cubase evidence, authorized desktop observation, manuals, or targeted REA inspection. Use for bounded reference studies and specification work.
+description: Resolve a specific feature question using user-selected examples, documentation, or observed OpenTrack behavior. Use only when external material is relevant to the user's requested feature; this does not establish a product-wide comparison target.
 ---
 
-Read `docs/workflow/current.md`, the assigned task, and the measurement contract in `docs/workflow/README.md` from the repository root.
+Read `docs/workflow/current.md`, the assigned task, and feature verification guidance in `docs/workflow/README.md` from the repository root.
 
-1. State the unanswered questions and evidence needed. Search existing notes/manifests first. Do not repeat a completed sweep.
-2. Distinguish user specification, manual text, direct observation, inference, and unknown. Do not convert a user's desired improvement into a claimed Cubase observation.
-3. Use current computer-use skill/tool instructions for authorized desktop inspection. Keep desktop interaction coordinated with the user. For REA, inspect only artifacts needed to answer the question; installed binaries remain evidence, not product assets/code.
-4. Record action/target, before/after state, display conditions, capture/reference IDs, actual result, and unresolved exceptions. Preserve project files; destructive experiments use copies.
-5. Stop once the packet's questions are answered. If tool recovery fails twice without new evidence, record the blocker and continue only independent authorized work.
-6. Update the task and ledger with exact evidence. Run `python scripts/parity_report.py`. Hand off a concrete behavior specification and acceptance cases; never claim implementation or parity from reference study alone.
+1. State the user-visible outcome and the specific unanswered feature question. Search current source and existing feature notes first.
+2. Distinguish user requirements, documentation, observed OpenTrack behavior, inference, and unknowns.
+3. Use external software examples only when the user makes them relevant to this feature. Follow current computer-use instructions for any authorized inspection. Treat screenshots as optional task inputs and do not archive them or derived comparisons by default.
+4. Inspect only material needed to answer the question. Preserve project files; use copies for destructive experiments.
+5. Stop when the feature question is answered. If tool recovery fails twice without new evidence, record the blocker and continue only independent authorized work.
+6. Update the task with a concise feature specification and acceptance cases, then select checks that answer the named feature question.

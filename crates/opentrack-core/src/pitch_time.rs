@@ -32,6 +32,22 @@ pub struct PitchNote {
     pub detected_midi: f32,
     pub shift: f32,
     pub straighten: f32,
+    /// Pitch offset at the left edge, in semitones from the note's base pitch.
+    #[serde(default)]
+    pub pitch_start_bend: f32,
+    /// User-set anchor position within the destination note, from 0 through 1.
+    #[serde(default = "default_pitch_anchor")]
+    pub pitch_anchor: f64,
+    /// Pitch offset at the anchor. Usually zero; retained when a bent note is split.
+    #[serde(default)]
+    pub pitch_anchor_bend: f32,
+    /// Pitch offset at the right edge, in semitones from the note's base pitch.
+    #[serde(default)]
+    pub pitch_end_bend: f32,
+}
+
+fn default_pitch_anchor() -> f64 {
+    0.5
 }
 
 impl PitchNote {
@@ -42,6 +58,38 @@ impl PitchNote {
         self.start
             + (source_local - self.source_start) / (self.source_end - self.source_start)
                 * (self.end - self.start)
+    }
+
+    pub fn pitch_at(&self, detected: f32, destination_time: f64) -> f32 {
+        let base = self.pitch(detected);
+        let fraction = ((destination_time - self.start) / (self.end - self.start)).clamp(0.0, 1.0);
+        let anchor = self.pitch_anchor.clamp(0.0, 1.0);
+        let bend = if fraction <= anchor && anchor > f64::EPSILON {
+            let t = (fraction / anchor) as f32;
+            self.pitch_start_bend * (1.0 - t) + self.pitch_anchor_bend * t
+        } else if anchor < 1.0 {
+            let t = ((fraction - anchor) / (1.0 - anchor)) as f32;
+            self.pitch_anchor_bend * (1.0 - t) + self.pitch_end_bend * t
+        } else {
+            let t = fraction as f32;
+            self.pitch_start_bend * (1.0 - t) + self.pitch_anchor_bend * t
+        };
+        base + bend
+    }
+
+    pub fn pitch_bend_at_fraction(&self, fraction: f64) -> f32 {
+        let anchor = self.pitch_anchor.clamp(0.0, 1.0);
+        let fraction = fraction.clamp(0.0, 1.0);
+        if fraction <= anchor && anchor > f64::EPSILON {
+            let t = (fraction / anchor) as f32;
+            self.pitch_start_bend * (1.0 - t) + self.pitch_anchor_bend * t
+        } else if anchor < 1.0 {
+            let t = ((fraction - anchor) / (1.0 - anchor)) as f32;
+            self.pitch_anchor_bend * (1.0 - t) + self.pitch_end_bend * t
+        } else {
+            let t = fraction as f32;
+            self.pitch_start_bend * (1.0 - t) + self.pitch_anchor_bend * t
+        }
     }
 }
 
@@ -70,7 +118,7 @@ impl PitchTimeEdit {
         let Some(note) = self.notes.get(note_index) else {
             return detected_midi;
         };
-        let mut target = note.pitch(detected_midi);
+        let mut target = note.pitch_at(detected_midi, destination_time);
 
         let tempo = if tempo_bpm.is_finite() && tempo_bpm > 0.0 {
             tempo_bpm
@@ -143,9 +191,16 @@ impl PitchTimeEdit {
             if ![n.start, n.end, n.source_start, n.source_end]
                 .iter()
                 .all(|v| v.is_finite())
-                || ![n.detected_midi, n.shift, n.straighten]
-                    .iter()
-                    .all(|v| v.is_finite())
+                || ![
+                    n.detected_midi,
+                    n.shift,
+                    n.straighten,
+                    n.pitch_start_bend,
+                    n.pitch_anchor_bend,
+                    n.pitch_end_bend,
+                ]
+                .iter()
+                .all(|v| v.is_finite())
                 || n.source_start < source_end - 1e-6
                 || n.start < end - 1e-6
                 || n.source_end - n.source_start < 0.01
@@ -156,6 +211,10 @@ impl PitchTimeEdit {
                 || !(0.0..=127.0).contains(&n.detected_midi)
                 || !ids.insert(n.id)
                 || !(0.0..=1.0).contains(&n.straighten)
+                || !(0.0..=1.0).contains(&n.pitch_anchor)
+                || !(-12.0..=12.0).contains(&n.pitch_start_bend)
+                || !(-12.0..=12.0).contains(&n.pitch_anchor_bend)
+                || !(-12.0..=12.0).contains(&n.pitch_end_bend)
             {
                 return false;
             }
@@ -167,13 +226,21 @@ impl PitchTimeEdit {
 }
 
 fn note_has_pitch_edit(note: &PitchNote) -> bool {
-    note.shift.abs() > 1e-6 || note.straighten > 1e-6
+    note.shift.abs() > 1e-6
+        || note.straighten > 1e-6
+        || note.pitch_start_bend.abs() > 1e-6
+        || note.pitch_anchor_bend.abs() > 1e-6
+        || note.pitch_end_bend.abs() > 1e-6
 }
 
 fn pitch_rules_differ(left: &PitchNote, right: &PitchNote) -> bool {
     (left.shift - right.shift).abs() > 1e-6
         || (left.straighten - right.straighten).abs() > 1e-6
         || (left.straighten > 1e-6 && (left.detected_midi - right.detected_midi).abs() > 1e-6)
+        || (left.pitch_start_bend - right.pitch_start_bend).abs() > 1e-6
+        || (left.pitch_anchor - right.pitch_anchor).abs() > 1e-6
+        || (left.pitch_anchor_bend - right.pitch_anchor_bend).abs() > 1e-6
+        || (left.pitch_end_bend - right.pitch_end_bend).abs() > 1e-6
 }
 
 fn boundary_pitch(edit: &PitchTimeEdit, left: &PitchNote, right: &PitchNote) -> f32 {
@@ -188,8 +255,8 @@ fn boundary_pitch(edit: &PitchTimeEdit, left: &PitchNote, right: &PitchNote) -> 
         right.source_start + sample_period * 0.5,
         right.detected_midi,
     );
-    let left_target = left.pitch(left_midi);
-    let right_target = right.pitch(right_midi);
+    let left_target = left.pitch_at(left_midi, left.end);
+    let right_target = right.pitch_at(right_midi, right.start);
     match (note_has_pitch_edit(left), note_has_pitch_edit(right)) {
         (false, true) => left_target,
         (true, false) => right_target,
@@ -264,6 +331,10 @@ mod tests {
             detected_midi: 57.0,
             shift,
             straighten: 0.0,
+            pitch_start_bend: 0.0,
+            pitch_anchor: 0.5,
+            pitch_anchor_bend: 0.0,
+            pitch_end_bend: 0.0,
         }
     }
 

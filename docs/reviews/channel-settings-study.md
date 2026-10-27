@@ -2,6 +2,8 @@
 
 **Status: partial investigation; implementation and runtime parity are not accepted.** This is a bounded M2 reference pass for the Project-attached VST Audio Channel Settings window. The Compressor editor remains out of scope.
 
+**Implementation status note (2026-10-26):** The built-in Compressor mentioned in this report's earlier implementation notes was subsequently removed at the user's direction. Those notes describe the pre-removal build; external VST3 compressor plug-ins remain separate.
+
 ## Reference conditions
 
 - Reference: Cubase 5, project `cubase file.cpr`, selected `Track 01` (audio channel).

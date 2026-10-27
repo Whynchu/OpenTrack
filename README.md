@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/opentrack-logo-dark.png">
+    <img src="docs/images/opentrack-logo-light.png" alt="OpenTrack reel mark" width="112">
+  </picture>
+</p>
+
 # OpenTrack
 
 OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide a dependable, expressive environment for recording, editing, arranging, mixing, and finishing music.
@@ -15,6 +22,7 @@ OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide 
 - **A capable mixing environment:** track routing, monitoring, automation, channel processing, and support for third-party instruments and effects.
 - **Projects you can trust:** reliable saving, media management, recovery, and consistent recall of your work and workspace.
 - **A flexible desktop workspace:** clear controls, useful shortcuts, configurable layouts, and a polished interface that keeps everyday actions close at hand.
+- **Interoperable projects:** import and export supported DAW project formats while retaining unsupported metadata where the format allows.
 - **An extensible foundation:** a Rust application and audio engine that can grow through community contributions and independently designed instruments and effects.
 
 Development prioritizes complete, usable musical workflows. Functionality, reliability, and interface polish are reviewed together as the application grows.
@@ -23,7 +31,7 @@ Development prioritizes complete, usable musical workflows. Functionality, relia
 
 OpenTrack is an early prototype under active development. The current application includes a Project timeline, track controls and Inspector, Mixer, Channel Settings with four-band EQ, floating transport, WAV import and playback, basic audio recording, MIDI editing, and native project saving.
 
-These pieces are still being integrated and tested. Advanced routing, automation, general third-party plug-in hosting, and a complete production workflow remain development goals. Screenshots show the current interface and do not imply that every visible control is fully implemented. Recording and monitoring still require validation with real audio hardware.
+These pieces are still being integrated and tested. Advanced routing, automation, general third-party plug-in hosting, and a complete production workflow remain development goals. Visible controls may still be incomplete. Recording and monitoring still require validation with real audio hardware.
 
 New projects use the `.opr` format. Earlier `.otp` and `.rwp` project files remain readable.
 

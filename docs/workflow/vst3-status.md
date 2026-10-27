@@ -1,7 +1,28 @@
 # VST3 implementation status
 
-Updated: 2026-10-25. This status is outside the transport parity ledger; do not
+Updated: 2026-10-26. This status is outside the transport parity ledger; do not
 reuse transport metrics for plug-in hosting.
+
+## Latest verified correction — T044
+
+Native plugin editors are now the default on insert add/click; generic sliders
+are a fallback with an explicit error. Fixed native mono bus negotiation for
+Waves, factory/module teardown order on load errors, optional legacy processing
+notifications for iZotope, initial controller state sync, editor close ordering
+and host frame sizing.
+
+The blank/stalled Waves editor was fixed by hosting the native view on a
+dedicated STA thread with its own message loop. The view is created from the live
+audio effect's controller, not a second instance, so CLA-76 VU/GR meters and
+other processing displays follow the real audio callback. A continuous-tone
+probe showed the meter moving and controls responding. All 25 installed effects
+(including all 19 Waves classes) had previously passed the fresh-folder native
+lifecycle/process/state sweep; that sweep was not repeated after the thread
+change. Three instruments still require instrument/MIDI hosting. See
+[T044](tasks/T044-vst3-native-editors-and-compatibility.md) for current build
+identity, exact checks and pending visual/listening acceptance. Current x64
+local-ASIO build: `84CCD48A721567199C6D6730E2716EC468EE803A8AD18F86EC03A11EB9D52836`.
+The historical implementation notes below are not evidence of current parity.
 
 ## Implemented
 
@@ -62,11 +83,12 @@ process working directory.
   parameters.
 - WaveShell1 CLA-76 Stereo also loads through the same path with a live
   parameter list and finite block output.
-- Current x64 local-ASIO build: `BE2E7B5A80D374DE2C535D683D288DA516E78C8A8A6EF6289163E63353CD2BA2`.
-  App suite: 141 passed, 5 ignored installed-plugin tests. VST3 suite: 13
-  passed, 2 ignored installed-plugin tests. Hosted audio: 6 passed. Live
-  listening/visual review remains pending; the full audio suite still has
-  unrelated in-progress pitch-quality failures owned by Codex.
+- Current x64 local-ASIO build: `84CCD48A721567199C6D6730E2716EC468EE803A8AD18F86EC03A11EB9D52836`.
+  App suite: 133 passed, 8 ignored opt-in tests, six pre-existing pitch-editing
+  failures. VST3 suite, scanner/catalog suites, 6 hosted-audio checks and the
+  installed CLA-76 mono/stereo audio checks pass. Native CLA-76 editor and
+  dedicated-thread regressions pass. Live in-app listening/visual review remains
+  pending.
 
 ## Not implemented
 
@@ -77,8 +99,11 @@ process working directory.
 
 ## Tests
 
-`cargo test --workspace` passes: app 131, audio 63 (1 ignored manual comparison),
-core 17, scanner 16, catalog 11, VST3 3 (1 ignored installed-module probe).
+Current targeted checks: app 133 passed (8 opt-in ignored) with six separate
+pitch-editing failures; core 18 passed; scanner and catalog suites pass; VST3
+suite passes with installed probes ignored; hosted audio 6 passed; installed
+CLA-76 mono/stereo audio and dedicated-editor checks pass. The historical
+workspace totals below are superseded.
 
 ## Next
 

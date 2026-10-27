@@ -315,6 +315,10 @@ pub fn segment_notes(analysis: &PitchAnalysis) -> Vec<opentrack_core::pitch_time
                 detected_midi: median(&smooth[a..b]),
                 shift: 0.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             });
         }
         run.clear();

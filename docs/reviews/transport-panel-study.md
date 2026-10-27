@@ -1,6 +1,6 @@
-# Transport panel: T029
+# Historical transport-panel study: T029
 
-Primary reference: `G:/dev/Opentrack/_analysis-tools/reports/workflow-L1/02-mixer-transport-1.png`. Inspected directly on 2026-10-25. This is an 837 x 69 pixel crop; full display resolution, scaling and desktop placement are unknown. Static layout establishes positions, not sound or hidden interactions. Existing approved colors remain OpenTrack's own.
+This note records an earlier feature-specific layout study. Its screenshot archive has been removed at the user's direction; it is historical context, not an active comparison or acceptance requirement. Current behavior is reviewed in OpenTrack.
 
 | Area | Reference structure | Current source | Review status |
 | --- | --- | --- | --- |

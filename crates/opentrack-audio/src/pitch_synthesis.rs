@@ -541,6 +541,10 @@ mod tests {
             detected_midi: 60.0,
             shift,
             straighten: 0.0,
+            pitch_start_bend: 0.0,
+            pitch_anchor: 0.5,
+            pitch_anchor_bend: 0.0,
+            pitch_end_bend: 0.0,
         };
         let make_edit = |notes| PitchTimeEdit {
             detector_version: 2,
@@ -609,6 +613,10 @@ mod tests {
             detected_midi: 57.0,
             shift,
             straighten: 0.0,
+            pitch_start_bend: 0.0,
+            pitch_anchor: 0.5,
+            pitch_anchor_bend: 0.0,
+            pitch_end_bend: 0.0,
         };
         for (left_shift, right_shift) in [(0.0, 2.0), (2.0, 0.0)] {
             let edit = PitchTimeEdit {
@@ -674,6 +682,10 @@ mod tests {
             detected_midi: 57.0,
             shift,
             straighten: 0.0,
+            pitch_start_bend: 0.0,
+            pitch_anchor: 0.5,
+            pitch_anchor_bend: 0.0,
+            pitch_end_bend: 0.0,
         };
         let edit = PitchTimeEdit {
             detector_version: 2,
@@ -747,6 +759,10 @@ mod tests {
                 detected_midi: 57.0,
                 shift: 3.0,
                 straighten: 0.0,
+                pitch_start_bend: 0.0,
+                pitch_anchor: 0.5,
+                pitch_anchor_bend: 0.0,
+                pitch_end_bend: 0.0,
             }],
             rendered_source: None,
             enabled: true,
