@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, FontId, Stroke, Vec2};
+use eframe::egui::{self, Color32, FontId, Rect, Stroke, Vec2};
 
 // Signal colors retain their meaning in either Windows app theme.
 pub const RECORD: Color32 = Color32::from_rgb(220, 65, 65);
@@ -53,6 +53,14 @@ pub fn hover_button_fill(base: Color32, visuals: &egui::Visuals) -> Color32 {
 }
 
 fn set_hover_style(style: &mut egui::Style) {
+    for widget in [
+        &mut style.visuals.widgets.inactive,
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+        &mut style.visuals.widgets.open,
+    ] {
+        widget.corner_radius = egui::CornerRadius::same(3);
+    }
     let base = style.visuals.widgets.inactive.bg_fill;
     style.visuals.widgets.hovered.bg_fill = hover_button_fill(base, &style.visuals);
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(
@@ -65,6 +73,88 @@ fn set_hover_style(style: &mut egui::Style) {
             .color
             .gamma_multiply(0.35),
     );
+}
+
+/// Compact control chrome shared by letter buttons, toolbar tools and transport.
+/// The caller retains the existing hit rectangle, action and semantic fill.
+pub fn paint_control(
+    ui: &egui::Ui,
+    rect: Rect,
+    response: &egui::Response,
+    base: Color32,
+    enabled: bool,
+    round: bool,
+) -> Color32 {
+    let fill = if enabled && response.is_pointer_button_down_on() {
+        Color32::from_rgba_unmultiplied(
+            (f32::from(base.r()) * 0.88).round() as u8,
+            (f32::from(base.g()) * 0.88).round() as u8,
+            (f32::from(base.b()) * 0.88).round() as u8,
+            base.a(),
+        )
+    } else if enabled && response.hovered() {
+        hover_button_fill(base, ui.visuals())
+    } else {
+        base
+    };
+    let radius = (rect.width().min(rect.height()) * 0.2).clamp(2.0, 3.0);
+    let edge = control_ink(fill, true).gamma_multiply(if enabled && response.hovered() {
+        0.42
+    } else {
+        0.22
+    });
+    let stroke = Stroke::new(0.75, edge);
+    if round {
+        let radius = rect.width().min(rect.height()) * 0.5;
+        ui.painter().circle_filled(rect.center(), radius, fill);
+        ui.painter()
+            .circle_stroke(rect.center(), radius - 0.5, stroke);
+    } else {
+        ui.painter().rect_filled(rect, radius, fill);
+        ui.painter()
+            .rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
+    }
+    if enabled && response.has_focus() {
+        let focus = Stroke::new(1.0, palette(ui).accent);
+        if round {
+            ui.painter().circle_stroke(
+                rect.center(),
+                rect.width().min(rect.height()) * 0.5 + 1.0,
+                focus,
+            );
+        } else {
+            ui.painter().rect_stroke(
+                rect.expand(1.0),
+                radius + 1.0,
+                focus,
+                egui::StrokeKind::Outside,
+            );
+        }
+    }
+    fill
+}
+
+pub fn control_ink(fill: Color32, enabled: bool) -> Color32 {
+    let luminance =
+        0.2126 * f32::from(fill.r()) + 0.7152 * f32::from(fill.g()) + 0.0722 * f32::from(fill.b());
+    Color32::from_gray(match (luminance > 145.0, enabled) {
+        (true, true) => 18,
+        (true, false) => 78,
+        (false, true) => 245,
+        (false, false) => 160,
+    })
+}
+
+pub fn control_label_font(ui: &egui::Ui, rect: Rect) -> FontId {
+    let family = if ui.ctx().data(|data| {
+        data.get_temp::<bool>(egui::Id::new("control-label-font-installed"))
+            .unwrap_or(false)
+    }) {
+        egui::FontFamily::Name("opentrack-control-label".into())
+    } else {
+        egui::FontFamily::Proportional
+    };
+    FontId::new((rect.height() * 0.76).clamp(9.0, 12.0), family)
 }
 
 fn palette_for(visuals: &egui::Visuals) -> Palette {
@@ -144,7 +234,7 @@ pub fn install(ctx: &egui::Context) {
             ..Default::default()
         };
         set_hover_style(&mut hover_style);
-        visuals.widgets.hovered = hover_style.visuals.widgets.hovered.clone();
+        visuals.widgets = hover_style.visuals.widgets;
         visuals.window_corner_radius = egui::CornerRadius::same(2);
         visuals.menu_corner_radius = egui::CornerRadius::same(2);
         ctx.set_visuals_of(theme, visuals);
@@ -174,6 +264,19 @@ fn install_windows_ui_font(ctx: &egui::Context) {
     if let Some(windows_dir) = std::env::var_os("WINDIR") {
         let font_dir = std::path::PathBuf::from(windows_dir).join("Fonts");
         let mut fonts = egui::FontDefinitions::default();
+        if let Ok(bytes) = std::fs::read(font_dir.join("seguisb.ttf")) {
+            fonts.font_data.insert(
+                "opentrack-control-semibold".into(),
+                egui::FontData::from_owned(bytes).into(),
+            );
+            fonts.families.insert(
+                egui::FontFamily::Name("opentrack-control-label".into()),
+                vec!["opentrack-control-semibold".to_owned()],
+            );
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("control-label-font-installed"), true)
+            });
+        }
         if let Ok(bytes) = std::fs::read(font_dir.join("segoeui.ttf")) {
             fonts.font_data.insert(
                 "windows-ui".into(),

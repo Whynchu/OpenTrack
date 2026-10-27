@@ -11,6 +11,7 @@ pub(super) fn button(
     enabled: bool,
     round: bool,
 ) -> egui::Response {
+    let enabled = enabled && ui.is_enabled();
     let response = ui.interact(
         r,
         ui.make_persistent_id(key),
@@ -36,34 +37,12 @@ pub(super) fn button(
             if ui.visuals().dark_mode { 0.52 } else { 0.76 },
         )
     };
-    let fill = if enabled && response.hovered() {
-        theme::hover_button_fill(normal_fill, ui.visuals())
-    } else {
-        normal_fill
-    };
-    let ink = if enabled {
-        project_controls::label_ink(fill)
-    } else if project_controls::label_ink(fill) == Color32::WHITE {
-        Color32::from_gray(180)
-    } else {
-        Color32::from_gray(88)
-    };
+    let fill = theme::paint_control(ui, r, &response, normal_fill, enabled, round);
+    let ink = theme::control_ink(fill, enabled);
     if round {
-        ui.painter()
-            .circle_filled(r.center(), r.height() * 0.48, fill);
-        ui.painter()
-            .circle_stroke(r.center(), r.height() * 0.48, Stroke::new(1.0, p.grid));
         ui.painter()
             .circle_filled(r.center(), r.height() * 0.19, p.canvas);
     } else {
-        ui.painter().rect_filled(r, 2.0, fill);
-        let outline = if enabled && response.hovered() {
-            ui.visuals().widgets.hovered.bg_stroke
-        } else {
-            Stroke::new(1.0, p.grid)
-        };
-        ui.painter()
-            .rect_stroke(r, 2.0, outline, egui::StrokeKind::Inside);
         symbol(ui, r, label, ink);
     }
     response.on_hover_text(tooltip)
@@ -201,7 +180,7 @@ fn symbol(ui: &mut egui::Ui, r: Rect, name: &str, ink: Color32) {
                 c,
                 Align2::CENTER_CENTER,
                 name,
-                FontId::proportional(10.0),
+                theme::control_label_font(ui, r),
                 ink,
             );
         }

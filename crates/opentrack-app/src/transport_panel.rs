@@ -17,25 +17,13 @@ fn label(ui: &egui::Ui, r: Rect, value: &str, size: f32, color: Color32) {
 }
 fn pitch_arrow(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
     let (response, painter) = ui.allocate_painter(Vec2::new(22.0, 20.0), Sense::click());
-    let palette = theme::palette(ui);
-    let fill = if response.hovered() {
-        theme::hover_button_fill(theme::toolbar_button_fill(ui.visuals()), ui.visuals())
-    } else {
-        theme::toolbar_button_fill(ui.visuals())
-    };
-    painter.rect_filled(response.rect, 2.0, fill);
-    painter.rect_stroke(
+    let fill = theme::paint_control(
+        ui,
         response.rect,
-        2.0,
-        Stroke::new(
-            1.0,
-            if response.hovered() {
-                palette.text
-            } else {
-                palette.grid
-            },
-        ),
-        egui::StrokeKind::Inside,
+        &response,
+        theme::toolbar_button_fill(ui.visuals()),
+        ui.is_enabled(),
+        false,
     );
     let direction = if left { -1.0 } else { 1.0 };
     let center = response.rect.center();
@@ -78,6 +66,7 @@ fn button(
     tip: &str,
 ) -> egui::Response {
     let r = rect(origin, b);
+    let enabled = enabled && ui.is_enabled();
     let response = ui.interact(
         r,
         ui.id().with(id),
@@ -96,25 +85,7 @@ fn button(
     } else {
         p.surface
     };
-    let fill = if enabled && response.hovered() {
-        theme::hover_button_fill(fill, ui.visuals())
-    } else {
-        fill
-    };
-    ui.painter().rect_filled(r, 1.0, fill);
-    ui.painter().rect_stroke(
-        r,
-        1.0,
-        Stroke::new(
-            1.0,
-            if enabled && response.hovered() {
-                p.text
-            } else {
-                p.grid
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
+    let fill = theme::paint_control(ui, r, &response, fill, enabled, false);
     let ink = if !enabled {
         p.muted
     } else if raised || selected {

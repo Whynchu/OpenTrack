@@ -1040,6 +1040,7 @@ fn toolbar_icon_button_tinted(
     enabled: bool,
     selected_color: Option<Color32>,
 ) -> egui::Response {
+    let enabled = enabled && ui.is_enabled();
     let width = match icon {
         ToolbarIcon::Previous | ToolbarIcon::Next => 18.0,
         ToolbarIcon::Cycle | ToolbarIcon::Stop | ToolbarIcon::Play | ToolbarIcon::Record => 34.0,
@@ -1072,7 +1073,6 @@ fn toolbar_icon_button_tinted(
     };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 25.0), sense);
     let p = theme::palette(ui);
-    let painter = ui.painter();
     let normal_fill = if selected {
         selected_color.unwrap_or(if matches!(icon, ToolbarIcon::Record) {
             theme::RECORD
@@ -1082,39 +1082,17 @@ fn toolbar_icon_button_tinted(
     } else {
         theme::toolbar_button_fill(ui.visuals())
     };
-    let fill = if enabled && response.is_pointer_button_down_on() {
-        ui.visuals().widgets.active.bg_fill
-    } else if enabled && response.hovered() {
-        theme::hover_button_fill(normal_fill, ui.visuals())
-    } else {
-        normal_fill
-    };
-    painter.rect_filled(rect, 3.0, fill);
-    let outline = if enabled && response.hovered() {
-        ui.visuals().widgets.hovered.bg_stroke
-    } else {
-        Stroke::new(0.5, p.grid.gamma_multiply(0.5))
-    };
-    painter.rect_stroke(rect, 3.0, outline, egui::StrokeKind::Inside);
+    let fill = theme::paint_control(ui, rect, &response, normal_fill, enabled, false);
     let color = if !enabled {
         p.muted.gamma_multiply(0.62)
     } else if selected {
-        project_controls::label_ink(fill)
+        theme::control_ink(fill, true)
     } else if matches!(icon, ToolbarIcon::Record) {
         theme::RECORD
     } else {
-        project_controls::label_ink(fill)
+        theme::control_ink(fill, true)
     };
     crate::icons::paint_toolbar(ui, rect, icon, color);
-    if response.has_focus() {
-        painter.rect_stroke(
-            rect.expand(1.0),
-            4.0,
-            Stroke::new(1.0, ui.visuals().selection.stroke.color),
-            egui::StrokeKind::Outside,
-        );
-    }
-
     if tooltip.is_empty() {
         response
     } else {
@@ -9907,42 +9885,16 @@ fn panel_close_button(ui: &mut egui::Ui, rect: Rect, palette: theme::Palette) ->
     let close_hover = response.hovered();
     let fill = if close_hover {
         theme::RECORD
-    } else if response.hovered() {
-        palette.surface
     } else {
         Color32::TRANSPARENT
     };
-    let painter = ui.painter();
-    if fill != Color32::TRANSPARENT {
-        painter.rect_filled(rect, 0.0, fill);
-    }
-    painter.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0, palette.grid.gamma_multiply(0.7)),
-        egui::StrokeKind::Inside,
-    );
+    theme::paint_control(ui, rect, &response, fill, ui.is_enabled(), false);
     let ink = if close_hover {
         Color32::WHITE
     } else {
         palette.text
     };
-    let center = rect.center();
-    let radius = 3.5;
-    painter.line_segment(
-        [
-            center + Vec2::new(-radius, -radius),
-            center + Vec2::new(radius, radius),
-        ],
-        Stroke::new(1.4, ink),
-    );
-    painter.line_segment(
-        [
-            center + Vec2::new(radius, -radius),
-            center + Vec2::new(-radius, radius),
-        ],
-        Stroke::new(1.4, ink),
-    );
+    crate::icon_system::paint_app_icon(ui, rect, crate::icon_system::IconId::Close, ink);
     response
 }
 

@@ -1,4 +1,24 @@
-# Current assignment - T050
+# Current assignment - T051
+
+Updated: 2026-10-27. Implementer: GPT-6.1 Sol. User visual review pending.
+
+## T051 - Button shapes and conventional letter controls
+
+The latest README screenshots are the reference for the user's requested
+button-shape review. Toolbar, track/Inspector letters, Mixer, Channel Settings,
+Transport, panel close controls and standard egui buttons now share compact
+rounded corners and restrained edges. The old Mixer bevel stripe is removed;
+letter labels use fitted Segoe UI Semibold and the circular e label is centered.
+Hover, pressed, disabled and keyboard focus treatments are shared. Existing hit
+rectangles, control order, conventional letters and command behavior are retained.
+
+Packet: `docs/workflow/tasks/T051-button-shape-polish.md`. Compile, formatting,
+and 11 focused existing checks pass. The x64 local-ASIO build is staged at
+`builds/x64/OpenTrack.exe`, SHA-256
+`A19AA8B5A92AF419B9369F7D1FBAD2E5FBB6539953702329A1AF9412DF33A506`.
+Live visual acceptance remains pending.
+
+## Prior assignment - T050
 
 Updated: 2026-10-26. Actual implementer: Codex. Independent review: pending.
 

@@ -41,18 +41,15 @@ fn icon(ui: &egui::Ui, rect: Rect, icon: Icon, ink: Color32) {
                 rect.center(),
                 Align2::CENTER_CENTER,
                 text,
-                FontId::proportional(12.0),
+                theme::control_label_font(ui, rect),
                 ink,
             );
         }
         Icon::Edit => {
-            ui.painter().text(
-                rect.center() + Vec2::new(0.0, -2.5),
-                Align2::CENTER_CENTER,
-                "e",
-                FontId::proportional(17.0),
-                ink,
-            );
+            let mut font = theme::control_label_font(ui, rect);
+            font.size = (rect.height() * 0.68).clamp(10.0, 14.0);
+            ui.painter()
+                .text(rect.center(), Align2::CENTER_CENTER, "e", font, ink);
         }
         Icon::Record => crate::icon_system::paint_app_icon(ui, rect, IconId::Record, ink),
         other => {
@@ -115,41 +112,9 @@ pub(super) fn control(
     } else {
         base
     };
-    let fill = if response.hovered() && enabled {
-        theme::hover_button_fill(normal_fill, ui.visuals())
-    } else {
-        normal_fill
-    };
-    let ink = if active && !matches!(symbol, Icon::Record) {
-        palette.canvas
-    } else {
-        Color32::from_gray(24)
-    };
-    if round {
-        ui.painter()
-            .circle_filled(rect.center(), rect.height() * 0.5, fill);
-        ui.painter().circle_stroke(
-            rect.center(),
-            rect.height() * 0.5 - 0.5,
-            Stroke::new(1.0, palette.grid),
-        );
-    } else {
-        ui.painter().rect_filled(rect, 2.0, fill);
-        ui.painter().rect_stroke(
-            rect,
-            2.0,
-            Stroke::new(1.0, palette.grid),
-            egui::StrokeKind::Inside,
-        );
-        ui.painter().line_segment(
-            [
-                rect.left_top() + Vec2::new(2.0, 1.0),
-                rect.right_top() + Vec2::new(-2.0, 1.0),
-            ],
-            Stroke::new(1.0, Color32::from_white_alpha(90)),
-        );
-    }
-    icon(ui, rect.shrink(1.0), symbol, ink);
+    let fill = theme::paint_control(ui, rect, &response, normal_fill, enabled, round);
+    let ink = theme::control_ink(fill, enabled);
+    icon(ui, rect, symbol, ink);
     if let Some(text) = tooltip {
         response.on_hover_text(text)
     } else {
