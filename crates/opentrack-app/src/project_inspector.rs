@@ -50,6 +50,12 @@ pub(super) fn button(
 
 fn symbol(ui: &mut egui::Ui, r: Rect, name: &str, ink: Color32) {
     let id = match name {
+        "M" => Some(crate::icon_system::IconId::GlyphMute),
+        "S" => Some(crate::icon_system::IconId::GlyphSolo),
+        "L" => Some(crate::icon_system::IconId::GlyphListen),
+        "R" => Some(crate::icon_system::IconId::GlyphRecord),
+        "W" => Some(crate::icon_system::IconId::GlyphWrite),
+        "E" | "e" => Some(crate::icon_system::IconId::GlyphFx),
         "▦" => Some(crate::icon_system::IconId::SnapType),
         "×" => Some(crate::icon_system::IconId::Close),
         "◀" | "◉" => Some(crate::icon_system::IconId::Monitor),

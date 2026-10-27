@@ -9741,9 +9741,9 @@ fn blend_color(from: Color32, to: Color32, amount: f32) -> Color32 {
     )
 }
 
-fn project_track_header_fill(palette: theme::Palette, selected: bool) -> Color32 {
+fn project_track_header_fill(palette: theme::Palette, selected: bool, dark_mode: bool) -> Color32 {
     if selected {
-        blend_color(palette.surface_raised, palette.accent, 0.16)
+        Color32::from_gray(if dark_mode { 102 } else { 224 })
     } else {
         palette.surface_raised
     }
@@ -10580,9 +10580,28 @@ fn show_project(
                     Pos2::new(header_left + 4.0 + index as f32 * 25.0, ruler.top() + 3.0),
                     Vec2::new(21.0, 15.0),
                 );
+                use crate::icon_system::IconId;
+                let icon = match label {
+                    "M" => Some(IconId::GlyphMute),
+                    "S" => Some(IconId::GlyphSolo),
+                    "R" => Some(IconId::GlyphRecord),
+                    "W" => Some(IconId::GlyphWrite),
+                    _ => None,
+                };
                 let response = ui
-                    .put(rect, egui::Button::new(label).small())
+                    .put(
+                        rect,
+                        egui::Button::new(if icon.is_some() { "" } else { label }).small(),
+                    )
                     .on_hover_text(tooltip);
+                if let Some(icon) = icon {
+                    crate::icon_system::paint_app_icon(
+                        ui,
+                        rect.shrink(1.0),
+                        icon,
+                        ui.visuals().text_color(),
+                    );
+                }
                 if enabled && response.clicked() {
                     match index {
                         2 => clear_all_muted = true,
@@ -10678,15 +10697,11 @@ fn show_project(
                     .tracks
                     .get(row)
                     .is_some_and(|track| arrange_view_state.selected_track_ids.contains(&track.id));
-                painter.rect_filled(header, 0.0, project_track_header_fill(palette, selected));
-                if selected {
-                    painter.rect_stroke(
-                        header,
-                        0.0,
-                        Stroke::new(1.0, palette.accent.gamma_multiply(0.75)),
-                        egui::StrokeKind::Inside,
-                    );
-                }
+                painter.rect_filled(
+                    header,
+                    0.0,
+                    project_track_header_fill(palette, selected, ui.visuals().dark_mode),
+                );
                 painter.line_segment(
                     [
                         Pos2::new(header_left, top + row_heights[row]),
@@ -11090,13 +11105,6 @@ fn show_project(
                             }
                         }
                     }
-                    if arrange_view_state.selected_track_ids.contains(&track.id) {
-                        painter.rect_filled(
-                            Rect::from_min_size(row_rect.min, Vec2::new(3.0, lane_height)),
-                            egui::CornerRadius::ZERO,
-                            theme::palette(ui).accent,
-                        );
-                    }
                     let track_color = if arrange_view_state.show_track_colors {
                         project_controls::track_color(track)
                     } else {
@@ -11263,6 +11271,7 @@ fn show_project(
                             project_controls::label_ink(project_track_header_fill(
                                 palette,
                                 arrange_view_state.selected_track_ids.contains(&track.id),
+                                ui.visuals().dark_mode,
                             )),
                         );
                     }

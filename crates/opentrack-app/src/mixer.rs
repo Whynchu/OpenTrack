@@ -37,24 +37,28 @@ fn icon(ui: &egui::Ui, rect: Rect, icon: Icon, ink: Color32) {
     use crate::icon_system::IconId;
     match icon {
         Icon::Text(text) => {
-            ui.painter().text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                text,
-                theme::control_label_font(ui, rect),
-                ink,
-            );
+            let id = match text {
+                "M" => Some(IconId::GlyphMute),
+                "S" => Some(IconId::GlyphSolo),
+                "L" => Some(IconId::GlyphListen),
+                "R" => Some(IconId::GlyphRecord),
+                "W" => Some(IconId::GlyphWrite),
+                _ => None,
+            };
+            if let Some(id) = id {
+                crate::icon_system::paint_app_icon(ui, rect.shrink(1.0), id, ink);
+            } else {
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    theme::control_label_font(ui, rect),
+                    ink,
+                );
+            }
         }
         Icon::Edit => {
-            let mut font = theme::control_label_font(ui, rect);
-            font.size = (rect.height() * 0.68).clamp(10.0, 14.0);
-            ui.painter().text(
-                rect.center() + Vec2::new(0.0, -1.0),
-                Align2::CENTER_CENTER,
-                "e",
-                font,
-                ink,
-            );
+            crate::icon_system::paint_app_icon(ui, rect.shrink(3.0), IconId::GlyphFx, ink);
         }
         Icon::Record => crate::icon_system::paint_app_icon(ui, rect, IconId::Record, ink),
         other => {
@@ -508,12 +512,10 @@ fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool
         |ui| {
             ui.set_min_width(rect.width());
             ui.set_max_width(rect.width());
-            ui.painter()
-                .rect_filled(rect, 0.0, theme::palette(ui).canvas);
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.spacing_mut().button_padding = Vec2::new(1.0, 0.0);
             ui.spacing_mut().interact_size.y = 15.0;
-            for input in [true, false] {
+            for (row, input) in [true, false].into_iter().enumerate() {
                 let default = if input {
                     if track.audio_channels == 1 {
                         "Left - Stereo In"
@@ -530,41 +532,67 @@ fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool
                 }
                 .unwrap_or(default)
                 .to_owned();
-                let response = ui.menu_button(egui::RichText::new(value).size(10.0), |ui| {
-                    if ui.button("No Bus").clicked() {
-                        if input {
-                            track.input_routing = Some("No Bus".into());
-                        } else {
-                            track.output_routing = Some("No Bus".into());
-                        }
-                        *modified = true;
-                        ui.close();
-                    }
-                    if input {
-                        for label in ["Stereo In", "Left - Stereo In", "Right - Stereo In"] {
-                            if ui
-                                .add_enabled(
-                                    label != "Stereo In" || track.audio_channels != 1,
-                                    egui::Button::new(label),
-                                )
-                                .clicked()
-                            {
-                                track.input_routing = Some(label.into());
+                let field_width = 78.0_f32.min(rect.width());
+                let field_left = (rect.width() - field_width) * 0.5;
+                let field = Rect::from_min_size(
+                    rect.min + Vec2::new(field_left, row as f32 * 15.0),
+                    Vec2::new(field_width, 15.0),
+                );
+                let response = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
+                        // Keep the menu button's natural minimum height inside its
+                        // row; otherwise egui's default interaction height makes
+                        // the two 15px routing rows overlap vertically.
+                        ui.spacing_mut().item_spacing = Vec2::ZERO;
+                        ui.spacing_mut().button_padding = Vec2::new(1.0, 0.0);
+                        ui.spacing_mut().interact_size.y = field.height();
+                        egui::containers::menu::MenuButton::from_button(
+                            egui::Button::new(egui::RichText::new(value).size(9.0))
+                                .truncate()
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::new(1.0, theme::palette(ui).muted))
+                                .corner_radius(0.0)
+                                .min_size(field.size()),
+                        )
+                        .ui(ui, |ui| {
+                            if ui.button("No Bus").clicked() {
+                                if input {
+                                    track.input_routing = Some("No Bus".into());
+                                } else {
+                                    track.output_routing = Some("No Bus".into());
+                                }
                                 *modified = true;
                                 ui.close();
                             }
-                        }
-                    } else {
-                        for label in ["Stereo Out", "Left", "Right"] {
-                            if ui.button(label).clicked() {
-                                track.output_routing = Some(label.into());
-                                *modified = true;
-                                ui.close();
+                            if input {
+                                for label in ["Stereo In", "Left - Stereo In", "Right - Stereo In"]
+                                {
+                                    if ui
+                                        .add_enabled(
+                                            label != "Stereo In" || track.audio_channels != 1,
+                                            egui::Button::new(label),
+                                        )
+                                        .clicked()
+                                    {
+                                        track.input_routing = Some(label.into());
+                                        *modified = true;
+                                        ui.close();
+                                    }
+                                }
+                            } else {
+                                for label in ["Stereo Out", "Left", "Right"] {
+                                    if ui.button(label).clicked() {
+                                        track.output_routing = Some(label.into());
+                                        *modified = true;
+                                        ui.close();
+                                    }
+                                }
                             }
-                        }
-                    }
-                });
-                response.response.on_hover_text(if input {
+                        })
+                        .0
+                    })
+                    .inner;
+                response.on_hover_text(if input {
                     "Input Routing (all selected with Shift + ALT + click)"
                 } else {
                     "Output Routing (all selected with Shift + ALT + click)"
@@ -577,9 +605,12 @@ fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool
 fn input_row(ui: &mut egui::Ui, r: Rect, track: &mut Track) -> bool {
     let at = |x, y, w, h| Rect::from_min_size(r.min + Vec2::new(x, y), Vec2::new(w, h));
     let mut modified = false;
+    let phase = at(4.0, 53.0, 16.0, 15.0);
+    let value = at(22.0, 53.0, 30.0, 15.0);
+    let knob = at(54.0, 44.0, 24.0, 24.0);
     if control(
         ui,
-        at(5.0, 53.0, 16.0, 15.0),
+        phase,
         "phase",
         Icon::Phase,
         track.input_phase_inverted,
@@ -592,24 +623,20 @@ fn input_row(ui: &mut egui::Ui, r: Rect, track: &mut Track) -> bool {
         track.input_phase_inverted = !track.input_phase_inverted;
         modified = true;
     }
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(at(24.0, 53.0, 30.0, 16.0)),
-        |ui| {
-            ui.spacing_mut().interact_size.y = 15.0;
-            ui.spacing_mut().button_padding = Vec2::ZERO;
-            modified |= ui
-                .add_sized(
-                    [30.0, 15.0],
-                    egui::DragValue::new(&mut track.input_gain_db)
-                        .range(-24.0..=24.0)
-                        .speed(0.1)
-                        .fixed_decimals(1),
-                )
-                .on_hover_text("Input Gain")
-                .changed();
-        },
-    );
-    let knob = at(57.0, 48.0, 24.0, 24.0);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(value), |ui| {
+        ui.spacing_mut().interact_size.y = 15.0;
+        ui.spacing_mut().button_padding = Vec2::ZERO;
+        modified |= ui
+            .add_sized(
+                [30.0, 15.0],
+                egui::DragValue::new(&mut track.input_gain_db)
+                    .range(-24.0..=24.0)
+                    .speed(0.1)
+                    .fixed_decimals(1),
+            )
+            .on_hover_text("Input Gain")
+            .changed();
+    });
     let response = ui
         .interact(
             knob,
@@ -739,7 +766,7 @@ fn strip(
             Stroke::new(1.0, p.muted),
             egui::StrokeKind::Inside,
         );
-        let pan = at(4.0, 86.0, 74.0, 17.0);
+        let pan = at(6.0, 86.0, 72.0, 17.0);
         ui.painter().rect_filled(pan, 1.0, p.canvas);
         let pan_response = ui.interact(pan, ui.id().with("pan"), Sense::click_and_drag());
         if pan_response.hovered() {
@@ -778,10 +805,10 @@ fn strip(
             format!("R {:.0}", track.pan * 100.0)
         };
         ui.painter()
-            .rect_filled(at(4.0, 104.0, 31.0, 18.0), 1.0, p.canvas);
+            .rect_filled(at(6.0, 104.0, 29.0, 18.0), 1.0, p.canvas);
         text(
             ui,
-            at(4.0, 104.0, 31.0, 18.0),
+            at(6.0, 104.0, 29.0, 18.0),
             &pan_label,
             11.0,
             p.text,
@@ -1277,8 +1304,8 @@ fn fader_impl(
         .rect_filled(rail.expand(1.0), 2.0, p.surface_raised);
     ui.painter().rect_filled(rail, 1.0, p.canvas);
     let meter = Rect::from_min_max(
-        Pos2::new(r.left() + 62.0, top + 1.0),
-        Pos2::new(r.right() - 5.0, bottom - 1.0),
+        Pos2::new(r.left() + 65.0, top + 1.0),
+        Pos2::new(r.right() - 4.0, bottom - 1.0),
     );
     ui.painter().rect_filled(meter, 0.0, p.canvas);
     for step in 0..=72 {

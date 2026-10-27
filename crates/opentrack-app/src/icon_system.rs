@@ -64,6 +64,12 @@ pub(crate) enum IconId {
     Close,
     TrackMusic,
     Document,
+    GlyphFx,
+    GlyphListen,
+    GlyphMute,
+    GlyphRecord,
+    GlyphSolo,
+    GlyphWrite,
 }
 
 impl IconId {
@@ -123,6 +129,12 @@ impl IconId {
             Self::Close => include_bytes!("../assets/tabler/x.svg"),
             Self::TrackMusic => include_bytes!("../assets/tabler/music.svg"),
             Self::Document => include_bytes!("../assets/tabler/file-description.svg"),
+            Self::GlyphFx => include_bytes!("../assets/original-glyphs/fx.svg"),
+            Self::GlyphListen => include_bytes!("../assets/original-glyphs/listen.svg"),
+            Self::GlyphMute => include_bytes!("../assets/original-glyphs/mute.svg"),
+            Self::GlyphRecord => include_bytes!("../assets/original-glyphs/record.svg"),
+            Self::GlyphSolo => include_bytes!("../assets/original-glyphs/solo.svg"),
+            Self::GlyphWrite => include_bytes!("../assets/original-glyphs/write.svg"),
         }
     }
 
@@ -389,7 +401,7 @@ pub(crate) fn paint_app_icon_on(
 mod tests {
     use super::*;
 
-    const APP_ICONS: [IconId; 25] = [
+    const APP_ICONS: [IconId; 31] = [
         IconId::TrackAudio,
         IconId::TrackMidi,
         IconId::TrackInstrument,
@@ -415,6 +427,12 @@ mod tests {
         IconId::TrackMusic,
         IconId::Document,
         IconId::ZeroCrossing,
+        IconId::GlyphFx,
+        IconId::GlyphListen,
+        IconId::GlyphMute,
+        IconId::GlyphRecord,
+        IconId::GlyphSolo,
+        IconId::GlyphWrite,
     ];
 
     const TOOLBAR_ICONS: [ToolbarIcon; 31] = [
