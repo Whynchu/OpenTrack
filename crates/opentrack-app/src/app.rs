@@ -666,6 +666,7 @@ pub struct OpenTrackApp {
     workspace_preferences: WorkspacePreferences,
     data: AppData,
     last_meter_update: Option<Instant>,
+    startup_splash_until: Option<Instant>,
     metering_preferences: metering::Preferences,
     preferences_ui: preferences::Window,
     sample_editor: sample_editor::State,
@@ -966,16 +967,12 @@ fn toolbar_choice_with_sense(
         FontId::proportional(11.0),
         ink,
     );
-    let c = rect.right_center() - Vec2::new(7.0, 0.0);
-    ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            c + Vec2::new(-3.0, -2.0),
-            c + Vec2::new(3.0, -2.0),
-            c + Vec2::new(0.0, 2.0),
-        ],
+    crate::icon_system::paint_app_icon(
+        ui,
+        Rect::from_center_size(rect.right_center() - Vec2::new(7.0, 0.0), Vec2::splat(12.0)),
+        crate::icon_system::IconId::ChevronDown,
         ink,
-        Stroke::NONE,
-    ));
+    );
     response
 }
 
@@ -1077,37 +1074,46 @@ fn toolbar_icon_button_tinted(
     let p = theme::palette(ui);
     let painter = ui.painter();
     let normal_fill = if selected {
-        selected_color.unwrap_or(p.accent)
+        selected_color.unwrap_or(if matches!(icon, ToolbarIcon::Record) {
+            theme::RECORD
+        } else {
+            p.accent
+        })
     } else {
         theme::toolbar_button_fill(ui.visuals())
     };
-    let fill = if enabled && response.hovered() {
+    let fill = if enabled && response.is_pointer_button_down_on() {
+        ui.visuals().widgets.active.bg_fill
+    } else if enabled && response.hovered() {
         theme::hover_button_fill(normal_fill, ui.visuals())
     } else {
         normal_fill
     };
-    painter.rect_filled(rect, 1.0, fill);
+    painter.rect_filled(rect, 3.0, fill);
     let outline = if enabled && response.hovered() {
         ui.visuals().widgets.hovered.bg_stroke
     } else {
-        Stroke::new(1.0, p.grid)
+        Stroke::new(0.5, p.grid.gamma_multiply(0.5))
     };
-    painter.rect_stroke(rect, 1.0, outline, egui::StrokeKind::Inside);
-    painter.line_segment(
-        [
-            rect.left_top() + Vec2::splat(1.0),
-            rect.right_top() + Vec2::new(-1.0, 1.0),
-        ],
-        Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.25)),
-    );
-    let color = if enabled {
+    painter.rect_stroke(rect, 3.0, outline, egui::StrokeKind::Inside);
+    let color = if !enabled {
+        p.muted.gamma_multiply(0.62)
+    } else if selected {
         project_controls::label_ink(fill)
-    } else if project_controls::label_ink(fill) == Color32::WHITE {
-        Color32::from_gray(180)
+    } else if matches!(icon, ToolbarIcon::Record) {
+        theme::RECORD
     } else {
-        Color32::from_gray(88)
+        project_controls::label_ink(fill)
     };
     crate::icons::paint_toolbar(ui, rect, icon, color);
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.expand(1.0),
+            4.0,
+            Stroke::new(1.0, ui.visuals().selection.stroke.color),
+            egui::StrokeKind::Outside,
+        );
+    }
 
     if tooltip.is_empty() {
         response
@@ -1794,6 +1800,7 @@ impl OpenTrackApp {
             workspace_preferences,
             data: AppData::default(),
             last_meter_update: None,
+            startup_splash_until: open_audio.then(|| Instant::now() + Duration::from_millis(1100)),
             metering_preferences: {
                 let mut value = creation
                     .storage
@@ -6530,13 +6537,6 @@ impl OpenTrackApp {
     }
 
     fn show_menu(&mut self, ui: &mut egui::Ui) {
-        let logo = crate::icons::logo_texture(ui.ctx());
-        ui.add(
-            egui::Image::from_texture(egui::load::SizedTexture::new(logo.id(), Vec2::splat(18.0)))
-                .sense(Sense::hover()),
-        )
-        .on_hover_text("OpenTrack");
-        ui.add_space(4.0);
         if !self.project_open {
             self.show_empty_project_menu(ui);
             return;
@@ -9045,17 +9045,15 @@ impl OpenTrackApp {
                         Stroke::new(1.0, theme::palette(ui).grid),
                         egui::StrokeKind::Inside,
                     );
-                    let arrow_center =
-                        Pos2::new(selector_rect.right() - 7.0, selector_rect.center().y);
-                    ui.painter().add(egui::Shape::convex_polygon(
-                        vec![
-                            arrow_center + Vec2::new(-3.0, -1.5),
-                            arrow_center + Vec2::new(3.0, -1.5),
-                            arrow_center + Vec2::new(0.0, 2.0),
-                        ],
+                    crate::icon_system::paint_app_icon(
+                        ui,
+                        Rect::from_center_size(
+                            Pos2::new(selector_rect.right() - 7.0, selector_rect.center().y),
+                            Vec2::splat(12.0),
+                        ),
+                        crate::icon_system::IconId::ChevronDown,
                         theme::palette(ui).text,
-                        Stroke::NONE,
-                    ));
+                    );
                     let mut color_choice = None;
                     let mut open_color_editor = false;
                     egui::Popup::menu(&selector_response)
@@ -9336,6 +9334,34 @@ impl eframe::App for OpenTrackApp {
                 &self.data.project,
                 pointer_released || (key_pressed && !pointer_down),
             );
+        }
+        if let Some(until) = self.startup_splash_until {
+            if Instant::now() >= until {
+                self.startup_splash_until = None;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(35));
+                let screen = ui.max_rect();
+                let response = egui::Area::new(Id::new("opentrack-startup-splash"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(screen.min)
+                    .show(&ctx, |ui| {
+                        let (screen, response) =
+                            ui.allocate_exact_size(screen.size(), Sense::click());
+                        ui.painter()
+                            .rect_filled(screen, 0.0, Color32::from_rgb(41, 41, 41));
+                        let banner_width = 360.0_f32
+                            .min(screen.width() * 0.8)
+                            .min(screen.height() * 360.0 / 210.0);
+                        let banner_size = Vec2::new(banner_width, banner_width * 210.0 / 360.0);
+                        let banner = Rect::from_center_size(screen.center(), banner_size);
+                        crate::icon_system::paint_splash(ui, banner);
+                        response.on_hover_cursor(egui::CursorIcon::Default)
+                    })
+                    .inner;
+                if response.clicked() {
+                    self.startup_splash_until = None;
+                }
+            }
         }
     }
 
@@ -14512,7 +14538,12 @@ mod toolbar_presentation_tests {
                         toolbar_icon_button(ui, ToolbarIcon::Power, "", true, true);
                         for size in [12.0, 16.0, 20.0] {
                             let (r, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-                            crate::icons::power(ui.painter(), r, expected);
+                            crate::icon_system::paint_app_icon(
+                                ui,
+                                r,
+                                crate::icon_system::IconId::Power,
+                                expected,
+                            );
                         }
                     });
                 },

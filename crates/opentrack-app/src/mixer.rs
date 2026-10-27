@@ -29,150 +29,52 @@ pub(super) enum Icon {
     Arrow,
     Connections,
     Chevron(bool),
+    Undo,
+    Reveal,
 }
 
-fn icon(p: &egui::Painter, rect: Rect, icon: Icon, ink: Color32) {
-    let c = rect.center();
-    let line = Stroke::new(1.2, ink);
-    let point = |x, y| c + Vec2::new(x, y);
+fn icon(ui: &egui::Ui, rect: Rect, icon: Icon, ink: Color32) {
+    use crate::icon_system::IconId;
     match icon {
         Icon::Text(text) => {
-            p.text(
-                c,
+            ui.painter().text(
+                rect.center(),
                 Align2::CENTER_CENTER,
                 text,
                 FontId::proportional(12.0),
                 ink,
             );
         }
-        Icon::Phase => {
-            p.circle_stroke(c, 5.0, line);
-            p.line_segment([point(-6.0, 6.0), point(6.0, -6.0)], line);
-        }
         Icon::Edit => {
-            p.text(
-                c + Vec2::new(0.0, -2.5),
+            ui.painter().text(
+                rect.center() + Vec2::new(0.0, -2.5),
                 Align2::CENTER_CENTER,
                 "e",
                 FontId::proportional(17.0),
                 ink,
             );
         }
-        Icon::Insert => {
-            p.line_segment([point(-8.0, 0.0), point(-3.0, 0.0)], line);
-            p.rect_stroke(
-                Rect::from_center_size(c, Vec2::new(6.0, 5.0)),
-                0.0,
-                line,
-                egui::StrokeKind::Inside,
-            );
-            p.line_segment([point(3.0, 0.0), point(8.0, 0.0)], line);
-        }
-        Icon::Eq => {
-            p.add(egui::Shape::closed_line(
-                vec![
-                    point(-8.0, 0.0),
-                    point(0.0, -6.0),
-                    point(8.0, 0.0),
-                    point(0.0, 6.0),
-                ],
-                line,
-            ));
-            p.line_segment([point(0.0, -7.0), point(0.0, 7.0)], line);
-        }
-        Icon::Send => {
-            p.line_segment([point(-8.0, 5.0), point(8.0, 5.0)], line);
-            p.line_segment([point(-6.0, 4.0), point(-6.0, -2.0)], line);
-            p.line_segment([point(-6.0, -2.0), point(-2.0, -2.0)], line);
-            p.rect_stroke(
-                Rect::from_center_size(point(1.0, -2.0), Vec2::new(6.0, 5.0)),
-                0.0,
-                line,
-                egui::StrokeKind::Inside,
-            );
-            p.line_segment([point(4.0, -2.0), point(8.0, -2.0)], line);
-        }
-        Icon::Speaker => {
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    point(-6.0, -3.0),
-                    point(-3.0, -3.0),
-                    point(2.0, -7.0),
-                    point(2.0, 7.0),
-                    point(-3.0, 3.0),
-                    point(-6.0, 3.0),
-                ],
-                ink,
-                Stroke::NONE,
-            ));
-        }
-        Icon::Record => {
-            p.circle_filled(c, rect.height() * 0.27, ink);
-        }
-        Icon::Copy | Icon::Paste => {
-            p.rect_stroke(
-                Rect::from_center_size(point(-2.0, -2.0), Vec2::new(9.0, 10.0)),
-                0.0,
-                line,
-                egui::StrokeKind::Inside,
-            );
-            p.rect_stroke(
-                Rect::from_center_size(point(2.0, 2.0), Vec2::new(9.0, 10.0)),
-                0.0,
-                line,
-                egui::StrokeKind::Inside,
-            );
-            if matches!(icon, Icon::Paste) {
-                p.line_segment([point(-2.0, -7.0), point(4.0, -7.0)], line);
-            }
-        }
-        Icon::Routing => {
-            for x in [-5.0, 0.0, 5.0] {
-                p.line_segment([point(x, -6.0), point(x, 6.0)], Stroke::new(2.0, ink));
-            }
-        }
-        Icon::Target => {
-            p.line_segment([point(-8.0, 0.0), point(8.0, 0.0)], line);
-            p.line_segment([point(0.0, -7.0), point(0.0, 7.0)], line);
-            p.circle_stroke(c, 4.0, line);
-        }
-        Icon::Channel => {
-            for x in [-5.0, 0.0, 5.0] {
-                p.line_segment([point(x, -6.0), point(x, 6.0)], line);
-                p.rect_filled(
-                    Rect::from_center_size(point(x, x * 0.5), Vec2::new(3.0, 4.0)),
-                    0.0,
-                    ink,
-                );
-            }
-        }
-        Icon::Arrow => {
-            p.line_segment([point(-7.0, 0.0), point(7.0, 0.0)], line);
-            p.line_segment([point(2.0, -5.0), point(7.0, 0.0)], line);
-            p.line_segment([point(2.0, 5.0), point(7.0, 0.0)], line);
-        }
-        Icon::Connections => {
-            for offset in [Vec2::new(-5.0, -4.0), Vec2::new(5.0, 4.0)] {
-                p.rect_stroke(
-                    Rect::from_center_size(c + offset, Vec2::new(6.0, 5.0)),
-                    0.0,
-                    line,
-                    egui::StrokeKind::Inside,
-                );
-            }
-            p.line_segment([point(-2.0, -4.0), point(5.0, -4.0)], line);
-            p.line_segment([point(5.0, -4.0), point(5.0, 1.0)], line);
-        }
-        Icon::Chevron(up) => {
-            let direction = if up { -1.0 } else { 1.0 };
-            p.line_segment(
-                [point(-4.0, -2.0 * direction), point(0.0, 2.0 * direction)],
-                line,
-            );
-            p.line_segment(
-                [point(0.0, 2.0 * direction), point(4.0, -2.0 * direction)],
-                line,
-            );
+        Icon::Record => crate::icon_system::paint_app_icon(ui, rect, IconId::Record, ink),
+        other => {
+            let id = match other {
+                Icon::Phase => IconId::Phase,
+                Icon::Insert => IconId::Insert,
+                Icon::Eq => IconId::Eq,
+                Icon::Send => IconId::Send,
+                Icon::Speaker => IconId::Monitor,
+                Icon::Copy => IconId::Copy,
+                Icon::Paste => IconId::Paste,
+                Icon::Routing | Icon::Connections => IconId::Routing,
+                Icon::Target => IconId::Target,
+                Icon::Channel => IconId::Channel,
+                Icon::Arrow => IconId::ChevronRight,
+                Icon::Chevron(true) => IconId::ChevronUp,
+                Icon::Chevron(false) => IconId::ChevronDown,
+                Icon::Undo => IconId::Undo,
+                Icon::Reveal => IconId::Reveal,
+                _ => unreachable!(),
+            };
+            crate::icon_system::paint_app_icon(ui, rect.shrink(1.0), id, ink);
         }
     }
 }
@@ -247,7 +149,7 @@ pub(super) fn control(
             Stroke::new(1.0, Color32::from_white_alpha(90)),
         );
     }
-    icon(ui.painter(), rect.shrink(1.0), symbol, ink);
+    icon(ui, rect.shrink(1.0), symbol, ink);
     if let Some(text) = tooltip {
         response.on_hover_text(text)
     } else {
@@ -475,7 +377,7 @@ fn sidebar(
         ui,
         at(7.0, 240.0, 21.0, 15.0),
         "reset",
-        Icon::Text("↶"),
+        Icon::Undo,
         false,
         false,
         false,
@@ -566,7 +468,7 @@ fn sidebar(
         (Icon::Channel, "Hide VST Instrument Channels", 294.0),
         (Icon::Arrow, "Hide FX Channels", 312.0),
         (Icon::Arrow, "Hide Output Channels", 330.0),
-        (Icon::Text("••"), "Reveal All Channels", 348.0),
+        (Icon::Reveal, "Reveal All Channels", 348.0),
     ]
     .into_iter()
     .enumerate()
@@ -1162,7 +1064,7 @@ fn footer(
             Align2::LEFT_CENTER,
         );
         icon(
-            ui.painter(),
+            ui,
             Rect::from_min_size(
                 lower.right_top() - Vec2::new(16.0, 0.0),
                 Vec2::new(14.0, 12.0),

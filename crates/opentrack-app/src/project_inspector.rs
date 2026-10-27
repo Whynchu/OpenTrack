@@ -64,12 +64,30 @@ pub(super) fn button(
         };
         ui.painter()
             .rect_stroke(r, 2.0, outline, egui::StrokeKind::Inside);
-        symbol(ui.painter(), r, label, ink);
+        symbol(ui, r, label, ink);
     }
     response.on_hover_text(tooltip)
 }
 
-fn symbol(p: &egui::Painter, r: Rect, name: &str, ink: Color32) {
+fn symbol(ui: &mut egui::Ui, r: Rect, name: &str, ink: Color32) {
+    let id = match name {
+        "▦" => Some(crate::icon_system::IconId::SnapType),
+        "×" => Some(crate::icon_system::IconId::Close),
+        "◀" | "◉" => Some(crate::icon_system::IconId::Monitor),
+        "♪" => Some(crate::icon_system::IconId::TrackMusic),
+        "▱" => Some(crate::icon_system::IconId::Document),
+        "▤" => Some(crate::icon_system::IconId::TakeLanes),
+        "✳" | "▯" => Some(crate::icon_system::IconId::Channel),
+        "↔" => Some(crate::icon_system::IconId::Insert),
+        "◇" => Some(crate::icon_system::IconId::Eq),
+        "⊥" => Some(crate::icon_system::IconId::Send),
+        _ => None,
+    };
+    if let Some(id) = id {
+        crate::icon_system::paint_app_icon(ui, r, id, ink);
+        return;
+    }
+    let p = ui.painter();
     let c = r.center();
     let stroke = Stroke::new(1.1, ink);
     let pt = |x, y| c + Vec2::new(x, y);
@@ -582,7 +600,7 @@ pub(super) fn show(
                 _ => "◉",
             };
             symbol(
-                ui.painter(),
+                ui,
                 Rect::from_center_size(
                     rect.right_center() - Vec2::new(10.0, 0.0),
                     Vec2::splat(18.0),

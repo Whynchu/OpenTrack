@@ -5,3 +5,5 @@ The optional `local-asio` build uses the vendored maolan-asio 0.0.1 Rust host li
 This host connects to a driver already installed by the user. The build does not contain a device driver or the Steinberg SDK. The standard build continues to provide WASAPI.
 
 The VST3 foundation uses the `vst3` 0.3.0 Rust bindings (MIT OR Apache-2.0), `libloading` 0.8.9 (ISC), and the transitive `com-scrape-types` 0.1.1 crate (MIT OR Apache-2.0). These are ABI bindings and loading helpers, not Steinberg SDK source or sample code. No VST3 SDK headers, plug-in binaries, or Steinberg-authored files are vendored in this repository.
+
+The application vendors selected SVG artwork from Tabler Icons v3.49.0 (MIT); the release commit, asset list, and full license are recorded in `crates/opentrack-app/assets/tabler/`. SVG parsing and rasterization use `resvg` 0.48.1 (Apache-2.0 OR MIT), pinned in `Cargo.toml` and `Cargo.lock`. OpenTrack's app mark and banner/splash artwork are user-provided and are not Tabler assets.

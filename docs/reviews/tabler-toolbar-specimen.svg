@@ -1,0 +1,353 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1120" viewBox="0 0 1080 1120"><rect width="100%" height="100%" fill="#1d1f22"/><style>text{font-family:Segoe UI,Arial,sans-serif;fill:#e2e5e9} .muted{fill:#9299a2}</style><text x="28" y="38" font-size="22" font-weight="600">OpenTrack · Tabler toolbar specimen</text><text x="28" y="60" font-size="12" class="muted">v3.49.0 · outline 1.75-unit strokes · familiar filled transport silhouettes · enlarged states</text><text x="304" y="96" text-anchor="middle" font-size="14" font-weight="600">Default</text><text x="499" y="96" text-anchor="middle" font-size="14" font-weight="600">Hover</text><text x="694" y="96" text-anchor="middle" font-size="14" font-weight="600">Active</text><text x="889" y="96" text-anchor="middle" font-size="14" font-weight="600">Disabled</text><text x="28" y="140" font-size="14">Play</text><rect x="286" y="117" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="123" width="24" height="24" viewBox="0 0 24 24" fill="#151719" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z" />
+</svg><rect x="481" y="117" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="123" width="24" height="24" viewBox="0 0 24 24" fill="#101214" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z" />
+</svg><rect x="676" y="117" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="123" width="24" height="24" viewBox="0 0 24 24" fill="#ffffff" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z" />
+</svg><rect x="871" y="117" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="123" width="24" height="24" viewBox="0 0 24 24" fill="#64676b" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z" />
+</svg><text x="28" y="185" font-size="14">Stop</text><rect x="286" y="162" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="168" width="24" height="24" viewBox="0 0 24 24" fill="#151719" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M17 4h-10a3 3 0 0 0 -3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3 -3v-10a3 3 0 0 0 -3 -3z" />
+</svg><rect x="481" y="162" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="168" width="24" height="24" viewBox="0 0 24 24" fill="#101214" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M17 4h-10a3 3 0 0 0 -3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3 -3v-10a3 3 0 0 0 -3 -3z" />
+</svg><rect x="676" y="162" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="168" width="24" height="24" viewBox="0 0 24 24" fill="#ffffff" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M17 4h-10a3 3 0 0 0 -3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3 -3v-10a3 3 0 0 0 -3 -3z" />
+</svg><rect x="871" y="162" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="168" width="24" height="24" viewBox="0 0 24 24" fill="#64676b" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M17 4h-10a3 3 0 0 0 -3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3 -3v-10a3 3 0 0 0 -3 -3z" />
+</svg><text x="28" y="230" font-size="14">Record</text><rect x="286" y="207" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="213" width="24" height="24" viewBox="0 0 24 24" fill="#dc4141" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 5.072a8 8 0 1 1 -3.995 7.213l-.005 -.285l.005 -.285a8 8 0 0 1 3.995 -6.643z" />
+</svg><rect x="481" y="207" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="213" width="24" height="24" viewBox="0 0 24 24" fill="#dc4141" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 5.072a8 8 0 1 1 -3.995 7.213l-.005 -.285l.005 -.285a8 8 0 0 1 3.995 -6.643z" />
+</svg><rect x="676" y="207" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="213" width="24" height="24" viewBox="0 0 24 24" fill="#ffffff" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 5.072a8 8 0 1 1 -3.995 7.213l-.005 -.285l.005 -.285a8 8 0 0 1 3.995 -6.643z" />
+</svg><rect x="871" y="207" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="213" width="24" height="24" viewBox="0 0 24 24" fill="#64676b" stroke="none" stroke-width="0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 5.072a8 8 0 1 1 -3.995 7.213l-.005 -.285l.005 -.285a8 8 0 0 1 3.995 -6.643z" />
+</svg><text x="28" y="275" font-size="14">Select</text><rect x="286" y="252" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="258" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7.904 17.563a1.2 1.2 0 0 0 2.228 .308l2.09 -3.093l4.907 4.907a1.067 1.067 0 0 0 1.509 0l1.047 -1.047a1.067 1.067 0 0 0 0 -1.509l-4.907 -4.907l3.113 -2.09a1.2 1.2 0 0 0 -.309 -2.228l-13.582 -3.904l3.904 13.563" />
+</svg><rect x="481" y="252" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="258" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7.904 17.563a1.2 1.2 0 0 0 2.228 .308l2.09 -3.093l4.907 4.907a1.067 1.067 0 0 0 1.509 0l1.047 -1.047a1.067 1.067 0 0 0 0 -1.509l-4.907 -4.907l3.113 -2.09a1.2 1.2 0 0 0 -.309 -2.228l-13.582 -3.904l3.904 13.563" />
+</svg><rect x="676" y="252" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="258" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7.904 17.563a1.2 1.2 0 0 0 2.228 .308l2.09 -3.093l4.907 4.907a1.067 1.067 0 0 0 1.509 0l1.047 -1.047a1.067 1.067 0 0 0 0 -1.509l-4.907 -4.907l3.113 -2.09a1.2 1.2 0 0 0 -.309 -2.228l-13.582 -3.904l3.904 13.563" />
+</svg><rect x="871" y="252" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="258" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7.904 17.563a1.2 1.2 0 0 0 2.228 .308l2.09 -3.093l4.907 4.907a1.067 1.067 0 0 0 1.509 0l1.047 -1.047a1.067 1.067 0 0 0 0 -1.509l-4.907 -4.907l3.113 -2.09a1.2 1.2 0 0 0 -.309 -2.228l-13.582 -3.904l3.904 13.563" />
+</svg><text x="28" y="320" font-size="14">Range</text><rect x="286" y="297" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="303" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14" />
+  <path d="M9 11l3 3l3 -3" />
+</svg><rect x="481" y="297" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="303" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14" />
+  <path d="M9 11l3 3l3 -3" />
+</svg><rect x="676" y="297" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="303" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14" />
+  <path d="M9 11l3 3l3 -3" />
+</svg><rect x="871" y="297" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="303" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14" />
+  <path d="M9 11l3 3l3 -3" />
+</svg><text x="28" y="365" font-size="14">Split</text><rect x="286" y="342" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="348" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M3 17a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M8.6 8.6l10.4 10.4" />
+  <path d="M8.6 15.4l10.4 -10.4" />
+</svg><rect x="481" y="342" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="348" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M3 17a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M8.6 8.6l10.4 10.4" />
+  <path d="M8.6 15.4l10.4 -10.4" />
+</svg><rect x="676" y="342" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="348" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M3 17a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M8.6 8.6l10.4 10.4" />
+  <path d="M8.6 15.4l10.4 -10.4" />
+</svg><rect x="871" y="342" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="348" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M3 17a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+  <path d="M8.6 8.6l10.4 10.4" />
+  <path d="M8.6 15.4l10.4 -10.4" />
+</svg><text x="28" y="410" font-size="14">Draw</text><rect x="286" y="387" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="393" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+  <path d="M13.5 6.5l4 4" />
+</svg><rect x="481" y="387" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="393" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+  <path d="M13.5 6.5l4 4" />
+</svg><rect x="676" y="387" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="393" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+  <path d="M13.5 6.5l4 4" />
+</svg><rect x="871" y="387" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="393" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+  <path d="M13.5 6.5l4 4" />
+</svg><text x="28" y="455" font-size="14">Erase</text><rect x="286" y="432" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="438" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" />
+  <path d="M18 13.3l-6.3 -6.3" />
+</svg><rect x="481" y="432" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="438" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" />
+  <path d="M18 13.3l-6.3 -6.3" />
+</svg><rect x="676" y="432" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="438" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" />
+  <path d="M18 13.3l-6.3 -6.3" />
+</svg><rect x="871" y="432" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="438" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" />
+  <path d="M18 13.3l-6.3 -6.3" />
+</svg><text x="28" y="500" font-size="14">Zoom</text><rect x="286" y="477" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="483" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />
+  <path d="M7 10l6 0" />
+  <path d="M10 7l0 6" />
+  <path d="M21 21l-6 -6" />
+</svg><rect x="481" y="477" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="483" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />
+  <path d="M7 10l6 0" />
+  <path d="M10 7l0 6" />
+  <path d="M21 21l-6 -6" />
+</svg><rect x="676" y="477" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="483" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />
+  <path d="M7 10l6 0" />
+  <path d="M10 7l0 6" />
+  <path d="M21 21l-6 -6" />
+</svg><rect x="871" y="477" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="483" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />
+  <path d="M7 10l6 0" />
+  <path d="M10 7l0 6" />
+  <path d="M21 21l-6 -6" />
+</svg><text x="28" y="545" font-size="14">Mute</text><rect x="286" y="522" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="528" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 1.912 4.934m-1.377 2.602a5 5 0 0 1 -.535 .464" />
+  <path d="M17.7 5a9 9 0 0 1 2.362 11.086m-1.676 2.299a9 9 0 0 1 -.686 .615" />
+  <path d="M9.069 5.054l.431 -.554a.8 .8 0 0 1 1.5 .5v2m0 4v8a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l1.294 -1.664" />
+  <path d="M3 3l18 18" />
+</svg><rect x="481" y="522" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="528" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 1.912 4.934m-1.377 2.602a5 5 0 0 1 -.535 .464" />
+  <path d="M17.7 5a9 9 0 0 1 2.362 11.086m-1.676 2.299a9 9 0 0 1 -.686 .615" />
+  <path d="M9.069 5.054l.431 -.554a.8 .8 0 0 1 1.5 .5v2m0 4v8a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l1.294 -1.664" />
+  <path d="M3 3l18 18" />
+</svg><rect x="676" y="522" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="528" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 1.912 4.934m-1.377 2.602a5 5 0 0 1 -.535 .464" />
+  <path d="M17.7 5a9 9 0 0 1 2.362 11.086m-1.676 2.299a9 9 0 0 1 -.686 .615" />
+  <path d="M9.069 5.054l.431 -.554a.8 .8 0 0 1 1.5 .5v2m0 4v8a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l1.294 -1.664" />
+  <path d="M3 3l18 18" />
+</svg><rect x="871" y="522" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="528" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 1.912 4.934m-1.377 2.602a5 5 0 0 1 -.535 .464" />
+  <path d="M17.7 5a9 9 0 0 1 2.362 11.086m-1.676 2.299a9 9 0 0 1 -.686 .615" />
+  <path d="M9.069 5.054l.431 -.554a.8 .8 0 0 1 1.5 .5v2m0 4v8a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l1.294 -1.664" />
+  <path d="M3 3l18 18" />
+</svg><text x="28" y="590" font-size="14">Snap</text><rect x="286" y="567" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="573" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 13v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a2 2 0 0 0 6 0v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a8 8 0 0 1 -16 0" />
+  <path d="M4 8l5 0" />
+  <path d="M15 8l4 0" />
+</svg><rect x="481" y="567" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="573" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 13v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a2 2 0 0 0 6 0v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a8 8 0 0 1 -16 0" />
+  <path d="M4 8l5 0" />
+  <path d="M15 8l4 0" />
+</svg><rect x="676" y="567" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="573" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 13v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a2 2 0 0 0 6 0v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a8 8 0 0 1 -16 0" />
+  <path d="M4 8l5 0" />
+  <path d="M15 8l4 0" />
+</svg><rect x="871" y="567" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="573" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 13v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a2 2 0 0 0 6 0v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a8 8 0 0 1 -16 0" />
+  <path d="M4 8l5 0" />
+  <path d="M15 8l4 0" />
+</svg><text x="28" y="635" font-size="14">Mixer</text><rect x="286" y="612" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="618" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 6l8 0" />
+  <path d="M16 6l4 0" />
+  <path d="M6 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 12l2 0" />
+  <path d="M10 12l10 0" />
+  <path d="M15 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 18l11 0" />
+  <path d="M19 18l1 0" />
+</svg><rect x="481" y="612" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="618" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 6l8 0" />
+  <path d="M16 6l4 0" />
+  <path d="M6 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 12l2 0" />
+  <path d="M10 12l10 0" />
+  <path d="M15 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 18l11 0" />
+  <path d="M19 18l1 0" />
+</svg><rect x="676" y="612" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="618" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 6l8 0" />
+  <path d="M16 6l4 0" />
+  <path d="M6 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 12l2 0" />
+  <path d="M10 12l10 0" />
+  <path d="M15 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 18l11 0" />
+  <path d="M19 18l1 0" />
+</svg><rect x="871" y="612" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="618" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 6l8 0" />
+  <path d="M16 6l4 0" />
+  <path d="M6 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 12l2 0" />
+  <path d="M10 12l10 0" />
+  <path d="M15 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+  <path d="M4 18l11 0" />
+  <path d="M19 18l1 0" />
+</svg><text x="28" y="680" font-size="14">Monitor</text><rect x="286" y="657" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="663" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 0 8" />
+  <path d="M17.7 5a9 9 0 0 1 0 14" />
+  <path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />
+</svg><rect x="481" y="657" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="663" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 0 8" />
+  <path d="M17.7 5a9 9 0 0 1 0 14" />
+  <path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />
+</svg><rect x="676" y="657" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="663" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 0 8" />
+  <path d="M17.7 5a9 9 0 0 1 0 14" />
+  <path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />
+</svg><rect x="871" y="657" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="663" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 8a5 5 0 0 1 0 8" />
+  <path d="M17.7 5a9 9 0 0 1 0 14" />
+  <path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />
+</svg><text x="28" y="725" font-size="14">Phase</text><rect x="286" y="702" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="708" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20.042 16.045a9 9 0 0 0 -12.087 -12.087m-2.318 1.677a9 9 0 1 0 12.725 12.73" />
+  <path d="M3 3l18 18" />
+</svg><rect x="481" y="702" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="708" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20.042 16.045a9 9 0 0 0 -12.087 -12.087m-2.318 1.677a9 9 0 1 0 12.725 12.73" />
+  <path d="M3 3l18 18" />
+</svg><rect x="676" y="702" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="708" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20.042 16.045a9 9 0 0 0 -12.087 -12.087m-2.318 1.677a9 9 0 1 0 12.725 12.73" />
+  <path d="M3 3l18 18" />
+</svg><rect x="871" y="702" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="708" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20.042 16.045a9 9 0 0 0 -12.087 -12.087m-2.318 1.677a9 9 0 1 0 12.725 12.73" />
+  <path d="M3 3l18 18" />
+</svg><text x="28" y="770" font-size="14">Insert</text><rect x="286" y="747" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="753" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054" />
+  <path d="M4 20l3.5 -3.5" />
+  <path d="M15 4l-3.5 3.5" />
+  <path d="M20 9l-3.5 3.5" />
+</svg><rect x="481" y="747" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="753" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054" />
+  <path d="M4 20l3.5 -3.5" />
+  <path d="M15 4l-3.5 3.5" />
+  <path d="M20 9l-3.5 3.5" />
+</svg><rect x="676" y="747" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="753" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054" />
+  <path d="M4 20l3.5 -3.5" />
+  <path d="M15 4l-3.5 3.5" />
+  <path d="M20 9l-3.5 3.5" />
+</svg><rect x="871" y="747" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="753" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054" />
+  <path d="M4 20l3.5 -3.5" />
+  <path d="M15 4l-3.5 3.5" />
+  <path d="M20 9l-3.5 3.5" />
+</svg><text x="28" y="815" font-size="14">EQ</text><rect x="286" y="792" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="798" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 19l16 0" />
+  <path d="M4 15l4 -6l4 2l4 -5l4 4" />
+</svg><rect x="481" y="792" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="798" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 19l16 0" />
+  <path d="M4 15l4 -6l4 2l4 -5l4 4" />
+</svg><rect x="676" y="792" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="798" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 19l16 0" />
+  <path d="M4 15l4 -6l4 2l4 -5l4 4" />
+</svg><rect x="871" y="792" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="798" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 19l16 0" />
+  <path d="M4 15l4 -6l4 2l4 -5l4 4" />
+</svg><text x="28" y="860" font-size="14">Routing</text><rect x="286" y="837" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="843" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+  <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+  <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+</svg><rect x="481" y="837" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="843" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+  <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+  <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+</svg><rect x="676" y="837" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="843" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+  <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+  <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+</svg><rect x="871" y="837" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="843" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+  <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+  <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+</svg><text x="28" y="905" font-size="14">Track Audio</text><rect x="286" y="882" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="888" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 12h-2c-.894 0 -1.662 -.857 -1.761 -2c-.296 -3.45 -.749 -6 -2.749 -6s-2.5 3.582 -2.5 8s-.5 8 -2.5 8s-2.452 -2.547 -2.749 -6c-.1 -1.147 -.867 -2 -1.763 -2h-2" />
+</svg><rect x="481" y="882" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="888" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 12h-2c-.894 0 -1.662 -.857 -1.761 -2c-.296 -3.45 -.749 -6 -2.749 -6s-2.5 3.582 -2.5 8s-.5 8 -2.5 8s-2.452 -2.547 -2.749 -6c-.1 -1.147 -.867 -2 -1.763 -2h-2" />
+</svg><rect x="676" y="882" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="888" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 12h-2c-.894 0 -1.662 -.857 -1.761 -2c-.296 -3.45 -.749 -6 -2.749 -6s-2.5 3.582 -2.5 8s-.5 8 -2.5 8s-2.452 -2.547 -2.749 -6c-.1 -1.147 -.867 -2 -1.763 -2h-2" />
+</svg><rect x="871" y="882" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="888" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 12h-2c-.894 0 -1.662 -.857 -1.761 -2c-.296 -3.45 -.749 -6 -2.749 -6s-2.5 3.582 -2.5 8s-.5 8 -2.5 8s-2.452 -2.547 -2.749 -6c-.1 -1.147 -.867 -2 -1.763 -2h-2" />
+</svg><text x="28" y="950" font-size="14">Track MIDI</text><rect x="286" y="927" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="933" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
+  <path d="M9 19v-6" />
+  <path d="M8 5v8h2v-8" />
+  <path d="M15 19v-6" />
+  <path d="M14 5v8h2v-8" />
+</svg><rect x="481" y="927" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="933" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
+  <path d="M9 19v-6" />
+  <path d="M8 5v8h2v-8" />
+  <path d="M15 19v-6" />
+  <path d="M14 5v8h2v-8" />
+</svg><rect x="676" y="927" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="933" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
+  <path d="M9 19v-6" />
+  <path d="M8 5v8h2v-8" />
+  <path d="M15 19v-6" />
+  <path d="M14 5v8h2v-8" />
+</svg><rect x="871" y="927" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="933" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
+  <path d="M9 19v-6" />
+  <path d="M8 5v8h2v-8" />
+  <path d="M15 19v-6" />
+  <path d="M14 5v8h2v-8" />
+</svg><text x="28" y="995" font-size="14">Instrument</text><rect x="286" y="972" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="978" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 8a2 2 0 0 1 2 -2h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2l0 -8" />
+  <path d="M6 10l0 .01" />
+  <path d="M10 10l0 .01" />
+  <path d="M14 10l0 .01" />
+  <path d="M18 10l0 .01" />
+  <path d="M6 14l0 .01" />
+  <path d="M18 14l0 .01" />
+  <path d="M10 14l4 .01" />
+</svg><rect x="481" y="972" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="978" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 8a2 2 0 0 1 2 -2h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2l0 -8" />
+  <path d="M6 10l0 .01" />
+  <path d="M10 10l0 .01" />
+  <path d="M14 10l0 .01" />
+  <path d="M18 10l0 .01" />
+  <path d="M6 14l0 .01" />
+  <path d="M18 14l0 .01" />
+  <path d="M10 14l4 .01" />
+</svg><rect x="676" y="972" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="978" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 8a2 2 0 0 1 2 -2h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2l0 -8" />
+  <path d="M6 10l0 .01" />
+  <path d="M10 10l0 .01" />
+  <path d="M14 10l0 .01" />
+  <path d="M18 10l0 .01" />
+  <path d="M6 14l0 .01" />
+  <path d="M18 14l0 .01" />
+  <path d="M10 14l4 .01" />
+</svg><rect x="871" y="972" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="978" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 8a2 2 0 0 1 2 -2h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2l0 -8" />
+  <path d="M6 10l0 .01" />
+  <path d="M10 10l0 .01" />
+  <path d="M14 10l0 .01" />
+  <path d="M18 10l0 .01" />
+  <path d="M6 14l0 .01" />
+  <path d="M18 14l0 .01" />
+  <path d="M10 14l4 .01" />
+</svg><text x="28" y="1040" font-size="14">Power</text><rect x="286" y="1017" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="1023" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 6a7.75 7.75 0 1 0 10 0" />
+  <path d="M12 4l0 8" />
+</svg><rect x="481" y="1017" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="1023" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 6a7.75 7.75 0 1 0 10 0" />
+  <path d="M12 4l0 8" />
+</svg><rect x="676" y="1017" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="1023" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 6a7.75 7.75 0 1 0 10 0" />
+  <path d="M12 4l0 8" />
+</svg><rect x="871" y="1017" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="1023" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 6a7.75 7.75 0 1 0 10 0" />
+  <path d="M12 4l0 8" />
+</svg><text x="28" y="1085" font-size="14">Undo</text><rect x="286" y="1062" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="292" y="1068" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#151719" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 14l-4 -4l4 -4" />
+  <path d="M5 10h11a4 4 0 1 1 0 8h-1" />
+</svg><rect x="481" y="1062" width="36" height="36" rx="4" fill="#b2b2b2" stroke="#4b4f55" stroke-opacity=".35"/><svg x="487" y="1068" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#101214" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 14l-4 -4l4 -4" />
+  <path d="M5 10h11a4 4 0 1 1 0 8h-1" />
+</svg><rect x="676" y="1062" width="36" height="36" rx="4" fill="#347fbd" stroke="#4b4f55" stroke-opacity=".35"/><svg x="682" y="1068" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 14l-4 -4l4 -4" />
+  <path d="M5 10h11a4 4 0 1 1 0 8h-1" />
+</svg><rect x="871" y="1062" width="36" height="36" rx="4" fill="#a0a0a0" stroke="#4b4f55" stroke-opacity=".35"/><svg x="877" y="1068" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64676b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 14l-4 -4l4 -4" />
+  <path d="M5 10h11a4 4 0 1 1 0 8h-1" />
+</svg><text x="28" y="1092" font-size="11" class="muted">Button sizes shown enlarged for inspection; application hit areas and spacing remain unchanged. Transport preserves red record identity and existing accents.</text></svg>

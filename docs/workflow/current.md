@@ -1,4 +1,37 @@
-# Current assignment - T049
+# Current assignment - T050
+
+Updated: 2026-10-26. Actual implementer: Codex. Independent review: pending.
+
+## T050 - Tabler icon system and OpenTrack branding
+
+The user approved continuing the toolbar prototype across the rest of the UI,
+asked for slightly stronger icon contrast, and requested removal of the logo
+beside File. The user supplied the new OpenTrack circle-and-dots mark, a
+transparent GitHub banner, and dark-background splash artwork. The app icon and
+README use the new SVG mark; the menu row has no extra logo. Startup displays
+the dark splash artwork briefly and allows click-to-dismiss. The GitHub banner
+is in `docs/images/opentrack-github-banner.svg` for the repository social image.
+The native window/taskbar icon is rasterized at 256px for cleaner Windows
+downsampling.
+
+Tabler v3.49.0 (commit bbed884) is pinned and only required verified SVGs are
+vendored, with MIT notice. The central renderer and resvg cache cover toolbar,
+track controls, Mixer, Channel Settings, Project inspector, Sample Editor,
+Transport, and split/draw/zoom cursor overlays. Existing layout, labels, DAW
+letter controls, shortcuts, actions, colors and states are retained. Enabled
+toolbar icons use near-black ink against light button faces; outline width is 1.75.
+
+Current report: `docs/reviews/tabler-application-icon-inventory.md`, with the
+full source inventory, mapping and screenshot limitation. The enlarged state
+specimen is `docs/reviews/tabler-toolbar-specimen.svg`. Source validation and
+the staged x64 local-ASIO build pass. Current executable: `builds/x64/OpenTrack.exe`,
+x64 with local ASIO, SHA-256
+`3DEE4E460FBC060ED7662100C3256CDC2FFE44262AB8BC345DADF0E88B6010B8`. Live
+desktop screenshot and cursor hotspot review await the user's screenshot
+because this session cannot capture the Windows desktop. Audio and editing
+behavior are unchanged.
+
+## Prior assignment - T049
 
 Updated: 2026-10-26. Actual implementer: OpenCode session (DeepSeek V4.1 Flash); no independent review.
 

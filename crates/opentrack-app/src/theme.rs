@@ -149,7 +149,7 @@ pub fn install(ctx: &egui::Context) {
         visuals.menu_corner_radius = egui::CornerRadius::same(2);
         ctx.set_visuals_of(theme, visuals);
     }
-    install_windows_font(ctx);
+    install_windows_ui_font(ctx);
     ctx.all_styles_mut(|style| {
         for (role, size) in [
             (egui::TextStyle::Body, 13.0),
@@ -169,14 +169,12 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
-fn install_windows_font(ctx: &egui::Context) {
+fn install_windows_ui_font(ctx: &egui::Context) {
     #[cfg(windows)]
     if let Some(windows_dir) = std::env::var_os("WINDIR") {
-        let path = std::path::PathBuf::from(windows_dir)
-            .join("Fonts")
-            .join("segoeui.ttf");
-        if let Ok(bytes) = std::fs::read(path) {
-            let mut fonts = egui::FontDefinitions::default();
+        let font_dir = std::path::PathBuf::from(windows_dir).join("Fonts");
+        let mut fonts = egui::FontDefinitions::default();
+        if let Ok(bytes) = std::fs::read(font_dir.join("segoeui.ttf")) {
             fonts.font_data.insert(
                 "windows-ui".into(),
                 egui::FontData::from_owned(bytes).into(),
@@ -186,9 +184,40 @@ fn install_windows_font(ctx: &egui::Context) {
                 .entry(egui::FontFamily::Proportional)
                 .or_default()
                 .insert(0, "windows-ui".into());
-            crate::system_tool_icons::install(ctx, &mut fonts);
-            ctx.set_fonts(fonts);
         }
+        let mut wordmark_paths = Vec::new();
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let user_fonts = std::path::PathBuf::from(local_app_data)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Fonts");
+            wordmark_paths.push(user_fonts.join("Inter-SemiBold.ttf"));
+            wordmark_paths.push(user_fonts.join("Inter-SemiBold.otf"));
+        }
+        wordmark_paths.push(font_dir.join("Inter-SemiBold.ttf"));
+        wordmark_paths.push(font_dir.join("Inter-SemiBold.otf"));
+        wordmark_paths.push(font_dir.join("arialbd.ttf"));
+        let wordmark_bytes = wordmark_paths
+            .into_iter()
+            .find_map(|path| std::fs::read(path).ok());
+        let wordmark_fonts = if let Some(bytes) = wordmark_bytes {
+            fonts.font_data.insert(
+                "opentrack-wordmark-bold".into(),
+                egui::FontData::from_owned(bytes).into(),
+            );
+            vec!["opentrack-wordmark-bold".to_owned()]
+        } else {
+            fonts
+                .families
+                .get(&egui::FontFamily::Proportional)
+                .cloned()
+                .unwrap_or_default()
+        };
+        fonts.families.insert(
+            egui::FontFamily::Name("opentrack-wordmark".into()),
+            wordmark_fonts,
+        );
+        ctx.set_fonts(fonts);
     }
 }
 

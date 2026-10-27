@@ -53,7 +53,7 @@ fn power(
     } else {
         theme::toolbar_button_fill(ui.visuals())
     });
-    crate::icons::power(ui.painter(), r, ink);
+    crate::icon_system::paint_app_icon(ui, r.shrink(1.0), crate::icon_system::IconId::Power, ink);
     response
 }
 
@@ -299,15 +299,12 @@ fn slot_frame(ui: &egui::Ui, r: Rect, label: &str) {
         9.0,
         Align2::RIGHT_CENTER,
     );
-    ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            r.min + Vec2::new(5.0, 21.0),
-            r.min + Vec2::new(9.0, 25.0),
-            r.min + Vec2::new(5.0, 29.0),
-        ],
+    crate::icon_system::paint_app_icon(
+        ui,
+        Rect::from_center_size(r.min + Vec2::new(7.0, 25.0), Vec2::splat(12.0)),
+        crate::icon_system::IconId::ChevronRight,
         p.muted,
-        Stroke::NONE,
-    ));
+    );
 }
 
 const EQ_BAND_1_FILTERS: &[(FilterType, &str)] = &[
@@ -1160,15 +1157,12 @@ fn strip(
         Sense::click(),
     );
     let c = selector.rect.left_center() + Vec2::new(8.0, 0.0);
-    ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            c + Vec2::new(-4.0, -2.0),
-            c + Vec2::new(4.0, -2.0),
-            c + Vec2::new(0.0, 3.0),
-        ],
+    crate::icon_system::paint_app_icon(
+        ui,
+        Rect::from_center_size(c, Vec2::splat(12.0)),
+        crate::icon_system::IconId::ChevronDown,
         p.muted,
-        Stroke::NONE,
-    ));
+    );
     text(
         ui,
         selector.rect,
@@ -1715,15 +1709,12 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                 "",
                 false,
             );
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    arrow.rect.center() + Vec2::new(-3.0, -1.0),
-                    arrow.rect.center() + Vec2::new(3.0, -1.0),
-                    arrow.rect.center() + Vec2::new(0.0, 3.0),
-                ],
+            crate::icon_system::paint_app_icon(
+                ui,
+                arrow.rect,
+                crate::icon_system::IconId::ChevronDown,
                 p.text,
-                Stroke::NONE,
-            ));
+            );
             menu(&arrow, 160.0, |ui| {
                 for (i, preset) in state.preferences.presets.iter().enumerate() {
                     if channel_menu_item(ui, state.selected_preset == Some(i), &preset.name)
@@ -1744,19 +1735,11 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
                 false,
             );
             let ink = project_controls::label_ink(theme::toolbar_button_fill(ui.visuals()));
-            ui.painter().rect_stroke(
-                save.rect.shrink(3.0),
-                0.0,
-                Stroke::new(1.0, ink),
-                egui::StrokeKind::Inside,
-            );
-            ui.painter()
-                .rect_filled(at(save.rect, 5.0, 4.0, 7.0, 4.0), 0.0, ink);
-            ui.painter().rect_stroke(
-                at(save.rect, 5.0, 10.0, 8.0, 5.0),
-                0.0,
-                Stroke::new(1.0, ink),
-                egui::StrokeKind::Inside,
+            crate::icon_system::paint_app_icon(
+                ui,
+                save.rect,
+                crate::icon_system::IconId::SavePreset,
+                ink,
             );
             if save.clicked() {
                 let name = state.preset_name_draft.trim();

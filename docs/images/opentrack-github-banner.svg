@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 210" fill="none">
+  <g transform="translate(180 77) scale(3.1)" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="0" cy="0" r="12"/>
+    <circle cx="0" cy="0" r="3" fill="#FFFFFF"/>
+    <circle cx="0" cy="-7.5" r="2" fill="#FFFFFF" stroke="none"/>
+    <circle cx="6.495" cy="3.75" r="2" fill="#FFFFFF" stroke="none"/>
+    <circle cx="-6.495" cy="3.75" r="2" fill="#FFFFFF" stroke="none"/>
+  </g>
+  <text x="180" y="164" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Arial, sans-serif" font-size="40" font-weight="600" letter-spacing="-1.6">OpenTrack</text>
+</svg>

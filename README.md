@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/opentrack-logo-dark.png">
-    <img src="docs/images/opentrack-logo-light.png" alt="OpenTrack reel mark" width="112">
-  </picture>
+  <img src="crates/opentrack-app/assets/opentrack-splash.svg" alt="OpenTrack" width="360">
 </p>
 
 # OpenTrack

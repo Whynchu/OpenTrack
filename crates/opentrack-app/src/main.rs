@@ -2,6 +2,7 @@
 
 mod app;
 mod crash_log;
+mod icon_system;
 mod icons;
 mod native_keys;
 mod native_windows;

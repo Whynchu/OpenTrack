@@ -270,48 +270,12 @@ pub(super) fn label_ink(color: Color32) -> Color32 {
 pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
     let rect = Rect::from_center_size(center, Vec2::new(18.0, 16.0));
     let ink = theme::palette(ui).text;
-    let p = ui.painter();
-    if track.kind == TrackKind::Audio {
-        let waveform = [
-            (-7.0, 0.0),
-            (-6.0, -2.0),
-            (-5.0, 3.0),
-            (-4.0, -4.0),
-            (-3.0, 5.0),
-            (-2.0, -6.0),
-            (-1.0, 3.0),
-            (0.0, 0.0),
-            (1.0, -4.0),
-            (2.0, 6.0),
-            (3.0, -5.0),
-            (4.0, 4.0),
-            (5.0, -3.0),
-            (6.0, 2.0),
-            (7.0, 0.0),
-        ];
-        p.add(egui::Shape::line(
-            waveform
-                .into_iter()
-                .map(|(x, y)| center + Vec2::new(x, y))
-                .collect(),
-            Stroke::new(1.4, ink),
-        ));
-    } else {
-        for x in [-6.0, -2.0, 2.0, 6.0] {
-            p.rect_filled(
-                Rect::from_min_size(center + Vec2::new(x, -5.0), Vec2::new(3.0, 11.0)),
-                0.0,
-                ink,
-            );
-        }
-        for x in [-3.0, 1.0] {
-            p.rect_filled(
-                Rect::from_min_size(center + Vec2::new(x, -5.0), Vec2::new(2.0, 6.0)),
-                0.0,
-                theme::palette(ui).surface,
-            );
-        }
-    }
+    let icon = match track.kind {
+        TrackKind::Audio => crate::icon_system::IconId::TrackAudio,
+        TrackKind::Midi => crate::icon_system::IconId::TrackMidi,
+        TrackKind::Instrument => crate::icon_system::IconId::TrackInstrument,
+    };
+    crate::icon_system::paint_app_icon(ui, rect, icon, ink);
     ui.interact(rect, Id::new(("track-type-icon", track.id)), Sense::hover())
         .on_hover_text(match track.kind {
             TrackKind::Audio => "Audio Track",
