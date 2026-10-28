@@ -7,6 +7,7 @@ mod icons;
 mod native_keys;
 mod native_windows;
 mod project_file;
+mod startup_splash;
 mod system_tool_icons;
 mod theme;
 mod timeline;
@@ -14,10 +15,13 @@ mod view_controls;
 
 fn main() -> eframe::Result {
     crash_log::install();
+    startup_splash::show();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
+            .with_maximized(true)
+            .with_visible(false)
             .with_icon(icons::opentrack_icon()),
         ..Default::default()
     };
@@ -25,6 +29,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "OpenTrack-",
         options,
-        Box::new(|creation| Ok(Box::new(app::OpenTrackApp::new(creation)))),
+        Box::new(move |creation| {
+            native_windows::install_resource_icons(native_windows::creation_root(creation));
+            let app = app::OpenTrackApp::new(creation);
+            Ok(Box::new(app))
+        }),
     )
 }

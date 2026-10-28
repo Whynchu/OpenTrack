@@ -9,7 +9,9 @@ $runningOpenTrack = Get-Process -Name OpenTrack -ErrorAction SilentlyContinue
 if ($runningOpenTrack) { throw 'Close OpenTrack through its UI before building.' }
 $manifest = Join-Path $PSScriptRoot 'Cargo.toml'
 $cache = Join-Path $PSScriptRoot '.build-cache'
+$metadataDirectory = Join-Path $cache 'metadata'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
+$null = New-Item -ItemType Directory -Path $metadataDirectory -Force
 $cacheDirectory = Get-Item -LiteralPath $cache -Force
 $cacheDirectory.Attributes = $cacheDirectory.Attributes -bor [System.IO.FileAttributes]::Hidden
 $architectures = if ($Architecture -eq 'all') { @('x64', 'x86') } else { @($Architecture) }
@@ -17,7 +19,7 @@ $architectures = if ($Architecture -eq 'all') { @('x64', 'x86') } else { @($Arch
 foreach ($arch in $architectures) {
     $triple = if ($arch -eq 'x64') { 'x86_64-pc-windows-msvc' } else { 'i686-pc-windows-msvc' }
     $destination = Join-Path $PSScriptRoot "builds\$arch"
-    $buildInfoPath = Join-Path $destination 'build-info.json'
+    $buildInfoPath = Join-Path $metadataDirectory "$arch-build-info.json"
     $useLocalAsio = [bool]$LocalAsio
     if (-not $PSBoundParameters.ContainsKey('LocalAsio')) {
         if (Test-Path -LiteralPath $buildInfoPath) {
@@ -39,8 +41,29 @@ foreach ($arch in $architectures) {
     $buildExitCode = $LASTEXITCODE
     $ErrorActionPreference = $buildErrorPreference
     if ($buildExitCode -ne 0) { throw "Build failed for $arch." }
+
+    # Stage the completed executable before replacing the distributable folder.
+    $staging = Join-Path $cache "package-staging\$arch"
+    $null = New-Item -ItemType Directory -Path $staging -Force
+    $stagedExecutable = Join-Path $staging 'OpenTrack.exe'
+    Copy-Item -LiteralPath (Join-Path $cache "$triple\release\opentrack.exe") -Destination $stagedExecutable -Force
+
+    # The builds/<arch> directory is a distribution folder, not a scratchpad
+    # for test reports, compatibility inventories, or historical build logs.
+    $buildRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'builds')).TrimEnd('\') + '\'
+    $destinationFullPath = [System.IO.Path]::GetFullPath($destination)
+    if (-not $destinationFullPath.StartsWith($buildRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean a package path outside $buildRoot"
+    }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $cache "$triple\release\opentrack.exe") -Destination (Join-Path $destination 'OpenTrack.exe') -Force
+    foreach ($entry in Get-ChildItem -LiteralPath $destination -Force) {
+        $entryFullPath = [System.IO.Path]::GetFullPath($entry.FullName)
+        if (-not $entryFullPath.StartsWith($destinationFullPath + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove an item outside $destinationFullPath"
+        }
+        Remove-Item -LiteralPath $entryFullPath -Recurse -Force
+    }
+    Copy-Item -LiteralPath $stagedExecutable -Destination (Join-Path $destination 'OpenTrack.exe') -Force
     if ($useLocalAsio) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'vendor\maolan-asio\LICENSE') -Destination (Join-Path $destination 'maolan-asio-LICENSE.txt') -Force
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'docs\third-party-notices.md') -Destination (Join-Path $destination 'third-party-notices.md') -Force

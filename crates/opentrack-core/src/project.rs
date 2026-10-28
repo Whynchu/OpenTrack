@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     Audio,
+    Group,
     Instrument,
     Midi,
 }
@@ -38,6 +39,9 @@ impl BusChannel {
             id,
             name: name.into(),
             kind: TrackKind::Audio,
+            parent_group_id: None,
+            group_collapsed: false,
+            group_cut_beats: Vec::new(),
             color_index: None,
             audio_channels: 2,
             muted: false,
@@ -60,6 +64,7 @@ impl BusChannel {
             sends_bypassed: false,
             input_routing: None,
             output_routing: None,
+            group_output_auto: false,
             send_routing: Vec::new(),
             instrument_waveform: InstrumentWaveform::default(),
             midi_parts: Vec::new(),
@@ -74,6 +79,15 @@ pub struct Track {
     pub id: u64,
     pub name: String,
     pub kind: TrackKind,
+    /// Owning group track, if this lane is nested in a group.
+    #[serde(default)]
+    pub parent_group_id: Option<u64>,
+    /// Whether Project hides a group's child rows. Persisted with the group.
+    #[serde(default)]
+    pub group_collapsed: bool,
+    /// Shared edit boundaries for the virtual event shown by a collapsed group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_cut_beats: Vec<f64>,
     /// Original UI palette selection; absent in older RWP files.
     #[serde(default)]
     pub color_index: Option<u8>,
@@ -133,6 +147,10 @@ pub struct Track {
     /// Selected channel output bus. `None` represents No Bus.
     #[serde(default)]
     pub output_routing: Option<String>,
+    /// True when group membership assigned this output automatically.
+    /// Explicit routing edits clear this so later group moves preserve them.
+    #[serde(default)]
+    pub group_output_auto: bool,
     /// Eight optional send destinations. Empty entries represent No Bus.
     #[serde(default)]
     pub send_routing: Vec<Option<String>>,
@@ -146,6 +164,53 @@ pub struct Track {
 
 fn default_audio_channels() -> u8 {
     2
+}
+
+fn track_belongs_to_group(tracks: &[Track], track_id: u64, group_id: u64) -> bool {
+    let mut parent_id = tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_group_id);
+    for _ in 0..2 {
+        let Some(parent) = parent_id else {
+            return false;
+        };
+        if parent == group_id {
+            return true;
+        }
+        parent_id = tracks
+            .iter()
+            .find(|track| track.id == parent)
+            .and_then(|track| track.parent_group_id);
+    }
+    false
+}
+
+fn sync_group_default_output(track: &mut Track, parent_group_id: Option<u64>) -> bool {
+    if track.group_output_auto {
+        let route = Some(parent_group_id.map_or_else(
+            || "Stereo Out".to_owned(),
+            |group_id| format!("Group:{group_id}"),
+        ));
+        let changed =
+            track.output_routing != route || track.group_output_auto != parent_group_id.is_some();
+        track.output_routing = route;
+        track.group_output_auto = parent_group_id.is_some();
+        return changed;
+    }
+    if parent_group_id.is_some()
+        && track
+            .output_routing
+            .as_deref()
+            .is_none_or(|route| route == "Stereo Out")
+    {
+        let route = parent_group_id.map(|group_id| format!("Group:{group_id}"));
+        let changed = track.output_routing != route || !track.group_output_auto;
+        track.output_routing = route;
+        track.group_output_auto = true;
+        return changed;
+    }
+    false
 }
 
 /// Built-in channel EQ. The four-band layout follows the Cubase 5 manual;
@@ -660,11 +725,12 @@ impl Project {
 
         let prefix = match kind {
             TrackKind::Audio => "Audio",
+            TrackKind::Group => "Group",
             TrackKind::Instrument => "Instrument",
             TrackKind::Midi => "MIDI",
         };
 
-        let audio_channels = if kind == TrackKind::Audio {
+        let audio_channels = if matches!(kind, TrackKind::Audio | TrackKind::Group) {
             audio_channels.clamp(1, 2)
         } else {
             2
@@ -673,6 +739,9 @@ impl Project {
             id,
             name: format!("{prefix} {:02}", self.next_track_number),
             kind,
+            parent_group_id: None,
+            group_collapsed: false,
+            group_cut_beats: Vec::new(),
             color_index: None,
             audio_channels,
             muted: false,
@@ -703,6 +772,7 @@ impl Project {
                 None
             },
             output_routing: Some("Stereo Out".to_owned()),
+            group_output_auto: false,
             send_routing: Vec::new(),
             instrument_waveform: InstrumentWaveform::default(),
             midi_parts: Vec::new(),
@@ -730,6 +800,133 @@ impl Project {
         insertion_index
     }
 
+    /// Assigns existing tracks to a group without changing their timeline
+    /// content. Moving a group also keeps its descendants together in the row
+    /// order. A group may contain groups only when it is itself top-level,
+    /// which caps nesting at two levels.
+    pub fn assign_tracks_to_group(&mut self, group_id: u64, track_ids: &[u64]) -> bool {
+        if track_ids.is_empty() {
+            return false;
+        }
+        let Some(group_index) = self
+            .tracks
+            .iter()
+            .position(|track| track.id == group_id && track.kind == TrackKind::Group)
+        else {
+            return false;
+        };
+        let group_is_nested = self.tracks[group_index].parent_group_id.is_some();
+        let mut unique = BTreeSet::new();
+        for id in track_ids {
+            if *id == group_id || !unique.insert(*id) {
+                return false;
+            }
+            if !self.tracks.iter().any(|track| track.id == *id) {
+                return false;
+            }
+        }
+
+        let mut root_ids = unique.clone();
+        for id in &unique {
+            let mut parent_id = self
+                .tracks
+                .iter()
+                .find(|track| track.id == *id)
+                .and_then(|track| track.parent_group_id);
+            while let Some(parent) = parent_id {
+                if unique.contains(&parent) {
+                    root_ids.remove(id);
+                    break;
+                }
+                parent_id = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == parent)
+                    .and_then(|track| track.parent_group_id);
+            }
+        }
+        let mut grouped_ids = root_ids.clone();
+        loop {
+            let previous_len = grouped_ids.len();
+            for track in &self.tracks {
+                if track
+                    .parent_group_id
+                    .is_some_and(|parent_id| grouped_ids.contains(&parent_id))
+                {
+                    grouped_ids.insert(track.id);
+                }
+            }
+            if grouped_ids.len() == previous_len {
+                break;
+            }
+        }
+        if grouped_ids.contains(&group_id)
+            || (group_is_nested
+                && grouped_ids.iter().any(|id| {
+                    self.tracks
+                        .iter()
+                        .any(|track| track.id == *id && track.kind == TrackKind::Group)
+                }))
+        {
+            return false;
+        }
+
+        let mut candidate = self.clone();
+        let selected_track_id = candidate
+            .selected_track
+            .and_then(|index| candidate.tracks.get(index as usize))
+            .map(|track| track.id);
+        for track in &mut candidate.tracks {
+            if root_ids.contains(&track.id) {
+                track.parent_group_id = Some(group_id);
+                sync_group_default_output(track, Some(group_id));
+            }
+        }
+        let mut grouped_tracks = Vec::with_capacity(grouped_ids.len());
+        let mut remaining = Vec::with_capacity(candidate.tracks.len());
+        for track in candidate.tracks.drain(..) {
+            if grouped_ids.contains(&track.id) {
+                grouped_tracks.push(track);
+            } else {
+                remaining.push(track);
+            }
+        }
+        let group_index = remaining
+            .iter()
+            .position(|track| track.id == group_id)
+            .expect("group must remain in the project");
+        remaining.splice(group_index + 1..group_index + 1, grouped_tracks);
+        candidate.tracks = remaining;
+        candidate.selected_track = selected_track_id
+            .and_then(|id| candidate.tracks.iter().position(|track| track.id == id))
+            .and_then(|index| u32::try_from(index).ok());
+        if candidate.validate().is_err() {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
+    /// Removes the direct children of `group_id` from that group.
+    pub fn ungroup_tracks(&mut self, group_id: u64) -> bool {
+        if !self
+            .tracks
+            .iter()
+            .any(|track| track.id == group_id && track.kind == TrackKind::Group)
+        {
+            return false;
+        }
+        let mut changed = false;
+        for track in &mut self.tracks {
+            if track.parent_group_id == Some(group_id) {
+                track.parent_group_id = None;
+                sync_group_default_output(track, None);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Renames a track after trimming surrounding whitespace.
     pub fn rename_track(&mut self, track_index: usize, name: &str) -> bool {
         let name = name.trim();
@@ -752,11 +949,23 @@ impl Project {
             return None;
         }
         self.register_media();
+        let removed_id = self.tracks[track_index].id;
+        let removed_parent_id = self.tracks[track_index].parent_group_id;
+        for track in &mut self.tracks {
+            if track.parent_group_id == Some(removed_id) {
+                track.parent_group_id = removed_parent_id;
+            }
+        }
         let selected_track_id = self
             .selected_track
             .and_then(|index| self.tracks.get(index as usize))
             .map(|track| track.id);
         let removed = self.tracks.remove(track_index);
+        for track in &mut self.tracks {
+            if track.parent_group_id == Some(removed_id) {
+                sync_group_default_output(track, removed_parent_id);
+            }
+        }
 
         self.selected_track = selected_track_id
             .and_then(|id| self.tracks.iter().position(|track| track.id == id))
@@ -787,6 +996,121 @@ impl Project {
             .map(|track| track.id);
         let track = self.tracks.remove(from);
         self.tracks.insert(to, track);
+        self.selected_track = selected_track_id
+            .and_then(|id| self.tracks.iter().position(|track| track.id == id))
+            .and_then(|index| u32::try_from(index).ok());
+        true
+    }
+
+    /// Reorders selected tracks as one stable block at an insertion index.
+    pub fn move_tracks_to(&mut self, track_ids: &[u64], insertion_index: usize) -> bool {
+        if track_ids.is_empty() {
+            return false;
+        }
+        let ids = track_ids.iter().copied().collect::<BTreeSet<_>>();
+        if ids.len() != track_ids.len()
+            || ids
+                .iter()
+                .any(|id| !self.tracks.iter().any(|t| t.id == *id))
+        {
+            return false;
+        }
+        let mut root_ids = ids.clone();
+        for id in &ids {
+            let mut parent_id = self
+                .tracks
+                .iter()
+                .find(|track| track.id == *id)
+                .and_then(|track| track.parent_group_id);
+            while let Some(parent) = parent_id {
+                if ids.contains(&parent) {
+                    root_ids.remove(id);
+                    break;
+                }
+                parent_id = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == parent)
+                    .and_then(|track| track.parent_group_id);
+            }
+        }
+
+        // A moved group carries its descendants in the ordered track list.
+        // Their parent links remain intact; only the dragged roots can join a
+        // different group at the destination.
+        let mut moved_ids = root_ids.clone();
+        loop {
+            let previous_len = moved_ids.len();
+            for track in &self.tracks {
+                if track
+                    .parent_group_id
+                    .is_some_and(|parent_id| moved_ids.contains(&parent_id))
+                {
+                    moved_ids.insert(track.id);
+                }
+            }
+            if moved_ids.len() == previous_len {
+                break;
+            }
+        }
+
+        let insertion_index = insertion_index.min(self.tracks.len());
+        let moved_before_insertion = self.tracks[..insertion_index]
+            .iter()
+            .filter(|track| moved_ids.contains(&track.id))
+            .count();
+        let selected_track_id = self
+            .selected_track
+            .and_then(|index| self.tracks.get(index as usize))
+            .map(|track| track.id);
+        let original_order = self.tracks.iter().map(|track| track.id).collect::<Vec<_>>();
+        let moved_order = self
+            .tracks
+            .iter()
+            .filter(|track| moved_ids.contains(&track.id))
+            .map(|track| track.id)
+            .collect::<Vec<_>>();
+        let mut moved = Vec::with_capacity(moved_ids.len());
+        let mut remaining = Vec::with_capacity(self.tracks.len() - moved_ids.len());
+        for track in self.tracks.iter().cloned() {
+            if moved_ids.contains(&track.id) {
+                moved.push(track);
+            } else {
+                remaining.push(track);
+            }
+        }
+        let destination = insertion_index
+            .saturating_sub(moved_before_insertion)
+            .min(remaining.len());
+        let before_parent = destination
+            .checked_sub(1)
+            .and_then(|index| remaining.get(index))
+            .and_then(|track| track.parent_group_id);
+        let after_parent = remaining
+            .get(destination)
+            .and_then(|track| track.parent_group_id);
+        let destination_parent = match (before_parent, after_parent) {
+            (Some(before), Some(after)) if before == after => Some(before),
+            (Some(parent), None) | (None, Some(parent)) => Some(parent),
+            _ => None,
+        };
+        let mut membership_changed = false;
+        for track in &mut moved {
+            if root_ids.contains(&track.id) && track.parent_group_id != destination_parent {
+                track.parent_group_id = destination_parent;
+                membership_changed = true;
+            }
+            if root_ids.contains(&track.id) {
+                membership_changed |= sync_group_default_output(track, destination_parent);
+            }
+        }
+        let mut target_order = remaining.iter().map(|track| track.id).collect::<Vec<_>>();
+        target_order.splice(destination..destination, moved_order);
+        if target_order == original_order && !membership_changed {
+            return false;
+        }
+        remaining.splice(destination..destination, moved);
+        self.tracks = remaining;
         self.selected_track = selected_track_id
             .and_then(|id| self.tracks.iter().position(|track| track.id == id))
             .and_then(|index| u32::try_from(index).ok());
@@ -941,6 +1265,84 @@ impl Project {
         }
         *self = candidate;
         Some(id)
+    }
+
+    /// Split every descendant audio event crossing one timeline position and
+    /// retain the shared virtual-event boundary on the group channel.
+    pub fn split_group_audio_clips(&mut self, group_id: u64, at_beats: f64) -> (bool, Vec<u64>) {
+        if !at_beats.is_finite()
+            || !self
+                .tracks
+                .iter()
+                .any(|track| track.id == group_id && track.kind == TrackKind::Group)
+        {
+            return (false, Vec::new());
+        }
+        let mut candidate = self.clone();
+        let mut start = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        for track in candidate.tracks.iter().filter(|track| {
+            track.kind == TrackKind::Audio
+                && track_belongs_to_group(&candidate.tracks, track.id, group_id)
+        }) {
+            for clip in &track.clips {
+                start = start.min(clip.start_beats);
+                end =
+                    end.max(clip.start_beats + clip.duration_seconds * candidate.tempo_bpm / 60.0);
+            }
+        }
+        if !start.is_finite() || at_beats <= start || at_beats >= end {
+            return (false, Vec::new());
+        }
+        let Some(group_index) = candidate
+            .tracks
+            .iter()
+            .position(|track| track.id == group_id && track.kind == TrackKind::Group)
+        else {
+            return (false, Vec::new());
+        };
+        if candidate.tracks[group_index]
+            .group_cut_beats
+            .iter()
+            .any(|beat| (*beat - at_beats).abs() < 1e-6)
+        {
+            return (false, Vec::new());
+        }
+        let targets = candidate
+            .tracks
+            .iter()
+            .filter(|track| {
+                track.kind == TrackKind::Audio
+                    && track_belongs_to_group(&candidate.tracks, track.id, group_id)
+            })
+            .flat_map(|track| {
+                track.clips.iter().filter_map(move |clip| {
+                    let end = clip.start_beats + clip.duration_seconds * candidate.tempo_bpm / 60.0;
+                    (at_beats > clip.start_beats && at_beats < end).then_some((track.id, clip.id))
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut right_ids = Vec::with_capacity(targets.len());
+        for (track_id, clip_id) in targets {
+            let Some(right_id) = candidate.split_audio_clip(track_id, clip_id, at_beats) else {
+                return (false, Vec::new());
+            };
+            right_ids.push(right_id);
+        }
+        let Some(group) = candidate
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == group_id)
+        else {
+            return (false, Vec::new());
+        };
+        group.group_cut_beats.push(at_beats);
+        group.group_cut_beats.sort_by(f64::total_cmp);
+        if candidate.validate().is_err() {
+            return (false, Vec::new());
+        }
+        *self = candidate;
+        (true, right_ids)
     }
     /// Linear overlap crossfade. Does not extend events or alter source media.
     pub fn crossfade_audio_clips(&mut self, first: u64, second: u64) -> bool {
@@ -1341,6 +1743,11 @@ impl Project {
         let mut midi_part_ids = BTreeSet::new();
         let mut midi_note_ids = BTreeSet::new();
         let mut midi_controller_ids = BTreeSet::new();
+        let track_kinds = self
+            .tracks
+            .iter()
+            .map(|track| (track.id, (track.kind, track.parent_group_id)))
+            .collect::<std::collections::BTreeMap<_, _>>();
         for track in &self.tracks {
             if track.id == 0 || track.id >= INPUT_BUS_ID || !track_ids.insert(track.id) {
                 return Err("track IDs must be nonzero and unique");
@@ -1350,6 +1757,35 @@ impl Project {
             }
             if !matches!(track.audio_channels, 1 | 2) {
                 return Err("track audio channel width must be mono or stereo");
+            }
+            if (track.kind != TrackKind::Group && !track.group_cut_beats.is_empty())
+                || track
+                    .group_cut_beats
+                    .iter()
+                    .any(|beat| !beat.is_finite() || *beat < 0.0)
+                || track
+                    .group_cut_beats
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+            {
+                return Err("group edit boundaries must be ordered nonnegative beats");
+            }
+            if let Some(parent_id) = track.parent_group_id {
+                let Some((TrackKind::Group, parent_parent)) = track_kinds.get(&parent_id) else {
+                    return Err("a grouped track must reference an existing group track");
+                };
+                if track.id == parent_id
+                    || (track.kind == TrackKind::Group && parent_parent.is_some())
+                {
+                    return Err("group nesting cannot exceed two levels");
+                }
+                if track.kind == TrackKind::Group
+                    && self.tracks.iter().any(|child| {
+                        child.parent_group_id == Some(track.id) && child.kind == TrackKind::Group
+                    })
+                {
+                    return Err("a nested group cannot contain another group");
+                }
             }
             if !track.input_gain_db.is_finite() || !(-24.0..=24.0).contains(&track.input_gain_db) {
                 return Err("channel input gain must be between -24 and 24 dB");
@@ -1452,10 +1888,12 @@ impl Project {
                     _ => {}
                 }
             }
-            if track.kind != TrackKind::Audio && !track.clips.is_empty() {
+            if !matches!(track.kind, TrackKind::Audio) && !track.clips.is_empty() {
                 return Err("audio clips must be stored on audio tracks");
             }
-            if track.kind == TrackKind::Audio && !track.midi_parts.is_empty() {
+            if !matches!(track.kind, TrackKind::Midi | TrackKind::Instrument)
+                && !track.midi_parts.is_empty()
+            {
                 return Err("MIDI parts must be stored on MIDI or instrument tracks");
             }
             for part in &track.midi_parts {
@@ -1567,6 +2005,38 @@ impl Project {
                         return Err("pitch/time note data is invalid");
                     }
                 }
+            }
+        }
+        let mut group_routes = std::collections::BTreeMap::new();
+        for track in &self.tracks {
+            let Some(group_id) = track
+                .output_routing
+                .as_deref()
+                .and_then(|route| route.strip_prefix("Group:"))
+            else {
+                continue;
+            };
+            let group_id = group_id
+                .parse::<u64>()
+                .map_err(|_| "group output route has an invalid ID")?;
+            if track.id == group_id
+                || !self
+                    .tracks
+                    .iter()
+                    .any(|candidate| candidate.id == group_id && candidate.kind == TrackKind::Group)
+            {
+                return Err("group output route must target another group channel");
+            }
+            group_routes.insert(track.id, group_id);
+        }
+        for track in &self.tracks {
+            let mut visited = BTreeSet::new();
+            let mut current = track.id;
+            while let Some(next) = group_routes.get(&current).copied() {
+                if !visited.insert(current) {
+                    return Err("group output routing cannot contain cycles");
+                }
+                current = next;
             }
         }
         if track_ids

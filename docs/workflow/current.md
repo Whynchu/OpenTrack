@@ -1,6 +1,149 @@
-# Current assignment - T052
+# Current assignment — T056
 
-Updated: 2026-10-27. Implementer: GPT-6.1 Sol. User review pending.
+## T056 — Plug-in window memory and MIDI arrangement/editor workflow (2026-10-27)
+
+The user confirmed Gateway meters look good and requested persistent VST Audio
+Channel Settings and VST3 editor positions, VST3 editors above OpenTrack's
+Project and lower-zone panels, pencil-drawn MIDI parts on MIDI/Instrument
+tracks, and a MIDI Editor tab alongside Mixer and Audio Editor. Existing
+Channel Settings bounds already flow through `.opr` workspace snapshots;
+verify close/reopen behavior and preserve the feature. Existing MIDI parts,
+note editing and a floating MIDI Editor exist, but Project pencil creation and
+the docked MIDI Editor tab are missing. See
+`docs/workflow/tasks/T056-plugin-window-memory-midi-arrangement-editor.md`.
+Implementation uses snapped drag duration (click makes one grid unit); drawing
+leaves the part unselected and the current lower-zone tab unchanged, while
+double-click selects the part and opens the MIDI Editor. Native VST editor
+bounds use project-workspace snapshots with owner-relative z-order. Runtime and
+user acceptance remain pending.
+
+## Prior assignment — T055
+
+## T055 — Splash isolation, VST editor animation, and loop pencil cursor (2026-10-27)
+
+The user confirmed that fader/EQ response is substantially improved and that
+Ozone can load on Stereo Out. Follow-up concerns: startup splash must appear
+alone before the main window, Ozone editor animation should continue without
+pointer movement, and the Loop Draw pencil must point upper-left with its tip
+at the cursor hotspot. See
+`docs/workflow/tasks/T055-startup-splash-vst-editor-animation-and-draw-cursor.md`.
+The user rejected the first splash approach because it opened the application
+small instead of maximized, and reported that forced redraw did not fix Ozone.
+Discard that approach. Rework startup to use a standalone 600×327 splash while
+the maximized main window remains hidden, then reveal the main window after
+initialization and a two-second minimum. Fix the VST editor message pump to
+dispatch thread-level timer messages, a likely source of idle animation stalls.
+The requested Ozone behavior is specifically live EQ and level-meter movement
+during audio playback without pointer movement. Keep the cursor-only upper-left
+pencil change. The user clarified that the README SVG is authoritative, the
+background must remain grey but darker, and the app window must not load until
+the splash is finished. Startup now shows the exact SVG artwork over a uniform
+dark grey background, then creates the maximized main window after the splash
+closes. Runtime startup appearance and Ozone playback animation remain
+unverified.
+
+The latest follow-up also addresses the remaining display/build concerns:
+Gateway now receives processor-produced VST3 parameter changes on the host
+control thread, editor windows request regular repaints, the executable has a
+multi-size Windows icon resource, and the release script keeps build metadata
+out of `builds/x64` while replacing stale package contents. Main and floating
+windows are created hidden and shown after their first UI frame to reduce the
+startup flash. `builds/x64` was rebuilt; the installed Gateway smoke test loads
+the plug-in and processes audio successfully. The live Gateway meter behavior
+and cold-start appearance still need a GUI check because the Sky computer-use
+service is unavailable in this session.
+
+## Sample Editor piano key labels and MIDI pencil (2026-10-27)
+
+The Pitch & Time keyboard now names every key, including black keys, using
+sharp names with octaves (`C#4`). The keyboard widened from 38 to 64 px so a
+black key's name sits inside the black key; labels hide as a set when semitone
+rows are under 12 px. Pitch-note corner handles now draw and hit-test inside
+their note at every row height. The existing MIDI Editor window gains pencil
+semantics: the Draw tool click- or drag-draws notes with a live preview, while
+the Select tool no longer adds notes from empty cells. Source and automated
+checks pass and the x64 build was rebuilt; live visual review in OpenTrack
+remains pending. Whether the MIDI Editor should become a lower-zone tab beside
+Audio Editor instead of a separate window is an open user decision.
+
+## Prior assignment — T054
+
+## T054 — Realtime control performance, Stereo Out VST3 and startup splash (2026-10-27)
+
+The user accepted the T053 group editing tools and drag behavior as good to go.
+Waveform edge cases are deferred to a separate user review and do not block
+editing-tool acceptance. T054 addresses audio static/slowdown during fader and
+EQ manipulation, VST3 inserts on Stereo Out, and the supplied startup splash
+reference (approximately 600×327 px, centered, with a two-second minimum
+display while initialization proceeds). See
+`docs/workflow/tasks/T054-realtime-controls-output-vst-and-splash.md`.
+The user reports substantially improved fader/EQ response and successfully
+loaded Ozone on Stereo Out. Live plug-in processing and persistence remain to
+be checked.
+Investigation found that Channel Settings changes rebuild the complete playback
+plan; each plan reconstructs per-track channel processors, including EQ filter
+state, and may crossfade/render both plans. VST scanning, instance mapping and
+audio hosted inserts currently enumerate project tracks only, while Stereo Out
+is a separate bus. Current work should avoid rebuilding the full playback path
+for every continuous control drag and must extend hosted processing to the
+existing output-bus identity without disturbing normal track/group inserts.
+
+## Accepted prior assignment — T053
+
+Group editing tools, including live ghost/candidate drag preview and stable
+cursor, are user-accepted. Group waveform edge-case study is deferred to a
+future user review. The rest of T053 history is retained below.
+
+---
+
+## T053 implementation and build history
+
+## T053 — Group audio tracks (2026-10-27)
+
+Implementation and build are complete; runtime/user review is pending in
+`docs/workflow/tasks/T053-group-audio-tracks.md`.
+The latest drag-preview follow-up preserves the existing composite styling,
+shows the original group segment as a translucent ghost, renders the candidate
+segment live from its dragged child clips, and keeps the standard arrow cursor
+while hovering/dragging group segments. The updated x64 local-ASIO build is
+`builds/x64/OpenTrack.exe`, SHA-256
+`9DB7002CCEC6C07C8B75EBDEA46A9C9AC4EEE5D5ACF207E58C66A6E71A9797FB`.
+Live drag and cursor behavior still need user review.
+The user confirmed that drag-and-drop grouping nests the selected track. The
+existing lane-button slot uses the supplied stack-and-G SVG to collapse/expand
+group children; descendant M/S indicators reflect inherited group state. Group
+creation offers mono/stereo configuration; moving a group carries descendants,
+and placing a track between group members assigns it to that group. The Project
+track-header area is one third wider.
+
+Collapsed groups render a normalized mono or stereo composite. Group-row
+editing now supports synchronized split/cut/delete/copy/paste/move/trim and the
+shared fade/gain gestures, retaining child tracks and applying common timeline
+offsets. Group tracks are now actual playback buses: children with automatic
+routing feed their group, nested buses process before their parents, and the
+group output follows its own channel processing to Stereo Out. Automatic
+routing returns children to Stereo Out when removed; explicit non-default
+routes survive group membership changes. Route displays resolve group names.
+The lower-zone Sample Editor tab is renamed Audio Editor. The latest user
+review clarified that a collapsed group is one continuous virtual event from
+the earliest child start to latest child end. Only explicit group cuts and
+boundaries shared by every populated child track divide it into selectable
+pieces. Unshared child clip edges remain hidden; selecting/moving a piece
+operates on child clips in that range. Collapsing no longer highlights child
+recordings. Project meters use the track's mono/stereo channel count. VST
+Channel Settings resolves group routes to names and offers valid group outputs.
+
+`cargo fmt --all` and `cargo check -p opentrack` pass. The x64 local-ASIO
+release build passes with existing dead-code warnings. Executable:
+`builds/x64/OpenTrack.exe`, SHA-256
+`899B47F3C873CDFA1A78DBBBB2E7DFF8B696AA96C3AEE0368E1EDC6E2BED1B59`;
+`build-info.json` confirms `local_asio: true`. Runtime review of grouped edit
+gestures, routing/audio, and the updated labels is pending user acceptance.
+
+## Prior assignment — T052
+
+Updated: 2026-10-27. Implementer: GPT-6 Luna. Implementation incomplete;
+runtime and user review pending.
 
 ## T052 - Mixer meters, fader rail and numeric gain
 

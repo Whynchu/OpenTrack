@@ -130,6 +130,29 @@ fn menu(response: &egui::Response, width: f32, content: impl FnOnce(&mut egui::U
         .show(content);
 }
 
+fn group_route_would_cycle(tracks: &[Track], track_id: u64, target_group_id: u64) -> bool {
+    let mut current = target_group_id;
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if current == track_id {
+            return true;
+        }
+        if !visited.insert(current) {
+            return true;
+        }
+        let Some(next) = tracks
+            .iter()
+            .find(|track| track.id == current)
+            .and_then(|track| track.output_routing.as_deref())
+            .and_then(|route| route.strip_prefix("Group:"))
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        current = next;
+    }
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -141,6 +164,23 @@ pub(super) fn show(
     output_peaks: [f32; 2],
     vst3_plugin_catalog: &[PluginDescriptor],
 ) -> bool {
+    let selected_track_id = project
+        .selected_track
+        .map(|index| index as usize)
+        .and_then(|index| project.tracks.get(index))
+        .map(|track| track.id);
+    let group_options = project
+        .tracks
+        .iter()
+        .filter(|candidate| candidate.kind == TrackKind::Group)
+        .filter(|candidate| Some(candidate.id) != selected_track_id)
+        .filter(|candidate| {
+            selected_track_id.is_none_or(|track_id| {
+                !group_route_would_cycle(&project.tracks, track_id, candidate.id)
+            })
+        })
+        .map(|candidate| (candidate.id, candidate.name.clone()))
+        .collect::<Vec<_>>();
     let mut names = project
         .tracks
         .iter()
@@ -251,6 +291,7 @@ pub(super) fn show(
                     r,
                     track,
                     &names,
+                    &group_options,
                     index,
                     &mut next,
                     peak,
@@ -1090,6 +1131,7 @@ fn strip(
     r: Rect,
     track: &mut Track,
     names: &[String],
+    group_options: &[(u64, String)],
     index: usize,
     next: &mut Option<usize>,
     peak: [f32; 2],
@@ -1213,6 +1255,20 @@ fn strip(
         } else {
             track.output_routing.as_deref().unwrap_or("Stereo Out")
         };
+        let group_route_label = if input || is_bus {
+            None
+        } else {
+            label
+                .strip_prefix("Group:")
+                .and_then(|value| value.parse::<u64>().ok())
+                .and_then(|group_id| {
+                    group_options
+                        .iter()
+                        .find(|(candidate_id, _)| *candidate_id == group_id)
+                        .map(|(_, name)| format!("Group: {name}"))
+                })
+        };
+        let label = group_route_label.as_deref().unwrap_or(label);
         text(
             ui,
             field.shrink2(Vec2::new(2.0, 0.0)),
@@ -1255,6 +1311,15 @@ fn strip(
                             ui.close();
                         }
                     }
+                    if !group_options.is_empty() {
+                        ui.separator();
+                        for (group_id, group_name) in group_options {
+                            if ui.button(format!("Group: {group_name}")).clicked() {
+                                selected = Some(format!("Group:{group_id}"));
+                                ui.close();
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -1263,6 +1328,7 @@ fn strip(
                 track.input_routing = Some(value);
             } else {
                 track.output_routing = Some(value);
+                track.group_output_auto = false;
             }
             changed = true;
         }

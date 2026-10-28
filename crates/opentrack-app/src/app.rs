@@ -362,6 +362,7 @@ impl ChannelSettingsSnapshot {
         track.sends_bypassed = self.sends_bypassed;
         track.input_routing = self.input_routing.clone();
         track.output_routing = self.output_routing.clone();
+        track.group_output_auto = false;
         track.send_routing = self.send_routing.clone();
     }
 }
@@ -666,7 +667,6 @@ pub struct OpenTrackApp {
     workspace_preferences: WorkspacePreferences,
     data: AppData,
     last_meter_update: Option<Instant>,
-    startup_splash_until: Option<Instant>,
     metering_preferences: metering::Preferences,
     preferences_ui: preferences::Window,
     sample_editor: sample_editor::State,
@@ -682,9 +682,11 @@ pub struct OpenTrackApp {
     plugin_scan_status: String,
     plugin_scan_error: Option<String>,
     root_window_handle: Option<isize>,
+    startup_visibility_pending: bool,
     vst3_parameter_window: Option<(u64, usize)>,
     vst3_editor_window: Option<(u64, usize)>,
     vst3_editor_host: Option<vst3_host::EditorHost>,
+    vst3_editor_bounds: Option<WindowBounds>,
     main_window_bounds: Option<WindowBounds>,
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
@@ -736,11 +738,6 @@ pub struct OpenTrackApp {
     midi_reported_dropped_messages: u64,
     midi_thru_enabled: bool,
     midi_editor_open: bool,
-    midi_editor_bounds: Option<WindowBounds>,
-    midi_editor_restore_bounds: Option<WindowBounds>,
-    midi_editor_window_epoch: u64,
-    midi_editor_viewport_live: bool,
-    midi_editor_focus_requested: bool,
     channel_settings_window: NativeWindowState,
     channel_settings_ui: ChannelSettingsUiState,
     channel_window_owner: crate::native_windows::ChannelOwner,
@@ -756,6 +753,8 @@ pub struct OpenTrackApp {
     midi_controller_number: u8,
     selected_midi_note_id: Option<u64>,
     midi_note_drag: Option<MidiNoteDrag>,
+    midi_note_draw: Option<MidiNoteDraw>,
+    midi_part_draw: Option<MidiPartDraw>,
     midi_controller_drag: Option<MidiControllerDrag>,
     project_history: ProjectHistory,
     recording_session: Option<RecordingSession>,
@@ -857,6 +856,23 @@ struct MidiNoteDrag {
     pitch: u8,
     delta_beats: f64,
     delta_rows: f64,
+}
+
+#[derive(Clone, Copy)]
+struct MidiNoteDraw {
+    track_id: u64,
+    part_id: u64,
+    start_beats: f64,
+    end_beats: f64,
+    pitch: u8,
+    velocity: u8,
+}
+
+#[derive(Clone, Copy)]
+struct MidiPartDraw {
+    track_id: u64,
+    start_beats: f64,
+    end_beats: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -1778,7 +1794,6 @@ impl OpenTrackApp {
             workspace_preferences,
             data: AppData::default(),
             last_meter_update: None,
-            startup_splash_until: open_audio.then(|| Instant::now() + Duration::from_millis(1100)),
             metering_preferences: {
                 let mut value = creation
                     .storage
@@ -1815,9 +1830,11 @@ impl OpenTrackApp {
             plugin_scan_status,
             plugin_scan_error: None,
             root_window_handle: crate::native_windows::creation_root(creation),
+            startup_visibility_pending: true,
             vst3_parameter_window: None,
             vst3_editor_window: None,
             vst3_editor_host: None,
+            vst3_editor_bounds: None,
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
@@ -1892,11 +1909,6 @@ impl OpenTrackApp {
             midi_reported_dropped_messages: 0,
             midi_thru_enabled,
             midi_editor_open: false,
-            midi_editor_bounds: None,
-            midi_editor_restore_bounds: None,
-            midi_editor_window_epoch: 0,
-            midi_editor_viewport_live: false,
-            midi_editor_focus_requested: false,
             channel_settings_window: NativeWindowState::default(),
             channel_settings_ui: ChannelSettingsUiState {
                 preferences: channel_settings_preferences,
@@ -1916,6 +1928,8 @@ impl OpenTrackApp {
             midi_controller_number: 11,
             selected_midi_note_id: None,
             midi_note_drag: None,
+            midi_note_draw: None,
+            midi_part_draw: None,
             midi_controller_drag: None,
             project_history: ProjectHistory::default(),
             recording_session: None,
@@ -1995,7 +2009,7 @@ impl OpenTrackApp {
                 &self.arrange_view_state,
                 &self.project_window,
                 self.midi_editor_open,
-                self.midi_editor_bounds.clone(),
+                self.vst3_editor_bounds.clone(),
                 &self.channel_settings_window,
                 &self.mixer_window,
                 &self.media_window,
@@ -2011,7 +2025,7 @@ impl OpenTrackApp {
         arrange_view_state: &ArrangeViewState,
         project_window: &ProjectWindowState,
         midi_editor_open: bool,
-        midi_editor_bounds: Option<WindowBounds>,
+        vst3_editor_bounds: Option<WindowBounds>,
         channel_settings_window: &NativeWindowState,
         mixer_window: &NativeWindowState,
         media_window: &NativeWindowState,
@@ -2044,11 +2058,12 @@ impl OpenTrackApp {
             false,
             false,
         )?;
+        store_active_project_window_state(workspace_state, "midi-editor", midi_editor_open, None)?;
         store_active_project_window_state(
             workspace_state,
-            "midi-editor",
-            midi_editor_open,
-            midi_editor_bounds,
+            "vst3-editor",
+            false,
+            vst3_editor_bounds,
         )?;
         for (id, window) in [
             (CHANNEL_SETTINGS_WINDOW_ID, channel_settings_window),
@@ -2146,6 +2161,7 @@ impl OpenTrackApp {
             self.data.project = project;
             self.selected_midi_note_id = None;
             self.midi_note_drag = None;
+            self.midi_note_draw = None;
             self.rebuild_audio_plan();
             self.refresh_modified_from_saved();
             self.status_message = "Undid project edit".to_owned();
@@ -2165,6 +2181,7 @@ impl OpenTrackApp {
             self.data.project = project;
             self.selected_midi_note_id = None;
             self.midi_note_drag = None;
+            self.midi_note_draw = None;
             self.rebuild_audio_plan();
             self.refresh_modified_from_saved();
             self.status_message = "Redid project edit".to_owned();
@@ -2468,6 +2485,26 @@ impl OpenTrackApp {
         let track_descriptors: Vec<_> = project_tracks
             .iter()
             .map(|track| {
+                let mut effective_muted = track.muted;
+                let mut effective_solo = track.solo;
+                let mut effective_solo_defeat = track.solo_defeat;
+                if track.kind == TrackKind::Group {
+                    effective_solo |= project_tracks.iter().any(|child| {
+                        project_track_is_in_group(&self.data.project, child.id, track.id)
+                            && (child.solo || child.solo_defeat)
+                    });
+                }
+                let mut parent_id = track.parent_group_id;
+                for _ in 0..2 {
+                    let Some(id) = parent_id else { break };
+                    let Some(parent) = project_tracks.iter().find(|parent| parent.id == id) else {
+                        break;
+                    };
+                    effective_muted |= parent.muted;
+                    effective_solo |= parent.solo;
+                    effective_solo_defeat |= parent.solo_defeat;
+                    parent_id = parent.parent_group_id;
+                }
                 let meter_peak = Arc::clone(
                     track_meter_peaks
                         .entry(track.id)
@@ -2475,12 +2512,14 @@ impl OpenTrackApp {
                 );
                 (
                     meter_peak,
+                    track.kind == TrackKind::Group,
+                    track.audio_channels,
                     track.gain,
                     track.pan,
                     track.track_delay_ms,
-                    track.muted,
-                    track.solo,
-                    track.solo_defeat,
+                    effective_muted,
+                    effective_solo,
+                    effective_solo_defeat,
                     track.equalizer.clone(),
                     track.inserts.clone(),
                     track.inserts_bypassed,
@@ -2572,6 +2611,8 @@ impl OpenTrackApp {
         let mut active_stream_clip_ids = HashSet::new();
         for (
             meter_peak,
+            is_group,
+            audio_channels,
             gain,
             pan,
             track_delay_ms,
@@ -2705,6 +2746,8 @@ impl OpenTrackApp {
                 }
             }
             playback_tracks.push(PlaybackTrackSettings {
+                is_group,
+                audio_channels,
                 clips: playback_clips,
                 midi_notes,
                 midi_controllers,
@@ -2730,11 +2773,25 @@ impl OpenTrackApp {
                 } else {
                     None
                 },
-                output_route: match output_routing.as_deref().unwrap_or("Stereo Out") {
-                    "Left" => PlaybackOutputRoute::Left,
-                    "Right" => PlaybackOutputRoute::Right,
-                    "No Bus" => PlaybackOutputRoute::Disconnected,
-                    _ => PlaybackOutputRoute::Stereo,
+                output_route: if let Some(group_id) = output_routing
+                    .as_deref()
+                    .and_then(|route| route.strip_prefix("Group:"))
+                    .and_then(|id| id.parse::<u64>().ok())
+                {
+                    project_tracks
+                        .iter()
+                        .position(|candidate| candidate.id == group_id)
+                        .map_or(
+                            PlaybackOutputRoute::Disconnected,
+                            PlaybackOutputRoute::Group,
+                        )
+                } else {
+                    match output_routing.as_deref().unwrap_or("Stereo Out") {
+                        "Left" => PlaybackOutputRoute::Left,
+                        "Right" => PlaybackOutputRoute::Right,
+                        "No Bus" => PlaybackOutputRoute::Disconnected,
+                        _ => PlaybackOutputRoute::Stereo,
+                    }
                 },
             });
         }
@@ -2744,8 +2801,10 @@ impl OpenTrackApp {
         self.data
             .audio_sources
             .retain(|path, _| active_audio_paths.contains(path));
+        let output_hosted_inserts =
+            vst3_runtime.hosted_inserts(&self.data.project.output_channel.strip);
         if let Some(engine) = self.audio_engine.as_mut() {
-            engine.set_playback_plan_with_metronome(
+            engine.set_playback_plan_with_hosted_output(
                 tempo_bpm,
                 playback_tracks,
                 loop_range_beats,
@@ -2758,6 +2817,7 @@ impl OpenTrackApp {
                     beat_unit: self.data.project.beat_unit,
                     downbeat_note: self.metronome_pitch_midi,
                 },
+                output_hosted_inserts,
             );
         }
         self.update_input_capture_state();
@@ -2924,11 +2984,7 @@ impl OpenTrackApp {
         self.track_add_dialog = None;
         self.main_window_restore_bounds = None;
         self.midi_editor_open = false;
-        self.midi_editor_bounds = None;
-        self.midi_editor_restore_bounds = None;
-        self.midi_editor_window_epoch = self.midi_editor_window_epoch.wrapping_add(1);
-        self.midi_editor_viewport_live = false;
-        self.midi_editor_focus_requested = false;
+        self.vst3_editor_bounds = None;
         self.channel_settings_window =
             reset_native_window_state(self.channel_settings_window.epoch);
         self.mixer_window = reset_native_window_state(self.mixer_window.epoch);
@@ -3097,6 +3153,10 @@ impl OpenTrackApp {
                     .active_index
                     .and_then(|index| workspace_state.workspaces.get(index))
                     .cloned();
+                let vst3_editor_bounds = active_workspace
+                    .as_ref()
+                    .and_then(|workspace| project_window_snapshot(workspace, "vst3-editor"))
+                    .and_then(|window| window.bounds.clone());
                 let project_window = restore_project_window_state(
                     active_workspace.as_ref(),
                     self.project_window.epoch,
@@ -3106,8 +3166,6 @@ impl OpenTrackApp {
                     .map(arrange_view_state_from_workspace)
                     .unwrap_or_default();
                 let midi_editor_open = midi_editor_snapshot.is_some_and(|window| window.open);
-                let midi_editor_bounds =
-                    midi_editor_snapshot.and_then(|window| window.bounds.clone());
                 let main_window_bounds = active_workspace
                     .as_ref()
                     .and_then(main_window_window_snapshot)
@@ -3149,11 +3207,7 @@ impl OpenTrackApp {
                     self.main_window_restore_bounds = None;
                 }
                 self.midi_editor_open = midi_editor_open;
-                self.midi_editor_bounds = midi_editor_bounds.clone();
-                self.midi_editor_restore_bounds = midi_editor_bounds;
-                self.midi_editor_window_epoch = self.midi_editor_window_epoch.wrapping_add(1);
-                self.midi_editor_viewport_live = false;
-                self.midi_editor_focus_requested = false;
+                self.vst3_editor_bounds = vst3_editor_bounds;
                 self.channel_settings_window = restore_native_window_state(
                     active_workspace.as_ref(),
                     CHANNEL_SETTINGS_WINDOW_ID,
@@ -3568,6 +3622,9 @@ impl OpenTrackApp {
 
     fn close_vst3_editor(&mut self) {
         if let Some(host) = self.vst3_editor_host.take() {
+            if let Some(bounds) = host.bounds() {
+                self.vst3_editor_bounds = Some(bounds);
+            }
             host.close();
         }
         if let Some((track_id, slot)) = self.vst3_editor_window.take() {
@@ -3588,8 +3645,7 @@ impl OpenTrackApp {
         let title = self
             .data
             .project
-            .tracks
-            .iter()
+            .channels()
             .find(|track| track.id == track_id)
             .and_then(|track| track.inserts.get(slot))
             .map(|insert| insert_effect_name(&insert.kind))
@@ -3598,17 +3654,39 @@ impl OpenTrackApp {
             .vst3_runtime
             .instance(track_id, slot)
             .ok_or_else(|| "the VST3 instance is unavailable".to_owned())?;
-        // The editor has its own STA thread; a cross-thread owner would make
-        // window creation wait on the application's message loop.
-        let window = vst3_host::EditorHost::open(&title, 0, effect)?;
+        // Create the native editor without an owner first: the UI thread waits
+        // for its STA editor thread to initialize. Attach ownership afterward
+        // so the plug-in stays over OpenTrack's Project and lower-zone panels.
+        let window = vst3_host::EditorHost::open(&title, self.vst3_editor_bounds.clone(), effect)?;
+        if let Some(owner) = self.root_window_handle {
+            window.set_owner(owner);
+        }
         self.vst3_editor_host = Some(window);
         self.vst3_editor_window = Some((track_id, slot));
         Ok(())
     }
 
     fn show_vst3_windows(&mut self, ctx: &egui::Context) {
+        if let Some(bounds) = self
+            .vst3_editor_host
+            .as_ref()
+            .and_then(vst3_host::EditorHost::bounds)
+        {
+            self.vst3_editor_bounds = Some(bounds);
+        }
+        if self.vst3_editor_window.is_some() {
+            // iPlug2 routes processor-to-editor meter messages through its
+            // component thread's idle timer. Components are instantiated on
+            // this UI thread, separate from the native editor window thread.
+            vst3_host::pump_ui_thread_timers();
+        }
         if self.vst3_runtime.take_dirty() {
             self.mark_modified();
+        }
+
+        if let Some((track_id, slot)) = self.vst3_editor_window {
+            self.vst3_runtime.sync_editor_parameters(track_id, slot);
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
         if let (Some((track_id, slot)), Some(engine)) =
@@ -3660,8 +3738,7 @@ impl OpenTrackApp {
         let title = self
             .data
             .project
-            .tracks
-            .iter()
+            .channels()
             .find(|track| track.id == track_id)
             .and_then(|track| track.inserts.get(slot))
             .map(|insert| insert_effect_name(&insert.kind))
@@ -3672,9 +3749,7 @@ impl OpenTrackApp {
         let mut enabled = self
             .data
             .project
-            .tracks
-            .iter()
-            .find(|track| track.id == track_id)
+            .channel_by_id_mut(track_id)
             .and_then(|track| track.inserts.get(slot))
             .is_some_and(|insert| insert.enabled);
         let mut set_parameter = None;
@@ -3762,12 +3837,7 @@ impl OpenTrackApp {
             self.rebuild_audio_plan();
         }
         if toggle_enabled
-            && let Some(track) = self
-                .data
-                .project
-                .tracks
-                .iter_mut()
-                .find(|track| track.id == track_id)
+            && let Some(track) = self.data.project.channel_by_id_mut(track_id)
             && let Some(insert) = track.inserts.get_mut(slot)
         {
             insert.enabled = enabled;
@@ -3788,12 +3858,7 @@ impl OpenTrackApp {
             self.mark_modified();
         }
         if remove {
-            if let Some(track) = self
-                .data
-                .project
-                .tracks
-                .iter_mut()
-                .find(|track| track.id == track_id)
+            if let Some(track) = self.data.project.channel_by_id_mut(track_id)
                 && slot < track.inserts.len()
             {
                 track.inserts.remove(slot);
@@ -4054,7 +4119,7 @@ impl OpenTrackApp {
             &self.arrange_view_state,
             &self.project_window,
             self.midi_editor_open,
-            self.midi_editor_bounds.clone(),
+            self.vst3_editor_bounds.clone(),
             &self.channel_settings_window,
             &self.mixer_window,
             &self.media_window,
@@ -4093,11 +4158,8 @@ impl OpenTrackApp {
         self.main_window_restore_bounds = active_main_bounds;
         let midi_editor_snapshot = midi_editor_window_snapshot(&workspace);
         self.midi_editor_open = midi_editor_snapshot.is_some_and(|window| window.open);
-        self.midi_editor_bounds = midi_editor_snapshot.and_then(|window| window.bounds.clone());
-        self.midi_editor_restore_bounds = self.midi_editor_bounds.clone();
-        self.midi_editor_window_epoch = self.midi_editor_window_epoch.wrapping_add(1);
-        self.midi_editor_viewport_live = false;
-        self.midi_editor_focus_requested = false;
+        self.vst3_editor_bounds = project_window_snapshot(&workspace, "vst3-editor")
+            .and_then(|window| window.bounds.clone());
         self.channel_settings_window = restore_native_window_state(
             Some(&workspace),
             CHANNEL_SETTINGS_WINDOW_ID,
@@ -4145,7 +4207,7 @@ impl OpenTrackApp {
             &self.arrange_view_state,
             &self.project_window,
             self.midi_editor_open,
-            self.midi_editor_bounds.clone(),
+            self.vst3_editor_bounds.clone(),
             &self.channel_settings_window,
             &self.mixer_window,
             &self.media_window,
@@ -4579,6 +4641,7 @@ impl OpenTrackApp {
             "edit.undo" => self.undo_project(),
             "edit.redo" => self.redo_project(),
             "edit.copy" => self.copy_selected_audio_events(),
+            "edit.cut" => self.cut_selected_audio_events(),
             "edit.paste" => self.paste_audio_events(),
             "edit.open_default_editor" => self.open_selected_midi_editor(),
             "edit.open_close_editor" => self.midi_editor_open = false,
@@ -5753,6 +5816,7 @@ impl OpenTrackApp {
         if self.data.project.remove_track(index).is_some() {
             self.selected_midi_note_id = None;
             self.midi_note_drag = None;
+            self.midi_note_draw = None;
             self.midi_controller_drag = None;
             self.rebuild_audio_plan();
             self.mark_modified();
@@ -6455,7 +6519,8 @@ impl OpenTrackApp {
             });
         if available {
             self.midi_editor_open = true;
-            self.midi_editor_focus_requested = true;
+            self.sample_editor_active = false;
+            self.mixer_window.open = true;
         } else {
             self.status_message = "Select a MIDI part before opening its editor".to_owned();
         }
@@ -6664,7 +6729,17 @@ impl OpenTrackApp {
                     }
                     menu_command(ui, "History...", "", false);
                     ui.separator();
-                    menu_command(ui, "Cut", "Ctrl+X", false);
+                    let can_cut = self.project_open
+                        && !self.is_recording()
+                        && !self
+                            .arrange_view_state
+                            .audio_events
+                            .selected_ids()
+                            .is_empty();
+                    if menu_command(ui, "Cut", "Ctrl+X", can_cut).clicked() {
+                        self.cut_selected_audio_events();
+                        ui.close();
+                    }
                     let can_copy = self.project_open
                         && !self.is_recording()
                         && !self
@@ -6788,6 +6863,7 @@ impl OpenTrackApp {
                     ui.menu_button("Add Track", |ui| {
                         for (label, kind) in [
                             ("Audio", TrackKind::Audio),
+                            ("Group Channel", TrackKind::Group),
                             ("Instrument", TrackKind::Instrument),
                             ("MIDI", TrackKind::Midi),
                         ] {
@@ -6808,7 +6884,6 @@ impl OpenTrackApp {
                                 ("Arranger", ""),
                                 ("FX Channel", ""),
                                 ("Folder", ""),
-                                ("Group Channel", ""),
                                 ("Marker", ""),
                                 ("Ruler", ""),
                                 ("Signature", ""),
@@ -7373,7 +7448,6 @@ impl OpenTrackApp {
                         .clicked()
                     {
                         self.midi_editor_open = true;
-                        self.midi_editor_focus_requested = true;
                         ui.close();
                     }
                 });
@@ -7494,21 +7568,26 @@ impl OpenTrackApp {
         ui.painter().rect_filled(panel_rect, 0.0, palette.surface);
         if docked_panel_header(ui, "", false) {
             self.mixer_window.open = false;
+            self.sample_editor_active = false;
+            self.midi_editor_open = false;
             return;
         }
-        for (index, label, active) in [(0, "Mixer", false), (1, "Sample Editor", true)] {
+        for (index, label) in [(0, "Mixer"), (1, "Audio Editor"), (2, "MIDI Editor")] {
             let rect = Rect::from_min_size(
                 panel_rect.min + Vec2::new(5.0 + index as f32 * 105.0, 1.0),
                 Vec2::new(102.0, PANEL_HEADER_HEIGHT - 2.0),
             );
+            let active = match index {
+                0 => !self.sample_editor_active && !self.midi_editor_open,
+                1 => self.sample_editor_active,
+                _ => self.midi_editor_open,
+            };
             if ui
-                .put(
-                    rect,
-                    egui::Button::new(label).selected(self.sample_editor_active == active),
-                )
+                .put(rect, egui::Button::new(label).selected(active))
                 .clicked()
             {
-                self.sample_editor_active = active;
+                self.sample_editor_active = index == 1;
+                self.midi_editor_open = index == 2;
             }
         }
         let body_rect = Rect::from_min_max(
@@ -7520,6 +7599,22 @@ impl OpenTrackApp {
         );
         let position_before = self.data.transport.position_beats;
         let selection_before = self.data.project.selected_track;
+        let midi_editor_visible = self.midi_editor_open;
+        let mixer_track_controls_before = (!self.sample_editor_active && !midi_editor_visible)
+            .then(|| {
+                self.data
+                    .project
+                    .tracks
+                    .iter()
+                    .map(|track| (track.gain, track.pan, track.equalizer.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mixer_output_controls_before = (
+            self.data.project.output_channel.strip.gain,
+            self.data.project.output_channel.strip.pan,
+            self.data.project.output_channel.strip.equalizer.clone(),
+        );
         let mut mixer_selection_requested = false;
         let sample_grid = self
             .arrange_view_state
@@ -7538,7 +7633,9 @@ impl OpenTrackApp {
                 |ui| {
                     ui.set_clip_rect(body_rect);
                     ui.set_width(body_rect.width());
-                    if self.sample_editor_active {
+                    if self.midi_editor_open {
+                        self.show_midi_editor_panel(ui)
+                    } else if self.sample_editor_active {
                         self.sample_editor.cycle_enabled = self.data.transport.cycle;
                         sample_editor::show(
                             ui,
@@ -7607,7 +7704,38 @@ impl OpenTrackApp {
             }
         }
         if modified {
-            self.rebuild_audio_plan();
+            let live_updates = self
+                .data
+                .project
+                .tracks
+                .iter()
+                .zip(mixer_track_controls_before)
+                .enumerate()
+                .filter_map(|(index, (track, (gain, pan, equalizer)))| {
+                    ((track.gain != gain) || (track.pan != pan) || (track.equalizer != equalizer))
+                        .then_some((index, track.gain, track.pan, track.equalizer.clone()))
+                })
+                .collect::<Vec<_>>();
+            let output = &self.data.project.output_channel.strip;
+            let output_changed = output.gain != mixer_output_controls_before.0
+                || output.pan != mixer_output_controls_before.1
+                || output.equalizer != mixer_output_controls_before.2;
+            let live_updated = (!live_updates.is_empty() || output_changed)
+                && self.audio_engine.as_ref().is_some_and(|engine| {
+                    if output_changed {
+                        engine.update_output_channel_parameters(
+                            output.gain,
+                            output.pan,
+                            &output.equalizer,
+                        );
+                    }
+                    live_updates.iter().all(|(index, gain, pan, equalizer)| {
+                        engine.update_track_channel_parameters(*index, *gain, *pan, equalizer)
+                    })
+                });
+            if !live_updated {
+                self.rebuild_audio_plan();
+            }
             self.mark_modified();
         }
     }
@@ -7759,7 +7887,7 @@ impl OpenTrackApp {
         let reopening = !self.transport_window.viewport_live;
         let id = egui::ViewportId::from_hash_of("floating-transport-panel-m1-position-v5");
         let mut builder = viewport_builder("Transport Panel", SIZE, SIZE, restore_bounds)
-            .with_visible(true)
+            .with_visible(!reopening)
             .with_decorations(false)
             .with_resizable(false)
             .with_window_level(if self.transport_window.always_on_top {
@@ -7778,8 +7906,6 @@ impl OpenTrackApp {
             rendered = true;
             if reopening {
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                window_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                window_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             }
             open &= reopening || !window_ctx.input(|input| input.viewport().close_requested());
             self.handle_native_window_input(window_ctx);
@@ -7813,6 +7939,23 @@ impl OpenTrackApp {
             self.channel_settings_window.viewport_live = false;
             return;
         }
+        let live_channel_id = match self.channel_settings_window.channel_bus {
+            Some(true) => Some(opentrack_core::project::INPUT_BUS_ID),
+            Some(false) => Some(opentrack_core::project::OUTPUT_BUS_ID),
+            None => self
+                .data
+                .project
+                .selected_track
+                .and_then(|index| self.data.project.tracks.get(index as usize))
+                .map(|track| track.id),
+        };
+        let live_controls_before = live_channel_id.and_then(|id| {
+            self.data
+                .project
+                .channels()
+                .find(|track| track.id == id)
+                .map(|track| (id, track.gain, track.pan, track.equalizer.clone()))
+        });
         let track_name = match self.channel_settings_window.channel_bus {
             Some(true) => self.data.project.input_channel.strip.name.clone(),
             Some(false) => self.data.project.output_channel.strip.name.clone(),
@@ -7837,7 +7980,10 @@ impl OpenTrackApp {
             self.channel_settings_window.epoch,
         ));
         let focus_requested = self.channel_settings_window.focus_requested;
-        self.channel_settings_window.focus_requested = false;
+        let viewport_live = self.channel_settings_window.viewport_live;
+        if viewport_live {
+            self.channel_settings_window.focus_requested = false;
+        }
         let mut builder = viewport_builder(
             format!("VST Audio Channel Settings - {track_name}"),
             Vec2::new(902.0, 430.0),
@@ -7845,9 +7991,9 @@ impl OpenTrackApp {
             restore_bounds.as_ref(),
         );
         builder = builder
-            .with_visible(true)
+            .with_visible(viewport_live)
             .with_window_level(egui::viewport::WindowLevel::Normal);
-        if focus_requested {
+        if focus_requested && viewport_live {
             builder = builder.with_active(true);
         }
         if restore_bounds.is_none() {
@@ -7861,7 +8007,7 @@ impl OpenTrackApp {
         let mut mixer_selection_requested = false;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             rendered = true;
-            if focus_requested {
+            if focus_requested && viewport_live {
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -7938,7 +8084,36 @@ impl OpenTrackApp {
             self.channel_settings_window.bounds = Some(bounds);
         }
         if modified {
-            self.rebuild_audio_plan();
+            let live_controls_changed = live_controls_before
+                .and_then(|(id, gain, pan, equalizer)| {
+                    let track = self.data.project.channels().find(|track| track.id == id)?;
+                    ((track.gain != gain) || (track.pan != pan) || (track.equalizer != equalizer))
+                        .then_some((id, track.gain, track.pan, track.equalizer.clone()))
+                })
+                .is_some_and(|(id, gain, pan, equalizer)| {
+                    self.audio_engine.as_ref().is_some_and(|engine| {
+                        if id == opentrack_core::project::OUTPUT_BUS_ID {
+                            engine.update_output_channel_parameters(gain, pan, &equalizer);
+                            true
+                        } else if id < opentrack_core::project::INPUT_BUS_ID {
+                            self.data
+                                .project
+                                .tracks
+                                .iter()
+                                .position(|track| track.id == id)
+                                .is_some_and(|index| {
+                                    engine.update_track_channel_parameters(
+                                        index, gain, pan, &equalizer,
+                                    )
+                                })
+                        } else {
+                            false
+                        }
+                    })
+                });
+            if !live_controls_changed {
+                self.rebuild_audio_plan();
+            }
             self.mark_modified();
         }
         self.update_channel_analyzer();
@@ -8129,14 +8304,15 @@ impl OpenTrackApp {
         let id = egui::ViewportId::from_hash_of((MEDIA_WINDOW_ID, self.media_window.epoch));
         if self.media_window.focus_requested && self.media_window.viewport_live {
             ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+            self.media_window.focus_requested = false;
         }
-        self.media_window.focus_requested = false;
         let builder = viewport_builder(
             title,
             Vec2::new(760.0, 560.0),
             Vec2::new(500.0, 360.0),
             restore_bounds.as_ref(),
-        );
+        )
+        .with_visible(self.media_window.viewport_live);
         let mut open = true;
         let mut insert = None;
         let mut bounds = None;
@@ -8161,14 +8337,7 @@ impl OpenTrackApp {
         }
     }
 
-    fn show_midi_editor_window(&mut self, ctx: &egui::Context) {
-        if !self.midi_editor_open {
-            self.midi_editor_viewport_live = false;
-            self.midi_editor_focus_requested = false;
-            self.midi_note_drag = None;
-            self.midi_controller_drag = None;
-            return;
-        }
+    fn show_midi_editor_panel(&mut self, ui: &mut egui::Ui) -> bool {
         let selected_track = self
             .data
             .project
@@ -8187,74 +8356,30 @@ impl OpenTrackApp {
                 .any(|part| part.id == part_id)
                 .then_some(part_id)
         });
-        let title = selected_track
-            .zip(selected_part_id)
-            .and_then(|(index, part_id)| {
-                let track = self.data.project.tracks.get(index)?;
-                let part = track.midi_parts.iter().find(|part| part.id == part_id)?;
-                Some(format!("MIDI Editor — {} — {}", track.name, part.name))
-            })
-            .unwrap_or_else(|| "MIDI Editor".to_owned());
-        let restore_bounds = if self.midi_editor_viewport_live {
-            None
-        } else {
-            self.midi_editor_restore_bounds
-                .clone()
-                .or_else(|| self.midi_editor_bounds.clone())
-        };
-        let id = egui::ViewportId::from_hash_of(("midi-editor", self.midi_editor_window_epoch));
-        if self.midi_editor_focus_requested && self.midi_editor_viewport_live {
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
-        }
-        self.midi_editor_focus_requested = false;
-        let builder = viewport_builder(
-            title,
-            Vec2::new(900.0, 600.0),
-            Vec2::new(680.0, 420.0),
-            restore_bounds.as_ref(),
-        );
-        let mut open = true;
         let mut modified = false;
-        let mut bounds = None;
-        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
-            self.handle_native_window_input(window_ctx);
-            open &= !window_ctx.input(|input| input.viewport().close_requested());
-            open &= self.midi_editor_open;
-            egui::CentralPanel::default().show(window_ctx, |ui| {
-                if let (Some(track_index), Some(part_id)) = (selected_track, selected_part_id) {
-                    modified |= show_midi_editor(
-                        ui,
-                        &mut self.data.project,
-                        track_index,
-                        part_id,
-                        &mut self.midi_position_quantize_beats,
-                        &mut self.midi_length_quantize_beats,
-                        &mut self.midi_insert_velocity,
-                        &mut self.midi_controller_number,
-                        &mut self.selected_midi_note_id,
-                        &mut self.midi_note_drag,
-                        &mut self.midi_controller_drag,
-                    );
-                } else {
-                    self.midi_note_drag = None;
-                    self.midi_controller_drag = None;
-                    ui.label("Select a MIDI part in the Project view, or create one there.");
-                }
-            });
-            bounds = native_window_bounds(window_ctx);
-        });
-        self.midi_editor_viewport_live = open;
-        if restore_bounds.is_some() {
-            self.midi_editor_restore_bounds = None;
+        if let (Some(track_index), Some(part_id)) = (selected_track, selected_part_id) {
+            modified |= show_midi_editor(
+                ui,
+                &mut self.data.project,
+                track_index,
+                part_id,
+                &mut self.midi_position_quantize_beats,
+                &mut self.midi_length_quantize_beats,
+                &mut self.midi_insert_velocity,
+                &mut self.midi_controller_number,
+                &mut self.selected_midi_note_id,
+                &mut self.midi_note_drag,
+                &mut self.midi_note_draw,
+                &mut self.midi_controller_drag,
+                self.edit_tool,
+            );
+        } else {
+            self.midi_note_drag = None;
+            self.midi_note_draw = None;
+            self.midi_controller_drag = None;
+            ui.label("Draw a MIDI part in a MIDI or Instrument track, or select an existing part.");
         }
-        if let Some(bounds) = bounds {
-            self.midi_editor_bounds = Some(bounds);
-        }
-        self.midi_editor_open = open;
-        if modified {
-            self.rebuild_audio_plan();
-            self.mark_modified();
-        }
+        modified
     }
 
     fn show_project_window(&mut self, ui: &mut egui::Ui) {
@@ -8422,7 +8547,7 @@ impl OpenTrackApp {
                         recording_preview.as_ref(),
                         &mut self.arrange_view_state,
                         &mut self.midi_editor_open,
-                        &mut self.midi_editor_focus_requested,
+                        &mut self.midi_part_draw,
                         &mut self.channel_settings_window,
                         &mut self.track_rename_dialog,
                         can_remove,
@@ -8431,6 +8556,10 @@ impl OpenTrackApp {
                 },
             )
             .inner;
+        if self.midi_editor_open {
+            self.mixer_window.open = true;
+            self.sample_editor_active = false;
+        }
         if (self.data.transport.position_beats - position_before).abs() > f64::EPSILON
             && let Some(engine) = &self.audio_engine
         {
@@ -8500,9 +8629,12 @@ impl OpenTrackApp {
     }
 
     fn show_docked_workspace(&mut self, ui: &mut egui::Ui) {
+        if self.midi_editor_open {
+            self.mixer_window.open = true;
+        }
         let area = ui.max_rect();
         let project_open = self.project_window.open;
-        let mixer_open = self.mixer_window.open;
+        let mixer_open = self.mixer_window.open || self.midi_editor_open;
         if !project_open && !mixer_open {
             return;
         }
@@ -8588,11 +8720,13 @@ impl OpenTrackApp {
         };
         let title = match dialog.kind {
             TrackKind::Audio => "Add Audio Track",
+            TrackKind::Group => "Add Group Channel",
             TrackKind::Instrument => "Add Instrument Track",
             TrackKind::Midi => "Add MIDI Track",
         };
         let configuration = match dialog.kind {
             TrackKind::Audio => "Audio Track Configuration",
+            TrackKind::Group => "Group Channel Configuration",
             TrackKind::Instrument => "Instrument Track Configuration",
             TrackKind::Midi => "MIDI Track Configuration",
         };
@@ -8631,6 +8765,7 @@ impl OpenTrackApp {
                             ui.horizontal(|ui| {
                                 let controls_width = match dialog.kind {
                                     TrackKind::Audio => 40.0 + 6.0 + 78.0 + 6.0 + 78.0,
+                                    TrackKind::Group => 40.0 + 6.0 + 78.0,
                                     TrackKind::Instrument => 40.0 + 6.0 + 160.0,
                                     TrackKind::Midi => 40.0,
                                 };
@@ -8686,6 +8821,37 @@ impl OpenTrackApp {
                                                     .show_ui(ui, |_| {});
                                             });
                                             ui.label(egui::RichText::new("speakers").size(10.0));
+                                        });
+                                    }
+                                    TrackKind::Group => {
+                                        ui.vertical(|ui| {
+                                            egui::ComboBox::from_id_salt(
+                                                "add-group-channel-configuration",
+                                            )
+                                            .width(78.0)
+                                            .selected_text(if dialog.audio_channels == 1 {
+                                                "Mono"
+                                            } else {
+                                                "Stereo"
+                                            })
+                                            .show_ui(
+                                                ui,
+                                                |ui| {
+                                                    ui.selectable_value(
+                                                        &mut dialog.audio_channels,
+                                                        1,
+                                                        "Mono",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut dialog.audio_channels,
+                                                        2,
+                                                        "Stereo",
+                                                    );
+                                                },
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("configuration").size(10.0),
+                                            );
                                         });
                                     }
                                     TrackKind::Instrument => {
@@ -9279,7 +9445,6 @@ impl eframe::App for OpenTrackApp {
             self.show_event_colors_dialog(&ctx);
             self.show_channel_settings_window(&ctx);
             self.show_media_window(&ctx);
-            self.show_midi_editor_window(&ctx);
             self.show_workspace_organizer(&ctx);
             self.show_track_rename_dialog(&ctx);
             self.show_track_delete_prompt(&ctx);
@@ -9313,33 +9478,10 @@ impl eframe::App for OpenTrackApp {
                 pointer_released || (key_pressed && !pointer_down),
             );
         }
-        if let Some(until) = self.startup_splash_until {
-            if Instant::now() >= until {
-                self.startup_splash_until = None;
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(35));
-                let screen = ui.max_rect();
-                let response = egui::Area::new(Id::new("opentrack-startup-splash"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(screen.min)
-                    .show(&ctx, |ui| {
-                        let (screen, response) =
-                            ui.allocate_exact_size(screen.size(), Sense::click());
-                        ui.painter()
-                            .rect_filled(screen, 0.0, Color32::from_rgb(41, 41, 41));
-                        let banner_width = 360.0_f32
-                            .min(screen.width() * 0.8)
-                            .min(screen.height() * 360.0 / 210.0);
-                        let banner_size = Vec2::new(banner_width, banner_width * 210.0 / 360.0);
-                        let banner = Rect::from_center_size(screen.center(), banner_size);
-                        crate::icon_system::paint_splash(ui, banner);
-                        response.on_hover_cursor(egui::CursorIcon::Default)
-                    })
-                    .inner;
-                if response.clicked() {
-                    self.startup_splash_until = None;
-                }
-            }
+        if self.startup_visibility_pending {
+            self.startup_visibility_pending = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
     }
 
@@ -9507,6 +9649,7 @@ fn default_dock_state() -> DockState<PanelTab> {
 fn track_kind_label(kind: TrackKind) -> &'static str {
     match kind {
         TrackKind::Audio => "AUDIO",
+        TrackKind::Group => "GROUP",
         TrackKind::Instrument => "INSTRUMENT",
         TrackKind::Midi => "MIDI",
     }
@@ -9515,6 +9658,7 @@ fn track_kind_label(kind: TrackKind) -> &'static str {
 fn track_kind_color(kind: TrackKind) -> Color32 {
     match kind {
         TrackKind::Audio => theme::TRACK_AUDIO,
+        TrackKind::Group => theme::TRACK_AUDIO,
         TrackKind::Instrument => theme::TRACK_INSTRUMENT,
         TrackKind::Midi => theme::TRACK_MIDI,
     }
@@ -9898,6 +10042,238 @@ fn panel_close_button(ui: &mut egui::Ui, rect: Rect, palette: theme::Palette) ->
     response
 }
 
+fn track_hidden_by_collapsed_group(project: &Project, track_id: u64) -> bool {
+    let mut parent_id = project
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_group_id);
+    for _ in 0..2 {
+        let Some(id) = parent_id else { return false };
+        let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
+            return false;
+        };
+        if parent.group_collapsed {
+            return true;
+        }
+        parent_id = parent.parent_group_id;
+    }
+    false
+}
+
+fn project_track_group_depth(project: &Project, track_id: u64) -> usize {
+    let mut depth = 0;
+    let mut parent_id = project
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_group_id);
+    for _ in 0..2 {
+        let Some(id) = parent_id else { break };
+        let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
+            break;
+        };
+        depth += 1;
+        parent_id = parent.parent_group_id;
+    }
+    depth
+}
+
+fn project_track_inherited_group_state(project: &Project, track_id: u64) -> (bool, bool, bool) {
+    let mut inherited = (false, false, false);
+    let mut parent_id = project
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_group_id);
+    for _ in 0..2 {
+        let Some(id) = parent_id else { break };
+        let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
+            break;
+        };
+        inherited.0 |= parent.muted;
+        inherited.1 |= parent.solo;
+        inherited.2 |= parent.solo_defeat;
+        parent_id = parent.parent_group_id;
+    }
+    inherited
+}
+
+fn project_track_is_in_group(project: &Project, track_id: u64, group_id: u64) -> bool {
+    let mut parent_id = project
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_group_id);
+    for _ in 0..2 {
+        let Some(id) = parent_id else { return false };
+        if id == group_id {
+            return true;
+        }
+        parent_id = project
+            .tracks
+            .iter()
+            .find(|track| track.id == id)
+            .and_then(|track| track.parent_group_id);
+    }
+    false
+}
+
+/// Builds normalized group-only display peaks by combining the child clip
+/// envelopes on the project timeline. This remains a visual summary; inserts
+/// and group-bus processing are not part of the current audio routing model.
+fn group_waveform_columns(
+    project: &Project,
+    group_id: u64,
+    sources: &HashMap<PathBuf, AudioSource>,
+    start_seconds: f64,
+    end_seconds: f64,
+    count: usize,
+    output_channels: usize,
+) -> Vec<[[f32; 2]; 2]> {
+    let mut columns = vec![[[0.0; 2]; 2]; count];
+    if count == 0 || end_seconds <= start_seconds || !project.tempo_bpm.is_finite() {
+        return columns;
+    }
+
+    let any_solo = project.tracks.iter().any(|track| track.solo);
+    let duration = end_seconds - start_seconds;
+    let column_seconds = duration / count as f64;
+    let seconds_per_beat = 60.0 / project.tempo_bpm.max(1.0);
+    let output_channels = output_channels.clamp(1, 2);
+    for track in project
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Audio)
+        .filter(|track| project_track_is_in_group(project, track.id, group_id))
+    {
+        let inherited = project_track_inherited_group_state(project, track.id);
+        if track.muted
+            || inherited.0
+            || (any_solo && !(track.solo || inherited.1 || track.solo_defeat || inherited.2))
+        {
+            continue;
+        }
+        for clip in &track.clips {
+            if !clip.start_beats.is_finite()
+                || !clip.duration_seconds.is_finite()
+                || clip.duration_seconds <= 0.0
+            {
+                continue;
+            }
+            let Some(source) = sources
+                .get(sample_editor::playback_path(clip))
+                .or_else(|| sources.get(&clip.source_path))
+            else {
+                continue;
+            };
+            let clip_start = clip.start_beats * seconds_per_beat;
+            let clip_end = clip_start + clip.duration_seconds;
+            let visible_start = start_seconds.max(clip_start);
+            let visible_end = end_seconds.min(clip_end);
+            if visible_end <= visible_start {
+                continue;
+            }
+            let first = (((visible_start - start_seconds) / duration * count as f64).floor()
+                as usize)
+                .min(count);
+            let last = (((visible_end - start_seconds) / duration * count as f64).ceil() as usize)
+                .clamp(first, count);
+            if first == last {
+                continue;
+            }
+            let first_time = start_seconds + first as f64 * column_seconds;
+            let last_time = start_seconds + last as f64 * column_seconds;
+            let source_start = (clip.source_offset_seconds + first_time - clip_start)
+                .clamp(0.0, source.duration_seconds());
+            let source_end = (clip.source_offset_seconds + last_time - clip_start)
+                .clamp(source_start, source.duration_seconds());
+            let source_channels = source.waveform().channels.max(1) as usize;
+            let count = last - first;
+            let left = source.waveform_columns(source_start, source_end, count, 0);
+            let right = if source_channels > 1 {
+                source.waveform_columns(source_start, source_end, count, 1)
+            } else {
+                left.clone()
+            };
+            let mono_pan = (track.pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+            let mono_pan_gain = [mono_pan.cos(), mono_pan.sin()];
+
+            for (offset, (left_range, right_range)) in left.iter().zip(&right).enumerate() {
+                let index = first + offset;
+                let local_seconds = ((start_seconds + (index as f64 + 0.5) * column_seconds)
+                    - clip_start)
+                    .clamp(0.0, clip.duration_seconds);
+                let envelope = clip.gain
+                    * track.gain
+                    * opentrack_audio::event_envelope(
+                        local_seconds,
+                        clip.duration_seconds,
+                        clip.fade_in_seconds,
+                        clip.fade_out_seconds,
+                    )
+                    * clip
+                        .source_fades
+                        .iter()
+                        .map(|fade| fade.gain_at(local_seconds + clip.source_offset_seconds))
+                        .product::<f32>();
+                let mut input = [*left_range, *right_range];
+                if output_channels == 1 && source_channels > 1 {
+                    input[0] = [
+                        (input[0][0] + input[1][0]) * 0.5,
+                        (input[0][1] + input[1][1]) * 0.5,
+                    ];
+                }
+                for output_channel in 0..output_channels {
+                    let channel_gain = if source_channels == 1 && output_channels == 2 {
+                        mono_pan_gain[output_channel]
+                    } else if source_channels > 1 && output_channels == 2 {
+                        if output_channel == 0 && track.pan > 0.0 {
+                            1.0 - track.pan
+                        } else if output_channel == 1 && track.pan < 0.0 {
+                            1.0 + track.pan
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    };
+                    let gain = envelope * channel_gain;
+                    let range = if output_channels == 1 {
+                        input[0]
+                    } else {
+                        input[output_channel.min(source_channels - 1)]
+                    };
+                    let scaled = if gain >= 0.0 {
+                        [range[0] * gain, range[1] * gain]
+                    } else {
+                        [range[1] * gain, range[0] * gain]
+                    };
+                    columns[index][output_channel][0] += scaled[0];
+                    columns[index][output_channel][1] += scaled[1];
+                }
+            }
+        }
+    }
+
+    let peak = columns
+        .iter()
+        .flat_map(|column| column.iter())
+        .flat_map(|range| range.iter())
+        .map(|sample| sample.abs())
+        .fold(0.0_f32, f32::max);
+    if peak > 1e-5 {
+        let gain = 0.88 / peak;
+        for column in &mut columns {
+            for range in column {
+                range[0] = (range[0] * gain).clamp(-1.0, 1.0);
+                range[1] = (range[1] * gain).clamp(-1.0, 1.0);
+            }
+        }
+    }
+    columns
+}
+
 fn show_project(
     ui: &mut egui::Ui,
     edit_tool: &mut EditTool,
@@ -9912,13 +10288,16 @@ fn show_project(
     recording_preview: Option<&RecordingPreview>,
     arrange_view_state: &mut ArrangeViewState,
     midi_editor_open: &mut bool,
-    midi_editor_focus_requested: &mut bool,
+    midi_part_draw: &mut Option<MidiPartDraw>,
     channel_settings_window: &mut NativeWindowState,
     _track_rename_dialog: &mut Option<TrackRenameDialog>,
     can_remove: bool,
     context_action: &mut Option<project_controls::Action>,
 ) -> bool {
     let mut modified = false;
+    if *edit_tool != EditTool::Draw {
+        *midi_part_draw = None;
+    }
     if arrange_view_state.selected_track_ids.is_empty()
         && let Some(track_id) = project
             .selected_track
@@ -9943,7 +10322,7 @@ fn show_project(
             });
     }
 
-    let lane_header_width = 198.0;
+    let lane_header_width = 264.0;
     let ruler_height = 22.0;
     ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
     ui.style_mut().spacing.scroll.bar_width = 14.0;
@@ -9959,6 +10338,12 @@ fn show_project(
     let track_ids = project
         .tracks
         .iter()
+        .map(|track| track.id)
+        .collect::<Vec<_>>();
+    let group_track_ids = project
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Group)
         .map(|track| track.id)
         .collect::<Vec<_>>();
     let mut custom_scroll_offset = None;
@@ -10065,6 +10450,9 @@ fn show_project(
     let visible_rows = project.tracks.len();
     let row_heights = (0..visible_rows)
         .map(|row| {
+            if track_hidden_by_collapsed_group(project, track_ids[row]) {
+                return 0.0;
+            }
             let take_lane_count = project
                 .tracks
                 .get(row)
@@ -10099,8 +10487,10 @@ fn show_project(
         ui.available_height().max(ruler_height + tracks_height),
     );
     let mut exclusive_solo_track_id = None;
-    let mut reorder_after_draw = None;
+    let mut reorder_after_draw: Option<(Vec<u64>, usize)> = None;
     let mut reorder_indicator = None;
+    let mut group_drop_after_draw: Option<(u64, Vec<u64>)> = None;
+    let mut group_drop_indicator = None;
     let mut clear_all_muted = false;
     let mut clear_all_solo = false;
     let scroll_bar_rect = Rect::from_min_max(
@@ -10687,21 +11077,32 @@ fn show_project(
             }
 
             // Paint header selection before the grid so lane fills never erase bar lines.
+            let mut pending_midi_part: Option<(u64, f64, f64)> = None;
             for row in 0..visible_rows {
                 let top = canvas.top() + ruler_height + row_offsets[row];
+                let track_id = track_ids[row];
+                let header_indent = project_track_group_depth(project, track_id) as f32 * 24.0;
                 let header = Rect::from_min_size(
-                    Pos2::new(header_left, top),
-                    Vec2::new(lane_header_width, row_heights[row]),
+                    Pos2::new(header_left + header_indent, top),
+                    Vec2::new(lane_header_width - header_indent, row_heights[row]),
                 );
-                let selected = project
-                    .tracks
-                    .get(row)
-                    .is_some_and(|track| arrange_view_state.selected_track_ids.contains(&track.id));
+                let selected = arrange_view_state.selected_track_ids.contains(&track_id);
                 painter.rect_filled(
                     header,
                     0.0,
                     project_track_header_fill(palette, selected, ui.visuals().dark_mode),
                 );
+                if header_indent > 0.0 {
+                    let center_y = top + row_heights[row] * 0.5;
+                    let connector_x = header_left + header_indent - 9.0;
+                    painter.line_segment(
+                        [
+                            Pos2::new(header_left + 8.0, center_y),
+                            Pos2::new(connector_x, center_y),
+                        ],
+                        Stroke::new(1.5, palette.muted.gamma_multiply(0.8)),
+                    );
+                }
                 painter.line_segment(
                     [
                         Pos2::new(header_left, top + row_heights[row]),
@@ -10919,6 +11320,9 @@ fn show_project(
 
             for row in 0..visible_rows {
                 let lane_height = row_heights[row];
+                if lane_height <= 0.0 {
+                    continue;
+                }
                 let base_track_height = arrange_view_state.track_height(track_ids[row]);
                 let take_lane_count = project
                     .tracks
@@ -10935,14 +11339,45 @@ fn show_project(
                         1.0
                     };
                 let top = canvas.min.y + ruler_height + row_offsets[row];
+                let row_track_id = track_ids[row];
+                let header_indent = project_track_group_depth(project, row_track_id) as f32 * 24.0;
+                // Child header controls stay inside the inset panel while the
+                // arrangement grid remains aligned with the rest of the tracks.
+                let row_header_width = lane_header_width - header_indent;
                 let row_rect = Rect::from_min_size(
-                    Pos2::new(header_left, top),
-                    Vec2::new(total_size.x, lane_height),
+                    Pos2::new(header_left + header_indent, top),
+                    Vec2::new(total_size.x - header_indent, lane_height),
                 );
+                if primary_down
+                    && press_origin.is_some_and(|origin| {
+                        origin.x >= header_left
+                            && origin.x < header_left + lane_header_width
+                            && row_rect.top() <= origin.y
+                            && origin.y < row_rect.bottom()
+                    })
+                {
+                    arrange_view_state.pending_track_drag_ids = Some(
+                        if arrange_view_state
+                            .selected_track_ids
+                            .contains(&row_track_id)
+                        {
+                            track_ids
+                                .iter()
+                                .copied()
+                                .filter(|id| arrange_view_state.selected_track_ids.contains(id))
+                                .collect()
+                        } else {
+                            vec![row_track_id]
+                        },
+                    );
+                    arrange_view_state.pending_group_drop = None;
+                }
+                let inherited_group_state =
+                    project_track_inherited_group_state(project, row_track_id);
                 if let Some(track) = project.tracks.get_mut(row) {
                     let resize_rect = Rect::from_min_max(
-                        Pos2::new(header_left, top + lane_height - 5.0),
-                        Pos2::new(header_left + lane_header_width, top + lane_height + 2.0),
+                        Pos2::new(row_rect.left(), top + lane_height - 5.0),
+                        Pos2::new(row_rect.left() + row_header_width, top + lane_height + 2.0),
                     );
                     let resize_response = ui.interact(
                         resize_rect,
@@ -10975,19 +11410,77 @@ fn show_project(
                     let arrange_response = ui.interact(
                         arrange_rect.intersect(grid_clip),
                         Id::new(("track-arrange-row", track.id)),
-                        Sense::click(),
+                        Sense::click_and_drag(),
                     );
+                    let midi_track = matches!(track.kind, TrackKind::Midi | TrackKind::Instrument);
+                    if midi_track && *edit_tool == EditTool::Draw {
+                        let minimum_part_grid = snap_grid_beats.unwrap_or(1.0);
+                        let beat_at_x = |x: f32| {
+                            let beat =
+                                (((x - grid_left) / bar_width).max(0.0) as f64) * beats_per_bar_f64;
+                            snap_grid_beats.map_or(beat, |grid| {
+                                crate::timeline::snap_beats_to_grid(beat, grid)
+                            })
+                        };
+                        let pointer = ui.input(|input| input.pointer.interact_pos());
+                        let origin = ui.input(|input| input.pointer.press_origin());
+                        let over_part = |point: Pos2| {
+                            let beat = (((point.x - grid_left) / bar_width).max(0.0) as f64)
+                                * beats_per_bar_f64;
+                            point.y >= top + 6.0
+                                && point.y <= top + media_lane_height - 6.0
+                                && track.midi_parts.iter().any(|part| {
+                                    beat >= part.start_beats
+                                        && beat <= part.start_beats + part.duration_beats
+                                })
+                        };
+                        let draw_origin = origin.filter(|point| {
+                            arrange_rect.contains(*point)
+                                && point.y >= top + 6.0
+                                && point.y <= top + media_lane_height - 6.0
+                                && !over_part(*point)
+                        });
+                        if arrange_response.drag_started()
+                            && let Some(origin) = draw_origin
+                        {
+                            let beat = beat_at_x(origin.x);
+                            *midi_part_draw = Some(MidiPartDraw {
+                                track_id: track.id,
+                                start_beats: beat,
+                                end_beats: beat,
+                            });
+                        }
+                        if let Some(draw) = midi_part_draw
+                            && draw.track_id == track.id
+                        {
+                            if let Some(pointer) = pointer {
+                                draw.end_beats = beat_at_x(pointer.x);
+                            }
+                            if arrange_response.drag_stopped() {
+                                pending_midi_part =
+                                    Some((track.id, draw.start_beats, draw.end_beats));
+                                *midi_part_draw = None;
+                            }
+                        } else if arrange_response.clicked()
+                            && let Some(point) = pointer
+                            && arrange_rect.contains(point)
+                            && !over_part(point)
+                        {
+                            let start = beat_at_x(point.x);
+                            pending_midi_part = Some((track.id, start, start + minimum_part_grid));
+                        }
+                    }
                     let header_response = ui.interact(
                         Rect::from_min_size(
                             row_rect.min,
-                            Vec2::new(lane_header_width - 20.0, lane_height),
+                            Vec2::new(row_header_width - 20.0, lane_height),
                         ),
                         Id::new(("project-track-header", track.id)),
                         Sense::click_and_drag(),
                     );
                     let name_rect = Rect::from_min_size(
                         Pos2::new(row_rect.min.x + 82.0, top + 2.0),
-                        Vec2::new(lane_header_width - 102.0, 20.0),
+                        Vec2::new(row_header_width - 102.0, 20.0),
                     );
                     let name_response = ui.interact(
                         name_rect,
@@ -11074,35 +11567,115 @@ fn show_project(
                             ui.data_mut(|data| data.insert_temp(rename_id, draft));
                         }
                     }
-                    if header_response.dragged() || name_response.dragged() {
-                        if let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) {
-                            let target = row_offsets
-                                .iter()
-                                .zip(&row_heights)
-                                .position(|(offset, height)| {
-                                    pointer.y < canvas.min.y + ruler_height + offset + height * 0.5
-                                })
-                                .unwrap_or(visible_rows);
-                            reorder_indicator = Some(target);
-                        }
-                    }
-                    if header_response.drag_stopped() || name_response.drag_stopped() {
-                        if let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) {
-                            let insertion = row_offsets
-                                .iter()
-                                .zip(&row_heights)
-                                .position(|(offset, height)| {
-                                    pointer.y < canvas.min.y + ruler_height + offset + height * 0.5
-                                })
-                                .unwrap_or(visible_rows);
-                            let target = if row < insertion {
-                                insertion.saturating_sub(1)
+                    if header_response.dragged()
+                        || name_response.dragged()
+                        || header_response.drag_stopped()
+                        || name_response.drag_stopped()
+                    {
+                        let drag_active = header_response.dragged() || name_response.dragged();
+                        let drag_stopped =
+                            header_response.drag_stopped() || name_response.drag_stopped();
+                        if let Some(pointer) = ui.input(|input| {
+                            input
+                                .pointer
+                                .hover_pos()
+                                .or_else(|| input.pointer.interact_pos())
+                        }) {
+                            let dragged_ids = if arrange_view_state
+                                .selected_track_ids
+                                .contains(&track.id)
+                            {
+                                track_ids
+                                    .iter()
+                                    .copied()
+                                    .filter(|id| arrange_view_state.selected_track_ids.contains(id))
+                                    .collect::<Vec<_>>()
                             } else {
-                                insertion
+                                vec![track.id]
                             };
-                            if target != row && target < visible_rows {
-                                reorder_after_draw = Some((row, target));
+                            let hovered_row = (0..visible_rows).find(|candidate| {
+                                let height = row_heights[*candidate];
+                                height > 0.0
+                                    && pointer.y
+                                        >= canvas.min.y + ruler_height + row_offsets[*candidate]
+                                    && pointer.y
+                                        <= canvas.min.y
+                                            + ruler_height
+                                            + row_offsets[*candidate]
+                                            + height
+                            });
+                            let group_target = hovered_row.and_then(|candidate| {
+                                let group_id = *track_ids.get(candidate)?;
+                                (group_track_ids.contains(&group_id)
+                                    && dragged_ids.iter().any(|id| *id != group_id))
+                                .then_some((candidate, group_id))
+                            });
+
+                            // Keep the last valid group target through the release
+                            // frame so a transient pointer update cannot turn this
+                            // gesture into an ordinary row reorder.
+                            if drag_active && !drag_stopped {
+                                arrange_view_state.pending_group_drop =
+                                    group_target.and_then(|(_, group_id)| {
+                                        let ids = dragged_ids
+                                            .iter()
+                                            .copied()
+                                            .filter(|id| *id != group_id)
+                                            .collect::<Vec<_>>();
+                                        (!ids.is_empty()).then_some((group_id, ids))
+                                    });
                             }
+
+                            let resolved_group_drop = group_target
+                                .map(|(_, group_id)| {
+                                    let ids = dragged_ids
+                                        .iter()
+                                        .copied()
+                                        .filter(|id| *id != group_id)
+                                        .collect::<Vec<_>>();
+                                    (group_id, ids)
+                                })
+                                .filter(|(_, ids)| !ids.is_empty())
+                                .or_else(|| arrange_view_state.pending_group_drop.clone());
+
+                            if let Some((candidate, _)) = group_target {
+                                group_drop_indicator = Some(candidate);
+                            }
+                            if drag_stopped {
+                                if let Some((group_id, dragged_ids)) = resolved_group_drop {
+                                    group_drop_after_draw = Some((group_id, dragged_ids));
+                                    // Grouping wins if the release also falls in the
+                                    // normal reorder zone on this frame.
+                                    reorder_after_draw = None;
+                                } else if group_target.is_none() {
+                                    let insertion = (0..visible_rows)
+                                        .filter(|candidate| row_heights[*candidate] > 0.0)
+                                        .find(|candidate| {
+                                            pointer.y
+                                                < canvas.min.y
+                                                    + ruler_height
+                                                    + row_offsets[*candidate]
+                                                    + row_heights[*candidate] * 0.5
+                                        })
+                                        .unwrap_or(visible_rows);
+                                    reorder_after_draw = Some((dragged_ids, insertion));
+                                }
+                                arrange_view_state.pending_group_drop = None;
+                            } else if group_target.is_none() {
+                                let insertion = (0..visible_rows)
+                                    .filter(|candidate| row_heights[*candidate] > 0.0)
+                                    .find(|candidate| {
+                                        pointer.y
+                                            < canvas.min.y
+                                                + ruler_height
+                                                + row_offsets[*candidate]
+                                                + row_heights[*candidate] * 0.5
+                                    })
+                                    .unwrap_or(visible_rows);
+                                reorder_indicator = Some(insertion);
+                            }
+                        } else if drag_stopped {
+                            group_drop_after_draw = arrange_view_state.pending_group_drop.take();
                         }
                     }
                     let track_color = if arrange_view_state.show_track_colors {
@@ -11111,7 +11684,7 @@ fn show_project(
                         theme::palette(ui).muted
                     };
                     let color_rect = Rect::from_min_size(
-                        Pos2::new(row_rect.left() + lane_header_width - 20.0, top + 1.0),
+                        Pos2::new(row_rect.left() + row_header_width - 20.0, top + 1.0),
                         Vec2::new(8.0, lane_height - 2.0),
                     );
                     modified |= project_controls::color_strip(
@@ -11124,14 +11697,20 @@ fn show_project(
                         Pos2::new(color_rect.right(), top + 1.0),
                         Vec2::new(11.0, lane_height - 2.0),
                     );
-                    paint_track_meter(
+                    paint_track_meter_channels(
                         ui,
                         meter_rect,
                         meter_levels.get(&track.id).copied().unwrap_or([0.0; 2]),
                         track_color,
+                        track.audio_channels,
                     );
                     if let Some(hold) = peak_holds.get(&track.id) {
-                        paint_peak_markers(ui, meter_rect, hold.markers);
+                        paint_peak_markers_channels(
+                            ui,
+                            meter_rect,
+                            hold.markers,
+                            track.audio_channels,
+                        );
                     }
                     painter.text(
                         Pos2::new(row_rect.left() + 24.0, top + 10.0),
@@ -11199,7 +11778,7 @@ fn show_project(
                         let y = top + lane_height - 42.0;
                         let ar = Rect::from_min_size(
                             Pos2::new(row_rect.left() + 32.0, y),
-                            Vec2::new(lane_header_width - 52.0, 42.0),
+                            Vec2::new(row_header_width - 52.0, 42.0),
                         );
                         painter.rect_filled(ar, 0.0, theme::palette(ui).surface);
                         painter.line_segment(
@@ -11256,7 +11835,7 @@ fn show_project(
                         (media_lane_height - if expanded { 42.0 } else { 0.0 }) < 54.0;
                     let text_painter = painter.with_clip_rect(Rect::from_min_size(
                         Pos2::new(row_rect.min.x + 32.0, top),
-                        Vec2::new(lane_header_width - 32.0, lane_height),
+                        Vec2::new(row_header_width - 32.0, lane_height),
                     ));
                     if !name_editing {
                         text_painter.text(
@@ -11278,6 +11857,8 @@ fn show_project(
                     let channel_label = match track.kind {
                         TrackKind::Audio if track.audio_channels == 1 => "mono",
                         TrackKind::Audio => "stereo",
+                        TrackKind::Group if track.audio_channels == 1 => "mono group",
+                        TrackKind::Group => "stereo group",
                         _ => track_kind_label(track.kind),
                     };
                     if !take_lanes_expanded {
@@ -11291,13 +11872,40 @@ fn show_project(
                     }
                     let button_height = 14.0;
                     let take_lanes_supported = track.kind == TrackKind::Audio;
+                    let group_collapse_control = track.kind == TrackKind::Group;
+                    let lane_control_label = if group_collapse_control {
+                        "▤G"
+                    } else {
+                        "▤"
+                    };
+                    let lane_control_active = if group_collapse_control {
+                        !track.group_collapsed
+                    } else {
+                        arrange_view_state.take_lanes_visible.contains(&track.id)
+                    };
                     for (button_index, (label, active, _fill, tooltip)) in [
-                        ("M", track.muted, theme::WARNING, "Mute"),
+                        (
+                            "M",
+                            track.muted || inherited_group_state.0,
+                            theme::WARNING,
+                            if inherited_group_state.0 {
+                                "Mute (inherited from group)"
+                            } else {
+                                "Mute"
+                            },
+                        ),
                         (
                             "S",
-                            track.solo || track.solo_defeat,
+                            track.solo
+                                || track.solo_defeat
+                                || inherited_group_state.1
+                                || inherited_group_state.2,
                             theme::palette(ui).accent,
-                            "Solo State (Solo Defeat with ALT click)",
+                            if inherited_group_state.1 || inherited_group_state.2 {
+                                "Solo State (inherited from group; ALT click for Solo Defeat)"
+                            } else {
+                                "Solo State (Solo Defeat with ALT click)"
+                            },
                         ),
                         ("R", track.armed, theme::RECORD, "Record Enable"),
                         (
@@ -11313,11 +11921,16 @@ fn show_project(
                             "Open Track Effects",
                         ),
                         (
-                            "▤",
-                            take_lanes_supported
-                                && arrange_view_state.take_lanes_visible.contains(&track.id),
+                            lane_control_label,
+                            lane_control_active,
                             theme::palette(ui).surface_raised,
-                            if take_lanes_supported {
+                            if group_collapse_control {
+                                if track.group_collapsed {
+                                    "Expand Group Tracks"
+                                } else {
+                                    "Collapse Group Tracks"
+                                }
+                            } else if take_lanes_supported {
                                 "Show/Hide Track Take Lanes"
                             } else {
                                 "Take Lanes are available on audio tracks"
@@ -11336,9 +11949,10 @@ fn show_project(
                             5 => (154.0, 22.0, 22.0),
                             _ => (177.0, 22.0, 16.0),
                         };
+                        let control_scale = (row_header_width / lane_header_width).clamp(0.75, 1.0);
                         let button_rect = Rect::from_min_size(
-                            Pos2::new(row_rect.left() + offset, top + control_top),
-                            Vec2::new(width, button_height),
+                            Pos2::new(row_rect.left() + offset * control_scale, top + control_top),
+                            Vec2::new(width * control_scale, button_height),
                         );
                         let response = project_inspector::button(
                             ui,
@@ -11347,7 +11961,7 @@ fn show_project(
                             if button_index == 3 { "◀" } else { label },
                             tooltip,
                             active,
-                            button_index != 5 || take_lanes_supported,
+                            button_index != 5 || take_lanes_supported || group_collapse_control,
                             button_index == 2,
                         );
                         if response.clicked() {
@@ -11392,7 +12006,12 @@ fn show_project(
                                     modified = true;
                                 }
                                 5 => {
-                                    if !arrange_view_state.take_lanes_visible.remove(&track.id) {
+                                    if group_collapse_control {
+                                        track.group_collapsed = !track.group_collapsed;
+                                    } else if !arrange_view_state
+                                        .take_lanes_visible
+                                        .remove(&track.id)
+                                    {
                                         arrange_view_state.take_lanes_visible.insert(track.id);
                                     }
                                     modified = true;
@@ -11434,7 +12053,6 @@ fn show_project(
                         }
                         if part_response.double_clicked() {
                             *midi_editor_open = true;
-                            *midi_editor_focus_requested = true;
                         }
                         grid_painter.rect_filled(
                             part_rect,
@@ -11487,6 +12105,51 @@ fn show_project(
                             theme::palette(ui).text,
                         );
                     }
+                    if let Some(draw) = *midi_part_draw
+                        && draw.track_id == track.id
+                    {
+                        let start = draw.start_beats.min(draw.end_beats);
+                        let end = draw
+                            .start_beats
+                            .max(draw.end_beats)
+                            .max(start + snap_grid_beats.unwrap_or(1.0));
+                        let preview_rect = Rect::from_min_max(
+                            Pos2::new(
+                                grid_left + (start / beats_per_bar_f64) as f32 * bar_width,
+                                top + 6.0,
+                            ),
+                            Pos2::new(
+                                grid_left + (end / beats_per_bar_f64) as f32 * bar_width,
+                                top + media_lane_height - 6.0,
+                            ),
+                        );
+                        grid_painter.rect_filled(
+                            preview_rect.intersect(grid_clip),
+                            egui::CornerRadius::same(4),
+                            project_controls::track_color(track).gamma_multiply(0.35),
+                        );
+                        grid_painter.rect_stroke(
+                            preview_rect.intersect(grid_clip),
+                            egui::CornerRadius::same(4),
+                            Stroke::new(1.5, theme::palette(ui).accent),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+            }
+
+            if let Some((track_id, first, last)) = pending_midi_part.take()
+                && let Some(track_index) =
+                    project.tracks.iter().position(|track| track.id == track_id)
+            {
+                let start = first.min(last).max(0.0);
+                let duration = (first.max(last) - start).max(snap_grid_beats.unwrap_or(1.0));
+                let previous_track = project.selected_track;
+                let previous_part = project.selected_midi_part_id;
+                if project.add_midi_part(track_index, start, duration).is_some() {
+                    project.selected_track = previous_track;
+                    project.selected_midi_part_id = previous_part;
+                    modified = true;
                 }
             }
 
@@ -11499,6 +12162,7 @@ fn show_project(
                         audio_events::take_lane_layout(t, project.tempo_bpm);
                     let take_lanes_visible = arrange_view_state.take_lanes_visible.contains(&t.id);
                     let base_height = arrange_view_state.track_height(t.id);
+                    let hidden_by_group = track_hidden_by_collapsed_group(project, t.id);
                     let media_height = base_height
                         * if take_lanes_visible {
                             take_lane_count as f32
@@ -11508,10 +12172,16 @@ fn show_project(
                     audio_events::Lane {
                         id: t.id,
                         channels: t.audio_channels,
-                        audio: t.kind == TrackKind::Audio,
+                        audio: (t.kind == TrackKind::Audio && !hidden_by_group)
+                            || (t.kind == TrackKind::Group
+                                && t.group_collapsed
+                                && !hidden_by_group),
                         rect: Rect::from_min_size(
                             Pos2::new(grid_left, canvas.top() + ruler_height + row_offsets[row]),
-                            Vec2::new(grid_clip.width(), media_height),
+                            Vec2::new(
+                                grid_clip.width(),
+                                if hidden_by_group { 0.0 } else { media_height },
+                            ),
                         ),
                         take_lanes_visible,
                         take_lane_count,
@@ -11551,6 +12221,361 @@ fn show_project(
                 edit_tool,
             );
             modified |= outcome.changed;
+            if let Some((group_id, _)) = arrange_view_state.audio_events.selected_group_segment()
+                && let Some(group_index) =
+                    project.tracks.iter().position(|track| track.id == group_id)
+            {
+                project.selected_track = Some(group_index as u32);
+                project.selected_midi_part_id = None;
+                arrange_view_state.selected_track_ids.clear();
+                arrange_view_state.selected_track_ids.insert(group_id);
+                arrange_view_state.selection_anchor_track_id = Some(group_id);
+            }
+            let group_duration_seconds =
+                content_bars as f64 * beats_per_bar_f64 * 60.0 / project.tempo_bpm.max(1.0);
+            if group_duration_seconds.is_finite() && group_duration_seconds > 0.0 {
+                for (row, group) in
+                    project.tracks.iter().enumerate().filter(|(_, track)| {
+                        track.kind == TrackKind::Group && track.group_collapsed
+                    })
+                {
+                    if row_heights[row] <= 0.0 {
+                        continue;
+                    }
+                    let children_have_audio = project.tracks.iter().any(|track| {
+                        track.kind == TrackKind::Audio
+                            && project_track_is_in_group(project, track.id, group.id)
+                            && !track.clips.is_empty()
+                    });
+                    if !children_have_audio {
+                        continue;
+                    }
+                    let group_segments = audio_events::group_audio_segments(project, group.id);
+                    let group_preview = arrange_view_state
+                        .audio_events
+                        .group_segment_preview(project.tempo_bpm)
+                        .filter(|preview| preview.group_id == group.id);
+                    let Some((group_start_beats, _)) = group_segments.first().copied() else {
+                        continue;
+                    };
+                    let Some((_, group_end_beats)) = group_segments.last().copied() else {
+                        continue;
+                    };
+                    let top = canvas.top() + ruler_height + row_offsets[row];
+                    let lane_height = arrange_view_state.track_height(group.id);
+                    let waveform_rect = Rect::from_min_max(
+                        Pos2::new(grid_left, top + 3.0),
+                        Pos2::new(
+                            grid_left + total_size.x - lane_header_width,
+                            top + (lane_height - 3.0).max(3.0),
+                        ),
+                    );
+                    let visible = waveform_rect.intersect(grid_clip);
+                    if visible.width() <= 0.0 || waveform_rect.width() <= 0.0 {
+                        continue;
+                    }
+                    let start_seconds = ((visible.left() - waveform_rect.left())
+                        / waveform_rect.width()) as f64
+                        * group_duration_seconds;
+                    let end_seconds = ((visible.right() - waveform_rect.left())
+                        / waveform_rect.width()) as f64
+                        * group_duration_seconds;
+                    let count = (visible.width() * ui.ctx().pixels_per_point())
+                        .ceil()
+                        .clamp(2.0, 4096.0) as usize;
+                    let channels = usize::from(group.audio_channels.clamp(1, 2));
+                    let mut columns = group_waveform_columns(
+                        project,
+                        group.id,
+                        audio_sources,
+                        start_seconds,
+                        end_seconds,
+                        count,
+                        channels,
+                    );
+                    if let Some(preview) = &group_preview {
+                        let seconds_per_beat = 60.0 / project.tempo_bpm.max(1.0);
+                        for (index, column) in columns.iter_mut().enumerate() {
+                            let beat = (start_seconds
+                                + (index as f64 + 0.5) / count as f64
+                                    * (end_seconds - start_seconds))
+                                / seconds_per_beat;
+                            if beat >= preview.original_bounds.0 - 1e-6
+                                && beat < preview.original_bounds.1 - 1e-6
+                            {
+                                *column = [[0.0; 2]; 2];
+                            }
+                        }
+                    }
+                    if group_preview.is_none()
+                        && columns.iter().all(|column| {
+                            column
+                                .iter()
+                                .all(|range| range[0] == 0.0 && range[1] == 0.0)
+                        })
+                    {
+                        continue;
+                    }
+                    let track_color = if arrange_view_state.show_track_colors {
+                        project_controls::track_color(group)
+                    } else {
+                        theme::palette(ui).muted
+                    };
+                    let event_rect = Rect::from_min_max(
+                        Pos2::new(
+                            waveform_rect.left()
+                                + (group_start_beats * 60.0
+                                    / project.tempo_bpm.max(1.0)
+                                    / group_duration_seconds)
+                                    as f32
+                                    * waveform_rect.width(),
+                            waveform_rect.top(),
+                        ),
+                        Pos2::new(
+                            waveform_rect.left()
+                                + (group_end_beats * 60.0
+                                    / project.tempo_bpm.max(1.0)
+                                    / group_duration_seconds)
+                                    as f32
+                                    * waveform_rect.width(),
+                            waveform_rect.bottom(),
+                        ),
+                    );
+                    grid_painter.rect_filled(event_rect.intersect(grid_clip), 0.0, track_color);
+                    grid_painter.rect_filled(
+                        Rect::from_min_max(
+                            Pos2::new(
+                                event_rect.left(),
+                                (event_rect.bottom() - 13.0).max(event_rect.top()),
+                            ),
+                            event_rect.max,
+                        )
+                        .intersect(grid_clip),
+                        0.0,
+                        track_color.gamma_multiply(0.8),
+                    );
+                    waveform_view::draw_colored(
+                        &grid_painter,
+                        waveform_rect,
+                        grid_clip,
+                        channels,
+                        group_duration_seconds,
+                        if ui.visuals().dark_mode {
+                            Color32::from_gray(230)
+                        } else {
+                            Color32::from_gray(28)
+                        },
+                        |_start, _end, _count, channel| {
+                            columns
+                                .iter()
+                                .map(|column| column[channel.min(1)])
+                                .collect()
+                        },
+                    );
+                    if let Some(preview) = &group_preview {
+                        let seconds_per_beat = 60.0 / project.tempo_bpm.max(1.0);
+                        let beat_to_x = |beat: f64| {
+                            waveform_rect.left()
+                                + (beat * seconds_per_beat / group_duration_seconds) as f32
+                                    * waveform_rect.width()
+                        };
+                        let preview_columns =
+                            |clips: &[(u64, opentrack_core::project::AudioClip)],
+                             bounds: (f64, f64)| {
+                                let mut preview_project = project.clone();
+                                for track in &mut preview_project.tracks {
+                                    let replacements = clips
+                                        .iter()
+                                        .filter(|(track_id, _)| *track_id == track.id)
+                                        .map(|(_, clip)| (clip.id, clip.clone()))
+                                        .collect::<std::collections::HashMap<_, _>>();
+                                    for clip in &mut track.clips {
+                                        if let Some(replacement) = replacements.get(&clip.id) {
+                                            *clip = replacement.clone();
+                                        }
+                                    }
+                                }
+                                let start = (bounds.0 * seconds_per_beat).max(0.0);
+                                let end = (bounds.1 * seconds_per_beat).max(start);
+                                let width = (beat_to_x(bounds.1) - beat_to_x(bounds.0)).max(1.0);
+                                let preview_count = (width * ui.ctx().pixels_per_point())
+                                    .ceil()
+                                    .clamp(2.0, 4096.0)
+                                    as usize;
+                                group_waveform_columns(
+                                    &preview_project,
+                                    group.id,
+                                    audio_sources,
+                                    start,
+                                    end,
+                                    preview_count,
+                                    channels,
+                                )
+                            };
+                        let original_rect = Rect::from_min_max(
+                            Pos2::new(beat_to_x(preview.original_bounds.0), waveform_rect.top()),
+                            Pos2::new(beat_to_x(preview.original_bounds.1), waveform_rect.bottom()),
+                        );
+                        let original_visible = original_rect.intersect(visible);
+                        if original_visible.is_positive() {
+                            let ghost_columns =
+                                preview_columns(&preview.original_clips, preview.original_bounds);
+                            let ghost_color = track_color.gamma_multiply(0.32);
+                            grid_painter.rect_filled(original_visible, 0.0, ghost_color);
+                            grid_painter.rect_filled(
+                                Rect::from_min_max(
+                                    Pos2::new(
+                                        original_rect.left(),
+                                        (original_rect.bottom() - 13.0).max(original_rect.top()),
+                                    ),
+                                    original_rect.max,
+                                )
+                                .intersect(visible),
+                                0.0,
+                                track_color.gamma_multiply(0.24),
+                            );
+                            waveform_view::draw_colored(
+                                &grid_painter,
+                                original_rect,
+                                visible,
+                                channels,
+                                (preview.original_bounds.1 - preview.original_bounds.0)
+                                    * seconds_per_beat,
+                                if ui.visuals().dark_mode {
+                                    Color32::from_gray(230).gamma_multiply(0.36)
+                                } else {
+                                    Color32::from_gray(28).gamma_multiply(0.36)
+                                },
+                                |_start, _end, _count, channel| {
+                                    ghost_columns
+                                        .iter()
+                                        .map(|column| column[channel.min(1)])
+                                        .collect()
+                                },
+                            );
+                            grid_painter.rect_stroke(
+                                original_visible,
+                                0.0,
+                                Stroke::new(1.0, track_color.gamma_multiply(0.55)),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        let candidate_rect = Rect::from_min_max(
+                            Pos2::new(beat_to_x(preview.candidate_bounds.0), waveform_rect.top()),
+                            Pos2::new(
+                                beat_to_x(preview.candidate_bounds.1),
+                                waveform_rect.bottom(),
+                            ),
+                        );
+                        let candidate_visible = candidate_rect.intersect(visible);
+                        if candidate_visible.is_positive() {
+                            let live_columns =
+                                preview_columns(&preview.candidate_clips, preview.candidate_bounds);
+                            grid_painter.rect_filled(candidate_rect, 0.0, track_color);
+                            grid_painter.rect_filled(
+                                Rect::from_min_max(
+                                    Pos2::new(
+                                        candidate_rect.left(),
+                                        (candidate_rect.bottom() - 13.0).max(candidate_rect.top()),
+                                    ),
+                                    candidate_rect.max,
+                                )
+                                .intersect(visible),
+                                0.0,
+                                track_color.gamma_multiply(0.8),
+                            );
+                            waveform_view::draw_colored(
+                                &grid_painter,
+                                candidate_rect,
+                                visible,
+                                channels,
+                                (preview.candidate_bounds.1 - preview.candidate_bounds.0)
+                                    * seconds_per_beat,
+                                if ui.visuals().dark_mode {
+                                    Color32::from_gray(230)
+                                } else {
+                                    Color32::from_gray(28)
+                                },
+                                |_start, _end, _count, channel| {
+                                    live_columns
+                                        .iter()
+                                        .map(|column| column[channel.min(1)])
+                                        .collect()
+                                },
+                            );
+                            if let Some(proxy) = audio_events::group_segment_proxy_from_clips(
+                                project,
+                                group.id,
+                                preview.candidate_bounds.0,
+                                preview.candidate_bounds.1,
+                                &preview.candidate_clips,
+                            ) {
+                                audio_events::paint_group_segment_controls(
+                                    ui,
+                                    &proxy,
+                                    candidate_rect,
+                                    visible,
+                                    track_color,
+                                );
+                            }
+                        }
+                    }
+                    // Only shared edit boundaries divide the group's virtual
+                    // event. Independent child clip edits stay visually joined.
+                    let seam = Color32::from_gray(32);
+                    for (beat, _) in group_segments.iter().skip(1).copied() {
+                        let x = waveform_rect.left()
+                            + ((beat * 60.0 / project.tempo_bpm.max(1.0) / group_duration_seconds)
+                                as f32)
+                                * waveform_rect.width();
+                        grid_painter.with_clip_rect(visible).line_segment(
+                            [
+                                Pos2::new(x, waveform_rect.top()),
+                                Pos2::new(x, waveform_rect.bottom()),
+                            ],
+                            Stroke::new(1.5, seam),
+                        );
+                    }
+                    if group_preview.is_none()
+                        && let Some((selected_group_id, segment_index)) =
+                            arrange_view_state.audio_events.selected_group_segment()
+                        && selected_group_id == group.id
+                        && let Some((start, end)) = group_segments.get(segment_index).copied()
+                    {
+                        let selected_rect = Rect::from_min_max(
+                            Pos2::new(
+                                waveform_rect.left()
+                                    + (start * 60.0
+                                        / project.tempo_bpm.max(1.0)
+                                        / group_duration_seconds)
+                                        as f32
+                                        * waveform_rect.width(),
+                                waveform_rect.top(),
+                            ),
+                            Pos2::new(
+                                waveform_rect.left()
+                                    + (end * 60.0
+                                        / project.tempo_bpm.max(1.0)
+                                        / group_duration_seconds)
+                                        as f32
+                                        * waveform_rect.width(),
+                                waveform_rect.bottom(),
+                            ),
+                        );
+                        if let Some(proxy) =
+                            audio_events::group_segment_proxy(project, group.id, start, end)
+                        {
+                            audio_events::paint_group_segment_controls(
+                                ui,
+                                &proxy,
+                                selected_rect,
+                                visible,
+                                track_color,
+                            );
+                        }
+                    }
+                }
+            }
             // Paint the live take after arranged clips so it remains the
             // visible top layer while recording over existing material.
             if let Some(preview) = recording_preview {
@@ -11628,6 +12653,18 @@ fn show_project(
                     Stroke::new(2.0, palette.accent),
                 );
             }
+            if let Some(group_row) = group_drop_indicator {
+                let y =
+                    canvas.min.y + ruler_height + row_offsets[group_row] + row_heights[group_row]
+                        - 2.0;
+                painter.line_segment(
+                    [
+                        Pos2::new(header_left + lane_header_width * 0.5, y),
+                        Pos2::new(header_left + lane_header_width, y),
+                    ],
+                    Stroke::new(3.0, palette.accent),
+                );
+            }
 
             if project.tracks.is_empty() {
                 grid_painter.text(
@@ -11670,6 +12707,44 @@ fn show_project(
             {
                 crate::timeline::show_move_cursor(ui, true);
             }
+            if primary_released {
+                let release_group_id = pointer
+                    .and_then(|pointer| {
+                        (0..visible_rows).find(|row| {
+                            row_heights[*row] > 0.0
+                                && pointer.y >= canvas.min.y + ruler_height + row_offsets[*row]
+                                && pointer.y
+                                    < canvas.min.y
+                                        + ruler_height
+                                        + row_offsets[*row]
+                                        + row_heights[*row]
+                        })
+                    })
+                    .and_then(|row| track_ids.get(row).copied())
+                    .filter(|id| group_track_ids.contains(id));
+                if let (Some(group_id), Some(dragged_ids)) = (
+                    release_group_id,
+                    arrange_view_state.pending_track_drag_ids.take(),
+                ) {
+                    let dragged_ids = dragged_ids
+                        .into_iter()
+                        .filter(|id| *id != group_id)
+                        .collect::<Vec<_>>();
+                    if !dragged_ids.is_empty() {
+                        group_drop_after_draw = Some((group_id, dragged_ids));
+                        reorder_after_draw = None;
+                    }
+                } else if group_drop_after_draw.is_none() {
+                    group_drop_after_draw = arrange_view_state.pending_group_drop.take();
+                    if group_drop_after_draw.is_some() {
+                        reorder_after_draw = None;
+                    }
+                } else {
+                    arrange_view_state.pending_track_drag_ids = None;
+                }
+                arrange_view_state.pending_track_drag_ids = None;
+                arrange_view_state.pending_group_drop = None;
+            }
         });
     if let Some(offset) = custom_scroll_offset {
         arrange_view_state.timeline_scroll_x = offset.x.max(0.0);
@@ -11708,8 +12783,11 @@ fn show_project(
             }
         }
     }
-    if let Some((from, to)) = reorder_after_draw {
-        modified |= project.move_track(from, to);
+    if let Some((track_ids, insertion_index)) = reorder_after_draw {
+        modified |= project.move_tracks_to(&track_ids, insertion_index);
+    }
+    if let Some((group_id, track_ids)) = group_drop_after_draw {
+        modified |= project.assign_tracks_to_group(group_id, &track_ids);
     }
     if let Some(solo_track_id) = exclusive_solo_track_id {
         for track in &mut project.tracks {
@@ -11825,7 +12903,9 @@ fn show_midi_editor(
     controller_number: &mut u8,
     selected_note_id: &mut Option<u64>,
     note_drag: &mut Option<MidiNoteDrag>,
+    note_draw: &mut Option<MidiNoteDraw>,
     controller_drag: &mut Option<MidiControllerDrag>,
+    tool: EditTool,
 ) -> bool {
     let Some(track) = project.tracks.get(track_index) else {
         return false;
@@ -11860,14 +12940,33 @@ fn show_midi_editor(
     if note_drag.is_some_and(|drag| drag.track_id != track_id || drag.part_id != part_id) {
         *note_drag = None;
     }
+    if note_draw.is_some_and(|draw| draw.track_id != track_id || draw.part_id != part_id) {
+        *note_draw = None;
+    }
     if controller_drag.is_some_and(|drag| drag.track_id != track_id || drag.part_id != part_id) {
         *controller_drag = None;
     }
     let mut modified = false;
+    let position_quantize = if position_quantize_beats.is_finite() && *position_quantize_beats > 0.0
+    {
+        *position_quantize_beats
+    } else {
+        1.0
+    };
+    let insert_length = if length_quantize_beats.is_finite() && *length_quantize_beats > 0.0 {
+        *length_quantize_beats
+    } else {
+        1.0
+    };
 
     ui.heading(format!("MIDI Editor — {track_name} — {part_name}"));
     ui.horizontal_wrapped(|ui| {
-        ui.label("Click an empty cell to add a note; drag a note to move it.");
+        if tool == EditTool::Draw {
+            ui.label("Pencil: click or drag an empty cell to draw a note.");
+        } else {
+            ui.label("Select a note to edit; choose the pencil tool to add notes.");
+        }
+        ui.label("Drag a note to move it.");
         ui.label("Drag a note's right edge to resize it.");
         ui.label("Right-click a note to remove it.");
         ui.separator();
@@ -11948,6 +13047,9 @@ fn show_midi_editor(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let (canvas, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+            if tool == EditTool::Draw && response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
             let painter = ui.painter_at(canvas);
             painter.rect_filled(canvas, egui::CornerRadius::ZERO, theme::palette(ui).canvas);
             painter.rect_filled(
@@ -12073,6 +13175,32 @@ fn show_midi_editor(
                     egui::StrokeKind::Inside,
                 );
             }
+            if let Some(draw) = note_draw
+                .as_ref()
+                .filter(|draw| draw.track_id == track_id && draw.part_id == part_id)
+            {
+                let preview = Rect::from_min_size(
+                    Pos2::new(
+                        canvas.min.x + KEYBOARD_WIDTH + draw.start_beats as f32 * BEAT_WIDTH,
+                        canvas.min.y + RULER_HEIGHT + (127 - draw.pitch) as f32 * ROW_HEIGHT,
+                    ),
+                    Vec2::new(
+                        ((draw.end_beats - draw.start_beats) as f32 * BEAT_WIDTH).max(3.0),
+                        ROW_HEIGHT - 1.0,
+                    ),
+                );
+                note_painter.rect_filled(
+                    preview,
+                    egui::CornerRadius::same(2),
+                    track_kind_color(track_kind).gamma_multiply(0.35),
+                );
+                note_painter.rect_stroke(
+                    preview,
+                    egui::CornerRadius::same(2),
+                    Stroke::new(1.5, Color32::WHITE),
+                    egui::StrokeKind::Inside,
+                );
+            }
 
             if response.drag_started() {
                 let press_position = ui
@@ -12140,6 +13268,22 @@ fn show_midi_editor(
                                 delta_beats: 0.0,
                                 delta_rows: 0.0,
                             });
+                        } else if tool == EditTool::Draw {
+                            let start = ((beat_position / position_quantize).floor()
+                                * position_quantize)
+                                .clamp(0.0, part_duration_beats);
+                            let remaining = part_duration_beats - start;
+                            if remaining >= 0.0625 {
+                                *selected_note_id = None;
+                                *note_draw = Some(MidiNoteDraw {
+                                    track_id,
+                                    part_id,
+                                    start_beats: start,
+                                    end_beats: start + insert_length.min(remaining).max(0.0625),
+                                    pitch,
+                                    velocity: (*insert_velocity).clamp(1, 127),
+                                });
+                            }
                         }
                     }
                 }
@@ -12147,6 +13291,16 @@ fn show_midi_editor(
 
             if response.dragged() {
                 let delta = response.drag_delta();
+                if let Some(draw) = note_draw.as_mut()
+                    && draw.track_id == track_id
+                    && draw.part_id == part_id
+                    && let Some(pointer) = response.interact_pointer_pos()
+                {
+                    let minimum = position_quantize.min(part_duration_beats - draw.start_beats);
+                    let beat = f64::from((pointer.x - canvas.min.x - KEYBOARD_WIDTH) / BEAT_WIDTH);
+                    draw.end_beats = ((beat / position_quantize).round() * position_quantize)
+                        .clamp(draw.start_beats + minimum, part_duration_beats);
+                }
                 if let Some(drag) = note_drag.as_mut()
                     && drag.track_id == track_id
                     && drag.part_id == part_id
@@ -12198,6 +13352,18 @@ fn show_midi_editor(
             }
             if response.drag_stopped() {
                 *note_drag = None;
+                if let Some(draw) = note_draw.take()
+                    && draw.track_id == track_id
+                    && draw.part_id == part_id
+                    && draw.end_beats > draw.start_beats
+                {
+                    edit_action = Some(MidiEditAction::Add(
+                        draw.start_beats,
+                        draw.end_beats - draw.start_beats,
+                        draw.pitch,
+                        draw.velocity,
+                    ));
+                }
             }
 
             if let Some(pointer) = response.interact_pointer_pos()
@@ -12231,24 +13397,11 @@ fn show_midi_editor(
                             edit_action = note_hit.map(MidiEditAction::Remove);
                         } else if let Some(note_id) = note_hit {
                             edit_action = Some(MidiEditAction::Select(note_id));
-                        } else {
-                            let quantize = if position_quantize_beats.is_finite()
-                                && *position_quantize_beats > 0.0
-                            {
-                                *position_quantize_beats
-                            } else {
-                                1.0
-                            };
-                            let snapped_position = (beat_position / quantize).floor() * quantize;
+                        } else if tool == EditTool::Draw {
+                            let snapped_position =
+                                (beat_position / position_quantize).floor() * position_quantize;
                             let remaining = part_duration_beats - snapped_position;
-                            let requested_length = if length_quantize_beats.is_finite()
-                                && *length_quantize_beats > 0.0
-                            {
-                                *length_quantize_beats
-                            } else {
-                                1.0
-                            };
-                            let duration = requested_length.min(remaining);
+                            let duration = insert_length.min(remaining);
                             if duration >= 0.0625 {
                                 edit_action = Some(MidiEditAction::Add(
                                     snapped_position,
@@ -12257,6 +13410,8 @@ fn show_midi_editor(
                                     (*insert_velocity).clamp(1, 127),
                                 ));
                             }
+                        } else {
+                            *selected_note_id = None;
                         }
                     }
                 }
@@ -14642,6 +15797,7 @@ mod ruler_interaction_tests {
         position: f64,
         cursor: egui::CursorIcon,
         ruler_labels: Vec<String>,
+        track_label_x: HashMap<String, f32>,
     }
 
     impl Fixture {
@@ -14656,6 +15812,7 @@ mod ruler_interaction_tests {
                 position: 0.0,
                 cursor: egui::CursorIcon::Default,
                 ruler_labels: Vec::new(),
+                track_label_x: HashMap::new(),
             }
         }
 
@@ -14693,6 +15850,7 @@ mod ruler_interaction_tests {
             );
             self.cursor = output.platform_output.cursor_icon;
             self.ruler_labels.clear();
+            self.track_label_x.clear();
             fn collect_labels(shape: &egui::Shape, labels: &mut Vec<String>) {
                 match shape {
                     egui::Shape::Text(text)
@@ -14711,8 +15869,34 @@ mod ruler_interaction_tests {
                     _ => {}
                 }
             }
+            let track_names = self
+                .project
+                .tracks
+                .iter()
+                .map(|track| track.name.as_str())
+                .collect::<Vec<_>>();
+            fn collect_track_labels(
+                shape: &egui::Shape,
+                names: &[&str],
+                positions: &mut HashMap<String, f32>,
+            ) {
+                match shape {
+                    egui::Shape::Text(text)
+                        if names.iter().any(|name| *name == text.galley.text()) =>
+                    {
+                        positions.insert(text.galley.text().to_owned(), text.pos.x);
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect_track_labels(shape, names, positions);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             for shape in &output.shapes {
                 collect_labels(&shape.shape, &mut self.ruler_labels);
+                collect_track_labels(&shape.shape, &track_names, &mut self.track_label_x);
             }
             output.textures_delta.clear();
             modified
@@ -14730,6 +15914,169 @@ mod ruler_interaction_tests {
                 },
             ])
         }
+    }
+
+    #[test]
+    fn project_track_drag_into_group_sets_parent_and_collapses_with_group() {
+        for source_above in [false, true] {
+            let mut f = Fixture::new();
+            for kind in if source_above {
+                [TrackKind::Audio, TrackKind::Group]
+            } else {
+                [TrackKind::Group, TrackKind::Audio]
+            } {
+                f.project.add_track(kind);
+            }
+            let group_id = f
+                .project
+                .tracks
+                .iter()
+                .find(|t| t.kind == TrackKind::Group)
+                .unwrap()
+                .id;
+            let child_id = f
+                .project
+                .tracks
+                .iter()
+                .find(|t| t.kind == TrackKind::Audio)
+                .unwrap()
+                .id;
+            for id in [group_id, child_id] {
+                f.view.set_track_height(id, 80.0);
+            }
+            f.frame(vec![]);
+            f.frame(vec![]);
+            let source_y = if source_above { 32.0 } else { 112.0 };
+            let target_y = if source_above { 145.0 } else { 65.0 };
+            f.button(120.0, source_y, true);
+            f.frame(vec![egui::Event::PointerMoved(Pos2::new(120.0, target_y))]);
+            f.frame(vec![]);
+            assert_eq!(f.view.pending_group_drop, Some((group_id, vec![child_id])));
+            f.button(120.0, target_y, false);
+            assert_eq!(
+                f.project
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == child_id)
+                    .unwrap()
+                    .parent_group_id,
+                Some(group_id)
+            );
+            f.frame(vec![]);
+            let group_name = f
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == group_id)
+                .unwrap()
+                .name
+                .clone();
+            let child_name = f
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == child_id)
+                .unwrap()
+                .name
+                .clone();
+            assert_eq!(project_track_group_depth(&f.project, child_id), 1);
+            assert!(
+                f.track_label_x[&child_name] - f.track_label_x[&group_name] >= 23.0,
+                "child label must visibly indent beneath its group"
+            );
+            f.button(9.0, 33.0, true);
+            f.button(9.0, 33.0, false);
+            assert!(
+                f.project
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == group_id)
+                    .unwrap()
+                    .group_collapsed
+            );
+            assert!(track_hidden_by_collapsed_group(&f.project, child_id));
+            let restored: Project =
+                serde_json::from_str(&serde_json::to_string(&f.project).unwrap()).unwrap();
+            assert_eq!(
+                restored
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == child_id)
+                    .unwrap()
+                    .parent_group_id,
+                Some(group_id)
+            );
+        }
+    }
+
+    #[test]
+    fn project_group_drop_commits_from_mouse_release_over_group_with_inspector_open() {
+        let mut f = Fixture::new();
+        f.view.show_inspector = true;
+        f.project.add_track(TrackKind::Audio);
+        f.project.add_track(TrackKind::Group);
+        let child_id = f.project.tracks[0].id;
+        let group_id = f.project.tracks[1].id;
+        for id in [child_id, group_id] {
+            f.view.set_track_height(id, 80.0);
+        }
+        f.frame(vec![]);
+
+        // Press in the audio header, then deliver the move and release in one
+        // frame, as happens when a native drag skips a source-widget stop event.
+        f.button(300.0, 32.0, true);
+        let target = Pos2::new(300.0, 145.0);
+        f.frame(vec![
+            egui::Event::PointerMoved(target),
+            egui::Event::PointerButton {
+                pos: target,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(
+            f.project
+                .tracks
+                .iter()
+                .find(|track| track.id == child_id)
+                .unwrap()
+                .parent_group_id,
+            Some(group_id)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires OPENTRACK_GROUP_PROJECT pointing to an explicit read-only project"]
+    fn project_track_group_drop_in_explicit_project() {
+        let path = std::env::var_os("OPENTRACK_GROUP_PROJECT").expect("explicit project path");
+        let mut f = Fixture::new();
+        f.project = crate::project_file::ProjectFile::read(Path::new(&path))
+            .unwrap()
+            .project;
+        let child_id = f.project.tracks[0].id;
+        f.project.add_track(TrackKind::Group);
+        let group_id = f.project.tracks.last().unwrap().id;
+        let target_y = 22.0 + (f.project.tracks.len() - 1) as f32 * 80.0 + 43.0;
+        for track in &f.project.tracks {
+            f.view.set_track_height(track.id, 80.0);
+        }
+        f.frame(vec![]);
+        f.frame(vec![]);
+        f.button(120.0, 32.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(120.0, target_y))]);
+        f.frame(vec![]);
+        assert_eq!(f.view.pending_group_drop, Some((group_id, vec![child_id])));
+        f.button(120.0, target_y, false);
+        assert_eq!(
+            f.project
+                .tracks
+                .iter()
+                .find(|t| t.id == child_id)
+                .unwrap()
+                .parent_group_id,
+            Some(group_id)
+        );
     }
 
     #[test]

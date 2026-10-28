@@ -147,6 +147,7 @@ pub(super) enum Action {
 fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
     for (name, kind) in [
         ("Audio", TrackKind::Audio),
+        ("Group Channel", TrackKind::Group),
         ("Instrument", TrackKind::Instrument),
         ("MIDI", TrackKind::Midi),
     ] {
@@ -165,7 +166,6 @@ fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
         "Arranger",
         "FX Channel",
         "Folder",
-        "Group Channel",
         "Marker",
         "Ruler",
         "Signature",
@@ -197,7 +197,7 @@ pub(super) fn background_menu(response: &egui::Response, action: &mut Option<Act
 
 pub(super) fn track_menu(
     response: &egui::Response,
-    id: u64,
+    track_id: u64,
     can_remove: bool,
     automation_visible: bool,
     any_automation_visible: bool,
@@ -214,7 +214,7 @@ pub(super) fn track_menu(
             .add_enabled(can_remove, egui::Button::new("Remove Selected Tracks"))
             .clicked()
         {
-            *action = Some(Action::Remove(id));
+            *action = Some(Action::Remove(track_id));
             ui.close();
         }
         ui.add_enabled(false, egui::Button::new("Track Controls Settings..."));
@@ -223,7 +223,7 @@ pub(super) fn track_menu(
             .add_enabled(!automation_visible, egui::Button::new("Show Automation"))
             .clicked()
         {
-            *action = Some(Action::ShowAutomation(id));
+            *action = Some(Action::ShowAutomation(track_id));
             ui.close();
         }
         ui.add_enabled(
@@ -298,6 +298,7 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
         ));
     } else {
         let icon = match track.kind {
+            TrackKind::Group => crate::icon_system::IconId::Channel,
             TrackKind::Instrument => crate::icon_system::IconId::TrackMidi,
             TrackKind::Midi => crate::icon_system::IconId::TrackInstrument,
             TrackKind::Audio => unreachable!("audio icon is drawn above"),
@@ -307,6 +308,7 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
     ui.interact(rect, Id::new(("track-type-icon", track.id)), Sense::hover())
         .on_hover_text(match track.kind {
             TrackKind::Audio => "Audio Track",
+            TrackKind::Group => "Group Channel",
             TrackKind::Instrument => "Instrument Track",
             TrackKind::Midi => "MIDI Track",
         });

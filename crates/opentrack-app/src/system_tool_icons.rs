@@ -25,7 +25,7 @@ fn paint_cursor(ui: &egui::Ui, icon: ToolbarIcon, hotspot: Option<Pos2>) {
     let Some(pointer) = hotspot else { return };
     let Some(id) = (match icon {
         ToolbarIcon::Split => Some(crate::icon_system::IconId::Split),
-        ToolbarIcon::Draw => Some(crate::icon_system::IconId::Draw),
+        ToolbarIcon::Draw => Some(crate::icon_system::IconId::DrawCursor),
         ToolbarIcon::Zoom => Some(crate::icon_system::IconId::Zoom),
         _ => None,
     }) else {
@@ -36,10 +36,10 @@ fn paint_cursor(ui: &egui::Ui, icon: ToolbarIcon, hotspot: Option<Pos2>) {
         egui::Id::new("tabler-tool-cursor"),
     ));
     let size = 20.0;
-    let offset = if matches!(icon, ToolbarIcon::Split) {
-        Vec2::ZERO
-    } else {
-        Vec2::new(6.0, 4.0)
+    let offset = match icon {
+        ToolbarIcon::Split => Vec2::ZERO,
+        ToolbarIcon::Draw => Vec2::ZERO,
+        _ => Vec2::new(6.0, 4.0),
     };
     let rect = Rect::from_min_size(pointer + offset, Vec2::splat(size));
     for halo in [

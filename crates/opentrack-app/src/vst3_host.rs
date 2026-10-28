@@ -6,12 +6,51 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use opentrack_audio::HostedInsert;
 use opentrack_core::project::{InsertEffectKind, Project, Track};
 use opentrack_plugins::{HostedProcessor, PluginClassId};
 use opentrack_vst3::{Vst3Effect, Vst3ParameterInfo, Vst3State};
+
+/// Dispatch thread-level Windows timers while a plug-in editor is open.
+///
+/// Some iPlug2 processors (including NeuralAmpModeler/Gateway) queue meter
+/// data from `process()` and transfer it to their editor from `OnIdle()`,
+/// which iPlug2 schedules with a thread timer. The VST3 component is created
+/// on OpenTrack's UI thread, so pumping timers only on the detached editor
+/// thread leaves the processor's idle callback stranded.
+#[cfg(windows)]
+pub fn pump_ui_thread_timers() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_TIMER,
+    };
+
+    let mut message = MSG::default();
+    loop {
+        // Restrict dispatch to thread-level WM_TIMER messages. Window-bound
+        // timers and the app's regular message queue remain under winit.
+        let available = unsafe {
+            PeekMessageW(
+                &mut message,
+                std::ptr::null_mut(),
+                WM_TIMER,
+                WM_TIMER,
+                PM_REMOVE,
+            )
+        };
+        if available == 0 {
+            break;
+        }
+        unsafe {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn pump_ui_thread_timers() {}
 
 struct Instance {
     class_id: String,
@@ -138,7 +177,10 @@ unsafe extern "system" fn editor_surface_proc(
 
 #[cfg(windows)]
 impl EditorWindow {
-    pub fn create(title: &str, owner: isize) -> Result<Self, String> {
+    pub fn create(
+        title: &str,
+        restore_bounds: Option<&opentrack_core::workspaces::WindowBounds>,
+    ) -> Result<Self, String> {
         use windows_sys::Win32::{
             Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError},
             System::LibraryLoader::GetModuleHandleW,
@@ -177,17 +219,22 @@ impl EditorWindow {
             let _ = RegisterClassW(&surface);
         });
         let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+        let (x, y) = restore_bounds
+            .filter(|bounds| bounds.left.is_finite() && bounds.top.is_finite())
+            .map_or((CW_USEDEFAULT, CW_USEDEFAULT), |bounds| {
+                (bounds.left.round() as i32, bounds.top.round() as i32)
+            });
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 class.as_ptr(),
                 title.as_ptr(),
                 WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_VISIBLE,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                x,
+                y,
                 960,
                 640,
-                owner as _,
+                std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 GetModuleHandleW(std::ptr::null()),
                 std::ptr::null_mut(),
@@ -275,61 +322,91 @@ impl EditorWindow {
         }
     }
 
-    /// Dispatch messages for the editor frame and the plug-in's own child
-    /// windows. winit normally drains the whole thread queue, but a busy frame
-    /// can return before messages for foreign windows are dispatched. Pumping
-    /// the editor's subtree here keeps plug-in timers, paint requests and input
-    /// moving independently of the application's redraw cadence.
-    pub fn pump_messages(&self) {
-        use windows_sys::Win32::{
-            Foundation::{HWND, LPARAM},
-            UI::WindowsAndMessaging::{
-                DispatchMessageW, EnumChildWindows, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
-            },
+    pub fn set_owner(&self, owner: isize) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWLP_HWNDPARENT, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW,
+            SetWindowPos,
         };
-
-        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> i32 {
-            // SAFETY: `lparam` points at the live Vec for this synchronous call.
-            unsafe { &mut *(lparam as *mut Vec<isize>) }.push(hwnd as isize);
-            1
-        }
-
-        let mut handles = vec![self.frame, self.hwnd];
         unsafe {
-            EnumChildWindows(
+            SetWindowLongPtrW(self.frame as _, GWLP_HWNDPARENT, owner);
+            SetWindowPos(
                 self.frame as _,
-                Some(collect),
-                &mut handles as *mut _ as LPARAM,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
         }
-        let mut message = MSG::default();
-        for hwnd in handles {
-            loop {
-                // SAFETY: the handles belong to this editor's window tree and
-                // remain alive until the app releases the editor host.
-                let available = unsafe { PeekMessageW(&mut message, hwnd as _, 0, 0, PM_REMOVE) };
-                if available == 0 {
-                    break;
-                }
-                unsafe {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
+    }
+
+    pub fn restore_position(&self, bounds: Option<&opentrack_core::workspaces::WindowBounds>) {
+        let Some(bounds) =
+            bounds.filter(|bounds| bounds.left.is_finite() && bounds.top.is_finite())
+        else {
+            return;
+        };
+        use windows_sys::Win32::{
+            Foundation::{HWND, RECT},
+            UI::WindowsAndMessaging::{GetWindowRect, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos},
+        };
+        let mut rect = RECT::default();
+        unsafe {
+            if GetWindowRect(self.frame as HWND, &mut rect) != 0 {
+                let _ = SetWindowPos(
+                    self.frame as HWND,
+                    std::ptr::null_mut(),
+                    bounds.left.round() as i32,
+                    bounds.top.round() as i32,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
             }
         }
     }
 
-    /// Ask the plug-in's window tree for another paint. Some plug-ins only
-    /// repaint their GL surface when the host invalidates it after input.
-    pub fn request_repaint(&self) {
-        use windows_sys::Win32::Graphics::Gdi::{RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow};
-        unsafe {
-            RedrawWindow(
-                self.hwnd as _,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-                RDW_INVALIDATE | RDW_ALLCHILDREN,
-            );
+    pub fn bounds(&self) -> Option<opentrack_core::workspaces::WindowBounds> {
+        use windows_sys::Win32::{
+            Foundation::{HWND, RECT},
+            UI::WindowsAndMessaging::GetWindowRect,
+        };
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(self.frame as HWND, &mut rect) } == 0 {
+            return None;
+        }
+        Some(opentrack_core::workspaces::WindowBounds {
+            left: f64::from(rect.left),
+            top: f64::from(rect.top),
+            width: f64::from(rect.right - rect.left),
+            height: f64::from(rect.bottom - rect.top),
+            inner_width: None,
+            inner_height: None,
+            monitor_id: None,
+        })
+    }
+
+    /// Dispatch the dedicated editor thread's full queue, including
+    /// Thread-level WM_TIMER callbacks are required by some animated views.
+    /// moving independently of the application's redraw cadence.
+    pub fn pump_messages(&self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+        };
+        let mut message = MSG::default();
+        loop {
+            // This dedicated thread owns only the native plug-in editor and its
+            // children. A null HWND includes thread-level WM_TIMER messages.
+            let available =
+                unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
+            if available == 0 {
+                break;
+            }
+            unsafe {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
         }
     }
 
@@ -352,6 +429,7 @@ impl Drop for EditorWindow {
 #[cfg(windows)]
 enum EditorCommand {
     Focus,
+    SetOwner(isize),
     Close,
 }
 
@@ -366,11 +444,16 @@ pub struct EditorHost {
     commands: std::sync::mpsc::Sender<EditorCommand>,
     thread: Option<std::thread::JoinHandle<()>>,
     alive: Arc<std::sync::atomic::AtomicBool>,
+    bounds: Arc<Mutex<Option<opentrack_core::workspaces::WindowBounds>>>,
 }
 
 #[cfg(windows)]
 impl EditorHost {
-    pub fn open(title: &str, owner: isize, effect: Arc<Vst3Effect>) -> Result<Self, String> {
+    pub fn open(
+        title: &str,
+        restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
+        effect: Arc<Vst3Effect>,
+    ) -> Result<Self, String> {
         use std::sync::atomic::AtomicBool;
         use std::sync::mpsc;
         use std::time::Duration;
@@ -378,14 +461,23 @@ impl EditorHost {
         let title = title.to_owned();
         let alive = Arc::new(AtomicBool::new(false));
         let thread_alive = Arc::clone(&alive);
+        let bounds = Arc::new(Mutex::new(None));
+        let thread_bounds = Arc::clone(&bounds);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (command_tx, command_rx) = mpsc::channel();
 
         let thread = std::thread::Builder::new()
             .name("opentrack-vst3-editor".to_owned())
             .spawn(move || {
-                let result =
-                    editor_thread(title, owner, effect, thread_alive, command_rx, ready_tx);
+                let result = editor_thread(
+                    title,
+                    restore_bounds,
+                    effect,
+                    thread_alive,
+                    thread_bounds,
+                    command_rx,
+                    ready_tx,
+                );
                 if let Err(error) = result {
                     eprintln!("VST3 editor thread: {error}");
                 }
@@ -397,6 +489,7 @@ impl EditorHost {
                 commands: command_tx,
                 thread: Some(thread),
                 alive,
+                bounds,
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
@@ -420,6 +513,16 @@ impl EditorHost {
 
     pub fn focus(&self) {
         let _ = self.commands.send(EditorCommand::Focus);
+    }
+
+    pub fn set_owner(&self, owner: isize) {
+        if owner != 0 {
+            let _ = self.commands.send(EditorCommand::SetOwner(owner));
+        }
+    }
+
+    pub fn bounds(&self) -> Option<opentrack_core::workspaces::WindowBounds> {
+        self.bounds.lock().ok().and_then(|bounds| bounds.clone())
     }
 
     pub fn close(mut self) {
@@ -447,28 +550,33 @@ impl Drop for EditorHost {
 #[cfg(windows)]
 fn editor_thread(
     title: String,
-    owner: isize,
+    restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
     effect: Arc<Vst3Effect>,
     alive: Arc<std::sync::atomic::AtomicBool>,
+    bounds: Arc<Mutex<Option<opentrack_core::workspaces::WindowBounds>>>,
     commands: std::sync::mpsc::Receiver<EditorCommand>,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let result = (|| -> Result<(), String> {
-        let window = EditorWindow::create(&title, owner)?;
+        let window = EditorWindow::create(&title, restore_bounds.as_ref())?;
         let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
+        window.restore_position(restore_bounds.as_ref());
+        if let Ok(mut current) = bounds.lock() {
+            *current = window.bounds();
+        }
         window.focus();
         alive.store(true, Ordering::Release);
         let _ = ready.send(Ok(()));
 
-        let mut last_repaint = Instant::now();
         loop {
             let mut close = false;
             while let Ok(command) = commands.try_recv() {
                 match command {
                     EditorCommand::Focus => window.focus(),
+                    EditorCommand::SetOwner(owner) => window.set_owner(owner),
                     EditorCommand::Close => close = true,
                 }
             }
@@ -476,9 +584,8 @@ fn editor_thread(
                 break;
             }
             window.pump_messages();
-            if last_repaint.elapsed() >= Duration::from_millis(16) {
-                window.request_repaint();
-                last_repaint = Instant::now();
+            if let Ok(mut current) = bounds.lock() {
+                *current = window.bounds();
             }
             std::thread::sleep(Duration::from_millis(4));
         }
@@ -499,7 +606,11 @@ pub struct EditorHost;
 
 #[cfg(not(windows))]
 impl EditorHost {
-    pub fn open(_title: &str, _owner: isize, _effect: Arc<Vst3Effect>) -> Result<Self, String> {
+    pub fn open(
+        _title: &str,
+        _restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
+        _effect: Arc<Vst3Effect>,
+    ) -> Result<Self, String> {
         Err("native VST3 editors are only supported on Windows".to_owned())
     }
 
@@ -508,6 +619,12 @@ impl EditorHost {
     }
 
     pub fn focus(&self) {}
+
+    pub fn set_owner(&self, _owner: isize) {}
+
+    pub fn bounds(&self) -> Option<opentrack_core::workspaces::WindowBounds> {
+        None
+    }
 
     pub fn close(self) {}
 }
@@ -575,7 +692,11 @@ impl Runtime {
         }
         let mut wanted = HashSet::new();
         let mut changed = false;
-        for track in &project.tracks {
+        for track in project
+            .tracks
+            .iter()
+            .chain(std::iter::once(&project.output_channel.strip))
+        {
             for (slot, insert) in track.inserts.iter().enumerate() {
                 let InsertEffectKind::Vst3 {
                     class_id,
@@ -685,6 +806,12 @@ impl Runtime {
             .map(|effect| effect.parameters())
     }
 
+    pub fn sync_editor_parameters(&self, track_id: u64, slot: usize) {
+        if let Some(effect) = self.instance(track_id, slot) {
+            effect.sync_output_parameters();
+        }
+    }
+
     pub fn set_parameter(&self, track_id: u64, slot: usize, id: u32, value: f64) {
         if let Some(effect) = self.instance(track_id, slot) {
             effect.set_parameter(id, value);
@@ -721,7 +848,11 @@ impl Runtime {
     /// Saves opaque component/controller chunks into the project before OPR
     /// serialization. No audio-thread work is involved.
     pub fn capture_states(&mut self, project: &mut Project) {
-        for track in &mut project.tracks {
+        for track in project
+            .tracks
+            .iter_mut()
+            .chain(std::iter::once(&mut project.output_channel.strip))
+        {
             for (slot, insert) in track.inserts.iter_mut().enumerate() {
                 let InsertEffectKind::Vst3 {
                     class_id,
@@ -1161,7 +1292,7 @@ mod tests {
             )
             .expect("load Waves"),
         );
-        let host = EditorHost::open("OpenTrack dedicated editor test", 0, effect)
+        let host = EditorHost::open("OpenTrack dedicated editor test", None, effect)
             .expect("editor host starts");
         std::thread::sleep(std::time::Duration::from_millis(750));
         assert!(host.is_alive());

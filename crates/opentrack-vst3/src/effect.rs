@@ -154,6 +154,8 @@ pub struct Vst3Effect {
 
     parameter_changes: ComWrapper<ParameterChanges>,
     parameter_changes_ptr: ComPtr<IParameterChanges>,
+    output_parameter_changes: ComWrapper<ParameterChanges>,
+    output_parameter_changes_ptr: ComPtr<IParameterChanges>,
     buffers: UnsafeCell<ProcessBuffers>,
     layout: BusLayout,
     prepared: bool,
@@ -233,10 +235,14 @@ impl Vst3Effect {
         let plug_frame = services
             .to_com_ptr::<IPlugFrame>()
             .ok_or_else(|| String::from("could not create the host IPlugFrame"))?;
-        let parameter_changes = ParameterChanges::new();
+        let parameter_changes = ParameterChanges::new(false);
         let parameter_changes_ptr = parameter_changes
             .to_com_ptr::<IParameterChanges>()
             .ok_or_else(|| String::from("could not create input parameter changes"))?;
+        let output_parameter_changes = ParameterChanges::new(true);
+        let output_parameter_changes_ptr = output_parameter_changes
+            .to_com_ptr::<IParameterChanges>()
+            .ok_or_else(|| String::from("could not create output parameter changes"))?;
 
         let component = create_component(factory, class_id)?;
         // Some WaveShell-style single-component wrappers only expose
@@ -298,6 +304,8 @@ impl Vst3Effect {
             processing: false,
             parameter_changes,
             parameter_changes_ptr,
+            output_parameter_changes,
+            output_parameter_changes_ptr,
             buffers: UnsafeCell::new(ProcessBuffers::default()),
             layout: BusLayout {
                 input_index: 0,
@@ -578,6 +586,21 @@ impl Vst3Effect {
         }
         let value = unsafe { self.controller.getParamNormalized(id) };
         value.is_finite().then(|| clamp_normalized(value))
+    }
+
+    /// Applies processor-produced parameter values to the edit controller.
+    ///
+    /// Call on the control thread while an editor is open. The audio callback
+    /// only copies values into a bounded lock-free queue.
+    pub fn sync_output_parameters(&self) {
+        while let Some(change) = self.shared.output_parameters.pop() {
+            if change.value.is_finite() {
+                let _ = unsafe {
+                    self.controller
+                        .setParamNormalized(change.id, clamp_normalized(change.value))
+                };
+            }
+        }
     }
 
     fn parameter_exists(&self, id: u32) -> bool {
@@ -892,6 +915,7 @@ impl Vst3Effect {
         }
 
         self.parameter_changes.begin_block();
+        self.output_parameter_changes.begin_block();
         while let Some(change) = self.shared.parameters.pop() {
             self.parameter_changes.add(change.id, change.value);
         }
@@ -952,7 +976,7 @@ impl Vst3Effect {
             inputs: buffers.input_buses.as_mut_ptr(),
             outputs: buffers.output_buses.as_mut_ptr(),
             inputParameterChanges: self.parameter_changes_ptr.as_ptr(),
-            outputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: self.output_parameter_changes_ptr.as_ptr(),
             inputEvents: std::ptr::null_mut(),
             outputEvents: std::ptr::null_mut(),
             processContext: &mut buffers.context,
@@ -964,6 +988,8 @@ impl Vst3Effect {
                 "IAudioProcessor::process failed with 0x{result:08x}"
             ));
         }
+        self.output_parameter_changes
+            .publish_latest(&self.shared.output_parameters);
 
         left.copy_from_slice(&buffers.output_left[..frames]);
         if self.layout.output_channels == 1 {
@@ -1241,6 +1267,85 @@ fn negotiate_buses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn installed_gateway_reports_process_output_parameters() {
+        use vst3::Steinberg::Vst::{
+            IParamValueQueue, IParamValueQueueTrait, IParameterChangesTrait,
+        };
+
+        let module = Path::new(
+            r"C:\Program Files\Common Files\VST3\Gateway.vst3\Contents\x86_64-win\Gateway.vst3",
+        );
+        let class =
+            PluginClassId::from_hex("0de7aef2de004e4f41414d6137325247").expect("Gateway class ID");
+        let effect = Vst3Effect::load(module, class, 48_000, 256).expect("load Gateway");
+        for parameter in effect.parameters() {
+            eprintln!(
+                "Gateway parameter: id={} title={:?} normalized={}",
+                parameter.id, parameter.title, parameter.normalized
+            );
+        }
+
+        let mut saw_output = false;
+        let mut phase = 0.0_f32;
+        for block in 0..512 {
+            let mut left = [0.0_f32; 256];
+            for sample in &mut left {
+                *sample = phase.sin() * 0.25;
+                phase += std::f32::consts::TAU * 110.0 / 48_000.0;
+            }
+            let mut right = left;
+            effect
+                .process(&mut left, &mut right)
+                .expect("Gateway process");
+
+            // SAFETY: inspect our own output-parameter object after the
+            // serialized processor call has returned.
+            let count = unsafe {
+                effect
+                    .output_parameter_changes_ptr
+                    .getParameterCount()
+                    .max(0) as usize
+            };
+            if count == 0 {
+                continue;
+            }
+            saw_output = true;
+            for index in 0..count {
+                // SAFETY: the queue is owned by the live output changes object.
+                let raw = unsafe {
+                    effect
+                        .output_parameter_changes_ptr
+                        .getParameterData(index as int32)
+                };
+                let Some(queue) = (unsafe { vst3::ComRef::<IParamValueQueue>::from_raw(raw) })
+                else {
+                    continue;
+                };
+                // SAFETY: queue remains owned by the effect for this test.
+                let points = unsafe { queue.getPointCount().max(0) as usize };
+                if points == 0 {
+                    continue;
+                }
+                let mut sample_offset = 0;
+                let mut value = 0.0;
+                // SAFETY: output pointers are valid locals and point exists.
+                let result = unsafe {
+                    queue.getPoint((points - 1) as int32, &mut sample_offset, &mut value)
+                };
+                if result == kResultOk {
+                    // SAFETY: local host queue.
+                    let id = unsafe { queue.getParameterId() };
+                    eprintln!(
+                        "Gateway output parameter: block={block} id={id} value={value} offset={sample_offset}"
+                    );
+                }
+            }
+        }
+        eprintln!("Gateway emitted output parameter changes: {saw_output}");
+    }
 
     #[test]
     fn state_default_is_empty_and_clone_independent() {

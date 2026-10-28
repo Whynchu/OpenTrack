@@ -26,6 +26,7 @@ use crate::parameter::PendingParameters;
 #[derive(Default)]
 pub(crate) struct HostShared {
     pub(crate) parameters: PendingParameters,
+    pub(crate) output_parameters: PendingParameters,
     pub(crate) dirty: AtomicBool,
     pub(crate) restart_flags: AtomicI32,
     pub(crate) editor_hwnd: AtomicIsize,

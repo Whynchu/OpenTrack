@@ -62,6 +62,7 @@ fn symbol(ui: &mut egui::Ui, r: Rect, name: &str, ink: Color32) {
         "♪" => Some(crate::icon_system::IconId::TrackMusic),
         "▱" => Some(crate::icon_system::IconId::Document),
         "▤" => Some(crate::icon_system::IconId::TakeLanes),
+        "▤G" => Some(crate::icon_system::IconId::GroupLanes),
         "✳" | "▯" => Some(crate::icon_system::IconId::Channel),
         "↔" => Some(crate::icon_system::IconId::Insert),
         "◇" => Some(crate::icon_system::IconId::Eq),
@@ -249,7 +250,12 @@ fn field_impl(
     response.on_hover_text(tooltip)
 }
 
-fn routing_field(ui: &mut egui::Ui, track: &mut Track, input: bool) -> bool {
+fn routing_field(
+    ui: &mut egui::Ui,
+    track: &mut Track,
+    input: bool,
+    group_names: &HashMap<u64, String>,
+) -> bool {
     let default = if input {
         if track.audio_channels == 1 {
             "Left - Stereo In"
@@ -266,6 +272,15 @@ fn routing_field(ui: &mut egui::Ui, track: &mut Track, input: bool) -> bool {
     }
     .unwrap_or(default)
     .to_owned();
+    let label = label
+        .strip_prefix("Group:")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|group_id| {
+            group_names
+                .get(&group_id)
+                .map_or_else(|| "Group Bus".to_owned(), |name| format!("Group: {name}"))
+        })
+        .unwrap_or(label);
     let response = field_impl(
         ui,
         &label,
@@ -302,6 +317,7 @@ fn routing_field(ui: &mut egui::Ui, track: &mut Track, input: bool) -> bool {
                     track.input_routing = Some((*value).into());
                 } else {
                     track.output_routing = Some((*value).into());
+                    track.group_output_auto = false;
                 }
                 changed = true;
                 ui.close();
@@ -326,6 +342,12 @@ pub(super) fn show(
     };
     let mut modified = false;
     let mut solo_exclusively = None;
+    let group_names = project
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Group)
+        .map(|track| (track.id, track.name.clone()))
+        .collect::<HashMap<_, _>>();
     {
         let track = &mut project.tracks[track_index];
         let track_id = track.id;
@@ -529,8 +551,8 @@ pub(super) fn show(
 
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         ui.add_space(12.0);
-        modified |= routing_field(ui, track, true);
-        modified |= routing_field(ui, track, false);
+        modified |= routing_field(ui, track, true, &group_names);
+        modified |= routing_field(ui, track, false, &group_names);
         ui.add_space(8.0);
         field(ui, "No Track Preset", "Apply Track Preset", 22.0);
         ui.add_space(6.0);

@@ -69,37 +69,47 @@ fn note_screen_rect(
     )
 }
 
-fn note_handle_mode(note_rect: Rect, pos: Pos2) -> Option<u8> {
+/// Corner squares are drawn and hit-tested inside the note so they can never
+/// spill over a neighbouring note, including at high vertical zoom.
+fn note_handle_rects(note_rect: Rect) -> Option<[(u8, Rect); 4]> {
     if note_rect.width() < 20.0 {
         return None;
     }
-    let handle = 7.0_f32.min(note_rect.width() * 0.30).max(4.0);
-    for (mode, center) in [
+    let handle = 7.0_f32
+        .min(note_rect.width() * 0.30)
+        .min((note_rect.height() - 3.0) * 0.5)
+        .max(3.0);
+    let inner = note_rect.shrink(1.0);
+    let square = Vec2::splat(handle);
+    Some([
         (
             PITCH_HANDLE_MODE_LEFT,
-            note_rect.left_top() + Vec2::new(handle * 0.5, -handle * 0.5),
+            Rect::from_min_size(inner.left_top(), square),
         ),
         (
             PITCH_HANDLE_MODE_RIGHT,
-            note_rect.right_top() - Vec2::splat(handle * 0.5),
+            Rect::from_min_size(inner.right_top() - Vec2::new(handle, 0.0), square),
         ),
-        (1, note_rect.left_bottom() + Vec2::splat(handle * 0.5)),
+        (
+            1,
+            Rect::from_min_size(inner.left_bottom() - Vec2::new(0.0, handle), square),
+        ),
         (
             2,
-            note_rect.right_bottom() + Vec2::new(-handle * 0.5, handle * 0.5),
+            Rect::from_min_size(inner.right_bottom() - square, square),
         ),
-    ] {
-        let hit_rect = if mode == PITCH_HANDLE_MODE_LEFT || mode == PITCH_HANDLE_MODE_RIGHT {
-            // Keep the pitch targets above the note so a normal body drag at
-            // its top edge still starts broad pitch tuning.
-            Rect::from_center_size(center, Vec2::new(handle + 5.0, handle))
-        } else {
-            Rect::from_center_size(center, Vec2::splat(handle + 5.0))
-        };
-        if hit_rect.contains(pos) {
+    ])
+}
+
+fn note_handle_mode(note_rect: Rect, pos: Pos2) -> Option<u8> {
+    for (mode, handle) in note_handle_rects(note_rect)? {
+        // Widen the target horizontally only; a click on the note's vertical
+        // centre must keep behaving as a body/edge gesture.
+        if handle.expand2(Vec2::new(2.0, 0.0)).contains(pos) {
             return Some(mode);
         }
     }
+    let handle = note_handle_rects(note_rect)?.first()?.1.width();
     let anchor_line = Rect::from_min_max(
         Pos2::new(note_rect.left() + handle + 5.0, note_rect.top()),
         Pos2::new(note_rect.right() - handle - 5.0, note_rect.top() + 7.0),
@@ -580,14 +590,14 @@ impl NoteEditor {
                 Stroke::new(if selected || hovered { 1.7 } else { 1.0 }, color),
                 egui::StrokeKind::Inside,
             );
-            let handle_size = 7.0_f32.min((note_rect.width() * 0.30).max(4.0));
             let handle_fill = if selected { Color32::WHITE } else { color };
             let handle_stroke = Stroke::new(1.0, if selected { color } else { Color32::WHITE });
-            if note_rect.width() >= 20.0 {
+            if let Some(handles) = note_handle_rects(note_rect) {
+                let handle_size = handles[0].1.width();
                 painter.line_segment(
                     [
-                        Pos2::new(note_rect.left() + handle_size, note_rect.top() + 1.0),
-                        Pos2::new(note_rect.right() - handle_size, note_rect.top() + 1.0),
+                        Pos2::new(note_rect.left() + handle_size + 1.0, note_rect.top() + 1.0),
+                        Pos2::new(note_rect.right() - handle_size - 1.0, note_rect.top() + 1.0),
                     ],
                     Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.75)),
                 );
@@ -600,38 +610,13 @@ impl NoteEditor {
                     Stroke::new(1.2, Color32::WHITE),
                 );
                 painter.circle_filled(Pos2::new(anchor_x, note_rect.top() + 3.0), 2.0, handle_fill);
-                let handles = [
-                    (
-                        PITCH_HANDLE_MODE_LEFT,
-                        Rect::from_min_size(
-                            note_rect.left_top() - Vec2::new(0.0, handle_size),
-                            Vec2::splat(handle_size),
-                        ),
-                        "Bend pitch at the note start",
-                    ),
-                    (
-                        PITCH_HANDLE_MODE_RIGHT,
-                        Rect::from_min_size(
-                            note_rect.right_top() - Vec2::splat(handle_size),
-                            Vec2::new(handle_size, handle_size),
-                        ),
-                        "Bend pitch at the note end",
-                    ),
-                    (
-                        1,
-                        Rect::from_min_size(note_rect.left_bottom(), Vec2::splat(handle_size)),
-                        "Move the note start in time",
-                    ),
-                    (
-                        2,
-                        Rect::from_min_size(
-                            note_rect.right_bottom() - Vec2::new(handle_size, 0.0),
-                            Vec2::splat(handle_size),
-                        ),
-                        "Move the note end in time",
-                    ),
+                let tooltips = [
+                    "Bend pitch at the note start",
+                    "Bend pitch at the note end",
+                    "Move the note start in time",
+                    "Move the note end in time",
                 ];
-                for (mode, handle, tooltip) in handles {
+                for ((mode, handle), tooltip) in handles.into_iter().zip(tooltips) {
                     ui.interact(
                         handle,
                         Id::new(("pitch-note-handle", note.id, mode)),
@@ -997,6 +982,26 @@ impl NoteEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn corner_handles_stay_inside_the_note_at_every_row_height() {
+        for height in [12.0, 20.0, 40.0] {
+            let note =
+                Rect::from_min_max(Pos2::new(100.0, 100.0), Pos2::new(200.0, 100.0 + height));
+            for (mode, handle) in note_handle_rects(note).unwrap() {
+                assert!(
+                    handle.min.x >= note.min.x
+                        && handle.max.x <= note.max.x
+                        && handle.min.y >= note.min.y
+                        && handle.max.y <= note.max.y,
+                    "handle {mode} must be drawn inside the note at height {height}"
+                );
+                assert_eq!(note_handle_mode(note, handle.center()), Some(mode));
+            }
+        }
+        let narrow = Rect::from_min_max(Pos2::new(100.0, 100.0), Pos2::new(119.0, 120.0));
+        assert!(note_handle_rects(narrow).is_none());
+    }
+
     #[test]
     fn touching_note_clicks_are_stable_body_drags_snap_centers_and_shift_drags_fine_tune() {
         let mut clip = clip();

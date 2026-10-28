@@ -162,7 +162,7 @@ pub(super) fn show(
 ) -> bool {
     state.note_audition = None;
     let Some((track_id, clip_id)) = state.target else {
-        ui.label("Double-click an audio event to open it in the Sample Editor.");
+        ui.label("Double-click an audio event to open it in the Audio Editor.");
         return false;
     };
     let Some(track) = project.tracks.iter().find(|t| t.id == track_id) else {
@@ -322,7 +322,7 @@ pub(super) fn show(
         Pos2::new(bounds.left(), overview.bottom() + 2.0),
         Pos2::new(bounds.left() + 232.0, bounds.bottom() - 22.0),
     );
-    let keyboard_width = if pitch_visible { 38.0 } else { 0.0 };
+    let keyboard_width = if pitch_visible { 64.0 } else { 0.0 };
     let rail_width = if pitch_visible { 20.0 } else { 0.0 };
     let ruler = Rect::from_min_max(
         Pos2::new(sidebar.right() + 5.0 + keyboard_width, sidebar.top()),
@@ -1332,7 +1332,7 @@ pub(super) mod tests {
             ]
         };
         frame(vec![], &mut project, &mut state, &mut history);
-        let wave = Rect::from_min_max(Pos2::new(275.0, 123.0), Pos2::new(1180.0, 478.0));
+        let wave = Rect::from_min_max(Pos2::new(301.0, 123.0), Pos2::new(1180.0, 478.0));
         let note = state.notes.draft.as_ref().unwrap().notes[0].clone();
         let y = state.pitch_view.y(note.detected_midi, wave);
         let cut = Pos2::new(wave.left() + wave.width() * 0.5, y + 4.2);

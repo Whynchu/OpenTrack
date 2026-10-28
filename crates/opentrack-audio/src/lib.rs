@@ -309,10 +309,64 @@ pub struct PlaybackTrack {
 struct PlaybackTrackRuntime {
     settings: PlaybackTrackSettings,
     processor: std::cell::UnsafeCell<ChannelProcessor>,
+    mix: MixControl,
+    equalizer_control: Arc<EqualizerControl>,
     meter_accumulator: std::cell::UnsafeCell<[f32; 2]>,
     hosted_latency_samples: u32,
     hosted_delay_samples: u32,
     hosted_buffers: std::cell::UnsafeCell<HostedTrackBuffers>,
+}
+
+struct MixControl {
+    target_gain: AtomicU32,
+    target_pan: AtomicU32,
+    current: std::cell::UnsafeCell<(f32, f32)>,
+    smoothing: f32,
+}
+
+impl MixControl {
+    fn new(gain: f32, pan: f32, sample_rate: u32) -> Self {
+        Self {
+            target_gain: AtomicU32::new(gain.to_bits()),
+            target_pan: AtomicU32::new(pan.to_bits()),
+            current: std::cell::UnsafeCell::new((gain, pan)),
+            smoothing: 1.0 - (-1.0 / (sample_rate.max(1) as f32 * 0.005)).exp(),
+        }
+    }
+
+    fn set(&self, gain: f32, pan: f32) {
+        self.target_gain.store(gain.to_bits(), Ordering::Relaxed);
+        self.target_pan.store(pan.to_bits(), Ordering::Relaxed);
+    }
+
+    fn next(&self) -> (f32, f32) {
+        // The audio callback is the only writer; UI updates only the atomic targets.
+        let current = unsafe { &mut *self.current.get() };
+        let gain = f32::from_bits(self.target_gain.load(Ordering::Relaxed));
+        let pan = f32::from_bits(self.target_pan.load(Ordering::Relaxed));
+        current.0 += (gain - current.0) * self.smoothing;
+        current.1 += (pan - current.1) * self.smoothing;
+        *current
+    }
+}
+
+struct EqualizerControl {
+    target: ArcSwap<ChannelEqualizer>,
+    revision: AtomicU64,
+}
+
+impl EqualizerControl {
+    fn new(target: ChannelEqualizer) -> Arc<Self> {
+        Arc::new(Self {
+            target: ArcSwap::from_pointee(target),
+            revision: AtomicU64::new(0),
+        })
+    }
+
+    fn set(&self, target: &ChannelEqualizer) {
+        self.target.store(Arc::new(target.clone()));
+        self.revision.fetch_add(1, Ordering::Release);
+    }
 }
 
 /// Preallocated planar scratch owned by one track for the hosted block path.
@@ -331,6 +385,8 @@ struct HostedTrackBuffers {
     delay_left: Vec<f32>,
     delay_right: Vec<f32>,
     delay_cursor: usize,
+    group_left: Vec<f32>,
+    group_right: Vec<f32>,
 }
 
 impl HostedTrackBuffers {
@@ -352,6 +408,8 @@ impl HostedTrackBuffers {
             delay_left: vec![0.0; delay_frames],
             delay_right: vec![0.0; delay_frames],
             delay_cursor: 0,
+            group_left: vec![0.0; HOSTED_BLOCK_FRAMES],
+            group_right: vec![0.0; HOSTED_BLOCK_FRAMES],
         }
     }
 
@@ -409,8 +467,10 @@ impl PlaybackTrackRuntime {
         let hosted_delay_samples =
             hosted_max_latency_samples.saturating_sub(hosted_latency_samples);
         let hosted_delay_frames = usize::try_from(hosted_delay_samples).unwrap_or(0);
+        let equalizer_control = EqualizerControl::new(settings.equalizer.clone());
         let processor = ChannelProcessor::new(
             &settings.equalizer,
+            Arc::clone(&equalizer_control),
             &settings.inserts,
             settings.inserts_bypassed,
             &settings.midi_notes,
@@ -421,7 +481,9 @@ impl PlaybackTrackRuntime {
         );
         let hosted_buffers = HostedTrackBuffers::new(hosted_processing, hosted_delay_frames);
         Self {
+            mix: MixControl::new(settings.gain, settings.pan, sample_rate),
             settings,
+            equalizer_control,
             processor: std::cell::UnsafeCell::new(processor),
             meter_accumulator: std::cell::UnsafeCell::new([0.0; 2]),
             hosted_latency_samples,
@@ -522,6 +584,8 @@ pub struct HostedProcessingDiagnostic {
 /// Immutable channel-strip data assembled by the UI thread before publication.
 #[derive(Clone)]
 pub struct PlaybackTrackSettings {
+    pub is_group: bool,
+    pub audio_channels: u8,
     pub clips: Vec<PlaybackClip>,
     pub midi_notes: Vec<PlaybackMidiNote>,
     pub midi_controllers: Vec<PlaybackMidiController>,
@@ -556,6 +620,7 @@ pub enum PlaybackOutputRoute {
     Left,
     Right,
     Disconnected,
+    Group(usize),
 }
 
 // SAFETY: the only mutable access to the processor and peak accumulator is
@@ -576,9 +641,12 @@ pub struct PlaybackPlan {
     metronome: MetronomeSettings,
     metronome_downbeat_frequency: f64,
     output_bus: bus::BusRuntime,
+    output_hosted_inserts: Vec<HostedInsert>,
     output_meter: Arc<StereoMeter>,
     tempo_bpm: f64,
     tracks: Vec<PlaybackTrackRuntime>,
+    /// Group tracks ordered deepest-first so child buses feed their parents.
+    group_order: Vec<usize>,
     any_solo: bool,
     loop_range_frames: Option<(u64, u64)>,
     cycle_mode: CycleMode,
@@ -605,9 +673,11 @@ impl PlaybackPlan {
                 &opentrack_core::project::BusChannel::output().strip,
                 44100,
             ),
+            output_hosted_inserts: Vec::new(),
             output_meter: Arc::new(StereoMeter::default()),
             tempo_bpm: 120.0,
             tracks: Vec::new(),
+            group_order: Vec::new(),
             any_solo: false,
             loop_range_frames: None,
             cycle_mode: CycleMode::Loop,
@@ -632,6 +702,24 @@ impl PlaybackPlan {
         generation: u64,
         sample_rate: u32,
         loop_range_beats: Option<(f64, f64)>,
+    ) -> Self {
+        Self::new_with_output_hosted(
+            tempo_bpm,
+            tracks,
+            generation,
+            sample_rate,
+            loop_range_beats,
+            Vec::new(),
+        )
+    }
+
+    fn new_with_output_hosted(
+        tempo_bpm: f64,
+        tracks: Vec<PlaybackTrackSettings>,
+        generation: u64,
+        sample_rate: u32,
+        loop_range_beats: Option<(f64, f64)>,
+        output_hosted_inserts: Vec<HostedInsert>,
     ) -> Self {
         let any_solo = tracks.iter().any(|track| track.solo);
         let tempo_bpm = if tempo_bpm.is_finite() && tempo_bpm > 0.0 {
@@ -665,7 +753,8 @@ impl PlaybackPlan {
             .iter()
             .map(|track| track.monitor_input.is_some())
             .collect();
-        let hosted_processing = tracks.iter().any(|track| !track.hosted_inserts.is_empty());
+        let hosted_processing = !output_hosted_inserts.is_empty()
+            || tracks.iter().any(|track| !track.hosted_inserts.is_empty());
         // Delay compensation is part of the published plan. Ring buffers are
         // sized here on the control thread; the callback never allocates.
         let latency_cap = sample_rate.saturating_mul(HOSTED_MAX_LATENCY_SECONDS);
@@ -674,11 +763,18 @@ impl PlaybackPlan {
             .map(|track| hosted_track_latency(&track.hosted_inserts, latency_cap))
             .collect();
         let hosted_max_latency_samples = track_latencies.iter().copied().max().unwrap_or(0);
+        let group_order = tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, track)| track.is_group.then_some(index))
+            .rev()
+            .collect();
         Self {
             output_bus: bus::BusRuntime::new(
                 &opentrack_core::project::BusChannel::output().strip,
                 sample_rate,
             ),
+            output_hosted_inserts,
             output_meter: Arc::new(StereoMeter::default()),
             tempo_bpm,
             metronome: MetronomeSettings::default(),
@@ -697,6 +793,7 @@ impl PlaybackPlan {
                     )
                 })
                 .collect(),
+            group_order,
             any_solo,
             loop_range_frames,
             cycle_mode: CycleMode::Loop,
@@ -1358,14 +1455,36 @@ impl AudioEngine {
         output_channel: &opentrack_core::project::Track,
         metronome: MetronomeSettings,
     ) {
+        self.set_playback_plan_with_hosted_output(
+            tempo_bpm,
+            tracks,
+            loop_range_beats,
+            cycle_mode,
+            output_channel,
+            metronome,
+            Vec::new(),
+        );
+    }
+
+    pub fn set_playback_plan_with_hosted_output(
+        &mut self,
+        tempo_bpm: f64,
+        tracks: Vec<PlaybackTrackSettings>,
+        loop_range_beats: Option<(f64, f64)>,
+        cycle_mode: CycleMode,
+        output_channel: &opentrack_core::project::Track,
+        metronome: MetronomeSettings,
+        output_hosted_inserts: Vec<HostedInsert>,
+    ) {
         self.current_generation = self.current_generation.wrapping_add(1).max(1);
         let previous = self.plan.load_full();
-        let mut new_plan = PlaybackPlan::new(
+        let mut new_plan = PlaybackPlan::new_with_output_hosted(
             tempo_bpm,
             tracks,
             self.current_generation,
             self.sample_rate,
             loop_range_beats,
+            output_hosted_inserts,
         );
         new_plan.output_meter = Arc::clone(&self.plan.load().output_meter);
         new_plan.cycle_mode = cycle_mode;
@@ -1376,6 +1495,36 @@ impl AudioEngine {
         new_plan.begin_parameter_transition(previous);
         self.retired_plans.push(self.plan.swap(Arc::new(new_plan)));
         self.reclaim_retired_plans();
+    }
+
+    /// Updates live gain/pan and EQ targets without rebuilding clips or DSP
+    /// graphs. The callback smooths the fader and retains biquad history.
+    pub fn update_track_channel_parameters(
+        &self,
+        track_index: usize,
+        gain: f32,
+        pan: f32,
+        equalizer: &ChannelEqualizer,
+    ) -> bool {
+        let plan = self.plan.load();
+        let Some(track) = plan.tracks.get(track_index) else {
+            return false;
+        };
+        track.mix.set(gain, pan);
+        track.equalizer_control.set(equalizer);
+        true
+    }
+
+    pub fn update_output_channel_parameters(
+        &self,
+        gain: f32,
+        pan: f32,
+        equalizer: &ChannelEqualizer,
+    ) {
+        self.plan
+            .load()
+            .output_bus
+            .set_channel_parameters(gain, pan, equalizer);
     }
 
     /// Releases replaced snapshots after the audio callback has finished using them.
@@ -2270,6 +2419,9 @@ fn render_hosted_blocks<T>(
         }
 
         for (track_index, track) in plan.tracks.iter().enumerate() {
+            if track.settings.is_group {
+                continue;
+            }
             let inaudible = track.settings.muted
                 || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
             if inaudible && !track.settings.meter_peak.spectrum_enabled() {
@@ -2287,22 +2439,26 @@ fn render_hosted_blocks<T>(
             );
         }
 
-        for index in 0..count {
-            let output_frame = frames[index];
-            let mut left = 0.0;
-            let mut right = 0.0;
-            for track in plan.tracks.iter() {
-                let inaudible = track.settings.muted
-                    || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
-                if inaudible && !track.settings.meter_peak.spectrum_enabled() {
-                    continue;
-                }
-                // SAFETY: callback_active admits exactly one renderer, which is
-                // the only writer of this track's block buffers and delay ring.
-                let buffers = unsafe { &mut *track.hosted_buffers.get() };
-                if buffers.block_left.len() < count {
-                    continue;
-                }
+        let mut master_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut master_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        for &group_index in &plan.group_order {
+            // SAFETY: the callback is the sole writer of these plan-owned buffers.
+            let buffers = unsafe { &mut *plan.tracks[group_index].hosted_buffers.get() };
+            buffers.group_left[..count].fill(0.0);
+            buffers.group_right[..count].fill(0.0);
+        }
+        for track in &plan.tracks {
+            if track.settings.is_group {
+                continue;
+            }
+            let inaudible = track.settings.muted
+                || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+            // SAFETY: callback_active admits exactly one writer of the block buffers.
+            let buffers = unsafe { &mut *track.hosted_buffers.get() };
+            if buffers.block_left.len() < count {
+                continue;
+            }
+            for index in 0..count {
                 let pre = (buffers.pre_left[index], buffers.pre_right[index]);
                 let post = (buffers.block_left[index], buffers.block_right[index]);
                 track
@@ -2313,25 +2469,47 @@ fn render_hosted_blocks<T>(
                     continue;
                 }
                 let (track_left, track_right) = buffers.delay_frame(post.0, post.1);
-                // Linear stereo balance matches the legacy per-sample path.
-                let output_left =
-                    track_left * track.settings.gain * (1.0 - track.settings.pan.max(0.0));
-                let output_right =
-                    track_right * track.settings.gain * (1.0 + track.settings.pan.min(0.0));
+                let (gain, pan) = track.mix.next();
+                let output_left = track_left * gain * (1.0 - pan.max(0.0));
+                let output_right = track_right * gain * (1.0 + pan.min(0.0));
                 // SAFETY: the same serialized callback owns this accumulator.
                 let accumulator = unsafe { &mut *track.meter_accumulator.get() };
                 accumulator[0] = accumulator[0].max(output_left.abs());
                 accumulator[1] = accumulator[1].max(output_right.abs());
-                match track.settings.output_route {
-                    PlaybackOutputRoute::Stereo => {
-                        left += output_left;
-                        right += output_right;
-                    }
-                    PlaybackOutputRoute::Left => left += (output_left + output_right) * 0.5,
-                    PlaybackOutputRoute::Right => right += (output_left + output_right) * 0.5,
-                    PlaybackOutputRoute::Disconnected => {}
-                }
+                route_group_or_output(
+                    plan,
+                    track.settings.output_route,
+                    output_left,
+                    output_right,
+                    index,
+                    &mut master_left[index],
+                    &mut master_right[index],
+                );
             }
+        }
+        for &group_index in &plan.group_order {
+            render_hosted_group_block(
+                plan,
+                group_index,
+                count,
+                sample_rate,
+                &mut master_left,
+                &mut master_right,
+            );
+        }
+
+        let mut output_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut output_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut dry_output_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut dry_output_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut click_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut click_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut audition_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut audition_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        for index in 0..count {
+            let output_frame = frames[index];
+            let left = master_left[index];
+            let right = master_right[index];
 
             let click = plan.metronome.sample_with_frequency(
                 output_frame,
@@ -2367,12 +2545,36 @@ fn render_hosted_blocks<T>(
                 &plan.monitor_mute_mask,
                 true,
             );
-            let (audition_left, audition_right) =
+            let (audition_l, audition_r) =
                 audition.map_or((0.0, 0.0), |audition| audition.next_frame(sample_rate));
-            let left = bus_left + click + audition_left;
-            let right = bus_right + click + audition_right;
-            output_peaks[0] = output_peaks[0].max(bus_left.abs());
-            output_peaks[1] = output_peaks[1].max(bus_right.abs());
+            output_left[index] = bus_left;
+            output_right[index] = bus_right;
+            dry_output_left[index] = bus_left;
+            dry_output_right[index] = bus_right;
+            click_left[index] = click;
+            click_right[index] = click;
+            audition_left[index] = audition_l;
+            audition_right[index] = audition_r;
+        }
+        for (insert_index, insert) in plan.output_hosted_inserts.iter().enumerate() {
+            if !insert.enabled {
+                continue;
+            }
+            if let Err(error) = insert
+                .processor
+                .process(&mut output_left[..count], &mut output_right[..count])
+            {
+                plan.record_hosted_error(plan.tracks.len(), insert_index, &error);
+                output_left[..count].copy_from_slice(&dry_output_left[..count]);
+                output_right[..count].copy_from_slice(&dry_output_right[..count]);
+                break;
+            }
+        }
+        for index in 0..count {
+            output_peaks[0] = output_peaks[0].max(output_left[index].abs());
+            output_peaks[1] = output_peaks[1].max(output_right[index].abs());
+            let left = output_left[index] + click_left[index] + audition_left[index];
+            let right = output_right[index] + click_right[index] + audition_right[index];
             let sample_start = (block_start + index) * channels;
             for (channel, sample) in samples[sample_start..sample_start + channels]
                 .iter_mut()
@@ -2472,6 +2674,85 @@ fn render_hosted_track_block(
     }
 }
 
+fn render_hosted_group_block(
+    plan: &PlaybackPlan,
+    group_index: usize,
+    count: usize,
+    sample_rate: u32,
+    master_left: &mut [f32; HOSTED_BLOCK_FRAMES],
+    master_right: &mut [f32; HOSTED_BLOCK_FRAMES],
+) {
+    let track = &plan.tracks[group_index];
+    let inaudible = track.settings.muted
+        || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+    // SAFETY: callback_active admits exactly one writer to this group's bus,
+    // processor, and output buffers.
+    let buffers = unsafe { &mut *track.hosted_buffers.get() };
+    if buffers.block_left.len() < count {
+        return;
+    }
+    let processor = unsafe { &mut *track.processor.get() };
+    for index in 0..count {
+        let (mut left, mut right) = (buffers.group_left[index], buffers.group_right[index]);
+        buffers.group_left[index] = 0.0;
+        buffers.group_right[index] = 0.0;
+        if track.settings.audio_channels == 1 {
+            let mono = (left + right) * 0.5;
+            left = mono;
+            right = mono;
+        }
+        buffers.pre_left[index] = left;
+        buffers.pre_right[index] = right;
+        processor.process(&mut left, &mut right);
+        buffers.block_left[index] = left;
+        buffers.block_right[index] = right;
+        buffers.dry_left[index] = left;
+        buffers.dry_right[index] = right;
+    }
+    for (insert_index, insert) in track.settings.hosted_inserts.iter().enumerate() {
+        if !insert.enabled {
+            continue;
+        }
+        if let Err(error) = insert.processor.process(
+            &mut buffers.block_left[..count],
+            &mut buffers.block_right[..count],
+        ) {
+            plan.record_hosted_error(group_index, insert_index, &error);
+            buffers.block_left[..count].copy_from_slice(&buffers.dry_left[..count]);
+            buffers.block_right[..count].copy_from_slice(&buffers.dry_right[..count]);
+            break;
+        }
+    }
+    for index in 0..count {
+        let pre = (buffers.pre_left[index], buffers.pre_right[index]);
+        let post = (buffers.block_left[index], buffers.block_right[index]);
+        track
+            .settings
+            .meter_peak
+            .record_spectrum(pre, post, sample_rate);
+        if inaudible {
+            continue;
+        }
+        let (left, right) = buffers.delay_frame(post.0, post.1);
+        let (gain, pan) = track.mix.next();
+        let output_left = left * gain * (1.0 - pan.max(0.0));
+        let output_right = right * gain * (1.0 + pan.min(0.0));
+        // SAFETY: this renderer is the only writer of the meter accumulator.
+        let accumulator = unsafe { &mut *track.meter_accumulator.get() };
+        accumulator[0] = accumulator[0].max(output_left.abs());
+        accumulator[1] = accumulator[1].max(output_right.abs());
+        route_group_or_output(
+            plan,
+            track.settings.output_route,
+            output_left,
+            output_right,
+            index,
+            &mut master_left[index],
+            &mut master_right[index],
+        );
+    }
+}
+
 fn publish_track_meters(plan: &PlaybackPlan) {
     for track in &plan.tracks {
         // SAFETY: render_frames is the only caller and callback_active admits
@@ -2530,7 +2811,16 @@ fn mix_frame_with_policy(
     let timeline_beats = output_frame as f64 * plan.tempo_bpm / (f64::from(output_rate) * 60.0);
     let mut left = 0.0;
     let mut right = 0.0;
+    for &group_index in &plan.group_order {
+        // SAFETY: this renderer is serialized by callback_active.
+        let buffers = unsafe { &mut *plan.tracks[group_index].hosted_buffers.get() };
+        buffers.group_left[0] = 0.0;
+        buffers.group_right[0] = 0.0;
+    }
     for (track_index, track) in plan.tracks.iter().enumerate() {
+        if track.settings.is_group {
+            continue;
+        }
         let inaudible = track.settings.muted
             || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
         if inaudible && !track.settings.meter_peak.spectrum_enabled() {
@@ -2582,23 +2872,100 @@ fn mix_frame_with_policy(
         }
         // Linear stereo balance preserves unity at center, with the opposite
         // side attenuated toward either edge. Exact reference pan law is unmeasured.
-        let output_left = track_left * track.settings.gain * (1.0 - track.settings.pan.max(0.0));
-        let output_right = track_right * track.settings.gain * (1.0 + track.settings.pan.min(0.0));
+        let (gain, pan) = track.mix.next();
+        let output_left = track_left * gain * (1.0 - pan.max(0.0));
+        let output_right = track_right * gain * (1.0 + pan.min(0.0));
         // SAFETY: mix_frame only runs in the serialized audio callback.
         let accumulator = unsafe { &mut *track.meter_accumulator.get() };
         accumulator[0] = accumulator[0].max(output_left.abs());
         accumulator[1] = accumulator[1].max(output_right.abs());
-        match track.settings.output_route {
-            PlaybackOutputRoute::Stereo => {
-                left += output_left;
-                right += output_right;
-            }
-            PlaybackOutputRoute::Left => left += (output_left + output_right) * 0.5,
-            PlaybackOutputRoute::Right => right += (output_left + output_right) * 0.5,
-            PlaybackOutputRoute::Disconnected => {}
+        route_group_or_output(
+            plan,
+            track.settings.output_route,
+            output_left,
+            output_right,
+            0,
+            &mut left,
+            &mut right,
+        );
+    }
+    for &group_index in &plan.group_order {
+        let track = &plan.tracks[group_index];
+        let inaudible = track.settings.muted
+            || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+        // SAFETY: the group buffer and processor are owned by this callback.
+        let buffers = unsafe { &mut *track.hosted_buffers.get() };
+        let (mut track_left, mut track_right) = (buffers.group_left[0], buffers.group_right[0]);
+        buffers.group_left[0] = 0.0;
+        buffers.group_right[0] = 0.0;
+        if track.settings.audio_channels == 1 {
+            let mono = (track_left + track_right) * 0.5;
+            track_left = mono;
+            track_right = mono;
         }
+        // SAFETY: callback_active permits exactly one writer of this processor.
+        let processor = unsafe { &mut *track.processor.get() };
+        let pre = (track_left, track_right);
+        processor.process(&mut track_left, &mut track_right);
+        if analyze {
+            track
+                .settings
+                .meter_peak
+                .record_spectrum(pre, (track_left, track_right), output_rate);
+        }
+        if inaudible {
+            continue;
+        }
+        let (gain, pan) = track.mix.next();
+        let output_left = track_left * gain * (1.0 - pan.max(0.0));
+        let output_right = track_right * gain * (1.0 + pan.min(0.0));
+        // SAFETY: mix_frame only runs in the serialized audio callback.
+        let accumulator = unsafe { &mut *track.meter_accumulator.get() };
+        accumulator[0] = accumulator[0].max(output_left.abs());
+        accumulator[1] = accumulator[1].max(output_right.abs());
+        route_group_or_output(
+            plan,
+            track.settings.output_route,
+            output_left,
+            output_right,
+            0,
+            &mut left,
+            &mut right,
+        );
     }
     (left, right)
+}
+
+fn route_group_or_output(
+    plan: &PlaybackPlan,
+    route: PlaybackOutputRoute,
+    left_sample: f32,
+    right_sample: f32,
+    frame: usize,
+    left: &mut f32,
+    right: &mut f32,
+) {
+    match route {
+        PlaybackOutputRoute::Stereo => {
+            *left += left_sample;
+            *right += right_sample;
+        }
+        PlaybackOutputRoute::Left => *left += (left_sample + right_sample) * 0.5,
+        PlaybackOutputRoute::Right => *right += (left_sample + right_sample) * 0.5,
+        PlaybackOutputRoute::Disconnected => {}
+        PlaybackOutputRoute::Group(index) => {
+            let Some(group) = plan.tracks.get(index) else {
+                return;
+            };
+            // SAFETY: the serialized audio renderer is the only writer of the
+            // preallocated group accumulator for this frame.
+            let buffers = unsafe { &mut *group.hosted_buffers.get() };
+            if frame < buffers.group_left.len() {
+                buffers.group_left[frame] += left_sample;
+                buffers.group_right[frame] += right_sample;
+            }
+        }
+    }
 }
 
 fn render_plan_frame(
@@ -3123,6 +3490,12 @@ fn oscillator_sample(waveform: InstrumentWaveform, phase: f32) -> f32 {
 
 struct ChannelProcessor {
     equalizer_bypassed: bool,
+    equalizer_wet: f32,
+    equalizer_wet_target: f32,
+    equalizer_wet_step: f32,
+    equalizer_control: Arc<EqualizerControl>,
+    equalizer_revision: u64,
+    sample_rate: u32,
     inserts_bypassed: bool,
     equalizer: [Biquad; 4],
     inserts: Vec<InsertProcessor>,
@@ -3132,6 +3505,7 @@ struct ChannelProcessor {
 impl ChannelProcessor {
     fn new(
         equalizer: &ChannelEqualizer,
+        equalizer_control: Arc<EqualizerControl>,
         inserts: &[InsertEffect],
         inserts_bypassed: bool,
         midi_notes: &[PlaybackMidiNote],
@@ -3148,6 +3522,12 @@ impl ChannelProcessor {
             .collect();
         Self {
             equalizer_bypassed: equalizer.bypassed,
+            equalizer_wet: if equalizer.bypassed { 0.0 } else { 1.0 },
+            equalizer_wet_target: if equalizer.bypassed { 0.0 } else { 1.0 },
+            equalizer_wet_step: 0.0,
+            equalizer_control,
+            equalizer_revision: 0,
+            sample_rate: sample_rate.max(1),
             inserts_bypassed,
             equalizer: bands,
             inserts,
@@ -3161,13 +3541,32 @@ impl ChannelProcessor {
     }
 
     fn process(&mut self, left: &mut f32, right: &mut f32) {
-        if !self.equalizer_bypassed {
-            for band in &mut self.equalizer {
-                if band.enabled {
-                    band.process(left, right);
-                }
+        let revision = self.equalizer_control.revision.load(Ordering::Acquire);
+        if revision != self.equalizer_revision {
+            let target = self.equalizer_control.target.load();
+            self.equalizer_bypassed = target.bypassed;
+            self.equalizer_wet_target = if target.bypassed { 0.0 } else { 1.0 };
+            self.equalizer_wet_step = (self.equalizer_wet_target - self.equalizer_wet)
+                / (self.sample_rate / 200).max(1) as f32;
+            for (filter, band) in self.equalizer.iter_mut().zip(target.bands.iter()) {
+                filter.update_band(band, self.sample_rate);
+            }
+            self.equalizer_revision = revision;
+        }
+        let dry = (*left, *right);
+        for band in &mut self.equalizer {
+            if band.enabled {
+                band.process(left, right);
             }
         }
+        if self.equalizer_wet != self.equalizer_wet_target {
+            self.equalizer_wet += self.equalizer_wet_step;
+            if (self.equalizer_wet - self.equalizer_wet_target).abs() < 1e-4 {
+                self.equalizer_wet = self.equalizer_wet_target;
+            }
+        }
+        *left = dry.0 * (1.0 - self.equalizer_wet) + *left * self.equalizer_wet;
+        *right = dry.1 * (1.0 - self.equalizer_wet) + *right * self.equalizer_wet;
         if !self.inserts_bypassed {
             for insert in &mut self.inserts {
                 if insert.enabled() {
@@ -3304,6 +3703,16 @@ impl Biquad {
         }
     }
 
+    fn update_band(&mut self, band: &EqualizerBand, sample_rate: u32) {
+        let coefficients = Self::from_band(band, sample_rate);
+        self.enabled = coefficients.enabled;
+        self.b0 = coefficients.b0;
+        self.b1 = coefficients.b1;
+        self.b2 = coefficients.b2;
+        self.a1 = coefficients.a1;
+        self.a2 = coefficients.a2;
+    }
+
     fn process(&mut self, left: &mut f32, right: &mut f32) {
         let input_left = *left;
         let output_left = self.b0 * input_left + self.left_z1;
@@ -3358,6 +3767,8 @@ mod processing_tests {
             PlaybackPlan::new(
                 p.tempo_bpm,
                 vec![PlaybackTrackSettings {
+                    is_group: false,
+                    audio_channels: 2,
                     clips: p.tracks[0]
                         .clips
                         .iter()
@@ -3440,6 +3851,8 @@ mod processing_tests {
         let plan = PlaybackPlan::new(
             120.0,
             vec![PlaybackTrackSettings {
+                is_group: false,
+                audio_channels: 2,
                 clips: vec![
                     PlaybackClip {
                         source_fades: Vec::new(),
@@ -3497,6 +3910,8 @@ mod processing_tests {
             Arc::new(PlaybackPlan::new(
                 120.0,
                 vec![PlaybackTrackSettings {
+                    is_group: false,
+                    audio_channels: 2,
                     clips: Vec::new(),
                     midi_notes: Vec::new(),
                     midi_controllers: Vec::new(),
@@ -3563,6 +3978,8 @@ mod processing_tests {
             let plan = PlaybackPlan::new(
                 120.0,
                 vec![PlaybackTrackSettings {
+                    is_group: false,
+                    audio_channels: 2,
                     clips: vec![PlaybackClip {
                         source_fades: vec![],
                         source: PlaybackSource::Decoded(source),
@@ -3646,6 +4063,8 @@ mod processing_tests {
         let plan = PlaybackPlan::new(
             120.0,
             vec![PlaybackTrackSettings {
+                is_group: false,
+                audio_channels: 2,
                 clips: vec![PlaybackClip {
                     source_fades: Vec::new(),
                     source: PlaybackSource::Decoded(source),
@@ -3968,8 +4387,10 @@ mod processing_tests {
     #[test]
     fn disabled_eq_and_empty_insert_chain_leave_audio_unchanged() {
         let instrument_factory = oscillator_instrument_factory(InstrumentWaveform::Sine);
+        let equalizer = ChannelEqualizer::default();
         let mut processor = ChannelProcessor::new(
-            &ChannelEqualizer::default(),
+            &equalizer,
+            EqualizerControl::new(equalizer.clone()),
             &[],
             false,
             &[],
@@ -4191,6 +4612,8 @@ mod processing_tests {
         let plan = ArcSwap::from(Arc::new(PlaybackPlan::new(
             120.0,
             vec![PlaybackTrackSettings {
+                is_group: false,
+                audio_channels: 2,
                 clips: vec![PlaybackClip {
                     source_fades: Vec::new(),
                     source: playback,
@@ -4307,6 +4730,8 @@ mod processing_tests {
             let plan = ArcSwap::from_pointee(PlaybackPlan::new(
                 120.0,
                 vec![PlaybackTrackSettings {
+                    is_group: false,
+                    audio_channels: 2,
                     clips: Vec::new(),
                     midi_notes: Vec::new(),
                     midi_controllers: Vec::new(),
@@ -4389,6 +4814,8 @@ mod processing_tests {
         let plan = ArcSwap::from(Arc::new(PlaybackPlan::new(
             120.0,
             vec![PlaybackTrackSettings {
+                is_group: false,
+                audio_channels: 2,
                 clips: Vec::new(),
                 midi_notes: Vec::new(),
                 midi_controllers: Vec::new(),
@@ -4689,6 +5116,8 @@ mod hosted_processing_tests {
 
     fn track(source: PlaybackSource, hosted_inserts: Vec<HostedInsert>) -> PlaybackTrackSettings {
         PlaybackTrackSettings {
+            is_group: false,
+            audio_channels: 2,
             clips: vec![PlaybackClip {
                 source_fades: Vec::new(),
                 source,

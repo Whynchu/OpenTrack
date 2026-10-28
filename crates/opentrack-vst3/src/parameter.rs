@@ -166,6 +166,7 @@ impl Default for ValueQueueData {
 /// Host `IParamValueQueue` used as input automation for one block.
 struct ParameterValueQueue {
     data: UnsafeCell<ValueQueueData>,
+    accepts_output: bool,
 }
 
 // SAFETY: the effect's single audio thread resets and fills queues before
@@ -216,15 +217,25 @@ impl IParamValueQueueTrait for ParameterValueQueue {
 
     unsafe fn addPoint(
         &self,
-        _sample_offset: int32,
-        _value: ParamValue,
+        sample_offset: int32,
+        value: ParamValue,
         index: *mut int32,
     ) -> tresult {
-        if !index.is_null() {
-            // SAFETY: validated non-null above.
-            unsafe { *index = 0 };
+        if !self.accepts_output || index.is_null() || !value.is_finite() || sample_offset < 0 {
+            return kInvalidArgument;
         }
-        kResultFalse
+        // SAFETY: VST3 calls output AddPoint during the serialized process
+        // callback, while this queue is exclusively owned by the audio thread.
+        let data = unsafe { &mut *self.data.get() };
+        let point_index = data.count.min(MAX_POINTS_PER_QUEUE - 1);
+        data.points[point_index] = ParamPoint {
+            sample_offset,
+            value,
+        };
+        data.count = (data.count + 1).min(MAX_POINTS_PER_QUEUE);
+        // SAFETY: validated non-null above; the host returns the point index.
+        unsafe { *index = point_index as int32 };
+        kResultOk
     }
 }
 
@@ -232,6 +243,7 @@ impl IParamValueQueueTrait for ParameterValueQueue {
 pub(crate) struct ParameterChanges {
     queues: [ComWrapper<ParameterValueQueue>; MAX_PARAMETER_QUEUES],
     active: UnsafeCell<usize>,
+    accepts_output: bool,
 }
 
 // SAFETY: see `ParameterValueQueue`; additionally the `active` count is only
@@ -239,14 +251,16 @@ pub(crate) struct ParameterChanges {
 unsafe impl Sync for ParameterChanges {}
 
 impl ParameterChanges {
-    pub(crate) fn new() -> ComWrapper<Self> {
+    pub(crate) fn new(accepts_output: bool) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             queues: std::array::from_fn(|_| {
                 ComWrapper::new(ParameterValueQueue {
                     data: UnsafeCell::new(ValueQueueData::default()),
+                    accepts_output,
                 })
             }),
             active: UnsafeCell::new(0),
+            accepts_output,
         })
     }
 
@@ -307,6 +321,26 @@ impl ParameterChanges {
             }
         }
     }
+
+    /// Copies the last point for each output parameter into the reverse
+    /// lock-free queue. Called on the audio thread after `process`.
+    pub(crate) fn publish_latest(&self, destination: &PendingParameters) {
+        if !self.accepts_output {
+            return;
+        }
+        // SAFETY: output change storage is owned by the serialized audio thread.
+        let active = unsafe { *self.active.get() };
+        for queue in self.queues.iter().take(active) {
+            // SAFETY: only the audio callback accesses this queue until publish.
+            let data = unsafe { &*queue.data.get() };
+            if let Some(point) = data.points.get(data.count.saturating_sub(1))
+                && data.count > 0
+                && point.value.is_finite()
+            {
+                destination.push(data.id, point.value.clamp(0.0, 1.0));
+            }
+        }
+    }
 }
 
 impl Class for ParameterChanges {
@@ -340,12 +374,42 @@ impl IParameterChangesTrait for ParameterChanges {
 
     unsafe fn addParameterData(
         &self,
-        _id: *const ParamID,
-        _index: *mut int32,
+        id: *const ParamID,
+        index: *mut int32,
     ) -> *mut IParamValueQueue {
-        // The host only supplies input automation; output parameter changes are
-        // not collected yet.
-        std::ptr::null_mut()
+        if !self.accepts_output || id.is_null() || index.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: the VST3 contract supplies valid ID and queue-index pointers
+        // for the duration of this call.
+        let id = unsafe { *id };
+        // SAFETY: the active count is owned by the serialized audio thread.
+        let active = unsafe { &mut *self.active.get() };
+        let found = self.queues.iter().take(*active).position(|queue| {
+            // SAFETY: active queues are owned by this process callback.
+            unsafe { (*queue.data.get()).id == id }
+        });
+        let queue_index = if let Some(index) = found {
+            index
+        } else if *active < MAX_PARAMETER_QUEUES {
+            let index = *active;
+            *active += 1;
+            // SAFETY: new queue slot is owned by the audio thread.
+            unsafe {
+                let data = &mut *self.queues[index].data.get();
+                data.id = id;
+                data.count = 0;
+            }
+            index
+        } else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY: validated above.
+        unsafe { *index = queue_index as int32 };
+        self.queues[queue_index]
+            .as_com_ref::<IParamValueQueue>()
+            .map(|reference| reference.as_ptr())
+            .unwrap_or(std::ptr::null_mut())
     }
 }
 
@@ -371,7 +435,7 @@ mod tests {
 
     #[test]
     fn parameter_changes_are_bounded_and_report_queues() {
-        let changes = ParameterChanges::new();
+        let changes = ParameterChanges::new(false);
         changes.begin_block();
         for parameter in 0..MAX_PARAMETER_QUEUES + 2 {
             changes.add(parameter as u32, 0.5);
@@ -396,5 +460,34 @@ mod tests {
         changes.begin_block();
         // SAFETY: local host object.
         assert_eq!(unsafe { interface.getParameterCount() }, 0);
+    }
+
+    #[test]
+    fn output_parameter_changes_are_published_without_audio_thread_controller_calls() {
+        let changes = ParameterChanges::new(true);
+        let destination = PendingParameters::default();
+        changes.begin_block();
+
+        let id = 0xCAFE;
+        let mut queue_index = -1;
+        // SAFETY: the output change object owns the returned queue for this
+        // block and the pointers below remain valid for each call.
+        let queue = unsafe { changes.addParameterData(&id, &mut queue_index) };
+        assert!(!queue.is_null());
+        assert_eq!(queue_index, 0);
+        let queue = unsafe { vst3::ComRef::<IParamValueQueue>::from_raw(queue) }
+            .expect("output parameter queue");
+        let mut point_index = -1;
+        assert_eq!(
+            unsafe { queue.addPoint(16, 0.75, &mut point_index) },
+            kResultOk
+        );
+        assert_eq!(point_index, 0);
+
+        changes.publish_latest(&destination);
+        let published = destination.pop().expect("published output parameter");
+        assert_eq!(published.id, id);
+        assert!((published.value - 0.75).abs() < f64::EPSILON);
+        assert!(destination.pop().is_none());
     }
 }

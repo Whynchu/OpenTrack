@@ -150,6 +150,32 @@ pub(super) fn show_channels(
     output_meter_peaks: [f32; 2],
     settings: &mut NativeWindowState,
 ) -> (bool, bool) {
+    let effective_states = project
+        .tracks
+        .iter()
+        .map(|track| {
+            let mut muted = track.muted;
+            let mut solo = track.solo || track.solo_defeat;
+            let mut parent_id = track.parent_group_id;
+            for _ in 0..2 {
+                let Some(id) = parent_id else { break };
+                let Some(parent) = project.tracks.iter().find(|candidate| candidate.id == id)
+                else {
+                    break;
+                };
+                muted |= parent.muted;
+                solo |= parent.solo || parent.solo_defeat;
+                parent_id = parent.parent_group_id;
+            }
+            (track.id, (muted, solo))
+        })
+        .collect::<HashMap<_, _>>();
+    let group_names = project
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Group)
+        .map(|track| (track.id, track.name.clone()))
+        .collect::<HashMap<_, _>>();
     let state_id = ui.id().with("measured-mixer-view");
     let mut view = ui
         .data_mut(|data| data.get_temp::<MixerView>(state_id))
@@ -178,6 +204,8 @@ pub(super) fn show_channels(
                 .or_default(),
             settings,
             view.hide_routing,
+            &group_names,
+            None,
         )
         .0;
     }
@@ -214,6 +242,8 @@ pub(super) fn show_channels(
                             peak_holds.entry(track.id).or_default(),
                             settings,
                             view.hide_routing,
+                            &group_names,
+                            effective_states.get(&track.id).copied(),
                         );
                         modified |= changed;
                         if select {
@@ -244,6 +274,8 @@ pub(super) fn show_channels(
                 .or_default(),
             settings,
             view.hide_routing,
+            &group_names,
+            None,
         )
         .0;
     }
@@ -481,7 +513,25 @@ fn sidebar(
     }
 }
 
-fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool) {
+fn display_group_route(route: &str, group_names: &HashMap<u64, String>) -> String {
+    let Some(group_id) = route
+        .strip_prefix("Group:")
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return route.to_owned();
+    };
+    group_names
+        .get(&group_id)
+        .map_or_else(|| "Group Bus".to_owned(), |name| format!("Group: {name}"))
+}
+
+fn routing(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    track: &mut Track,
+    group_names: &HashMap<u64, String>,
+    modified: &mut bool,
+) {
     if track.id >= opentrack_core::project::INPUT_BUS_ID {
         let input = track.id == opentrack_core::project::INPUT_BUS_ID;
         text(
@@ -532,6 +582,7 @@ fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool
                 }
                 .unwrap_or(default)
                 .to_owned();
+                let value = display_group_route(&value, group_names);
                 let field_width = 78.0_f32.min(rect.width());
                 let field_left = (rect.width() - field_width) * 0.5;
                 let field = Rect::from_min_size(
@@ -560,6 +611,7 @@ fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool
                                     track.input_routing = Some("No Bus".into());
                                 } else {
                                     track.output_routing = Some("No Bus".into());
+                                    track.group_output_auto = false;
                                 }
                                 *modified = true;
                                 ui.close();
@@ -583,6 +635,7 @@ fn routing(ui: &mut egui::Ui, rect: Rect, track: &mut Track, modified: &mut bool
                                 for label in ["Stereo Out", "Left", "Right"] {
                                     if ui.button(label).clicked() {
                                         track.output_routing = Some(label.into());
+                                        track.group_output_auto = false;
                                         *modified = true;
                                         ui.close();
                                     }
@@ -683,6 +736,8 @@ fn strip(
     held_peak: &mut metering::Hold,
     settings: &mut NativeWindowState,
     hide_routing: bool,
+    group_names: &HashMap<u64, String>,
+    effective_state: Option<(bool, bool)>,
 ) -> (bool, bool, bool) {
     let mut modified = false;
     let mut select = false;
@@ -719,7 +774,13 @@ fn strip(
         ));
 
         if !hide_routing {
-            routing(ui, at(0.0, 0.0, 82.0, 32.0), track, &mut modified);
+            routing(
+                ui,
+                at(0.0, 0.0, 82.0, 32.0),
+                track,
+                group_names,
+                &mut modified,
+            );
         }
         text(
             ui,
@@ -814,11 +875,13 @@ fn strip(
             p.text,
             Align2::CENTER_CENTER,
         );
+        let (effective_muted, effective_solo) =
+            effective_state.unwrap_or((track.muted, track.solo || track.solo_defeat));
         for (i, (label, active, tip, y)) in [
-            ("M", track.muted, "Mute", 126.0),
+            ("M", effective_muted, "Mute", 126.0),
             (
                 "S",
-                track.solo || track.solo_defeat,
+                effective_solo,
                 "Solo State (Solo Defeat with ALT click)",
                 142.0,
             ),

@@ -8,13 +8,14 @@ pub(crate) struct BusRuntime {
     settings: Track,
     processor: UnsafeCell<ChannelProcessor>,
     pre_gain: f32,
-    left_gain: f32,
-    right_gain: f32,
+    mix: super::MixControl,
+    equalizer_control: Arc<super::EqualizerControl>,
 }
 // SAFETY: callers serialize process() with the capture gate or output callback gate.
 unsafe impl Sync for BusRuntime {}
 impl BusRuntime {
     pub(crate) fn new(settings: &Track, rate: u32) -> Self {
+        let equalizer_control = super::EqualizerControl::new(settings.equalizer.clone());
         Self {
             pre_gain: 10.0_f32.powf(settings.input_gain_db / 20.0)
                 * if settings.input_phase_inverted {
@@ -22,11 +23,11 @@ impl BusRuntime {
                 } else {
                     1.0
                 },
-            left_gain: settings.gain * (1.0 - settings.pan.max(0.0)),
-            right_gain: settings.gain * (1.0 + settings.pan.min(0.0)),
+            mix: super::MixControl::new(settings.gain, settings.pan, rate),
             settings: settings.clone(),
             processor: UnsafeCell::new(ChannelProcessor::new(
                 &settings.equalizer,
+                Arc::clone(&equalizer_control),
                 &settings.inserts,
                 settings.inserts_bypassed,
                 &[],
@@ -35,7 +36,17 @@ impl BusRuntime {
                 120.0,
                 rate,
             )),
+            equalizer_control,
         }
+    }
+    pub(crate) fn set_channel_parameters(
+        &self,
+        gain: f32,
+        pan: f32,
+        equalizer: &opentrack_core::project::ChannelEqualizer,
+    ) {
+        self.mix.set(gain, pan);
+        self.equalizer_control.set(equalizer);
     }
     pub(crate) fn process(&self, left: f32, right: f32) -> (f32, f32) {
         self.process_inner(left, right, None)
@@ -75,7 +86,11 @@ impl BusRuntime {
         if s.muted {
             return (0.0, 0.0);
         }
-        (left * self.left_gain, right * self.right_gain)
+        let (gain, pan) = self.mix.next();
+        (
+            left * gain * (1.0 - pan.max(0.0)),
+            right * gain * (1.0 + pan.min(0.0)),
+        )
     }
 }
 

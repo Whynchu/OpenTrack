@@ -32,6 +32,7 @@ pub(crate) enum IconId {
     Mute,
     TimeWarp,
     Draw,
+    DrawCursor,
     Line,
     PlayTool,
     Color,
@@ -59,6 +60,7 @@ pub(crate) enum IconId {
     Undo,
     Reveal,
     TakeLanes,
+    GroupLanes,
     Power,
     SavePreset,
     Close,
@@ -98,6 +100,7 @@ impl IconId {
             Self::Mute => include_bytes!("../assets/tabler/volume-off.svg"),
             Self::TimeWarp => include_bytes!("../assets/tabler/clock-hour-3.svg"),
             Self::Draw => include_bytes!("../assets/tabler/pencil.svg"),
+            Self::DrawCursor => include_bytes!("../assets/tabler/pencil-cursor.svg"),
             Self::Line => include_bytes!("../assets/tabler/line.svg"),
             Self::Color => include_bytes!("../assets/tabler/palette.svg"),
             Self::RootKey => include_bytes!("../assets/tabler/music.svg"),
@@ -123,7 +126,8 @@ impl IconId {
             Self::ChevronDown => include_bytes!("../assets/tabler/chevron-down.svg"),
             Self::Undo => include_bytes!("../assets/tabler/arrow-back-up.svg"),
             Self::Reveal => include_bytes!("../assets/tabler/eye.svg"),
-            Self::TakeLanes => include_bytes!("../assets/tabler/layout-rows.svg"),
+            Self::TakeLanes => include_bytes!("../assets/original-glyphs/take-lanes.svg"),
+            Self::GroupLanes => include_bytes!("../assets/original-glyphs/group-lanes.svg"),
             Self::Power => include_bytes!("../assets/tabler/power.svg"),
             Self::SavePreset => include_bytes!("../assets/tabler/device-floppy.svg"),
             Self::Close => include_bytes!("../assets/tabler/x.svg"),
@@ -401,7 +405,7 @@ pub(crate) fn paint_app_icon_on(
 mod tests {
     use super::*;
 
-    const APP_ICONS: [IconId; 31] = [
+    const APP_ICONS: [IconId; 32] = [
         IconId::TrackAudio,
         IconId::TrackMidi,
         IconId::TrackInstrument,
@@ -421,6 +425,7 @@ mod tests {
         IconId::Undo,
         IconId::Reveal,
         IconId::TakeLanes,
+        IconId::GroupLanes,
         IconId::Power,
         IconId::SavePreset,
         IconId::Close,

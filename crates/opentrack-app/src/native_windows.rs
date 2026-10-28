@@ -19,6 +19,15 @@ pub(crate) fn creation_root(creation: &eframe::CreationContext<'_>) -> Option<is
     None
 }
 
+pub(crate) fn install_resource_icons(hwnd: Option<isize>) {
+    #[cfg(windows)]
+    if let Some(hwnd) = hwnd {
+        platform::install_resource_icons(hwnd);
+    }
+    #[cfg(not(windows))]
+    let _ = hwnd;
+}
+
 impl ChannelOwner {
     pub(crate) fn new(creation: &eframe::CreationContext<'_>) -> Self {
         if let Some(root) = creation_root(creation) {
@@ -69,6 +78,45 @@ mod platform {
             let thread = GetWindowThreadProcessId(search.root, std::ptr::null_mut());
             if thread != 0 {
                 EnumThreadWindows(thread, Some(visit), &mut search as *mut Search as LPARAM);
+            }
+        }
+    }
+
+    pub(super) fn install_resource_icons(root: isize) {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXICON, SM_CXSMICON,
+            SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
+        };
+
+        let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let resource_id = 1usize as *const u16;
+        let small = unsafe {
+            LoadImageW(
+                module,
+                resource_id,
+                IMAGE_ICON,
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+                LR_SHARED,
+            )
+        };
+        let large = unsafe {
+            LoadImageW(
+                module,
+                resource_id,
+                IMAGE_ICON,
+                GetSystemMetrics(SM_CXICON),
+                GetSystemMetrics(SM_CYICON),
+                LR_SHARED,
+            )
+        };
+        unsafe {
+            if !small.is_null() {
+                SendMessageW(root as _, WM_SETICON, ICON_SMALL as usize, small as isize);
+            }
+            if !large.is_null() {
+                SendMessageW(root as _, WM_SETICON, ICON_BIG as usize, large as isize);
             }
         }
     }

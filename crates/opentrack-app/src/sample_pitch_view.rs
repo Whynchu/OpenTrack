@@ -67,8 +67,22 @@ impl Viewport {
     }
 }
 
+const BLACK_KEY_FRACTION: f32 = 0.58;
+const MIN_LABEL_ROW_HEIGHT: f32 = 12.0;
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
 fn black_key(midi: i32) -> bool {
     matches!(midi.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
+}
+
+fn note_name(midi: i32) -> String {
+    format!(
+        "{}{}",
+        NOTE_NAMES[midi.rem_euclid(12) as usize],
+        midi.div_euclid(12) - 1
+    )
 }
 
 pub(super) fn grid(ui: &egui::Ui, keyboard: Rect, wave: Rect, view: &Viewport) {
@@ -109,7 +123,10 @@ pub(super) fn grid(ui: &egui::Ui, keyboard: Rect, wave: Rect, view: &Viewport) {
             painter.rect_filled(
                 Rect::from_min_max(
                     key.min,
-                    Pos2::new(keyboard.left() + keyboard.width() * 0.58, key.bottom()),
+                    Pos2::new(
+                        keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION,
+                        key.bottom(),
+                    ),
                 ),
                 0.0,
                 p.midi_key_black,
@@ -119,18 +136,28 @@ pub(super) fn grid(ui: &egui::Ui, keyboard: Rect, wave: Rect, view: &Viewport) {
             [key.left_bottom(), key.right_bottom()],
             Stroke::new(0.5, p.canvas),
         );
-        if !black && row_height >= 10.0 {
-            let name = ["C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"][midi as usize % 12];
+        if row_height >= MIN_LABEL_ROW_HEIGHT {
+            let (label_right, color) = if black {
+                (
+                    keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION - 3.0,
+                    Color32::WHITE,
+                )
+            } else {
+                (
+                    keyboard.right() - 3.0,
+                    if ui.visuals().dark_mode {
+                        Color32::from_gray(225)
+                    } else {
+                        Color32::from_gray(35)
+                    },
+                )
+            };
             painter.text(
-                Pos2::new(keyboard.right() - 3.0, y),
+                Pos2::new(label_right, y),
                 Align2::RIGHT_CENTER,
-                format!("{name}{}", midi / 12 - 1),
-                FontId::proportional(9.0),
-                if ui.visuals().dark_mode {
-                    Color32::from_gray(225)
-                } else {
-                    Color32::from_gray(35)
-                },
+                note_name(midi),
+                FontId::proportional(theme::type_size::SMALL),
+                color,
             );
         }
     }
@@ -291,5 +318,82 @@ mod tests {
         view.sanitize();
         assert_eq!(view.center, 60.0);
         assert_eq!(view.span, 24.0);
+    }
+
+    #[test]
+    fn every_key_is_named_inside_its_own_key_and_labels_hide_when_rows_are_too_small() {
+        let keyboard = Rect::from_min_max(Pos2::new(20.0, 20.0), Pos2::new(84.0, 320.0));
+        let wave = Rect::from_min_max(keyboard.right_top(), Pos2::new(784.0, 320.0));
+        let mut view = Viewport::default();
+        view.center = 66.0;
+        view.span = 13.0;
+        let visible = |view: &Viewport| {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(820.0, 340.0))),
+                    ..Default::default()
+                },
+                |ui| grid(ui, keyboard, wave, view),
+            );
+            output.textures_delta.clear();
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => {
+                        let rect = Rect::from_min_size(text.pos, text.galley.size());
+                        rect.intersects(keyboard)
+                            .then(|| (text.galley.text().to_owned(), rect))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let labels = visible(&view);
+        for midi in 60..=71 {
+            let name = note_name(midi);
+            assert!(
+                labels.iter().any(|(text, _)| text == &name),
+                "{name} must name its key"
+            );
+        }
+        let black_edge = keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION;
+        let c_sharp = labels
+            .iter()
+            .find(|(text, _)| text == "C#4")
+            .map(|(_, rect)| rect)
+            .unwrap();
+        assert!(
+            c_sharp.left() >= keyboard.left() && c_sharp.right() <= black_edge,
+            "a black key's name belongs inside the black key"
+        );
+        let c = labels
+            .iter()
+            .find(|(text, _)| text == "C4")
+            .map(|(_, rect)| rect)
+            .unwrap();
+        assert!(
+            c.left() > black_edge && c.right() <= keyboard.right(),
+            "a white key's name stays in the white part of the key"
+        );
+        view.center = 2.0;
+        view.span = 6.0;
+        let lowest_sharp = visible(&view);
+        let c_sharp_negative = lowest_sharp
+            .iter()
+            .find(|(text, _)| text == "C#-1")
+            .map(|(_, rect)| rect)
+            .expect("the lowest octave is named too");
+        assert!(
+            c_sharp_negative.left() >= keyboard.left() && c_sharp_negative.right() <= black_edge,
+            "the widest black-key name still fits inside the black key"
+        );
+        view.center = 66.0;
+        view.span = 72.0;
+        assert!(
+            visible(&view).is_empty(),
+            "labels are hidden rather than shown partially when rows are too small"
+        );
     }
 }

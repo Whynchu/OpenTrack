@@ -3,36 +3,40 @@ use eframe::egui::{self, Color32, Rect};
 
 /// Compact OpenTrack application mark for native application windows.
 pub(crate) fn opentrack_icon() -> egui::IconData {
-    // Keep a 256px source so Windows can downsample cleanly for its 16/32px
-    // title-bar and taskbar slots instead of enlarging a coarse 64px bitmap.
-    const SIZE: u32 = 256;
-    let svg = include_bytes!("../assets/opentrack-icon.svg");
-    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default())
-        .expect("bundled OpenTrack logo SVG should parse");
-    let mut pixmap =
-        resvg::tiny_skia::Pixmap::new(SIZE, SIZE).expect("application icon dimensions are bounded");
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(
-            SIZE as f32 / tree.size().width(),
-            SIZE as f32 / tree.size().height(),
-        ),
-        &mut pixmap.as_mut(),
-    );
-    let mut rgba = pixmap.data().to_vec();
-    for pixel in rgba.chunks_exact_mut(4) {
-        let alpha = u16::from(pixel[3]);
-        if alpha > 0 {
-            for component in &mut pixel[..3] {
-                *component = (u16::from(*component) * 255 / alpha).min(255) as u8;
+    static ICON: std::sync::OnceLock<egui::IconData> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        // Keep a 256px source for Windows title-bar/taskbar scaling. The native
+        // PE resource also supplies exact 16/24/32px variants for small slots.
+        const SIZE: u32 = 256;
+        let svg = include_bytes!("../assets/opentrack-icon.svg");
+        let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default())
+            .expect("bundled OpenTrack logo SVG should parse");
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(SIZE, SIZE)
+            .expect("application icon dimensions are bounded");
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_scale(
+                SIZE as f32 / tree.size().width(),
+                SIZE as f32 / tree.size().height(),
+            ),
+            &mut pixmap.as_mut(),
+        );
+        let mut rgba = pixmap.data().to_vec();
+        for pixel in rgba.chunks_exact_mut(4) {
+            let alpha = u16::from(pixel[3]);
+            if alpha > 0 {
+                for component in &mut pixel[..3] {
+                    *component = (u16::from(*component) * 255 / alpha).min(255) as u8;
+                }
             }
         }
-    }
-    egui::IconData {
-        rgba,
-        width: SIZE,
-        height: SIZE,
-    }
+        egui::IconData {
+            rgba,
+            width: SIZE,
+            height: SIZE,
+        }
+    })
+    .clone()
 }
 
 #[derive(Clone, Copy)]

@@ -126,6 +126,14 @@ pub(crate) struct ArrangeViewState {
     pub(crate) exclusive_track_ids: Vec<u64>,
     #[serde(default)]
     pub(crate) pre_exclusive_track_heights: Option<std::collections::BTreeMap<u64, f32>>,
+    /// The most recent valid Group row target during a track drag. This is
+    /// transient UI state and must survive frames until mouse-up.
+    #[serde(skip)]
+    pub(crate) pending_group_drop: Option<(u64, Vec<u64>)>,
+    /// Track ids captured from the original mouse-down; this lets a release
+    /// over a group commit even when the source widget misses drag_stopped.
+    #[serde(skip)]
+    pub(crate) pending_track_drag_ids: Option<Vec<u64>>,
 }
 
 impl Default for ArrangeViewState {
@@ -156,6 +164,8 @@ impl Default for ArrangeViewState {
             selection_anchor_track_id: None,
             exclusive_track_ids: Vec::new(),
             pre_exclusive_track_heights: None,
+            pending_group_drop: None,
+            pending_track_drag_ids: None,
         }
     }
 }
