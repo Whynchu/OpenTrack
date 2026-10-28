@@ -670,6 +670,7 @@ pub struct OpenTrackApp {
     metering_preferences: metering::Preferences,
     preferences_ui: preferences::Window,
     sample_editor: sample_editor::State,
+    midi_pitch_view: sample_editor::PitchViewport,
     sample_editor_active: bool,
     active_note_audition: Option<sample_editor::NoteAuditionRequest>,
     note_audition_stop_at: Option<Instant>,
@@ -1674,7 +1675,7 @@ impl OpenTrackApp {
             .storage
             .and_then(|storage| eframe::get_value::<f64>(storage, "midi-length-quantize"))
             .filter(|value| is_midi_quantize_value(*value))
-            .unwrap_or(1.0);
+            .unwrap_or(0.25);
         let midi_insert_velocity = creation
             .storage
             .and_then(|storage| eframe::get_value::<u8>(storage, "midi-insert-velocity"))
@@ -1817,6 +1818,14 @@ impl OpenTrackApp {
                     .unwrap_or_default();
                 state.pitch_view.sanitize();
                 state
+            },
+            midi_pitch_view: {
+                let mut view: sample_editor::PitchViewport = creation
+                    .storage
+                    .and_then(|storage| eframe::get_value(storage, "midi-editor-pitch-view-v1"))
+                    .unwrap_or_default();
+                view.sanitize();
+                view
             },
             sample_editor_active: false,
             active_note_audition: None,
@@ -6772,19 +6781,28 @@ impl OpenTrackApp {
                             ("Split Loop", ""),
                         ],
                     );
-                    let can_delete = self.project_open
+                    let can_delete_audio = self.project_open
                         && !self.is_recording()
                         && media_pool::selection_target(
                             &self.data.project,
                             &self.arrange_view_state.audio_events,
                         )
                         .is_some();
+                    let can_delete = can_delete_audio
+                        || (self.project_open
+                            && !self.is_recording()
+                            && self.data.project.selected_midi_part_id.is_some());
                     if menu_command(ui, "Delete", "Delete", can_delete).clicked() {
                         self.delete_audio_selection(false);
                         ui.close();
                     }
-                    if menu_command(ui, "Delete with Source File", "Shift+Delete", can_delete)
-                        .clicked()
+                    if menu_command(
+                        ui,
+                        "Delete with Source File",
+                        "Shift+Delete",
+                        can_delete_audio,
+                    )
+                    .clicked()
                     {
                         self.delete_audio_selection(true);
                         ui.close();
@@ -8371,7 +8389,9 @@ impl OpenTrackApp {
                 &mut self.midi_note_drag,
                 &mut self.midi_note_draw,
                 &mut self.midi_controller_drag,
-                self.edit_tool,
+                &mut self.edit_tool,
+                self.data.transport.position_beats,
+                &mut self.midi_pitch_view,
             );
         } else {
             self.midi_note_drag = None;
@@ -9497,6 +9517,7 @@ impl eframe::App for OpenTrackApp {
             "sample-editor-pitch-view-v1",
             &self.sample_editor.pitch_view,
         );
+        eframe::set_value(storage, "midi-editor-pitch-view-v1", &self.midi_pitch_view);
         eframe::set_value(storage, "dock-state", &self.dock_state);
         eframe::set_value(
             storage,
@@ -10295,6 +10316,9 @@ fn show_project(
     context_action: &mut Option<project_controls::Action>,
 ) -> bool {
     let mut modified = false;
+    let mut pending_midi_part_edit = None;
+    let mut pending_midi_part_remove = None;
+    let mut pending_midi_part_split = None;
     if *edit_tool != EditTool::Draw {
         *midi_part_draw = None;
     }
@@ -11413,6 +11437,13 @@ fn show_project(
                         Sense::click_and_drag(),
                     );
                     let midi_track = matches!(track.kind, TrackKind::Midi | TrackKind::Instrument);
+                    if *edit_tool == EditTool::Draw && arrange_response.hovered() {
+                        crate::system_tool_icons::tool_cursor_only_at(
+                            ui,
+                            ToolbarIcon::Draw,
+                            arrange_response.hover_pos(),
+                        );
+                    }
                     if midi_track && *edit_tool == EditTool::Draw {
                         let minimum_part_grid = snap_grid_beats.unwrap_or(1.0);
                         let beat_at_x = |x: f32| {
@@ -12028,20 +12059,23 @@ fn show_project(
                         }
                         let part_left =
                             canvas.min.x + lane_header_width + start_bar as f32 * bar_width;
-                        let part_right = (part_left + (duration_bars as f32 * bar_width).max(8.0))
-                            .min(canvas.max.x);
+                        let part_right =
+                            (part_left + duration_bars as f32 * bar_width).min(canvas.max.x);
                         if part_right <= part_left {
                             continue;
                         }
-                        let part_rect = Rect::from_min_max(
-                            Pos2::new(part_left, top + 6.0),
-                            Pos2::new(part_right, top + media_lane_height - 6.0),
+                        // Match audio event geometry exactly: MIDI parts occupy the full media lane.
+                        let part_rect = Rect::from_min_size(
+                            Pos2::new(part_left, top),
+                            Vec2::new(part_right - part_left, media_lane_height),
                         );
                         let part_color = track_color;
+                        let selected = project.selected_track == Some(row as u32)
+                            && project.selected_midi_part_id == Some(part.id);
                         let part_response = ui.interact(
                             part_rect.intersect(grid_clip),
                             Id::new(("midi-part", part.id)),
-                            Sense::click(),
+                            Sense::click_and_drag(),
                         );
                         if part_response.clicked() || part_response.double_clicked() {
                             let selected_track = Some(row as u32);
@@ -12049,33 +12083,151 @@ fn show_project(
                                 || project.selected_midi_part_id != Some(part.id);
                             project.selected_track = selected_track;
                             project.selected_midi_part_id = Some(part.id);
+                            arrange_view_state.audio_events.clear_selection();
+                            arrange_view_state.selected_track_ids.clear();
+                            arrange_view_state.selected_track_ids.insert(track.id);
+                            arrange_view_state.selection_anchor_track_id = Some(track.id);
                             modified |= selection_changed;
                         }
                         if part_response.double_clicked() {
                             *midi_editor_open = true;
                         }
+                        if part_response.clicked_by(egui::PointerButton::Primary)
+                            && *edit_tool == EditTool::Split
+                            && let Some(pointer) = part_response.interact_pointer_pos()
+                        {
+                            let beat =
+                                f64::from((pointer.x - grid_left) / bar_width) * beats_per_bar_f64;
+                            let beat = snap_grid_beats.map_or(beat, |grid| {
+                                crate::timeline::snap_beats_to_grid(beat, grid)
+                            });
+                            pending_midi_part_split = Some((track.id, part.id, beat));
+                        }
+                        if part_response.clicked_by(egui::PointerButton::Primary)
+                            && *edit_tool == EditTool::Delete
+                        {
+                            pending_midi_part_remove = Some((track.id, part.id));
+                        }
+                        if part_response.hovered() && *edit_tool == EditTool::Draw {
+                            crate::system_tool_icons::tool_cursor_only_at(
+                                ui,
+                                ToolbarIcon::Draw,
+                                part_response.hover_pos(),
+                            );
+                        } else if part_response.hovered() && selected {
+                            let pointer = part_response.hover_pos();
+                            if pointer.is_some_and(|pos| pos.x >= part_right - 9.0) {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            } else {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                            }
+                        }
+                        if part_response.drag_started()
+                            && *edit_tool == EditTool::Select
+                            && let Some(pointer) =
+                                ui.ctx().input(|input| input.pointer.press_origin())
+                        {
+                            project.selected_track = Some(row as u32);
+                            project.selected_midi_part_id = Some(part.id);
+                            arrange_view_state.audio_events.clear_selection();
+                            arrange_view_state.selected_track_ids.clear();
+                            arrange_view_state.selected_track_ids.insert(track.id);
+                            arrange_view_state.selection_anchor_track_id = Some(track.id);
+                            let pointer_beats =
+                                f64::from((pointer.x - grid_left) / bar_width) * beats_per_bar_f64;
+                            let resize = pointer.x >= part_right - 9.0;
+                            arrange_view_state.midi_part_drag = Some((
+                                track.id,
+                                part.id,
+                                resize,
+                                part.start_beats,
+                                part.duration_beats,
+                                if resize {
+                                    0.0
+                                } else {
+                                    pointer_beats - part.start_beats
+                                },
+                            ));
+                        }
+                        if part_response.dragged()
+                            && let Some((
+                                drag_track,
+                                drag_part,
+                                resize,
+                                original_start,
+                                original_duration,
+                                grab,
+                            )) = arrange_view_state.midi_part_drag
+                            && drag_track == track.id
+                            && drag_part == part.id
+                            && let Some(pointer) = part_response.interact_pointer_pos()
+                        {
+                            let pointer_beats =
+                                f64::from((pointer.x - grid_left) / bar_width) * beats_per_bar_f64;
+                            let snap = snap_grid_beats.unwrap_or(0.0625).max(0.0625);
+                            if resize {
+                                let end = crate::timeline::snap_beats_to_grid(pointer_beats, snap);
+                                let duration = (end - original_start).max(0.0625);
+                                if (part.duration_beats - duration).abs() > f64::EPSILON {
+                                    pending_midi_part_edit =
+                                        Some((track.id, part.id, original_start, duration));
+                                }
+                            } else {
+                                let start = crate::timeline::snap_beats_to_grid(
+                                    (pointer_beats - grab).max(0.0),
+                                    snap,
+                                );
+                                if (part.start_beats - start).abs() > f64::EPSILON {
+                                    pending_midi_part_edit =
+                                        Some((track.id, part.id, start, original_duration));
+                                }
+                            }
+                        }
+                        if part_response.drag_stopped() {
+                            arrange_view_state.midi_part_drag = None;
+                        }
+                        grid_painter.rect_filled(part_rect, egui::CornerRadius::ZERO, part_color);
+                        let part_name_band = Rect::from_min_max(
+                            Pos2::new(
+                                part_rect.left(),
+                                (part_rect.bottom() - 13.0).max(part_rect.top()),
+                            ),
+                            part_rect.max,
+                        );
                         grid_painter.rect_filled(
-                            part_rect,
-                            egui::CornerRadius::same(4),
-                            part_color.gamma_multiply(0.20),
+                            part_name_band,
+                            egui::CornerRadius::ZERO,
+                            if selected {
+                                Color32::BLACK
+                            } else {
+                                Color32::BLACK
+                            },
                         );
                         grid_painter.rect_stroke(
                             part_rect,
-                            egui::CornerRadius::same(4),
+                            egui::CornerRadius::ZERO,
                             Stroke::new(
-                                if project.selected_midi_part_id == Some(part.id) {
-                                    2.0
+                                1.0,
+                                if selected {
+                                    Color32::WHITE
                                 } else {
-                                    1.0
-                                },
-                                if project.selected_midi_part_id == Some(part.id) {
-                                    theme::palette(ui).accent
-                                } else {
-                                    part_color
+                                    Color32::BLACK
                                 },
                             ),
                             egui::StrokeKind::Inside,
                         );
+                        if selected {
+                            for point in [
+                                Pos2::new(part_rect.left() + 3.0, part_rect.bottom() - 3.0),
+                                Pos2::new(part_rect.right() - 3.0, part_rect.bottom() - 3.0),
+                            ] {
+                                grid_painter.rect_filled(
+                                    Rect::from_center_size(point, Vec2::splat(6.0)),
+                                    0.0,
+                                    Color32::WHITE,
+                                );
+                            }
+                        }
                         let note_painter = grid_painter.with_clip_rect(part_rect.shrink(2.0));
                         for note in &part.notes {
                             let absolute_start = part.start_beats + note.start_beats;
@@ -12097,13 +12249,19 @@ fn show_project(
                                 part_color,
                             );
                         }
-                        grid_painter.with_clip_rect(part_rect.shrink(5.0)).text(
-                            Pos2::new(part_rect.left() + 5.0, part_rect.top() + 3.0),
-                            Align2::LEFT_TOP,
-                            &part.name,
-                            FontId::proportional(theme::type_size::LABEL),
-                            theme::palette(ui).text,
-                        );
+                        grid_painter
+                            .with_clip_rect(part_name_band.shrink(2.0))
+                            .text(
+                                Pos2::new(part_name_band.left() + 4.0, part_name_band.center().y),
+                                Align2::LEFT_CENTER,
+                                &part.name,
+                                FontId::proportional(theme::type_size::LABEL),
+                                if selected {
+                                    Color32::WHITE
+                                } else {
+                                    project_controls::label_ink(part_color)
+                                },
+                            );
                     }
                     if let Some(draw) = *midi_part_draw
                         && draw.track_id == track.id
@@ -12138,6 +12296,45 @@ fn show_project(
                 }
             }
 
+            if let Some((track_id, part_id, start, duration)) = pending_midi_part_edit.take()
+                && let Some(part) = project
+                    .tracks
+                    .iter_mut()
+                    .find(|track| track.id == track_id)
+                    .and_then(|track| track.midi_parts.iter_mut().find(|part| part.id == part_id))
+            {
+                modified |= (part.start_beats - start).abs() > f64::EPSILON
+                    || (part.duration_beats - duration).abs() > f64::EPSILON;
+                part.start_beats = start;
+                part.duration_beats = duration;
+            }
+
+            if let Some((track_id, part_id)) = pending_midi_part_remove.take()
+                && let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id)
+            {
+                let before = track.midi_parts.len();
+                track.midi_parts.retain(|part| part.id != part_id);
+                modified |= track.midi_parts.len() != before;
+                if project.selected_midi_part_id == Some(part_id) {
+                    project.selected_midi_part_id = None;
+                    *midi_editor_open = false;
+                }
+                arrange_view_state.midi_part_drag = None;
+            }
+
+            if let Some((track_id, part_id, beat)) = pending_midi_part_split.take()
+                && let Some(track_index) =
+                    project.tracks.iter().position(|track| track.id == track_id)
+                && let Some(new_part_id) = split_midi_part(project, track_index, part_id, beat)
+            {
+                project.selected_track = Some(track_index as u32);
+                project.selected_midi_part_id = Some(new_part_id);
+                arrange_view_state.selected_track_ids.clear();
+                arrange_view_state.selected_track_ids.insert(track_id);
+                arrange_view_state.selection_anchor_track_id = Some(track_id);
+                modified = true;
+            }
+
             if let Some((track_id, first, last)) = pending_midi_part.take()
                 && let Some(track_index) =
                     project.tracks.iter().position(|track| track.id == track_id)
@@ -12146,7 +12343,10 @@ fn show_project(
                 let duration = (first.max(last) - start).max(snap_grid_beats.unwrap_or(1.0));
                 let previous_track = project.selected_track;
                 let previous_part = project.selected_midi_part_id;
-                if project.add_midi_part(track_index, start, duration).is_some() {
+                if project
+                    .add_midi_part(track_index, start, duration)
+                    .is_some()
+                {
                     project.selected_track = previous_track;
                     project.selected_midi_part_id = previous_part;
                     modified = true;
@@ -12892,6 +13092,88 @@ fn select_arrange_track(
     *selected_midi_part_id = None;
 }
 
+fn split_midi_part(
+    project: &mut Project,
+    track_index: usize,
+    part_id: u64,
+    beat: f64,
+) -> Option<u64> {
+    let part_index = project
+        .tracks
+        .get(track_index)?
+        .midi_parts
+        .iter()
+        .position(|part| part.id == part_id)?;
+    let original = project.tracks[track_index].midi_parts[part_index].clone();
+    let split_offset = beat - original.start_beats;
+    if !split_offset.is_finite()
+        || split_offset < 0.0625
+        || split_offset > original.duration_beats - 0.0625
+    {
+        return None;
+    }
+
+    {
+        let left = &mut project.tracks[track_index].midi_parts[part_index];
+        left.duration_beats = split_offset;
+        left.notes.retain_mut(|note| {
+            if note.start_beats >= split_offset {
+                return false;
+            }
+            note.duration_beats = note.duration_beats.min(split_offset - note.start_beats);
+            note.duration_beats > 0.0
+        });
+        left.controller_events
+            .retain(|event| event.position_beats < split_offset);
+    }
+
+    let new_part_id = project.add_midi_part(
+        track_index,
+        original.start_beats + split_offset,
+        original.duration_beats - split_offset,
+    )?;
+    {
+        let new_part = project.tracks[track_index]
+            .midi_parts
+            .iter_mut()
+            .find(|part| part.id == new_part_id)?;
+        new_part.name = format!("{} (split)", original.name);
+    }
+
+    for note in original.notes {
+        let end = note.start_beats + note.duration_beats;
+        if end <= split_offset {
+            continue;
+        }
+        let start = (note.start_beats - split_offset).max(0.0);
+        let duration = end.min(original.duration_beats) - split_offset.max(note.start_beats);
+        if duration > 0.0 {
+            let _ = project.add_midi_note_on_channel(
+                track_index,
+                new_part_id,
+                start,
+                duration,
+                note.pitch,
+                note.channel,
+                note.velocity,
+            );
+        }
+    }
+    for event in original.controller_events {
+        if event.position_beats >= split_offset {
+            let _ = project.add_midi_controller_event_on_channel(
+                track_index,
+                new_part_id,
+                event.position_beats - split_offset,
+                event.controller,
+                event.channel,
+                event.value,
+            );
+        }
+    }
+    Some(new_part_id)
+}
+
 fn show_midi_editor(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -12905,7 +13187,9 @@ fn show_midi_editor(
     note_drag: &mut Option<MidiNoteDrag>,
     note_draw: &mut Option<MidiNoteDraw>,
     controller_drag: &mut Option<MidiControllerDrag>,
-    tool: EditTool,
+    tool: &mut EditTool,
+    transport_position_beats: f64,
+    pitch_view: &mut sample_editor::PitchViewport,
 ) -> bool {
     let Some(track) = project.tracks.get(track_index) else {
         return false;
@@ -12916,21 +13200,20 @@ fn show_midi_editor(
     let Some(part_index) = track.midi_parts.iter().position(|part| part.id == part_id) else {
         return false;
     };
-    let track_kind = track.kind;
     let track_id = track.id;
     let track_name = track.name.clone();
-    let part = &track.midi_parts[part_index];
-    let part_name = part.name.clone();
-    let part_duration_beats = part.duration_beats;
-    let note_count = part.notes.len();
-    let visible_beats = part
+    let track_color = project_controls::track_color(track);
+    let part_name = track.midi_parts[part_index].name.clone();
+    let part_duration_beats = track.midi_parts[part_index].duration_beats;
+    let note_count = track.midi_parts[part_index].notes.len();
+    let visible_beats = track.midi_parts[part_index]
         .notes
         .iter()
         .map(|note| note.start_beats + note.duration_beats)
         .fold(part_duration_beats, f64::max)
         .ceil()
         .clamp(1.0, 4_096.0) as usize;
-    let selected_note_index = part
+    let selected_note_index = track.midi_parts[part_index]
         .notes
         .iter()
         .position(|note| Some(note.id) == *selected_note_id);
@@ -12959,689 +13242,985 @@ fn show_midi_editor(
         1.0
     };
 
-    ui.heading(format!("MIDI Editor — {track_name} — {part_name}"));
-    ui.horizontal_wrapped(|ui| {
-        if tool == EditTool::Draw {
-            ui.label("Pencil: click or drag an empty cell to draw a note.");
-        } else {
-            ui.label("Select a note to edit; choose the pencil tool to add notes.");
-        }
-        ui.label("Drag a note to move it.");
-        ui.label("Drag a note's right edge to resize it.");
-        ui.label("Right-click a note to remove it.");
-        ui.separator();
-        ui.label(format!(
-            "{note_count} notes · {:.2} beats",
-            part_duration_beats
-        ));
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Position snap");
-        egui::ComboBox::from_id_salt(("midi-position-snap", track_id, part_id))
-            .selected_text(midi_quantize_label(*position_quantize_beats))
-            .show_ui(ui, |ui| {
-                for (beats, label) in MIDI_QUANTIZE_VALUES {
-                    ui.selectable_value(position_quantize_beats, beats, label);
-                }
-            });
-        ui.label("Insert length");
-        egui::ComboBox::from_id_salt(("midi-insert-length", track_id, part_id))
-            .selected_text(midi_quantize_label(*length_quantize_beats))
-            .show_ui(ui, |ui| {
-                for (beats, label) in MIDI_QUANTIZE_VALUES {
-                    ui.selectable_value(length_quantize_beats, beats, label);
-                }
-            });
-        if selected_note_index.is_none() {
-            ui.add(egui::Slider::new(insert_velocity, 1..=127).text("Insert velocity"));
-        }
-    });
-    if let Some(note_index) = selected_note_index {
-        let part = &mut project.tracks[track_index].midi_parts[part_index];
-        let note = &mut part.notes[note_index];
-        ui.horizontal(|ui| {
-            ui.label(format!("Selected note: {}", midi_pitch_label(note.pitch)));
-            let max_length = part_duration_beats - note.start_beats;
-            if max_length >= 0.0625 {
-                modified |= ui
-                    .add(
-                        egui::Slider::new(&mut note.duration_beats, 0.0625..=max_length)
-                            .logarithmic(true)
-                            .text("Length"),
+    let bounds = ui.available_rect_before_wrap();
+    let toolbar = Rect::from_min_size(bounds.min, Vec2::new(bounds.width(), 28.0));
+    let info = Rect::from_min_size(
+        Pos2::new(bounds.left(), toolbar.bottom() + 2.0),
+        Vec2::new(bounds.width(), 38.0),
+    );
+    let overview = Rect::from_min_size(
+        Pos2::new(bounds.left(), info.bottom() + 3.0),
+        Vec2::new(bounds.width(), 28.0),
+    );
+    // Reserve the same fixed-height header stack as the Audio Editor before
+    // laying out the inspector and piano roll beneath it.
+    let _header_reservation = ui.allocate_rect(
+        Rect::from_min_max(bounds.min, Pos2::new(bounds.right(), overview.bottom())),
+        Sense::hover(),
+    );
+    let piano_view = Rect::from_min_max(
+        Pos2::new(bounds.left() + 232.0 + 5.0 + 64.0, overview.bottom() + 2.0),
+        Pos2::new(bounds.right() - 20.0, bounds.bottom() - 22.0),
+    );
+    let palette = theme::palette(ui);
+    let mut fit_part = false;
+    ui.painter()
+        .rect_filled(toolbar, 0.0, palette.surface_raised);
+    ui.painter().rect_filled(info, 0.0, palette.surface);
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(toolbar.shrink2(Vec2::new(4.0, 2.0))),
+        |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+            ui.horizontal(|ui| {
+                sample_editor::toolbar_tool(
+                    ui,
+                    tool,
+                    EditTool::Select,
+                    ToolbarIcon::Select,
+                    "Object Selection",
+                );
+                sample_editor::toolbar_tool(
+                    ui,
+                    tool,
+                    EditTool::Range,
+                    ToolbarIcon::Range,
+                    "Range Selection",
+                );
+                sample_editor::toolbar_tool(
+                    ui,
+                    tool,
+                    EditTool::Split,
+                    ToolbarIcon::Split,
+                    "Scissors",
+                );
+                fit_part =
+                    toolbar_icon_button(ui, ToolbarIcon::Zoom, "Fit Part", false, true).clicked();
+                ui.add_space(9.0);
+                ui.label("Bars + Beats");
+                ui.label(format!(
+                    "Tempo {:.2}   {}/{}",
+                    project.tempo_bpm, project.beats_per_bar, project.beat_unit
+                ));
+                ui.add_space(8.0);
+                let mut snap_enabled = true;
+                ui.checkbox(&mut snap_enabled, "Snap");
+                egui::ComboBox::from_id_salt(("midi-grid", track_id, part_id))
+                    .width(88.0)
+                    .selected_text(midi_quantize_label(*position_quantize_beats))
+                    .show_ui(ui, |ui| {
+                        for (beats, label) in MIDI_QUANTIZE_VALUES {
+                            ui.selectable_value(position_quantize_beats, beats, label);
+                        }
+                    });
+                egui::ComboBox::from_id_salt(("midi-length", track_id, part_id))
+                    .width(70.0)
+                    .selected_text(midi_quantize_label(*length_quantize_beats))
+                    .show_ui(ui, |ui| {
+                        for (beats, label) in MIDI_QUANTIZE_VALUES {
+                            ui.selectable_value(length_quantize_beats, beats, label);
+                        }
+                    });
+                ui.add_enabled(false, egui::Button::new("Split at Selection"));
+                ui.label(format!(
+                    "Cursor {}",
+                    format_transport_position(
+                        transport_position_beats,
+                        project.beats_per_bar,
+                        project.beat_unit
                     )
-                    .changed();
-            } else {
-                ui.label("Length fixed by part boundary");
-            }
-            modified |= ui
-                .add(egui::Slider::new(&mut note.velocity, 1..=127).text("Velocity"))
-                .changed();
-        });
-    }
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Controller lane");
-        egui::ComboBox::from_id_salt(("midi-controller-lane", track_id, part_id))
-            .selected_text(midi_controller_label(*controller_number))
-            .show_ui(ui, |ui| {
-                for (controller, label) in MIDI_CONTROLLER_VALUES {
-                    ui.selectable_value(controller_number, controller, label);
-                }
+                ));
             });
-        ui.label("Click to add a point, drag to edit, right-click to remove.");
-    });
-    ui.separator();
-
-    const KEYBOARD_WIDTH: f32 = 88.0;
-    const RULER_HEIGHT: f32 = 26.0;
-    const ROW_HEIGHT: f32 = 14.0;
+        },
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(info.shrink2(Vec2::new(4.0, 0.0))),
+        |ui| {
+            let width = 106.0_f32.min((info.width() - 45.0) / 6.0);
+            ui.spacing_mut().item_spacing = Vec2::new(5.0, 0.0);
+            ui.horizontal_top(|ui| {
+                sample_editor::field(
+                    ui,
+                    width,
+                    "Position (beats)",
+                    &mut project.tracks[track_index].midi_parts[part_index].start_beats,
+                    0.0..=1e8,
+                    0.01,
+                    true,
+                );
+                sample_editor::field(
+                    ui,
+                    width,
+                    "Length (beats)",
+                    &mut project.tracks[track_index].midi_parts[part_index].duration_beats,
+                    0.0625..=1e8,
+                    0.01,
+                    true,
+                );
+                let mut pitch = selected_note_index
+                    .map(|i| {
+                        f64::from(project.tracks[track_index].midi_parts[part_index].notes[i].pitch)
+                    })
+                    .unwrap_or(0.0);
+                sample_editor::field(
+                    ui,
+                    width,
+                    "Pitch",
+                    &mut pitch,
+                    0.0..=127.0,
+                    1.0,
+                    selected_note_index.is_some(),
+                );
+                let mut velocity = selected_note_index
+                    .map(|i| {
+                        f64::from(
+                            project.tracks[track_index].midi_parts[part_index].notes[i].velocity,
+                        )
+                    })
+                    .unwrap_or(f64::from(*insert_velocity));
+                if sample_editor::field(
+                    ui,
+                    width,
+                    "Velocity",
+                    &mut velocity,
+                    1.0..=127.0,
+                    1.0,
+                    true,
+                ) {
+                    *insert_velocity = velocity.round() as u8;
+                }
+                sample_editor::field(
+                    ui,
+                    width,
+                    "Note Length",
+                    &mut *length_quantize_beats,
+                    0.0625..=64.0,
+                    0.01,
+                    true,
+                );
+                let mut notes = note_count as f64;
+                sample_editor::field(ui, width, "Notes", &mut notes, 0.0..=1e8, 1.0, false);
+            });
+        },
+    );
+    let overview_response = ui.interact(
+        overview,
+        ui.id().with(("midi-overview", track_id, part_id)),
+        Sense::click_and_drag(),
+    );
+    ui.painter().rect_filled(overview, 0.0, palette.canvas);
+    let overview_part = Rect::from_min_max(
+        Pos2::new(overview.left() + 2.0, overview.top() + 3.0),
+        Pos2::new(overview.right() - 2.0, overview.bottom() - 3.0),
+    );
+    ui.painter()
+        .rect_filled(overview_part, 0.0, palette.canvas_alternate);
+    for note in &project.tracks[track_index].midi_parts[part_index].notes {
+        let left = overview_part.left()
+            + (note.start_beats / visible_beats as f64) as f32 * overview_part.width();
+        let right = overview_part.left()
+            + ((note.start_beats + note.duration_beats) / visible_beats as f64) as f32
+                * overview_part.width();
+        let pitch_y =
+            overview_part.bottom() - (f32::from(note.pitch) / 127.0) * overview_part.height();
+        ui.painter().line_segment(
+            [
+                Pos2::new(left, pitch_y),
+                Pos2::new(right.max(left + 1.0), pitch_y),
+            ],
+            Stroke::new(1.0, track_color.gamma_multiply(0.8)),
+        );
+    }
+    const KEYBOARD_WIDTH: f32 = 64.0;
+    const RULER_HEIGHT: f32 = 22.0;
     const BEAT_WIDTH: f32 = 44.0;
+    const CONTROLLER_LANE_HEIGHT: f32 = 126.0;
     let bpb = usize::from(project.beats_per_bar.max(1));
+    pitch_view.sanitize();
+    match crate::view_controls::wheel(ui, piano_view) {
+        Some(crate::view_controls::WheelAction::VerticalPan(amount)) => pitch_view.scroll(amount),
+        Some(crate::view_controls::WheelAction::VerticalZoom(amount)) => {
+            pitch_view.zoom_scroll(amount)
+        }
+        _ => {}
+    }
+    let note_area_height = (piano_view.height() - RULER_HEIGHT - CONTROLLER_LANE_HEIGHT).max(72.0);
     let size = Vec2::new(
         KEYBOARD_WIDTH + visible_beats as f32 * BEAT_WIDTH,
-        RULER_HEIGHT + 128.0 * ROW_HEIGHT,
+        RULER_HEIGHT + note_area_height,
     );
     let mut edit_action = None;
-    egui::ScrollArea::both()
-        .id_salt(("midi-piano-roll", track_id, part_id))
-        .max_height(460.0)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let (canvas, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
-            if tool == EditTool::Draw && response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-            }
-            let painter = ui.painter_at(canvas);
-            painter.rect_filled(canvas, egui::CornerRadius::ZERO, theme::palette(ui).canvas);
-            painter.rect_filled(
-                Rect::from_min_size(canvas.min, Vec2::new(size.x, RULER_HEIGHT)),
-                egui::CornerRadius::ZERO,
-                theme::palette(ui).surface,
-            );
-
-            for row in 0..128_usize {
-                let pitch = (127 - row) as u8;
-                let top = canvas.min.y + RULER_HEIGHT + row as f32 * ROW_HEIGHT;
-                let key_rect = Rect::from_min_size(
-                    Pos2::new(canvas.min.x, top),
-                    Vec2::new(KEYBOARD_WIDTH, ROW_HEIGHT),
-                );
-                let pitch_class = pitch % 12;
-                let black_key = matches!(pitch_class, 1 | 3 | 6 | 8 | 10);
+    let mut pitch_controls_rects = None;
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(232.0);
+            egui::Frame::new()
+                .fill(palette.surface_raised)
+                .inner_margin(egui::Margin::same(7))
+                .show(ui, |ui| {
+                    ui.set_min_height(260.0);
+                    let track_header = ui
+                        .allocate_exact_size(Vec2::new(218.0, 22.0), Sense::hover())
+                        .0;
+                    ui.painter().rect_filled(track_header, 0.0, track_color);
+                    ui.painter().with_clip_rect(track_header).text(
+                        track_header.left_center() + Vec2::new(4.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        &track_name,
+                        FontId::proportional(11.0),
+                        project_controls::label_ink(track_color),
+                    );
+                    ui.separator();
+                    egui::CollapsingHeader::new("Part")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            ui.label(&part_name);
+                            ui.label(format!("{:.3} beats", part_duration_beats));
+                        });
+                    ui.separator();
+                    if selected_note_index.is_none() {
+                        ui.add(egui::Slider::new(insert_velocity, 1..=127).text("Velocity"));
+                    }
+                    ui.separator();
+                    if let Some(note_index) = selected_note_index {
+                        let note = &mut project.tracks[track_index].midi_parts[part_index].notes
+                            [note_index];
+                        ui.label(format!("Selected {}", midi_pitch_label(note.pitch)));
+                        let max_length = part_duration_beats - note.start_beats;
+                        if max_length >= 0.0625 {
+                            modified |= ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut note.duration_beats,
+                                        0.0625..=max_length,
+                                    )
+                                    .logarithmic(true)
+                                    .text("Length"),
+                                )
+                                .changed();
+                        }
+                        modified |= ui
+                            .add(egui::Slider::new(&mut note.velocity, 1..=127).text("Velocity"))
+                            .changed();
+                    } else {
+                        ui.label("Select a note to edit its length and velocity.");
+                    }
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("CONTROLLER")
+                            .small()
+                            .color(palette.muted),
+                    );
+                    egui::ComboBox::from_id_salt(("midi-controller-lane", track_id, part_id))
+                        .selected_text(midi_controller_label(*controller_number))
+                        .show_ui(ui, |ui| {
+                            for (controller, label) in MIDI_CONTROLLER_VALUES {
+                                ui.selectable_value(controller_number, controller, label);
+                            }
+                        });
+                    ui.label("Click to add a point; drag to edit; right-click to remove.");
+                });
+        });
+        let scroll_output = egui::ScrollArea::both()
+            .id_salt(("midi-piano-roll", track_id, part_id))
+            .max_height(piano_view.height())
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let (canvas, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+                let painter = ui.painter_at(canvas);
+                painter.rect_filled(canvas, egui::CornerRadius::ZERO, theme::palette(ui).canvas);
                 painter.rect_filled(
-                    key_rect,
+                    Rect::from_min_size(canvas.min, Vec2::new(size.x, RULER_HEIGHT)),
                     egui::CornerRadius::ZERO,
-                    if black_key {
-                        theme::palette(ui).midi_key_black
-                    } else {
-                        theme::palette(ui).midi_key_white
-                    },
+                    theme::palette(ui).surface,
                 );
-                let row_rect = Rect::from_min_max(
-                    Pos2::new(canvas.min.x + KEYBOARD_WIDTH, top),
-                    Pos2::new(canvas.max.x, top + ROW_HEIGHT),
-                );
-                painter.rect_filled(
-                    row_rect,
-                    egui::CornerRadius::ZERO,
-                    if black_key {
-                        theme::palette(ui).midi_row_black
-                    } else {
-                        theme::palette(ui).midi_row_white
-                    },
-                );
-                painter.line_segment(
-                    [row_rect.left_bottom(), row_rect.right_bottom()],
-                    Stroke::new(0.5, theme::palette(ui).surface_raised),
-                );
-                painter.text(
-                    Pos2::new(key_rect.left() + 7.0, key_rect.center().y),
-                    Align2::LEFT_CENTER,
-                    midi_pitch_label(pitch),
-                    FontId::monospace(theme::type_size::SMALL),
-                    if black_key {
-                        Color32::WHITE
-                    } else {
-                        theme::palette(ui).text
-                    },
-                );
-            }
 
-            for beat in 0..=visible_beats {
-                let x = canvas.min.x + KEYBOARD_WIDTH + beat as f32 * BEAT_WIDTH;
-                let bar_line = beat % bpb == 0;
-                painter.line_segment(
-                    [
-                        Pos2::new(x, canvas.min.y + RULER_HEIGHT),
-                        Pos2::new(x, canvas.max.y),
-                    ],
-                    Stroke::new(
-                        if bar_line { 1.0 } else { 0.5 },
-                        if bar_line {
-                            theme::palette(ui).grid
-                        } else {
-                            theme::palette(ui).surface_raised
-                        },
+                let pitch_area = Rect::from_min_max(
+                    Pos2::new(canvas.left() + KEYBOARD_WIDTH, canvas.top() + RULER_HEIGHT),
+                    canvas.max,
+                );
+                let keyboard_area = Rect::from_min_max(
+                    Pos2::new(canvas.left(), pitch_area.top()),
+                    Pos2::new(canvas.left() + KEYBOARD_WIDTH, pitch_area.bottom()),
+                );
+                pitch_controls_rects = Some((keyboard_area, pitch_area));
+                let row_height = pitch_area.height() / pitch_view.span;
+                for pitch in 0..=127_i32 {
+                    let y = pitch_view.y(pitch as f32, pitch_area);
+                    let row_rect = Rect::from_min_max(
+                        Pos2::new(pitch_area.left(), y - row_height * 0.5),
+                        Pos2::new(pitch_area.right(), y + row_height * 0.5),
+                    )
+                    .intersect(pitch_area);
+                    if row_rect.is_positive() {
+                        let key_rect = Rect::from_min_max(
+                            Pos2::new(keyboard_area.left(), row_rect.top()),
+                            Pos2::new(keyboard_area.right(), row_rect.bottom()),
+                        );
+                        sample_editor::paint_pitch_key_row(
+                            ui, key_rect, row_rect, pitch, row_height,
+                        );
+                    }
+                }
+
+                for beat in 0..=visible_beats {
+                    let x = canvas.min.x + KEYBOARD_WIDTH + beat as f32 * BEAT_WIDTH;
+                    let bar_line = beat % bpb == 0;
+                    painter.line_segment(
+                        [
+                            Pos2::new(x, pitch_area.top()),
+                            Pos2::new(x, pitch_area.bottom()),
+                        ],
+                        Stroke::new(
+                            if bar_line { 1.0 } else { 0.5 },
+                            if bar_line {
+                                theme::palette(ui).grid
+                            } else {
+                                theme::palette(ui).surface_raised
+                            },
+                        ),
+                    );
+                    if bar_line && beat < visible_beats {
+                        painter.text(
+                            Pos2::new(x + 4.0, canvas.min.y + RULER_HEIGHT * 0.5),
+                            Align2::LEFT_CENTER,
+                            format_transport_position(
+                                beat as f64,
+                                project.beats_per_bar,
+                                project.beat_unit,
+                            ),
+                            FontId::monospace(theme::type_size::LABEL),
+                            theme::palette(ui).muted,
+                        );
+                    }
+                }
+
+                let part_grid = Rect::from_min_max(
+                    Pos2::new(canvas.min.x + KEYBOARD_WIDTH, canvas.min.y + RULER_HEIGHT),
+                    Pos2::new(
+                        (canvas.min.x + KEYBOARD_WIDTH + part_duration_beats as f32 * BEAT_WIDTH)
+                            .min(canvas.max.x),
+                        canvas.max.y,
                     ),
                 );
-                if bar_line && beat < visible_beats {
-                    painter.text(
-                        Pos2::new(x + 4.0, canvas.min.y + RULER_HEIGHT * 0.5),
-                        Align2::LEFT_CENTER,
-                        format!("Bar {}", beat / bpb + 1),
-                        FontId::monospace(theme::type_size::LABEL),
+                let note_painter = painter.with_clip_rect(part_grid);
+                for note in &project.tracks[track_index].midi_parts[part_index].notes {
+                    let note_rect = Rect::from_min_size(
+                        Pos2::new(
+                            canvas.min.x + KEYBOARD_WIDTH + note.start_beats as f32 * BEAT_WIDTH,
+                            pitch_view.y(f32::from(note.pitch), part_grid) - row_height * 0.5,
+                        ),
+                        Vec2::new(
+                            (note.duration_beats as f32 * BEAT_WIDTH).max(3.0),
+                            (row_height - 1.0).max(1.0),
+                        ),
+                    );
+                    let note_color =
+                        track_color.gamma_multiply(0.35 + 0.65 * f32::from(note.velocity) / 127.0);
+                    note_painter.rect_filled(note_rect, egui::CornerRadius::same(2), note_color);
+                    note_painter.rect_stroke(
+                        note_rect,
+                        egui::CornerRadius::same(2),
+                        Stroke::new(
+                            if Some(note.id) == *selected_note_id {
+                                2.0
+                            } else {
+                                1.0
+                            },
+                            if Some(note.id) == *selected_note_id {
+                                Color32::WHITE
+                            } else {
+                                track_color
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if let Some(draw) = note_draw
+                    .as_ref()
+                    .filter(|draw| draw.track_id == track_id && draw.part_id == part_id)
+                {
+                    let preview = Rect::from_min_size(
+                        Pos2::new(
+                            canvas.min.x + KEYBOARD_WIDTH + draw.start_beats as f32 * BEAT_WIDTH,
+                            pitch_view.y(f32::from(draw.pitch), part_grid) - row_height * 0.5,
+                        ),
+                        Vec2::new(
+                            ((draw.end_beats - draw.start_beats) as f32 * BEAT_WIDTH).max(3.0),
+                            (row_height - 1.0).max(1.0),
+                        ),
+                    );
+                    note_painter.rect_filled(
+                        preview,
+                        egui::CornerRadius::same(2),
+                        track_color.gamma_multiply(0.35),
+                    );
+                    note_painter.rect_stroke(
+                        preview,
+                        egui::CornerRadius::same(2),
+                        Stroke::new(1.5, Color32::WHITE),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if note_draw.is_none()
+                    && let Some(pointer) =
+                        response.hover_pos().filter(|pos| part_grid.contains(*pos))
+                {
+                    let beat = f64::from((pointer.x - canvas.min.x - KEYBOARD_WIDTH) / BEAT_WIDTH);
+                    let pitch = pitch_view.center + (part_grid.center().y - pointer.y) / row_height;
+                    if beat >= 0.0
+                        && beat < part_duration_beats
+                        && (0.0..=127.0).contains(&pitch)
+                        && !project.tracks[track_index].midi_parts[part_index]
+                            .notes
+                            .iter()
+                            .any(|note| {
+                                f32::from(note.pitch).round() == pitch.round()
+                                    && beat >= note.start_beats
+                                    && beat < note.start_beats + note.duration_beats
+                            })
+                    {
+                        let start = ((beat / position_quantize).floor() * position_quantize)
+                            .clamp(0.0, part_duration_beats);
+                        let duration = insert_length.min(part_duration_beats - start);
+                        if duration >= 0.0625 {
+                            let ghost = Rect::from_min_size(
+                                Pos2::new(
+                                    canvas.min.x + KEYBOARD_WIDTH + start as f32 * BEAT_WIDTH,
+                                    pitch_view.y(pitch.round(), part_grid) - row_height * 0.5,
+                                ),
+                                Vec2::new(
+                                    (duration as f32 * BEAT_WIDTH).max(3.0),
+                                    (row_height - 1.0).max(1.0),
+                                ),
+                            );
+                            note_painter.rect_filled(
+                                ghost,
+                                egui::CornerRadius::same(2),
+                                track_color.gamma_multiply(0.38),
+                            );
+                            note_painter.rect_stroke(
+                                ghost,
+                                egui::CornerRadius::same(2),
+                                Stroke::new(1.0, track_color),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
+
+                // Note creation and editing are MIDI-editor-local gestures. A
+                // primary-button drag may start a new note regardless of the
+                // project Draw tool; middle-button drag belongs only to pan.
+                if response.drag_started_by(egui::PointerButton::Primary) {
+                    let press_position = ui
+                        .ctx()
+                        .input(|input| input.pointer.press_origin())
+                        .or_else(|| response.interact_pointer_pos());
+                    if let Some(pointer) = press_position {
+                        let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
+                        let pitch_position =
+                            pitch_view.center + (part_grid.center().y - pointer.y) / row_height;
+                        let beat_position = f64::from(beat_x / BEAT_WIDTH);
+                        if beat_x >= 0.0
+                            && part_grid.contains(pointer)
+                            && (0.0..=127.0).contains(&pitch_position)
+                            && beat_position < part_duration_beats
+                        {
+                            let pitch = pitch_position.round() as u8;
+                            let note_hit = project.tracks[track_index].midi_parts[part_index]
+                                .notes
+                                .iter()
+                                .find(|note| {
+                                    let note_left = canvas.min.x
+                                        + KEYBOARD_WIDTH
+                                        + note.start_beats as f32 * BEAT_WIDTH;
+                                    let note_right = note_left
+                                        + (note.duration_beats as f32 * BEAT_WIDTH).max(3.0);
+                                    note.pitch == pitch
+                                        && pointer.x >= note_left
+                                        && pointer.x < note_right
+                                })
+                                .map(|note| {
+                                    (
+                                        note.id,
+                                        note.start_beats,
+                                        note.duration_beats,
+                                        note.pitch,
+                                        canvas.min.x
+                                            + KEYBOARD_WIDTH
+                                            + (note.start_beats + note.duration_beats) as f32
+                                                * BEAT_WIDTH,
+                                    )
+                                });
+                            if let Some((
+                                note_id,
+                                start_beats,
+                                duration_beats,
+                                note_pitch,
+                                note_right,
+                            )) = note_hit
+                            {
+                                let mode = if pointer.x >= note_right - 6.0 {
+                                    MidiNoteDragMode::Resize
+                                } else {
+                                    MidiNoteDragMode::Move
+                                };
+                                *selected_note_id = Some(note_id);
+                                *note_drag = Some(MidiNoteDrag {
+                                    track_id,
+                                    part_id,
+                                    note_id,
+                                    mode,
+                                    start_beats,
+                                    duration_beats,
+                                    pitch: note_pitch,
+                                    delta_beats: 0.0,
+                                    delta_rows: 0.0,
+                                });
+                            } else {
+                                let start = ((beat_position / position_quantize).floor()
+                                    * position_quantize)
+                                    .clamp(0.0, part_duration_beats);
+                                let remaining = part_duration_beats - start;
+                                if remaining >= 0.0625 {
+                                    *selected_note_id = None;
+                                    *note_draw = Some(MidiNoteDraw {
+                                        track_id,
+                                        part_id,
+                                        start_beats: start,
+                                        end_beats: start + insert_length.min(remaining).max(0.0625),
+                                        pitch,
+                                        velocity: (*insert_velocity).clamp(1, 127),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if response.dragged_by(egui::PointerButton::Primary) {
+                    let delta = response.drag_delta();
+                    if let Some(draw) = note_draw.as_mut()
+                        && draw.track_id == track_id
+                        && draw.part_id == part_id
+                        && let Some(pointer) = response.interact_pointer_pos()
+                    {
+                        let minimum = position_quantize.min(part_duration_beats - draw.start_beats);
+                        let beat =
+                            f64::from((pointer.x - canvas.min.x - KEYBOARD_WIDTH) / BEAT_WIDTH);
+                        draw.end_beats = ((beat / position_quantize).round() * position_quantize)
+                            .clamp(draw.start_beats + minimum, part_duration_beats);
+                    }
+                    if let Some(drag) = note_drag.as_mut()
+                        && drag.track_id == track_id
+                        && drag.part_id == part_id
+                    {
+                        drag.delta_beats += f64::from(delta.x / BEAT_WIDTH);
+                        drag.delta_rows += f64::from(delta.y / row_height.max(1.0));
+                    }
+                    if let Some(drag) = *note_drag
+                        && drag.track_id == track_id
+                        && drag.part_id == part_id
+                        && let Some(note) = project.tracks[track_index].midi_parts[part_index]
+                            .notes
+                            .iter_mut()
+                            .find(|note| note.id == drag.note_id)
+                    {
+                        let quantize = if position_quantize_beats.is_finite()
+                            && *position_quantize_beats > 0.0
+                        {
+                            *position_quantize_beats
+                        } else {
+                            1.0
+                        };
+                        match drag.mode {
+                            MidiNoteDragMode::Move => {
+                                let max_start =
+                                    (part_duration_beats - drag.duration_beats).max(0.0);
+                                let snapped_start =
+                                    ((drag.start_beats + drag.delta_beats) / quantize).round()
+                                        * quantize;
+                                let next_start = snapped_start.clamp(0.0, max_start);
+                                let next_pitch =
+                                    (i16::from(drag.pitch) - drag.delta_rows.round() as i16)
+                                        .clamp(0, 127) as u8;
+                                modified |=
+                                    note.start_beats != next_start || note.pitch != next_pitch;
+                                note.start_beats = next_start;
+                                note.pitch = next_pitch;
+                            }
+                            MidiNoteDragMode::Resize => {
+                                let max_length = part_duration_beats - drag.start_beats;
+                                if max_length >= 0.0625 {
+                                    let snapped_length = ((drag.duration_beats + drag.delta_beats)
+                                        / quantize)
+                                        .round()
+                                        * quantize;
+                                    let next_length = snapped_length.clamp(0.0625, max_length);
+                                    modified |= note.duration_beats != next_length;
+                                    note.duration_beats = next_length;
+                                }
+                            }
+                        }
+                    }
+                }
+                if response.drag_stopped() {
+                    *note_drag = None;
+                    if let Some(draw) = note_draw.take()
+                        && draw.track_id == track_id
+                        && draw.part_id == part_id
+                        && draw.end_beats > draw.start_beats
+                    {
+                        edit_action = Some(MidiEditAction::Add(
+                            draw.start_beats,
+                            draw.end_beats - draw.start_beats,
+                            draw.pitch,
+                            draw.velocity,
+                        ));
+                    }
+                }
+
+                if let Some(pointer) = response.interact_pointer_pos()
+                    && (response.clicked_by(egui::PointerButton::Primary)
+                        || response.secondary_clicked())
+                {
+                    let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
+                    let pitch_position =
+                        pitch_view.center + (part_grid.center().y - pointer.y) / row_height;
+                    if beat_x >= 0.0
+                        && part_grid.contains(pointer)
+                        && (0.0..=127.0).contains(&pitch_position)
+                    {
+                        let beat_position = f64::from(beat_x / BEAT_WIDTH);
+                        let beat = beat_position.floor() as usize;
+                        if beat < visible_beats && beat_position < part_duration_beats {
+                            let pitch = pitch_position.round() as u8;
+                            let note_hit = project.tracks[track_index].midi_parts[part_index]
+                                .notes
+                                .iter()
+                                .find(|note| {
+                                    note.pitch == pitch
+                                        && pointer.x
+                                            >= canvas.min.x
+                                                + KEYBOARD_WIDTH
+                                                + note.start_beats as f32 * BEAT_WIDTH
+                                        && pointer.x
+                                            < canvas.min.x
+                                                + KEYBOARD_WIDTH
+                                                + (note.start_beats + note.duration_beats) as f32
+                                                    * BEAT_WIDTH
+                                })
+                                .map(|note| note.id);
+                            if response.secondary_clicked() {
+                                edit_action = note_hit.map(MidiEditAction::Remove);
+                            } else if let Some(note_id) = note_hit {
+                                edit_action = Some(MidiEditAction::Select(note_id));
+                            } else {
+                                *selected_note_id = None;
+                            }
+                        }
+                    }
+                }
+
+                const CONTROLLER_LANE_HEIGHT: f32 = 126.0;
+                const CONTROLLER_PLOT_HEIGHT: f32 = 88.0;
+                const CONTROLLER_PLOT_TOP: f32 = 24.0;
+                let controller_size = Vec2::new(
+                    KEYBOARD_WIDTH + visible_beats as f32 * BEAT_WIDTH,
+                    CONTROLLER_LANE_HEIGHT,
+                );
+                let (controller_canvas, controller_response) =
+                    ui.allocate_exact_size(controller_size, Sense::click_and_drag());
+                let controller_painter = ui.painter_at(controller_canvas);
+                controller_painter.rect_filled(
+                    controller_canvas,
+                    egui::CornerRadius::ZERO,
+                    theme::palette(ui).canvas,
+                );
+                controller_painter.rect_filled(
+                    Rect::from_min_max(
+                        controller_canvas.min,
+                        Pos2::new(
+                            controller_canvas.min.x + KEYBOARD_WIDTH,
+                            controller_canvas.max.y,
+                        ),
+                    ),
+                    egui::CornerRadius::ZERO,
+                    theme::palette(ui).surface,
+                );
+                let plot = Rect::from_min_size(
+                    Pos2::new(
+                        controller_canvas.min.x + KEYBOARD_WIDTH,
+                        controller_canvas.min.y + CONTROLLER_PLOT_TOP,
+                    ),
+                    Vec2::new(visible_beats as f32 * BEAT_WIDTH, CONTROLLER_PLOT_HEIGHT),
+                );
+                controller_painter.rect_filled(
+                    plot,
+                    egui::CornerRadius::ZERO,
+                    theme::palette(ui).canvas,
+                );
+                controller_painter.text(
+                    Pos2::new(
+                        controller_canvas.min.x + 7.0,
+                        controller_canvas.min.y + 12.0,
+                    ),
+                    Align2::LEFT_CENTER,
+                    midi_controller_label(*controller_number),
+                    FontId::monospace(theme::type_size::LABEL),
+                    theme::palette(ui).text,
+                );
+                let mut lane_events: Vec<_> = project.tracks[track_index].midi_parts[part_index]
+                    .controller_events
+                    .iter()
+                    .filter(|event| event.controller == *controller_number)
+                    .map(|event| (event.id, event.position_beats, event.value))
+                    .collect();
+                lane_events.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+                for beat in 0..=visible_beats {
+                    let x = plot.left() + beat as f32 * BEAT_WIDTH;
+                    let bar_line = beat % bpb == 0;
+                    controller_painter.line_segment(
+                        [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+                        Stroke::new(
+                            if bar_line { 1.0 } else { 0.5 },
+                            if bar_line {
+                                theme::palette(ui).grid
+                            } else {
+                                theme::palette(ui).surface_raised
+                            },
+                        ),
+                    );
+                }
+                for value in [0_u8, 32, 64, 96, 127] {
+                    let y = plot.bottom() - f32::from(value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
+                    controller_painter.line_segment(
+                        [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+                        Stroke::new(0.5, theme::palette(ui).surface_raised),
+                    );
+                    controller_painter.text(
+                        Pos2::new(plot.left() + 3.0, y - 2.0),
+                        Align2::LEFT_BOTTOM,
+                        value.to_string(),
+                        FontId::monospace(theme::type_size::TINY),
                         theme::palette(ui).muted,
                     );
                 }
-            }
-
-            let part_grid = Rect::from_min_max(
-                Pos2::new(canvas.min.x + KEYBOARD_WIDTH, canvas.min.y + RULER_HEIGHT),
-                Pos2::new(
-                    (canvas.min.x + KEYBOARD_WIDTH + part_duration_beats as f32 * BEAT_WIDTH)
-                        .min(canvas.max.x),
-                    canvas.max.y,
-                ),
-            );
-            let note_painter = painter.with_clip_rect(part_grid);
-            for note in &project.tracks[track_index].midi_parts[part_index].notes {
-                let note_rect = Rect::from_min_size(
-                    Pos2::new(
-                        canvas.min.x + KEYBOARD_WIDTH + note.start_beats as f32 * BEAT_WIDTH,
-                        canvas.min.y + RULER_HEIGHT + (127 - note.pitch) as f32 * ROW_HEIGHT,
-                    ),
-                    Vec2::new(
-                        (note.duration_beats as f32 * BEAT_WIDTH).max(3.0),
-                        ROW_HEIGHT - 1.0,
-                    ),
-                );
-                let note_color = track_kind_color(track_kind)
-                    .gamma_multiply(0.35 + 0.65 * f32::from(note.velocity) / 127.0);
-                note_painter.rect_filled(note_rect, egui::CornerRadius::same(2), note_color);
-                note_painter.rect_stroke(
-                    note_rect,
-                    egui::CornerRadius::same(2),
-                    Stroke::new(
-                        if Some(note.id) == *selected_note_id {
-                            2.0
-                        } else {
-                            1.0
-                        },
-                        if Some(note.id) == *selected_note_id {
-                            theme::palette(ui).accent
-                        } else {
-                            track_kind_color(track_kind)
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            if let Some(draw) = note_draw
-                .as_ref()
-                .filter(|draw| draw.track_id == track_id && draw.part_id == part_id)
-            {
-                let preview = Rect::from_min_size(
-                    Pos2::new(
-                        canvas.min.x + KEYBOARD_WIDTH + draw.start_beats as f32 * BEAT_WIDTH,
-                        canvas.min.y + RULER_HEIGHT + (127 - draw.pitch) as f32 * ROW_HEIGHT,
-                    ),
-                    Vec2::new(
-                        ((draw.end_beats - draw.start_beats) as f32 * BEAT_WIDTH).max(3.0),
-                        ROW_HEIGHT - 1.0,
-                    ),
-                );
-                note_painter.rect_filled(
-                    preview,
-                    egui::CornerRadius::same(2),
-                    track_kind_color(track_kind).gamma_multiply(0.35),
-                );
-                note_painter.rect_stroke(
-                    preview,
-                    egui::CornerRadius::same(2),
-                    Stroke::new(1.5, Color32::WHITE),
-                    egui::StrokeKind::Inside,
-                );
-            }
-
-            if response.drag_started() {
-                let press_position = ui
-                    .ctx()
-                    .input(|input| input.pointer.press_origin())
-                    .or_else(|| response.interact_pointer_pos());
-                if let Some(pointer) = press_position {
-                    let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
-                    let note_y = pointer.y - canvas.min.y - RULER_HEIGHT;
-                    let row = (note_y / ROW_HEIGHT).floor() as usize;
-                    let beat_position = f64::from(beat_x / BEAT_WIDTH);
-                    if beat_x >= 0.0
-                        && note_y >= 0.0
-                        && row < 128
-                        && beat_position < part_duration_beats
-                    {
-                        let pitch = (127 - row) as u8;
-                        let note_hit = project.tracks[track_index].midi_parts[part_index]
-                            .notes
-                            .iter()
-                            .find(|note| {
-                                let note_left = canvas.min.x
-                                    + KEYBOARD_WIDTH
-                                    + note.start_beats as f32 * BEAT_WIDTH;
-                                let note_right =
-                                    note_left + (note.duration_beats as f32 * BEAT_WIDTH).max(3.0);
-                                note.pitch == pitch
-                                    && pointer.x >= note_left
-                                    && pointer.x < note_right
-                            })
-                            .map(|note| {
-                                (
-                                    note.id,
-                                    note.start_beats,
-                                    note.duration_beats,
-                                    note.pitch,
-                                    canvas.min.x
-                                        + KEYBOARD_WIDTH
-                                        + (note.start_beats + note.duration_beats) as f32
-                                            * BEAT_WIDTH,
-                                )
-                            });
-                        if let Some((
-                            note_id,
-                            start_beats,
-                            duration_beats,
-                            note_pitch,
-                            note_right,
-                        )) = note_hit
-                        {
-                            let mode = if pointer.x >= note_right - 6.0 {
-                                MidiNoteDragMode::Resize
-                            } else {
-                                MidiNoteDragMode::Move
-                            };
-                            *selected_note_id = Some(note_id);
-                            *note_drag = Some(MidiNoteDrag {
-                                track_id,
-                                part_id,
-                                note_id,
-                                mode,
-                                start_beats,
-                                duration_beats,
-                                pitch: note_pitch,
-                                delta_beats: 0.0,
-                                delta_rows: 0.0,
-                            });
-                        } else if tool == EditTool::Draw {
-                            let start = ((beat_position / position_quantize).floor()
-                                * position_quantize)
-                                .clamp(0.0, part_duration_beats);
-                            let remaining = part_duration_beats - start;
-                            if remaining >= 0.0625 {
-                                *selected_note_id = None;
-                                *note_draw = Some(MidiNoteDraw {
-                                    track_id,
-                                    part_id,
-                                    start_beats: start,
-                                    end_beats: start + insert_length.min(remaining).max(0.0625),
-                                    pitch,
-                                    velocity: (*insert_velocity).clamp(1, 127),
-                                });
-                            }
-                        }
+                let default_value = midi_controller_default_value(*controller_number);
+                let default_y =
+                    plot.bottom() - f32::from(default_value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
+                let mut previous_point = Some((plot.left(), default_y));
+                for (_, position_beats, value) in &lane_events {
+                    let x = plot.left() + *position_beats as f32 * BEAT_WIDTH;
+                    let y = plot.bottom() - f32::from(*value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
+                    if let Some((previous_x, previous_y)) = previous_point {
+                        controller_painter.line_segment(
+                            [Pos2::new(previous_x, previous_y), Pos2::new(x, previous_y)],
+                            Stroke::new(1.5, theme::palette(ui).accent),
+                        );
+                        controller_painter.line_segment(
+                            [Pos2::new(x, previous_y), Pos2::new(x, y)],
+                            Stroke::new(1.5, theme::palette(ui).accent),
+                        );
                     }
+                    controller_painter.circle_filled(
+                        Pos2::new(x, y),
+                        4.0,
+                        theme::palette(ui).accent,
+                    );
+                    previous_point = Some((x, y));
                 }
-            }
-
-            if response.dragged() {
-                let delta = response.drag_delta();
-                if let Some(draw) = note_draw.as_mut()
-                    && draw.track_id == track_id
-                    && draw.part_id == part_id
-                    && let Some(pointer) = response.interact_pointer_pos()
-                {
-                    let minimum = position_quantize.min(part_duration_beats - draw.start_beats);
-                    let beat = f64::from((pointer.x - canvas.min.x - KEYBOARD_WIDTH) / BEAT_WIDTH);
-                    draw.end_beats = ((beat / position_quantize).round() * position_quantize)
-                        .clamp(draw.start_beats + minimum, part_duration_beats);
-                }
-                if let Some(drag) = note_drag.as_mut()
-                    && drag.track_id == track_id
-                    && drag.part_id == part_id
-                {
-                    drag.delta_beats += f64::from(delta.x / BEAT_WIDTH);
-                    drag.delta_rows += f64::from(delta.y / ROW_HEIGHT);
-                }
-                if let Some(drag) = *note_drag
-                    && drag.track_id == track_id
-                    && drag.part_id == part_id
-                    && let Some(note) = project.tracks[track_index].midi_parts[part_index]
-                        .notes
-                        .iter_mut()
-                        .find(|note| note.id == drag.note_id)
-                {
-                    let quantize =
-                        if position_quantize_beats.is_finite() && *position_quantize_beats > 0.0 {
-                            *position_quantize_beats
-                        } else {
-                            1.0
-                        };
-                    match drag.mode {
-                        MidiNoteDragMode::Move => {
-                            let max_start = (part_duration_beats - drag.duration_beats).max(0.0);
-                            let snapped_start = ((drag.start_beats + drag.delta_beats) / quantize)
-                                .round()
-                                * quantize;
-                            let next_start = snapped_start.clamp(0.0, max_start);
-                            let next_pitch = (i16::from(drag.pitch)
-                                - drag.delta_rows.round() as i16)
-                                .clamp(0, 127) as u8;
-                            modified |= note.start_beats != next_start || note.pitch != next_pitch;
-                            note.start_beats = next_start;
-                            note.pitch = next_pitch;
-                        }
-                        MidiNoteDragMode::Resize => {
-                            let max_length = part_duration_beats - drag.start_beats;
-                            if max_length >= 0.0625 {
-                                let snapped_length =
-                                    ((drag.duration_beats + drag.delta_beats) / quantize).round()
-                                        * quantize;
-                                let next_length = snapped_length.clamp(0.0625, max_length);
-                                modified |= note.duration_beats != next_length;
-                                note.duration_beats = next_length;
-                            }
-                        }
-                    }
-                }
-            }
-            if response.drag_stopped() {
-                *note_drag = None;
-                if let Some(draw) = note_draw.take()
-                    && draw.track_id == track_id
-                    && draw.part_id == part_id
-                    && draw.end_beats > draw.start_beats
-                {
-                    edit_action = Some(MidiEditAction::Add(
-                        draw.start_beats,
-                        draw.end_beats - draw.start_beats,
-                        draw.pitch,
-                        draw.velocity,
-                    ));
-                }
-            }
-
-            if let Some(pointer) = response.interact_pointer_pos()
-                && (response.clicked() || response.secondary_clicked())
-            {
-                let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
-                let note_y = pointer.y - canvas.min.y - RULER_HEIGHT;
-                if beat_x >= 0.0 && note_y >= 0.0 {
-                    let beat_position = f64::from(beat_x / BEAT_WIDTH);
-                    let beat = beat_position.floor() as usize;
-                    let row = (note_y / ROW_HEIGHT).floor() as usize;
-                    if beat < visible_beats && beat_position < part_duration_beats && row < 128 {
-                        let pitch = (127 - row) as u8;
-                        let note_hit = project.tracks[track_index].midi_parts[part_index]
-                            .notes
-                            .iter()
-                            .find(|note| {
-                                note.pitch == pitch
-                                    && pointer.x
-                                        >= canvas.min.x
-                                            + KEYBOARD_WIDTH
-                                            + note.start_beats as f32 * BEAT_WIDTH
-                                    && pointer.x
-                                        < canvas.min.x
-                                            + KEYBOARD_WIDTH
-                                            + (note.start_beats + note.duration_beats) as f32
-                                                * BEAT_WIDTH
-                            })
-                            .map(|note| note.id);
-                        if response.secondary_clicked() {
-                            edit_action = note_hit.map(MidiEditAction::Remove);
-                        } else if let Some(note_id) = note_hit {
-                            edit_action = Some(MidiEditAction::Select(note_id));
-                        } else if tool == EditTool::Draw {
-                            let snapped_position =
-                                (beat_position / position_quantize).floor() * position_quantize;
-                            let remaining = part_duration_beats - snapped_position;
-                            let duration = insert_length.min(remaining);
-                            if duration >= 0.0625 {
-                                edit_action = Some(MidiEditAction::Add(
-                                    snapped_position,
-                                    duration,
-                                    pitch,
-                                    (*insert_velocity).clamp(1, 127),
-                                ));
-                            }
-                        } else {
-                            *selected_note_id = None;
-                        }
-                    }
-                }
-            }
-
-            const CONTROLLER_LANE_HEIGHT: f32 = 126.0;
-            const CONTROLLER_PLOT_HEIGHT: f32 = 88.0;
-            const CONTROLLER_PLOT_TOP: f32 = 24.0;
-            let controller_size = Vec2::new(
-                KEYBOARD_WIDTH + visible_beats as f32 * BEAT_WIDTH,
-                CONTROLLER_LANE_HEIGHT,
-            );
-            let (controller_canvas, controller_response) =
-                ui.allocate_exact_size(controller_size, Sense::click_and_drag());
-            let controller_painter = ui.painter_at(controller_canvas);
-            controller_painter.rect_filled(
-                controller_canvas,
-                egui::CornerRadius::ZERO,
-                theme::palette(ui).canvas,
-            );
-            controller_painter.rect_filled(
-                Rect::from_min_max(
-                    controller_canvas.min,
-                    Pos2::new(
-                        controller_canvas.min.x + KEYBOARD_WIDTH,
-                        controller_canvas.max.y,
-                    ),
-                ),
-                egui::CornerRadius::ZERO,
-                theme::palette(ui).surface,
-            );
-            let plot = Rect::from_min_size(
-                Pos2::new(
-                    controller_canvas.min.x + KEYBOARD_WIDTH,
-                    controller_canvas.min.y + CONTROLLER_PLOT_TOP,
-                ),
-                Vec2::new(visible_beats as f32 * BEAT_WIDTH, CONTROLLER_PLOT_HEIGHT),
-            );
-            controller_painter.rect_filled(
-                plot,
-                egui::CornerRadius::ZERO,
-                theme::palette(ui).canvas,
-            );
-            controller_painter.text(
-                Pos2::new(
-                    controller_canvas.min.x + 7.0,
-                    controller_canvas.min.y + 12.0,
-                ),
-                Align2::LEFT_CENTER,
-                midi_controller_label(*controller_number),
-                FontId::monospace(theme::type_size::LABEL),
-                theme::palette(ui).text,
-            );
-            let mut lane_events: Vec<_> = project.tracks[track_index].midi_parts[part_index]
-                .controller_events
-                .iter()
-                .filter(|event| event.controller == *controller_number)
-                .map(|event| (event.id, event.position_beats, event.value))
-                .collect();
-            lane_events.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-            for beat in 0..=visible_beats {
-                let x = plot.left() + beat as f32 * BEAT_WIDTH;
-                let bar_line = beat % bpb == 0;
-                controller_painter.line_segment(
-                    [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
-                    Stroke::new(
-                        if bar_line { 1.0 } else { 0.5 },
-                        if bar_line {
-                            theme::palette(ui).grid
-                        } else {
-                            theme::palette(ui).surface_raised
-                        },
-                    ),
-                );
-            }
-            for value in [0_u8, 32, 64, 96, 127] {
-                let y = plot.bottom() - f32::from(value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
-                controller_painter.line_segment(
-                    [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
-                    Stroke::new(0.5, theme::palette(ui).surface_raised),
-                );
-                controller_painter.text(
-                    Pos2::new(plot.left() + 3.0, y - 2.0),
-                    Align2::LEFT_BOTTOM,
-                    value.to_string(),
-                    FontId::monospace(theme::type_size::TINY),
-                    theme::palette(ui).muted,
-                );
-            }
-            let default_value = midi_controller_default_value(*controller_number);
-            let default_y =
-                plot.bottom() - f32::from(default_value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
-            let mut previous_point = Some((plot.left(), default_y));
-            for (_, position_beats, value) in &lane_events {
-                let x = plot.left() + *position_beats as f32 * BEAT_WIDTH;
-                let y = plot.bottom() - f32::from(*value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
                 if let Some((previous_x, previous_y)) = previous_point {
                     controller_painter.line_segment(
-                        [Pos2::new(previous_x, previous_y), Pos2::new(x, previous_y)],
-                        Stroke::new(1.5, theme::palette(ui).accent),
-                    );
-                    controller_painter.line_segment(
-                        [Pos2::new(x, previous_y), Pos2::new(x, y)],
-                        Stroke::new(1.5, theme::palette(ui).accent),
+                        [
+                            Pos2::new(previous_x, previous_y),
+                            Pos2::new(plot.right(), previous_y),
+                        ],
+                        Stroke::new(1.0, theme::palette(ui).accent),
                     );
                 }
-                controller_painter.circle_filled(Pos2::new(x, y), 4.0, theme::palette(ui).accent);
-                previous_point = Some((x, y));
-            }
-            if let Some((previous_x, previous_y)) = previous_point {
-                controller_painter.line_segment(
-                    [
-                        Pos2::new(previous_x, previous_y),
-                        Pos2::new(plot.right(), previous_y),
-                    ],
-                    Stroke::new(1.0, theme::palette(ui).accent),
-                );
-            }
 
-            let controller_event_hit = |pointer: Pos2| {
-                lane_events
-                    .iter()
-                    .filter_map(|(event_id, position_beats, value)| {
-                        let x = plot.left() + *position_beats as f32 * BEAT_WIDTH;
-                        let y = plot.bottom() - f32::from(*value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
-                        let distance_sq = (pointer.x - x).powi(2) + (pointer.y - y).powi(2);
-                        (distance_sq <= 100.0).then_some((
-                            *event_id,
-                            *position_beats,
-                            *value,
-                            distance_sq,
-                        ))
-                    })
-                    .min_by(|a, b| a.3.total_cmp(&b.3))
-                    .map(|(id, position, value, _)| (id, position, value))
-            };
-            if controller_response.drag_started()
-                && let Some(pointer) = ui
-                    .ctx()
-                    .input(|input| input.pointer.press_origin())
-                    .or_else(|| controller_response.interact_pointer_pos())
-                && plot.contains(pointer)
-                && let Some((event_id, position, value)) = controller_event_hit(pointer)
-            {
-                *controller_drag = Some(MidiControllerDrag {
-                    track_id,
-                    part_id,
-                    event_id,
-                    start_position_beats: position,
-                    start_value: value,
-                    delta_beats: 0.0,
-                    delta_value: 0.0,
-                });
-            }
-            if controller_response.dragged() {
-                let delta = controller_response.drag_delta();
-                if let Some(drag) = controller_drag.as_mut()
-                    && drag.track_id == track_id
-                    && drag.part_id == part_id
+                let controller_event_hit = |pointer: Pos2| {
+                    lane_events
+                        .iter()
+                        .filter_map(|(event_id, position_beats, value)| {
+                            let x = plot.left() + *position_beats as f32 * BEAT_WIDTH;
+                            let y =
+                                plot.bottom() - f32::from(*value) / 127.0 * CONTROLLER_PLOT_HEIGHT;
+                            let distance_sq = (pointer.x - x).powi(2) + (pointer.y - y).powi(2);
+                            (distance_sq <= 100.0).then_some((
+                                *event_id,
+                                *position_beats,
+                                *value,
+                                distance_sq,
+                            ))
+                        })
+                        .min_by(|a, b| a.3.total_cmp(&b.3))
+                        .map(|(id, position, value, _)| (id, position, value))
+                };
+                if controller_response.drag_started_by(egui::PointerButton::Primary)
+                    && let Some(pointer) = ui
+                        .ctx()
+                        .input(|input| input.pointer.press_origin())
+                        .or_else(|| controller_response.interact_pointer_pos())
+                    && plot.contains(pointer)
+                    && let Some((event_id, position, value)) = controller_event_hit(pointer)
                 {
-                    drag.delta_beats += f64::from(delta.x / BEAT_WIDTH);
-                    drag.delta_value += f64::from(-delta.y * 127.0 / CONTROLLER_PLOT_HEIGHT);
+                    *controller_drag = Some(MidiControllerDrag {
+                        track_id,
+                        part_id,
+                        event_id,
+                        start_position_beats: position,
+                        start_value: value,
+                        delta_beats: 0.0,
+                        delta_value: 0.0,
+                    });
                 }
-                if let Some(drag) = *controller_drag
-                    && drag.track_id == track_id
-                    && drag.part_id == part_id
-                    && let Some(event) = project.tracks[track_index].midi_parts[part_index]
-                        .controller_events
-                        .iter_mut()
-                        .find(|event| event.id == drag.event_id)
-                {
-                    let quantize =
-                        if position_quantize_beats.is_finite() && *position_quantize_beats > 0.0 {
-                            *position_quantize_beats
-                        } else {
-                            1.0
-                        };
-                    let position = ((drag.start_position_beats + drag.delta_beats) / quantize)
-                        .round()
-                        * quantize;
-                    let next_position = position.clamp(0.0, part_duration_beats);
-                    let next_value = (f64::from(drag.start_value) + drag.delta_value)
-                        .round()
-                        .clamp(0.0, 127.0) as u8;
-                    modified |= event.position_beats != next_position || event.value != next_value;
-                    event.position_beats = next_position;
-                    event.value = next_value;
-                }
-            }
-            if controller_response.drag_stopped() {
-                *controller_drag = None;
-            }
-            if let Some(pointer) = controller_response.interact_pointer_pos()
-                && plot.contains(pointer)
-                && (controller_response.clicked() || controller_response.secondary_clicked())
-            {
-                let hit = controller_event_hit(pointer);
-                if controller_response.secondary_clicked() {
-                    if let Some((event_id, _, _)) = hit {
-                        let events = &mut project.tracks[track_index].midi_parts[part_index]
-                            .controller_events;
-                        let previous_len = events.len();
-                        events.retain(|event| event.id != event_id);
-                        modified |= events.len() != previous_len;
+                if controller_response.dragged_by(egui::PointerButton::Primary) {
+                    let delta = controller_response.drag_delta();
+                    if let Some(drag) = controller_drag.as_mut()
+                        && drag.track_id == track_id
+                        && drag.part_id == part_id
+                    {
+                        drag.delta_beats += f64::from(delta.x / BEAT_WIDTH);
+                        drag.delta_value += f64::from(-delta.y * 127.0 / CONTROLLER_PLOT_HEIGHT);
                     }
-                } else if hit.is_none() {
-                    let beat = f64::from((pointer.x - plot.left()) / BEAT_WIDTH);
-                    let quantize =
-                        if position_quantize_beats.is_finite() && *position_quantize_beats > 0.0 {
+                    if let Some(drag) = *controller_drag
+                        && drag.track_id == track_id
+                        && drag.part_id == part_id
+                        && let Some(event) = project.tracks[track_index].midi_parts[part_index]
+                            .controller_events
+                            .iter_mut()
+                            .find(|event| event.id == drag.event_id)
+                    {
+                        let quantize = if position_quantize_beats.is_finite()
+                            && *position_quantize_beats > 0.0
+                        {
                             *position_quantize_beats
                         } else {
                             1.0
                         };
-                    let position =
-                        ((beat / quantize).floor() * quantize).clamp(0.0, part_duration_beats);
-                    let value = ((plot.bottom() - pointer.y) / CONTROLLER_PLOT_HEIGHT * 127.0)
-                        .round()
-                        .clamp(0.0, 127.0) as u8;
-                    modified |= project
-                        .add_midi_controller_event(
-                            track_index,
-                            part_id,
-                            position,
-                            *controller_number,
-                            value,
-                        )
-                        .is_some();
+                        let position = ((drag.start_position_beats + drag.delta_beats) / quantize)
+                            .round()
+                            * quantize;
+                        let next_position = position.clamp(0.0, part_duration_beats);
+                        let next_value = (f64::from(drag.start_value) + drag.delta_value)
+                            .round()
+                            .clamp(0.0, 127.0) as u8;
+                        modified |=
+                            event.position_beats != next_position || event.value != next_value;
+                        event.position_beats = next_position;
+                        event.value = next_value;
+                    }
                 }
-            }
+                if controller_response.drag_stopped() {
+                    *controller_drag = None;
+                }
+                if let Some(pointer) = controller_response.interact_pointer_pos()
+                    && plot.contains(pointer)
+                    && (controller_response.clicked_by(egui::PointerButton::Primary)
+                        || controller_response.secondary_clicked())
+                {
+                    let hit = controller_event_hit(pointer);
+                    if controller_response.secondary_clicked() {
+                        if let Some((event_id, _, _)) = hit {
+                            let events = &mut project.tracks[track_index].midi_parts[part_index]
+                                .controller_events;
+                            let previous_len = events.len();
+                            events.retain(|event| event.id != event_id);
+                            modified |= events.len() != previous_len;
+                        }
+                    } else if controller_response.clicked_by(egui::PointerButton::Primary)
+                        && hit.is_none()
+                    {
+                        let beat = f64::from((pointer.x - plot.left()) / BEAT_WIDTH);
+                        let quantize = if position_quantize_beats.is_finite()
+                            && *position_quantize_beats > 0.0
+                        {
+                            *position_quantize_beats
+                        } else {
+                            1.0
+                        };
+                        let position =
+                            ((beat / quantize).floor() * quantize).clamp(0.0, part_duration_beats);
+                        let value = ((plot.bottom() - pointer.y) / CONTROLLER_PLOT_HEIGHT * 127.0)
+                            .round()
+                            .clamp(0.0, 127.0) as u8;
+                        modified |= project
+                            .add_midi_controller_event(
+                                track_index,
+                                part_id,
+                                position,
+                                *controller_number,
+                                value,
+                            )
+                            .is_some();
+                    }
+                }
+            });
+        let (press_origin, pointer_delta, middle_down) = ui.input(|input| {
+            (
+                input.pointer.press_origin(),
+                input.pointer.delta(),
+                input.pointer.button_down(egui::PointerButton::Middle),
+            )
         });
+        let mut state = scroll_output.state;
+        let mut scroll_changed = false;
+        if fit_part {
+            state.offset = Vec2::ZERO;
+            scroll_changed = true;
+        }
+        if middle_down && press_origin.is_some_and(|pos| scroll_output.inner_rect.contains(pos)) {
+            pitch_view.pan_pixels(pointer_delta.y, note_area_height);
+            state.offset.x = (state.offset.x - pointer_delta.x).max(0.0);
+            state.offset.y = 0.0;
+            scroll_changed = true;
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+        }
+        let content_width = scroll_output
+            .content_size
+            .x
+            .max(scroll_output.inner_rect.width());
+        let max_scroll_x = (content_width - scroll_output.inner_rect.width()).max(0.0);
+        if (overview_response.clicked() || overview_response.dragged())
+            && let Some(pointer) = overview_response.interact_pointer_pos()
+        {
+            let fraction = ((pointer.x - overview_part.left()) / overview_part.width().max(1.0))
+                .clamp(0.0, 1.0);
+            state.offset.x = (fraction * content_width - scroll_output.inner_rect.width() * 0.5)
+                .clamp(0.0, max_scroll_x);
+            scroll_changed = true;
+        }
+        let visible_fraction = (scroll_output.inner_rect.width() / content_width).clamp(0.0, 1.0);
+        let viewport_width = (overview_part.width() * visible_fraction).max(12.0);
+        let viewport_left = overview_part.left()
+            + if max_scroll_x > 0.0 {
+                state.offset.x / max_scroll_x * (overview_part.width() - viewport_width)
+            } else {
+                0.0
+            };
+        ui.painter().rect_stroke(
+            Rect::from_min_size(
+                Pos2::new(viewport_left, overview_part.top()),
+                Vec2::new(viewport_width, overview_part.height()),
+            ),
+            0.0,
+            Stroke::new(1.0, Color32::WHITE),
+            egui::StrokeKind::Inside,
+        );
+        if scroll_changed {
+            state.store(ui.ctx(), scroll_output.id);
+            ui.ctx().request_repaint();
+        }
+        if let Some((keyboard, wave)) = pitch_controls_rects {
+            let rail = Rect::from_min_max(
+                Pos2::new(scroll_output.inner_rect.right() - 20.0, wave.top()),
+                Pos2::new(scroll_output.inner_rect.right(), wave.bottom()),
+            );
+            sample_editor::pitch_view_controls(ui, rail, keyboard, wave, pitch_view);
+        }
+    });
 
     match edit_action {
         Some(MidiEditAction::Add(start_beats, duration_beats, pitch, velocity)) => {
@@ -13724,10 +14303,7 @@ fn midi_controller_default_value(controller: u8) -> u8 {
 }
 
 fn midi_pitch_label(pitch: u8) -> String {
-    const NOTE_NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    format!("{} · {pitch}", NOTE_NAMES[usize::from(pitch % 12)])
+    sample_editor::pitch_note_name(i32::from(pitch))
 }
 
 fn show_mixer(

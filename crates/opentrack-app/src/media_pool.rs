@@ -176,6 +176,40 @@ impl OpenTrackApp {
         let Some(target) =
             selection_target(&self.data.project, &self.arrange_view_state.audio_events)
         else {
+            if delete_files {
+                return;
+            }
+            let Some(part_id) = self.data.project.selected_midi_part_id else {
+                return;
+            };
+            let Some(track_index) = self.data.project.selected_track.map(|index| index as usize)
+            else {
+                return;
+            };
+            let Some(track) = self.data.project.tracks.get(track_index) else {
+                return;
+            };
+            if !track.midi_parts.iter().any(|part| part.id == part_id) {
+                return;
+            }
+            self.project_history.finish_frame(&self.data.project, true);
+            if !self.project_history.begin(&self.data.project) {
+                self.status_message = "Cannot delete: undo snapshot is unavailable".into();
+                return;
+            }
+            self.data.project.tracks[track_index]
+                .midi_parts
+                .retain(|part| part.id != part_id);
+            self.data.project.selected_midi_part_id = None;
+            self.midi_editor_open = false;
+            self.selected_midi_note_id = None;
+            self.midi_note_drag = None;
+            self.midi_note_draw = None;
+            self.midi_controller_drag = None;
+            self.project_history.finish_frame(&self.data.project, true);
+            self.rebuild_audio_plan();
+            self.mark_modified();
+            self.status_message = "Removed selected MIDI part; Undo restores it".into();
             return;
         };
         let (candidate, files) = match prepare(&self.data.project, target, delete_files) {

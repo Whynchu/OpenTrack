@@ -1054,6 +1054,24 @@ pub(super) fn show_with_tool(
     {
         let over_content = lanes.iter().any(|lane| {
             lane.automation.is_some_and(|r| r.contains(pos))
+                || project
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == lane.id)
+                    .is_some_and(|track| {
+                        matches!(track.kind, TrackKind::Midi | TrackKind::Instrument)
+                            && lane.rect.contains(pos)
+                            && track.midi_parts.iter().any(|part| {
+                                let left = origin + part.start_beats as f32 * px;
+                                let right =
+                                    origin + (part.start_beats + part.duration_beats) as f32 * px;
+                                Rect::from_min_max(
+                                    Pos2::new(left, lane.rect.top() + 6.0),
+                                    Pos2::new(right, lane.rect.bottom() - 6.0),
+                                )
+                                .contains(pos)
+                            })
+                    })
                 || event_tracks_for_lane(project, lane).iter().any(|track_id| {
                     project
                         .tracks
@@ -1659,6 +1677,7 @@ pub(super) fn show_with_tool(
                         }
                     }
                     state.row_focus = false;
+                    project.selected_midi_part_id = None;
                     if group_master {
                         let ids = event_tracks_for_lane(project, lane)
                             .into_iter()
@@ -1676,6 +1695,12 @@ pub(super) fn show_with_tool(
                             .tracks
                             .iter()
                             .position(|track| track.id == lane.id)
+                            .and_then(|index| u32::try_from(index).ok());
+                    } else {
+                        project.selected_track = project
+                            .tracks
+                            .iter()
+                            .position(|track| track.id == owner_track_id)
                             .and_then(|index| u32::try_from(index).ok());
                     }
                     if *edit_tool == EditTool::Split {

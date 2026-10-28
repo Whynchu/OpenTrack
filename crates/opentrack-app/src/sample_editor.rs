@@ -8,6 +8,30 @@ mod pitch_view;
 pub(super) use editing::playback_path;
 pub(super) use pitch_view::Viewport as PitchViewport;
 
+pub(super) fn paint_pitch_key_row(
+    ui: &egui::Ui,
+    keyboard: Rect,
+    row: Rect,
+    midi: i32,
+    row_height: f32,
+) {
+    pitch_view::key_row(ui, keyboard, row, midi, row_height);
+}
+
+pub(super) fn pitch_note_name(midi: i32) -> String {
+    pitch_view::note_name(midi)
+}
+
+pub(super) fn pitch_view_controls(
+    ui: &mut egui::Ui,
+    rail: Rect,
+    keyboard: Rect,
+    wave: Rect,
+    view: &mut PitchViewport,
+) {
+    pitch_view::controls(ui, rail, keyboard, wave, view);
+}
+
 struct PitchTask {
     original_clip: opentrack_core::project::AudioClip,
     source_identity: (u64, u64),
@@ -111,7 +135,7 @@ fn waveform_channels(track: u8, source: Option<&AudioSource>) -> usize {
         })
         .clamp(1, 2)
 }
-fn toolbar_tool(
+pub(super) fn toolbar_tool(
     ui: &mut egui::Ui,
     tool: &mut EditTool,
     value: EditTool,
@@ -122,7 +146,7 @@ fn toolbar_tool(
         *tool = value;
     }
 }
-fn field<T: egui::emath::Numeric>(
+pub(super) fn field<T: egui::emath::Numeric>(
     ui: &mut egui::Ui,
     width: f32,
     label: &str,

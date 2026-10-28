@@ -1,4 +1,28 @@
-# Current assignment — T056
+# Current assignment — T057
+
+## T057 — MIDI editor framing, note preview and arrangement parity (2026-10-27)
+
+The user asked for the MIDI Editor to use the Audio Editor's overall UI
+structure while retaining the piano-roll look, with shorter default notes and a
+snapped ghost note on hover that is committed by click. Notes should use the
+track highlight color. MIDI parts in Project should share audio-event selection
+visuals and applicable behavior, without audio gain/fade controls. See
+`docs/workflow/tasks/T057-midi-editor-and-arrangement-parity.md`.
+The 2026-10-28 side-by-side screenshots reject the prior claim of visual parity.
+The MIDI editor still differs substantially in toolbar and field presentation,
+inspector/header styling, keyboard rendering and note naming, and pitch
+navigation. The expression/controller lane is below and aligned with the note
+grid. MIDI note drawing inside the MIDI Editor does not require
+Pencil: primary left-click on an empty cell creates a note and primary drag can
+create its duration. Other mouse buttons must not create or edit notes, and
+middle-button drag pans only. Pencil remains required for drawing MIDI parts in
+the Project arrangement. T057 is in rework, not awaiting acceptance. The only
+intended structural differences from Audio Editor are no audio waveform and the
+expression/controller lane below the MIDI note area. See the visual gap table
+and input contract in
+`docs/workflow/tasks/T057-midi-editor-and-arrangement-parity.md`.
+
+## Prior assignment — T056
 
 ## T056 — Plug-in window memory and MIDI arrangement/editor workflow (2026-10-27)
 

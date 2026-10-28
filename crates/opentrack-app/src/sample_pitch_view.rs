@@ -73,16 +73,84 @@ const NOTE_NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
 
-fn black_key(midi: i32) -> bool {
+pub(super) fn black_key(midi: i32) -> bool {
     matches!(midi.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
 }
 
-fn note_name(midi: i32) -> String {
+pub(super) fn note_name(midi: i32) -> String {
     format!(
         "{}{}",
         NOTE_NAMES[midi.rem_euclid(12) as usize],
         midi.div_euclid(12) - 1
     )
+}
+
+/// Paint one piano key and its matching pitch row. Shared with the MIDI Editor
+/// so both editors use the same key geometry, colors, and octave labels.
+pub(super) fn key_row(ui: &egui::Ui, keyboard: Rect, row: Rect, midi: i32, row_height: f32) {
+    let p = theme::palette(ui);
+    let painter = ui.painter().with_clip_rect(keyboard.union(row));
+    let black = black_key(midi);
+    painter.rect_filled(
+        row,
+        0.0,
+        if black {
+            p.midi_row_black
+        } else {
+            p.midi_row_white
+        },
+    );
+    painter.line_segment(
+        [row.left_bottom(), row.right_bottom()],
+        Stroke::new(0.5, p.grid.gamma_multiply(0.5)),
+    );
+    let key = Rect::from_min_max(
+        Pos2::new(keyboard.left(), row.top()),
+        Pos2::new(keyboard.right(), row.bottom()),
+    )
+    .intersect(keyboard);
+    painter.rect_filled(key, 0.0, p.midi_key_white);
+    if black {
+        painter.rect_filled(
+            Rect::from_min_max(
+                key.min,
+                Pos2::new(
+                    keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION,
+                    key.bottom(),
+                ),
+            ),
+            0.0,
+            p.midi_key_black,
+        );
+    }
+    painter.line_segment(
+        [key.left_bottom(), key.right_bottom()],
+        Stroke::new(0.5, p.canvas),
+    );
+    if row_height >= MIN_LABEL_ROW_HEIGHT {
+        let (label_right, color) = if black {
+            (
+                keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION - 3.0,
+                Color32::WHITE,
+            )
+        } else {
+            (
+                keyboard.right() - 3.0,
+                if ui.visuals().dark_mode {
+                    Color32::from_gray(225)
+                } else {
+                    Color32::from_gray(35)
+                },
+            )
+        };
+        painter.text(
+            Pos2::new(label_right, row.center().y),
+            Align2::RIGHT_CENTER,
+            note_name(midi),
+            FontId::proportional(theme::type_size::SMALL),
+            color,
+        );
+    }
 }
 
 pub(super) fn grid(ui: &egui::Ui, keyboard: Rect, wave: Rect, view: &Viewport) {
@@ -99,67 +167,7 @@ pub(super) fn grid(ui: &egui::Ui, keyboard: Rect, wave: Rect, view: &Viewport) {
         if !row.is_positive() {
             continue;
         }
-        let black = black_key(midi);
-        painter.rect_filled(
-            row,
-            0.0,
-            if black {
-                p.midi_row_black
-            } else {
-                p.midi_row_white
-            },
-        );
-        painter.line_segment(
-            [row.left_bottom(), row.right_bottom()],
-            Stroke::new(0.5, p.grid.gamma_multiply(0.5)),
-        );
-        let key = Rect::from_min_max(
-            Pos2::new(keyboard.left(), y - row_height * 0.5),
-            Pos2::new(keyboard.right(), y + row_height * 0.5),
-        )
-        .intersect(keyboard);
-        painter.rect_filled(key, 0.0, p.midi_key_white);
-        if black {
-            painter.rect_filled(
-                Rect::from_min_max(
-                    key.min,
-                    Pos2::new(
-                        keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION,
-                        key.bottom(),
-                    ),
-                ),
-                0.0,
-                p.midi_key_black,
-            );
-        }
-        painter.line_segment(
-            [key.left_bottom(), key.right_bottom()],
-            Stroke::new(0.5, p.canvas),
-        );
-        if row_height >= MIN_LABEL_ROW_HEIGHT {
-            let (label_right, color) = if black {
-                (
-                    keyboard.left() + keyboard.width() * BLACK_KEY_FRACTION - 3.0,
-                    Color32::WHITE,
-                )
-            } else {
-                (
-                    keyboard.right() - 3.0,
-                    if ui.visuals().dark_mode {
-                        Color32::from_gray(225)
-                    } else {
-                        Color32::from_gray(35)
-                    },
-                )
-            };
-            painter.text(
-                Pos2::new(label_right, y),
-                Align2::RIGHT_CENTER,
-                note_name(midi),
-                FontId::proportional(theme::type_size::SMALL),
-                color,
-            );
-        }
+        key_row(ui, keyboard, row, midi, row_height);
     }
     painter.line_segment(
         [keyboard.right_top(), keyboard.right_bottom()],

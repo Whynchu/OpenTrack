@@ -134,6 +134,10 @@ pub(crate) struct ArrangeViewState {
     /// over a group commit even when the source widget misses drag_stopped.
     #[serde(skip)]
     pub(crate) pending_track_drag_ids: Option<Vec<u64>>,
+    /// Transient MIDI-part move/resize gesture: track, part, resize mode,
+    /// original start, original duration, and pointer grab offset in beats.
+    #[serde(skip)]
+    pub(crate) midi_part_drag: Option<(u64, u64, bool, f64, f64, f64)>,
 }
 
 impl Default for ArrangeViewState {
@@ -166,6 +170,7 @@ impl Default for ArrangeViewState {
             pre_exclusive_track_heights: None,
             pending_group_drop: None,
             pending_track_drag_ids: None,
+            midi_part_drag: None,
         }
     }
 }
