@@ -128,3 +128,13 @@ The audio callback now reports an EMA render load and overrun count in the
 status strip, while audio clip gesture edits defer plan rebuild until release.
 These changes are tracked under T058; runtime performance under ASIO 256-frame
 playback still needs measurement and listening review.
+
+Project inspector follow-up: the selected track's M/S indicators now include
+inherited parent-group state, and group rows/inspector indicators include solo
+state from descendants. The inspector Monitor control now toggles the existing
+track monitor setting for Audio tracks with an input route, and shows disabled
+when the route is explicitly No Bus. Project track-header monitor painting uses
+an ASCII icon key. Two unreferenced legacy RGBA logo assets were removed; the
+active SVG branding and native app icon remain. `cargo check --offline -p
+opentrack --features local-asio` passes. Desktop visual and live monitoring
+review remain pending under the user's no-computer-use instruction.

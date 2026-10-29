@@ -10254,15 +10254,6 @@ fn track_kind_label(kind: TrackKind) -> &'static str {
     }
 }
 
-fn track_kind_color(kind: TrackKind) -> Color32 {
-    match kind {
-        TrackKind::Audio => theme::TRACK_AUDIO,
-        TrackKind::Group => theme::TRACK_AUDIO,
-        TrackKind::Instrument => theme::TRACK_INSTRUMENT,
-        TrackKind::Midi => theme::TRACK_MIDI,
-    }
-}
-
 fn filter_type_name(filter: FilterType) -> &'static str {
     match filter {
         FilterType::Bell | FilterType::ParametricI => "Parametric I",
@@ -10275,27 +10266,6 @@ fn filter_type_name(filter: FilterType) -> &'static str {
         FilterType::LowPass => "Low Pass",
         FilterType::HighPass | FilterType::HighPassI => "High Pass I",
         FilterType::HighPassII => "High Pass II",
-    }
-}
-
-fn generator_waveform_name(waveform: GeneratorWaveform) -> &'static str {
-    match waveform {
-        GeneratorWaveform::Sine => "Sine",
-        GeneratorWaveform::Square => "Square",
-        GeneratorWaveform::Sawtooth => "Sawtooth",
-        GeneratorWaveform::Triangle => "Triangle",
-        GeneratorWaveform::WhiteNoise => "White noise",
-        GeneratorWaveform::BrownNoise => "Brown noise",
-        GeneratorWaveform::PinkNoise => "Pink noise",
-    }
-}
-
-fn instrument_waveform_name(waveform: InstrumentWaveform) -> &'static str {
-    match waveform {
-        InstrumentWaveform::Sine => "Sine oscillator",
-        InstrumentWaveform::Square => "Square oscillator",
-        InstrumentWaveform::Sawtooth => "Sawtooth oscillator",
-        InstrumentWaveform::Triangle => "Triangle oscillator",
     }
 }
 
@@ -10686,11 +10656,10 @@ fn project_track_group_depth(project: &Project, track_id: u64) -> usize {
 
 fn project_track_inherited_group_state(project: &Project, track_id: u64) -> (bool, bool, bool) {
     let mut inherited = (false, false, false);
-    let mut parent_id = project
-        .tracks
-        .iter()
-        .find(|track| track.id == track_id)
-        .and_then(|track| track.parent_group_id);
+    let Some(track) = project.tracks.iter().find(|track| track.id == track_id) else {
+        return inherited;
+    };
+    let mut parent_id = track.parent_group_id;
     for _ in 0..2 {
         let Some(id) = parent_id else { break };
         let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
@@ -10700,6 +10669,16 @@ fn project_track_inherited_group_state(project: &Project, track_id: u64) -> (boo
         inherited.1 |= parent.solo;
         inherited.2 |= parent.solo_defeat;
         parent_id = parent.parent_group_id;
+    }
+    if track.kind == TrackKind::Group {
+        for child in project
+            .tracks
+            .iter()
+            .filter(|candidate| project_track_is_in_group(project, candidate.id, track_id))
+        {
+            inherited.1 |= child.solo;
+            inherited.2 |= child.solo_defeat;
+        }
     }
     inherited
 }
@@ -11993,6 +11972,14 @@ fn show_project(
                 }
                 let inherited_group_state =
                     project_track_inherited_group_state(project, row_track_id);
+                let group_child_solo = project
+                    .tracks
+                    .get(row)
+                    .is_some_and(|group| group.kind == TrackKind::Group)
+                    && project.tracks.iter().any(|child| {
+                        project_track_is_in_group(project, child.id, row_track_id)
+                            && (child.solo || child.solo_defeat)
+                    });
                 if let Some(track) = project.tracks.get_mut(row) {
                     let resize_rect = Rect::from_min_max(
                         Pos2::new(row_rect.left(), top + lane_height - 5.0),
@@ -12536,7 +12523,9 @@ fn show_project(
                                 || inherited_group_state.1
                                 || inherited_group_state.2,
                             theme::palette(ui).accent,
-                            if inherited_group_state.1 || inherited_group_state.2 {
+                            if group_child_solo {
+                                "Solo is active on a child track"
+                            } else if inherited_group_state.1 || inherited_group_state.2 {
                                 "Solo State (inherited from group; ALT click for Solo Defeat)"
                             } else {
                                 "Solo State (Solo Defeat with ALT click)"
@@ -12544,7 +12533,7 @@ fn show_project(
                         ),
                         ("R", track.armed, theme::RECORD, "Record Enable"),
                         (
-                            "◉",
+                            "MON",
                             track.monitor,
                             theme::palette(ui).surface_raised,
                             "Monitor",
@@ -16249,488 +16238,6 @@ fn linear_gain_db(gain: f32) -> f32 {
     } else {
         20.0 * gain.log10()
     }
-}
-
-fn show_mixer_legacy(
-    ui: &mut egui::Ui,
-    project: &mut Project,
-    meter_levels: &HashMap<u64, [f32; 2]>,
-    show_strips: bool,
-    show_settings: bool,
-) -> bool {
-    let mut modified = false;
-    let mut exclusive_solo_track_id = None;
-    let mut selected_track = project.selected_track;
-    if show_strips && project.tracks.is_empty() {
-        ui.centered_and_justified(|ui| {
-            ui.label(
-                egui::RichText::new("Add tracks to create mixer channels")
-                    .color(theme::palette(ui).muted),
-            );
-        });
-        return false;
-    }
-    if show_strips {
-        ui.horizontal(|ui| {
-            ui.heading("Mixer");
-            ui.separator();
-            ui.label(
-                egui::RichText::new("CHANNELS")
-                    .small()
-                    .color(theme::palette(ui).muted),
-            );
-        });
-        ui.separator();
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                for (track_index, track) in project.tracks.iter_mut().enumerate() {
-                    egui::Frame::group(ui.style())
-                        .fill(theme::palette(ui).surface)
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .show(ui, |ui| {
-                            ui.set_min_width(86.0);
-                            ui.horizontal(|ui| {
-                                ui.colored_label(track_kind_color(track.kind), "CH");
-                                if ui
-                                    .selectable_label(
-                                        selected_track == Some(track_index as u32),
-                                        track.name.as_str(),
-                                    )
-                                    .clicked()
-                                {
-                                    selected_track = Some(track_index as u32);
-                                    modified = true;
-                                }
-                            });
-                            ui.add_space(8.0);
-                            let meter_height = 156.0;
-                            let (meter, meter_response) = ui
-                                .allocate_exact_size(Vec2::new(12.0, meter_height), Sense::hover());
-                            let peak = meter_levels.get(&track.id).copied().unwrap_or([0.0; 2]).into_iter().fold(0.0_f32, f32::max);
-                            let meter_fraction = meter_fill_fraction(peak);
-                            ui.painter().rect_filled(
-                                meter,
-                                egui::CornerRadius::same(3),
-                                theme::palette(ui).canvas,
-                            );
-                            if meter_fraction > 0.0 {
-                                ui.painter().rect_filled(
-                                    Rect::from_min_size(
-                                        Pos2::new(
-                                            meter.min.x,
-                                            meter.max.y - meter_height * meter_fraction,
-                                        ),
-                                        Vec2::new(meter.width(), meter_height * meter_fraction),
-                                    ),
-                                    egui::CornerRadius::same(3),
-                                    project_controls::track_color(track),
-                                );
-                            }
-                            if peak >= 1.0 {
-                                ui.painter().rect_filled(
-                                    Rect::from_min_size(meter.min, Vec2::new(meter.width(), 4.0)),
-                                    egui::CornerRadius::same(1),
-                                    theme::RECORD,
-                                );
-                            }
-                            let meter_text = if peak > 0.0 {
-                                format!("{:.1} dBFS", 20.0 * peak.log10())
-                            } else {
-                                "-∞ dBFS".to_owned()
-                            };
-                            meter_response.on_hover_text(meter_text);
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut track.gain, 0.0..=opentrack_core::project::MAX_CHANNEL_GAIN)
-                                        .vertical()
-                                        .show_value(false),
-                                )
-                                .changed()
-                            {
-                                modified = true;
-                            }
-                            ui.horizontal(|ui| {
-                                let mute = egui::Button::new("M").fill(if track.muted {
-                                    theme::WARNING
-                                } else {
-                                    theme::palette(ui).surface_raised
-                                });
-                                if ui.add(mute).clicked() {
-                                    track.muted = !track.muted;
-                                    modified = true;
-                                }
-                                let solo_fill = if track.solo {
-                                    theme::palette(ui).accent
-                                } else if track.solo_defeat {
-                                    theme::palette(ui).solo_defeat
-                                } else {
-                                    theme::palette(ui).surface_raised
-                                };
-                                let solo_tooltip = if track.solo_defeat {
-                                    "Solo Defeat; Alt-click to disable"
-                                } else {
-                                    "Solo; Ctrl-click to solo exclusively; Alt-click for Solo Defeat"
-                                };
-                                let solo = egui::Button::new("S").fill(solo_fill);
-                                if ui.add(solo).on_hover_text(solo_tooltip).clicked() {
-                                    let modifiers = ui.input(|input| input.modifiers);
-                                    if modifiers.alt {
-                                        track.solo_defeat = !track.solo_defeat;
-                                        if track.solo_defeat {
-                                            track.solo = false;
-                                        }
-                                    } else {
-                                        track.solo = !track.solo;
-                                        if track.solo {
-                                            track.solo_defeat = false;
-                                            if modifiers.ctrl {
-                                                exclusive_solo_track_id = Some(track.id);
-                                            }
-                                        }
-                                    }
-                                    modified = true;
-                                }
-                                let arm = egui::Button::new("R").fill(if track.armed {
-                                    theme::RECORD
-                                } else {
-                                    theme::palette(ui).surface_raised
-                                });
-                                if ui.add(arm).clicked() {
-                                    track.armed = !track.armed;
-                                    modified = true;
-                                }
-                            });
-                        });
-                }
-                egui::Frame::group(ui.style())
-                    .fill(theme::palette(ui).master_surface)
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(92.0);
-                        ui.label(egui::RichText::new("MASTER").strong().color(theme::palette(ui).accent));
-                        ui.add_space(180.0);
-                        ui.label(egui::RichText::new("0.0 dB").monospace());
-                    });
-            });
-        });
-    }
-    if let Some(solo_track_id) = exclusive_solo_track_id {
-        for track in &mut project.tracks {
-            if track.id != solo_track_id && track.solo {
-                track.solo = false;
-            }
-        }
-    }
-    if show_settings {
-        egui::ScrollArea::vertical()
-            .id_salt("mixer-channel-settings")
-            .show(ui, |ui| {
-                if project.tracks.is_empty() {
-                    ui.label("Add a track to open its channel settings.");
-                    ui.horizontal(|ui| {
-                        for (kind, label) in [
-                            (TrackKind::Audio, "+ Audio Track"),
-                            (TrackKind::Instrument, "+ Instrument Track"),
-                            (TrackKind::Midi, "+ MIDI Track"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                project.add_track(kind);
-                                selected_track = project.selected_track;
-                                modified = true;
-                            }
-                        }
-                    });
-                } else {
-                    let selected_name = selected_track
-                        .and_then(|index| project.tracks.get(index as usize))
-                        .map(|track| track.name.clone())
-                        .unwrap_or_else(|| "Select a track".to_owned());
-                    ui.horizontal(|ui| {
-                        ui.label("Track");
-                        egui::ComboBox::from_id_salt("channel-settings-track")
-                            .selected_text(selected_name)
-                            .show_ui(ui, |ui| {
-                                for (index, track) in project.tracks.iter().enumerate() {
-                                    modified |= ui
-                                        .selectable_value(
-                                            &mut selected_track,
-                                            Some(index as u32),
-                                            &track.name,
-                                        )
-                                        .changed();
-                                }
-                            });
-                    });
-                    if selected_track.is_none() {
-                        ui.label("Select a track to edit its instrument, EQ, and inserts.");
-                    }
-                }
-                if project.selected_track != selected_track {
-                    project.selected_track = selected_track;
-                    project.selected_midi_part_id = None;
-                }
-                if let Some(selected_index) = selected_track
-                    .map(|index| index as usize)
-                    .filter(|index| *index < project.tracks.len())
-                {
-                    let track = &mut project.tracks[selected_index];
-                    ui.separator();
-                    if track.kind == TrackKind::Instrument {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("BUILT-IN INSTRUMENT")
-                                    .small()
-                                    .color(theme::palette(ui).muted),
-                            );
-                            egui::ComboBox::from_id_salt(("instrument-waveform", track.id))
-                                .selected_text(instrument_waveform_name(track.instrument_waveform))
-                                .show_ui(ui, |ui| {
-                                    for waveform in [
-                                        InstrumentWaveform::Sine,
-                                        InstrumentWaveform::Square,
-                                        InstrumentWaveform::Sawtooth,
-                                        InstrumentWaveform::Triangle,
-                                    ] {
-                                        modified |= ui
-                                            .selectable_value(
-                                                &mut track.instrument_waveform,
-                                                waveform,
-                                                instrument_waveform_name(waveform),
-                                            )
-                                            .changed();
-                                    }
-                                });
-                        });
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("BUILT-IN EQ")
-                                .small()
-                                .color(theme::palette(ui).muted),
-                        );
-                        modified |= ui
-                            .checkbox(&mut track.equalizer.bypassed, "Bypass")
-                            .changed();
-                    });
-                    for (band_index, band) in track.equalizer.bands.iter_mut().enumerate() {
-                        egui::CollapsingHeader::new(format!("EQ Band {}", band_index + 1))
-                            .default_open(band.enabled)
-                            .show(ui, |ui| {
-                                modified |= ui.checkbox(&mut band.enabled, "Enabled").changed();
-                                egui::ComboBox::from_id_salt(("eq-filter", track.id, band_index))
-                                    .selected_text(filter_type_name(band.filter))
-                                    .show_ui(ui, |ui| {
-                                        let available_filters: &[FilterType] =
-                                            if matches!(band_index, 1 | 2) {
-                                                &[FilterType::Bell]
-                                            } else {
-                                                &[
-                                                    FilterType::Bell,
-                                                    FilterType::LowShelf,
-                                                    FilterType::HighShelf,
-                                                    FilterType::LowPass,
-                                                    FilterType::HighPass,
-                                                ]
-                                            };
-                                        for filter in available_filters.iter().copied() {
-                                            modified |= ui
-                                                .selectable_value(
-                                                    &mut band.filter,
-                                                    filter,
-                                                    filter_type_name(filter),
-                                                )
-                                                .changed();
-                                        }
-                                    });
-                                modified |= ui
-                                    .add(
-                                        egui::Slider::new(&mut band.frequency_hz, 20.0..=20_000.0)
-                                            .logarithmic(true)
-                                            .text("Frequency (Hz)"),
-                                    )
-                                    .changed();
-                                modified |= ui
-                                    .add(
-                                        egui::Slider::new(&mut band.gain_db, -24.0..=24.0)
-                                            .text("Gain (dB)"),
-                                    )
-                                    .changed();
-                                modified |= ui
-                                    .add(egui::Slider::new(&mut band.q, 0.1..=10.0).text("Q"))
-                                    .changed();
-                            });
-                    }
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("INSERT EFFECTS")
-                                .small()
-                                .color(theme::palette(ui).muted),
-                        );
-                        if ui.button("+ Test Generator").clicked() {
-                            track.inserts.push(InsertEffect {
-                                enabled: true,
-                                kind: InsertEffectKind::TestGenerator {
-                                    waveform: GeneratorWaveform::Sine,
-                                    frequency_hz: 440.0,
-                                    gain_db: -18.0,
-                                },
-                            });
-                            modified = true;
-                        }
-                        if ui.button("+ Stereo Delay").clicked() {
-                            track.inserts.push(InsertEffect {
-                                enabled: true,
-                                kind: InsertEffectKind::default(),
-                            });
-                            modified = true;
-                        }
-                    });
-                    let mut remove_insert = None;
-                    let mut move_insert = None;
-                    let insert_count = track.inserts.len();
-                    for (insert_index, insert) in track.inserts.iter_mut().enumerate() {
-                        egui::Frame::group(ui.style())
-                            .fill(theme::palette(ui).surface)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let effect_name = match &insert.kind {
-                                        InsertEffectKind::TestGenerator { .. } => "Test Generator",
-                                        InsertEffectKind::StereoDelay { .. } => "Stereo Delay",
-                                        InsertEffectKind::LegacyUnavailableCompressor { .. } => {
-                                            "Unavailable Compressor"
-                                        }
-                                        InsertEffectKind::Vst3 { .. } => "VST3 Plug-in",
-                                    };
-                                    if matches!(
-                                        &insert.kind,
-                                        InsertEffectKind::LegacyUnavailableCompressor { .. }
-                                    ) {
-                                        ui.label("Unavailable Compressor (inactive)");
-                                    } else {
-                                        modified |=
-                                            ui.checkbox(&mut insert.enabled, effect_name).changed();
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            insert_index > 0,
-                                            egui::Button::new("↑").small(),
-                                        )
-                                        .on_hover_text("Move insert up")
-                                        .clicked()
-                                    {
-                                        move_insert = Some((insert_index, insert_index - 1));
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            insert_index + 1 < insert_count,
-                                            egui::Button::new("↓").small(),
-                                        )
-                                        .on_hover_text("Move insert down")
-                                        .clicked()
-                                    {
-                                        move_insert = Some((insert_index, insert_index + 1));
-                                    }
-                                    if ui.small_button("Remove").clicked() {
-                                        remove_insert = Some(insert_index);
-                                    }
-                                });
-                                match &mut insert.kind {
-                                    InsertEffectKind::TestGenerator {
-                                        waveform,
-                                        frequency_hz,
-                                        gain_db,
-                                    } => {
-                                        egui::ComboBox::from_id_salt((
-                                            "generator-waveform",
-                                            track.id,
-                                            insert_index,
-                                        ))
-                                        .selected_text(generator_waveform_name(*waveform))
-                                        .show_ui(
-                                            ui,
-                                            |ui| {
-                                                for option in [
-                                                    GeneratorWaveform::Sine,
-                                                    GeneratorWaveform::Square,
-                                                    GeneratorWaveform::Sawtooth,
-                                                    GeneratorWaveform::Triangle,
-                                                    GeneratorWaveform::WhiteNoise,
-                                                    GeneratorWaveform::BrownNoise,
-                                                    GeneratorWaveform::PinkNoise,
-                                                ] {
-                                                    modified |= ui
-                                                        .selectable_value(
-                                                            waveform,
-                                                            option,
-                                                            generator_waveform_name(option),
-                                                        )
-                                                        .changed();
-                                                }
-                                            },
-                                        );
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(frequency_hz, 1.0..=20_000.0)
-                                                    .logarithmic(true)
-                                                    .text("Frequency (Hz)"),
-                                            )
-                                            .changed();
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(gain_db, -60.0..=0.0)
-                                                    .text("Gain (dB)"),
-                                            )
-                                            .changed();
-                                    }
-                                    InsertEffectKind::StereoDelay {
-                                        time_ms,
-                                        feedback,
-                                        mix,
-                                    } => {
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(time_ms, 1.0..=2_000.0)
-                                                    .text("Time (ms)"),
-                                            )
-                                            .changed();
-                                        modified |= ui
-                                            .add(
-                                                egui::Slider::new(feedback, 0.0..=0.95)
-                                                    .text("Feedback"),
-                                            )
-                                            .changed();
-                                        modified |= ui
-                                            .add(egui::Slider::new(mix, 0.0..=1.0).text("Wet"))
-                                            .changed();
-                                    }
-                                    InsertEffectKind::LegacyUnavailableCompressor { .. } => {
-                                        ui.label(
-                                            "Removed built-in effect: replace it with a VST3 plug-in or remove this slot.",
-                                        );
-                                    }
-                                    InsertEffectKind::Vst3 { name, .. } => {
-                                        ui.label(if name.is_empty() {
-                                            "VST3 plug-in"
-                                        } else {
-                                            name.as_str()
-                                        });
-                                    }
-                                }
-                            });
-                    }
-                    if let Some(insert_index) = remove_insert {
-                        track.inserts.remove(insert_index);
-                        modified = true;
-                    } else if let Some((from, to)) = move_insert {
-                        track.inserts.swap(from, to);
-                        modified = true;
-                    }
-                }
-            });
-    }
-    modified
 }
 
 #[cfg(test)]

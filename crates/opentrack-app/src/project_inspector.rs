@@ -58,7 +58,7 @@ fn symbol(ui: &mut egui::Ui, r: Rect, name: &str, ink: Color32) {
         "E" | "e" => Some(crate::icon_system::IconId::GlyphFx),
         "▦" => Some(crate::icon_system::IconId::SnapType),
         "×" => Some(crate::icon_system::IconId::Close),
-        "◀" | "◉" => Some(crate::icon_system::IconId::Monitor),
+        "MON" | "◀" | "◉" => Some(crate::icon_system::IconId::Monitor),
         "♪" => Some(crate::icon_system::IconId::TrackMusic),
         "▱" => Some(crate::icon_system::IconId::Document),
         "▤" => Some(crate::icon_system::IconId::TakeLanes),
@@ -350,9 +350,22 @@ pub(super) fn show(
         .filter(|track| track.kind == TrackKind::Group)
         .map(|track| (track.id, track.name.clone()))
         .collect::<HashMap<_, _>>();
+    let track_id = project.tracks[track_index].id;
+    let (inherited_muted, inherited_solo, inherited_solo_defeat) =
+        super::project_track_inherited_group_state(project, track_id);
+    let group_child_solo = project.tracks[track_index].kind == TrackKind::Group
+        && project.tracks.iter().any(|child| {
+            super::project_track_is_in_group(project, child.id, track_id)
+                && (child.solo || child.solo_defeat)
+        });
+    let effective_muted = project.tracks[track_index].muted || inherited_muted;
+    let effective_solo = project.tracks[track_index].solo
+        || project.tracks[track_index].solo_defeat
+        || inherited_solo
+        || inherited_solo_defeat
+        || group_child_solo;
     {
         let track = &mut project.tracks[track_index];
-        let track_id = track.id;
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let p = theme::palette(ui);
         let (header, _) =
@@ -404,11 +417,26 @@ pub(super) fn show(
             egui::StrokeKind::Inside,
         );
         for (index, (label, tooltip, active, enabled)) in [
-            ("M", "Mute", track.muted, true),
+            (
+                "M",
+                if inherited_muted {
+                    "Muted by parent group; click to toggle this track's mute"
+                } else {
+                    "Mute"
+                },
+                effective_muted,
+                true,
+            ),
             (
                 "S",
-                "Solo State (Solo Defeat with ALT click)",
-                track.solo || track.solo_defeat,
+                if group_child_solo {
+                    "Solo is active on a child track"
+                } else if inherited_solo || inherited_solo_defeat {
+                    "Solo is active from a parent group"
+                } else {
+                    "Solo State (Solo Defeat with ALT click)"
+                },
+                effective_solo,
                 true,
             ),
             ("R", "Read Enable", track.automation_read, true),
@@ -491,7 +519,16 @@ pub(super) fn show(
             requires_plan_rebuild = true;
         }
         for (index, (label, tooltip, left, width)) in [
-            ("◀", "Monitor", 29.0, 16.0),
+            (
+                "MON",
+                if track.input_routing.as_deref() == Some("No Bus") {
+                    "Select an audio input before enabling monitor"
+                } else {
+                    "Monitor input"
+                },
+                29.0,
+                16.0,
+            ),
             (
                 "♪",
                 "Toggle Timebase between Musical and Linear",
@@ -505,16 +542,24 @@ pub(super) fn show(
         .into_iter()
         .enumerate()
         {
-            button(
+            let enabled = index == 0
+                && track.kind == TrackKind::Audio
+                && track.input_routing.as_deref() != Some("No Bus");
+            let response = button(
                 ui,
                 Rect::from_min_size(controls.min + Vec2::new(left, 28.0), Vec2::new(width, 14.0)),
                 (track_id, "secondary", index),
                 label,
                 tooltip,
-                false,
-                false,
+                index == 0 && track.monitor,
+                enabled,
                 false,
             );
+            if response.clicked() && index == 0 {
+                track.monitor = !track.monitor;
+                modified = true;
+                requires_plan_rebuild = true;
+            }
         }
         ui.add_space(5.0);
         ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);

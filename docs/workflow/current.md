@@ -45,6 +45,12 @@ and final workspace/audio-plan setup remains on the UI thread. The dedicated
 VST3 editor host stays hidden until its view is attached and saved bounds are
 applied; first-paint behavior and app-owned window flashes need runtime review.
 
+Project panel follow-up: inspector M/S buttons display inherited group state,
+group headers reflect soloed descendants, and the inspector Monitor button now
+toggles audio-track monitoring only when an input route is available. Two
+unreferenced legacy RGBA logo assets were removed. Local-ASIO compilation
+passes; runtime display/monitor review remains pending.
+
 ## Previous task T057 - recovery after accidental app.rs reset
 
 ## 2026-10-28 recovery after accidental app.rs reset
