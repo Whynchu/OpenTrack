@@ -60,6 +60,16 @@ reports ASIO output at 256 frames on a Mackie interface; the period is about
 5.3 ms at 48 kHz. Runtime load/overrun values and listening confirmation are
 still needed before attributing the pops to the render thread.
 
+The idle ASIO capture path now skips Input Bus processing when monitoring,
+recording, and input spectrum are all disabled; input probe meters continue to
+run. Release builds use the optimized profile below. The x64 local-ASIO package
+build completed successfully in 8m14s with SHA-256
+`97F6FC253AF76FBFC9BF630C939F6D541C45F886AF41AC6ECB14A419472802DE`. This is
+build evidence only; no runtime CPU comparison or listening result has been
+collected yet. The renderer load metric excludes ASIO input conversion/copying
+outside the playback renderer, so it is an indicator rather than a full device
+callback measurement.
+
 ### Phase 2 — Free wins (R2, R3)
 
 - Release profile: `lto = "fat"`, `codegen-units = 1`, `opt-level = 3`, `panic = "unwind"` preserved. Target features per decision 1.
@@ -103,11 +113,11 @@ still needed before attributing the pops to the render thread.
 ## Handoff
 
 - Actual implementer/reviewer model: Codex; phase 1 in progress by user request.
-- Source identity (commit plus dirty diff/artifact identity) and build hash: dirty worktree; x64 local-ASIO package SHA-256 `B8B3952CFB2008D81A486E3B4FF545CE189A48B2C9DBB754E43E09EE3FE6D125`.
-- Changes and reasons: callback timing and overrun visibility; defer plan rebuilds during audio-event drags.
-- Commands/checks and actual results: `cargo check --offline -p opentrack --features local-asio` passed; x64 local-ASIO package build passed. Runtime measurement remains pending.
+- Source identity (commit plus dirty diff/artifact identity) and build hash: commit `506c139` plus ASIO idle-input bypass and release-profile changes; x64 local-ASIO package SHA-256 `97F6FC253AF76FBFC9BF630C939F6D541C45F886AF41AC6ECB14A419472802DE`.
+- Changes and reasons: callback timing and overrun visibility; defer plan rebuilds during audio-event drags; skip unused Input Bus DSP in the ASIO capture callback; enable optimized release settings.
+- Commands/checks and actual results: `cargo check --offline -p opentrack --features local-asio` passed; x64 local-ASIO package build passed in 8m14s. Runtime measurement remains pending.
 - Runtime environment and evidence paths: Windows x64; fixtures to be created under the audio crate's test suite, not in `builds/`.
 - Ledger IDs updated; report command/result: pending.
 - Review findings, rework, elapsed effort if available: no runtime measurement yet.
-- Failures/unknowns/pending acceptance: A1 baseline unmeasured; current ASIO DSP load and overruns unknown.
+- Failures/unknowns/pending acceptance: A1 baseline unmeasured; current ASIO DSP load and overruns unknown; callback load does not include all host-side ASIO work.
 - Next ready task: run the new build during the user's typical playback session and capture the DSP/overrun status, then continue phase 1 profiling.

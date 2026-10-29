@@ -248,23 +248,30 @@ impl AsioCapture {
     pub(crate) fn push(&self, samples: &mut [f32]) {
         self.callback_reads.fetch_add(1, Ordering::AcqRel);
         record_probe_samples(samples, self.channels, &self.peaks, None);
-        for frame in samples.chunks_exact_mut(self.channels as usize) {
-            let left = if frame[0].is_finite() { frame[0] } else { 0.0 };
-            let right = frame
-                .get(1)
-                .copied()
-                .filter(|s| s.is_finite())
-                .unwrap_or(left);
-            let (left, right) = self.monitor.process_input(left, right);
-            frame[0] = left;
-            if frame.len() > 1 {
-                frame[1] = right;
-            }
-            if self.monitor.is_enabled() && !self.monitor.push_frame(left, right) {
-                self.monitor.add_dropped_frames(1);
+        let recording = self.recording.load_full();
+        let process_input_bus = self.monitor.is_enabled()
+            || recording.is_some()
+            || self.monitor.meter_tap().spectrum_enabled();
+        if process_input_bus {
+            let monitoring = self.monitor.is_enabled();
+            for frame in samples.chunks_exact_mut(self.channels as usize) {
+                let left = if frame[0].is_finite() { frame[0] } else { 0.0 };
+                let right = frame
+                    .get(1)
+                    .copied()
+                    .filter(|s| s.is_finite())
+                    .unwrap_or(left);
+                let (left, right) = self.monitor.process_input(left, right);
+                frame[0] = left;
+                if frame.len() > 1 {
+                    frame[1] = right;
+                }
+                if monitoring && !self.monitor.push_frame(left, right) {
+                    self.monitor.add_dropped_frames(1);
+                }
             }
         }
-        if let Some(recording) = self.recording.load().as_ref() {
+        if let Some(recording) = recording.as_ref() {
             push_if_enabled(
                 &recording.ring,
                 None,

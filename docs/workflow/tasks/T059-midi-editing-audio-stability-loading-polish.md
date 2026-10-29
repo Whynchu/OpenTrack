@@ -106,7 +106,7 @@ finalization smoothness is still unresolved. The VST3 hidden-until-attached
 mitigation has not been visually verified.
 
 The current x64 local-ASIO package is `builds/x64/OpenTrack.exe`, SHA-256
-`B8B3952CFB2008D81A486E3B4FF545CE189A48B2C9DBB754E43E09EE3FE6D125`.
+`97F6FC253AF76FBFC9BF630C939F6D541C45F886AF41AC6ECB14A419472802DE`.
 Popup investigation found that egui menu bars and popups use their default
 click-close behavior. The shared outside-click handling above now covers the
 common app-managed transient/configuration windows; the remaining specialized
