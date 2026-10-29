@@ -843,6 +843,8 @@ mod tests {
         let plan = super::super::PlaybackPlan::new(
             120.0,
             vec![super::super::PlaybackTrackSettings {
+                is_group: false,
+                audio_channels: 2,
                 clips: vec![super::super::PlaybackClip {
                     source_fades: Vec::new(),
                     source: PlaybackSource::Streamed {

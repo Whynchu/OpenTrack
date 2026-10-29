@@ -100,10 +100,6 @@ pub(super) fn key_row(ui: &egui::Ui, keyboard: Rect, row: Rect, midi: i32, row_h
             p.midi_row_white
         },
     );
-    painter.line_segment(
-        [row.left_bottom(), row.right_bottom()],
-        Stroke::new(0.5, p.grid.gamma_multiply(0.5)),
-    );
     let key = Rect::from_min_max(
         Pos2::new(keyboard.left(), row.top()),
         Pos2::new(keyboard.right(), row.bottom()),
@@ -123,9 +119,36 @@ pub(super) fn key_row(ui: &egui::Ui, keyboard: Rect, row: Rect, midi: i32, row_h
             p.midi_key_black,
         );
     }
+    let pixels_per_point = ui.ctx().pixels_per_point().max(1.0);
+    let separator_y = ((row.bottom() * pixels_per_point).round() + 0.5) / pixels_per_point;
     painter.line_segment(
-        [key.left_bottom(), key.right_bottom()],
-        Stroke::new(0.5, p.canvas),
+        [
+            Pos2::new(row.left(), separator_y),
+            Pos2::new(row.right(), separator_y),
+        ],
+        Stroke::new(1.0 / pixels_per_point, p.grid.gamma_multiply(0.85)),
+    );
+    // Draw the key boundary after filling the keyboard so adjacent keys stay
+    // distinct at compact semitone heights. Snap the stroke to a physical
+    // pixel to avoid the half-pixel antialiasing that made these disappear.
+    let separator_y = ((key.bottom() * pixels_per_point).round() + 0.5) / pixels_per_point;
+    let separator = if ui.visuals().dark_mode {
+        if black {
+            Color32::from_gray(70)
+        } else {
+            Color32::from_gray(45)
+        }
+    } else if black {
+        Color32::from_gray(130)
+    } else {
+        Color32::from_gray(195)
+    };
+    painter.line_segment(
+        [
+            Pos2::new(key.left(), separator_y),
+            Pos2::new(key.right(), separator_y),
+        ],
+        Stroke::new(1.0 / pixels_per_point, separator),
     );
     if row_height >= MIN_LABEL_ROW_HEIGHT {
         let (label_right, color) = if black {
@@ -234,7 +257,7 @@ pub(super) fn controls(
         thumb,
         2.0,
         if nav.hovered() || nav.dragged() {
-            p.accent
+            crate::theme::slider_highlight(ui.visuals())
         } else {
             p.muted.gamma_multiply(0.65)
         },

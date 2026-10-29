@@ -181,7 +181,17 @@ pub(super) fn show_channels(
         .data_mut(|data| data.get_temp::<MixerView>(state_id))
         .unwrap_or_default();
     let area = ui.available_rect_before_wrap();
-    let height = (area.height() - 22.0).max(300.0);
+    let visible_track_count = project
+        .tracks
+        .iter()
+        .filter(|track| !(view.hide_audio && track.kind == TrackKind::Audio))
+        .count();
+    let track_area_width = area.width()
+        - 70.0
+        - if view.hide_input { 0.0 } else { 94.0 }
+        - if view.hide_output { 0.0 } else { 86.0 };
+    let horizontal_scroll_needed = visible_track_count as f32 * 82.0 > track_area_width;
+    let height = (area.height() - if horizontal_scroll_needed { 12.0 } else { 0.0 }).max(300.0);
     let mut modified = false;
     let mut selection_requested = false;
     let mut selected = project.selected_track;
@@ -219,8 +229,8 @@ pub(super) fn show_channels(
         ui.style_mut().spacing.scroll.floating = false;
         ui.style_mut().spacing.scroll.bar_width = 12.0;
         egui::ScrollArea::horizontal()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .max_height(height + 14.0)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+            .max_height(area.height())
             .id_salt("mixer-track-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {

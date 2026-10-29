@@ -181,6 +181,21 @@ impl EditorWindow {
         title: &str,
         restore_bounds: Option<&opentrack_core::workspaces::WindowBounds>,
     ) -> Result<Self, String> {
+        Self::create_with_visibility(title, restore_bounds, true)
+    }
+
+    fn create_hidden(
+        title: &str,
+        restore_bounds: Option<&opentrack_core::workspaces::WindowBounds>,
+    ) -> Result<Self, String> {
+        Self::create_with_visibility(title, restore_bounds, false)
+    }
+
+    fn create_with_visibility(
+        title: &str,
+        restore_bounds: Option<&opentrack_core::workspaces::WindowBounds>,
+        visible: bool,
+    ) -> Result<Self, String> {
         use windows_sys::Win32::{
             Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError},
             System::LibraryLoader::GetModuleHandleW,
@@ -224,12 +239,13 @@ impl EditorWindow {
             .map_or((CW_USEDEFAULT, CW_USEDEFAULT), |bounds| {
                 (bounds.left.round() as i32, bounds.top.round() as i32)
             });
+        let visibility = if visible { WS_VISIBLE } else { 0 };
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 class.as_ptr(),
                 title.as_ptr(),
-                WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_VISIBLE,
+                WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | visibility,
                 x,
                 y,
                 960,
@@ -266,7 +282,7 @@ impl EditorWindow {
                 0,
                 surface_class.as_ptr(),
                 std::ptr::null(),
-                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE,
+                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | visibility,
                 0,
                 0,
                 900,
@@ -290,6 +306,14 @@ impl EditorWindow {
             frame: hwnd as isize,
             hwnd: child as isize,
         })
+    }
+
+    pub fn show(&self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOW, ShowWindow};
+        unsafe {
+            ShowWindow(self.hwnd as _, SW_SHOW);
+            ShowWindow(self.frame as _, SW_SHOW);
+        }
     }
 
     pub fn hwnd(&self) -> isize {
@@ -561,9 +585,10 @@ fn editor_thread(
     use std::time::Duration;
 
     let result = (|| -> Result<(), String> {
-        let window = EditorWindow::create(&title, restore_bounds.as_ref())?;
+        let window = EditorWindow::create_hidden(&title, restore_bounds.as_ref())?;
         let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
         window.restore_position(restore_bounds.as_ref());
+        window.show();
         if let Ok(mut current) = bounds.lock() {
             *current = window.bounds();
         }
@@ -776,6 +801,78 @@ impl Runtime {
         changed
     }
 
+    /// Load or restore one VST3 insert. Project loading uses this one-at-a-time
+    /// entry point to keep the UI responsive between plug-in instances.
+    pub fn load_insert(&mut self, track: &Track, slot: usize) -> bool {
+        if self.sample_rate == 0 || self.max_block == 0 {
+            return false;
+        }
+        let Some(insert) = track.inserts.get(slot) else {
+            return false;
+        };
+        let InsertEffectKind::Vst3 {
+            class_id,
+            module_path,
+            component_state,
+            controller_state,
+            ..
+        } = &insert.kind
+        else {
+            return false;
+        };
+        let key = (track.id, slot);
+        if self
+            .failed_class
+            .get(&key)
+            .is_some_and(|failed| failed == class_id)
+            || self
+                .instances
+                .get(&key)
+                .is_some_and(|instance| instance.class_id == *class_id)
+        {
+            return false;
+        }
+        self.instances.remove(&key);
+        self.failures.remove(&key);
+        self.failed_class.remove(&key);
+        let Ok(parsed_class_id) = PluginClassId::from_hex(class_id) else {
+            self.failures
+                .insert(key, "Saved VST3 class ID is invalid".to_owned());
+            return true;
+        };
+        match Vst3Effect::load(
+            module_path,
+            parsed_class_id,
+            self.sample_rate,
+            self.max_block,
+        ) {
+            Ok(effect) => {
+                if !component_state.is_empty() || !controller_state.is_empty() {
+                    let state = Vst3State {
+                        component: component_state.clone(),
+                        controller: controller_state.clone(),
+                    };
+                    if let Err(error) = effect.load_state(&state) {
+                        self.failures
+                            .insert(key, format!("VST3 state restore failed: {error}"));
+                    }
+                }
+                self.instances.insert(
+                    key,
+                    Instance {
+                        class_id: parsed_class_id.to_hex(),
+                        effect: Arc::new(effect),
+                    },
+                );
+            }
+            Err(error) => {
+                self.failures.insert(key, error);
+                self.failed_class.insert(key, parsed_class_id.to_hex());
+            }
+        }
+        true
+    }
+
     pub fn hosted_inserts(&self, track: &Track) -> Vec<HostedInsert> {
         track
             .inserts
@@ -894,7 +991,7 @@ mod tests {
         eprintln!("stage: load first");
         let first = Vst3Effect::load(&module, class, 48_000, 64).expect("first instance");
         eprintln!("stage: open first editor");
-        let window = EditorWindow::create("OpenTrack compatibility probe", 0).unwrap();
+        let window = EditorWindow::create("OpenTrack compatibility probe", None).unwrap();
         first
             .open_editor(window.hwnd() as *mut std::ffi::c_void)
             .expect("native editor");
@@ -923,7 +1020,7 @@ mod tests {
         first.close_editor();
         drop(window);
         eprintln!("stage: reopen editor");
-        let window = EditorWindow::create("OpenTrack compatibility reopen", 0).unwrap();
+        let window = EditorWindow::create("OpenTrack compatibility reopen", None).unwrap();
         first
             .open_editor(window.hwnd() as *mut std::ffi::c_void)
             .unwrap();
@@ -1124,7 +1221,7 @@ mod tests {
         runtime.set_format(48_000, 64);
         runtime.sync(&project);
         assert_eq!(runtime.failure(track_id, 0), None);
-        let window = EditorWindow::create("OpenTrack VST3 editor test", 0).expect("editor host");
+        let window = EditorWindow::create("OpenTrack VST3 editor test", None).expect("editor host");
         runtime
             .open_editor(track_id, 0, window.hwnd())
             .expect("CLA-76 editor opens");

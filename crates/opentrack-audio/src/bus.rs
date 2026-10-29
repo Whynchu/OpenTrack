@@ -32,6 +32,7 @@ impl BusRuntime {
                 settings.inserts_bypassed,
                 &[],
                 &[],
+                std::sync::Arc::new(super::MidiEventControls::new(&[])),
                 oscillator_instrument_factory(InstrumentWaveform::default()).as_ref(),
                 120.0,
                 rate,

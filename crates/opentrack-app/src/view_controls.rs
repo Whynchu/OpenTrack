@@ -1,6 +1,25 @@
 //! Shared arrange/editor navigation, before egui remaps Shift to X and Ctrl to zoom.
 use eframe::egui::{self, Id, Pos2, Rect, Sense, Stroke, Vec2};
 
+pub(crate) fn apply_solid_scrollbars(ui: &mut egui::Ui) {
+    let slider_highlight = crate::theme::slider_highlight(ui.visuals());
+    let idle_handle = ui.visuals().widgets.noninteractive.fg_stroke.color;
+    let scroll = &mut ui.style_mut().spacing.scroll;
+    *scroll = egui::style::ScrollStyle::solid();
+    scroll.bar_width = 16.0;
+    scroll.bar_inner_margin = 1.0;
+    scroll.bar_outer_margin = 1.0;
+    scroll.foreground_color = true;
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    // Solid scrollbars draw their handle from the widget foreground color.
+    // Keep the idle handle subdued, and reserve the light gray accent for
+    // hover/drag so Project rails do not look selected permanently.
+    widgets.inactive.fg_stroke.color = idle_handle;
+    widgets.hovered.fg_stroke.color = slider_highlight;
+    widgets.active.fg_stroke.color = slider_highlight;
+    widgets.open.fg_stroke.color = slider_highlight;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum WheelAction {
     TimeZoom(f32),
@@ -140,7 +159,7 @@ pub(crate) fn zoom(
         Rect::from_center_size(center, size),
         1.0,
         if response.hovered() || response.dragged() {
-            p.accent
+            crate::theme::slider_highlight(ui.visuals())
         } else {
             p.muted
         },

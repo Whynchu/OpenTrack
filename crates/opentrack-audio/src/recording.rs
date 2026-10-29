@@ -2558,6 +2558,8 @@ mod tests {
         let plan = crate::PlaybackPlan::new(
             120.0,
             vec![crate::PlaybackTrackSettings {
+                is_group: false,
+                audio_channels: 2,
                 clips: vec![crate::PlaybackClip {
                     source_fades: Vec::new(),
                     source: crate::PlaybackSource::Decoded(decoded),

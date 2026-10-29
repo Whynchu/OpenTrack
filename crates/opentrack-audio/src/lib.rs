@@ -71,6 +71,7 @@ impl AudioDeviceMode {
 
 #[cfg(not(windows))]
 use std::time::Duration;
+use std::time::Instant;
 use std::{
     path::Path,
     sync::{
@@ -85,6 +86,7 @@ use opentrack_core::project::{
     ChannelEqualizer, CycleMode, EqualizerBand, FilterType, GeneratorWaveform, InsertEffect,
     InsertEffectKind, InstrumentWaveform,
 };
+use std::collections::HashMap;
 
 use crate::plugins::test_generator::{TestGenerator, TestGeneratorParameters, TestWaveform};
 
@@ -234,6 +236,7 @@ pub struct PlaybackClip {
 /// One scheduled note rendered by a Rust instrument processor.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaybackMidiNote {
+    pub id: u64,
     pub start_beats: f64,
     pub duration_beats: f64,
     pub frequency_hz: f32,
@@ -250,6 +253,50 @@ pub struct PlaybackMidiController {
     pub value: u8,
 }
 
+/// Lock-free live values for MIDI data that can change without altering its
+/// scheduled position. The UI is the producer; instrument processors read these
+/// atomics on the audio thread.
+pub struct MidiEventControls {
+    note_velocity_indices: HashMap<u64, usize>,
+    note_velocities: Box<[AtomicU32]>,
+}
+
+impl MidiEventControls {
+    fn new(notes: &[PlaybackMidiNote]) -> Self {
+        let note_velocity_indices = notes
+            .iter()
+            .enumerate()
+            .map(|(index, note)| (note.id, index))
+            .collect();
+        let note_velocities = notes
+            .iter()
+            .map(|note| AtomicU32::new(note.velocity.to_bits()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self {
+            note_velocity_indices,
+            note_velocities,
+        }
+    }
+
+    fn update_note_velocity(&self, note_id: u64, velocity: f32) -> bool {
+        let Some(index) = self.note_velocity_indices.get(&note_id).copied() else {
+            return false;
+        };
+        let Some(value) = self.note_velocities.get(index) else {
+            return false;
+        };
+        value.store(velocity.to_bits(), Ordering::Release);
+        true
+    }
+
+    fn note_velocity(&self, index: usize) -> f32 {
+        self.note_velocities
+            .get(index)
+            .map_or(0.0, |value| f32::from_bits(value.load(Ordering::Acquire)))
+    }
+}
+
 /// Audio-thread processor created from a track's scheduled MIDI notes.
 /// Implementations must not allocate, block, or take contended locks in `next_frame`.
 pub trait InstrumentProcessor: Send {
@@ -263,6 +310,7 @@ pub trait InstrumentFactory: Send + Sync {
         &self,
         notes: &[PlaybackMidiNote],
         controllers: &[PlaybackMidiController],
+        controls: Arc<MidiEventControls>,
         tempo_bpm: f64,
         sample_rate: u32,
     ) -> Box<dyn InstrumentProcessor>;
@@ -282,12 +330,14 @@ impl InstrumentFactory for OscillatorInstrumentFactory {
         &self,
         notes: &[PlaybackMidiNote],
         controllers: &[PlaybackMidiController],
+        controls: Arc<MidiEventControls>,
         tempo_bpm: f64,
         sample_rate: u32,
     ) -> Box<dyn InstrumentProcessor> {
         Box::new(MidiVoice::new(
             notes,
             controllers,
+            controls,
             tempo_bpm,
             sample_rate,
             self.waveform,
@@ -308,6 +358,7 @@ pub struct PlaybackTrack {
 
 struct PlaybackTrackRuntime {
     settings: PlaybackTrackSettings,
+    midi_controls: Arc<MidiEventControls>,
     processor: std::cell::UnsafeCell<ChannelProcessor>,
     mix: MixControl,
     equalizer_control: Arc<EqualizerControl>,
@@ -364,8 +415,12 @@ impl EqualizerControl {
     }
 
     fn set(&self, target: &ChannelEqualizer) {
-        self.target.store(Arc::new(target.clone()));
-        self.revision.fetch_add(1, Ordering::Release);
+        let current = self.target.load();
+        if current.as_ref() != target {
+            drop(current);
+            self.target.store(Arc::new(target.clone()));
+            self.revision.fetch_add(1, Ordering::Release);
+        }
     }
 }
 
@@ -467,6 +522,7 @@ impl PlaybackTrackRuntime {
         let hosted_delay_samples =
             hosted_max_latency_samples.saturating_sub(hosted_latency_samples);
         let hosted_delay_frames = usize::try_from(hosted_delay_samples).unwrap_or(0);
+        let midi_controls = Arc::new(MidiEventControls::new(&settings.midi_notes));
         let equalizer_control = EqualizerControl::new(settings.equalizer.clone());
         let processor = ChannelProcessor::new(
             &settings.equalizer,
@@ -475,6 +531,7 @@ impl PlaybackTrackRuntime {
             settings.inserts_bypassed,
             &settings.midi_notes,
             &settings.midi_controllers,
+            Arc::clone(&midi_controls),
             settings.instrument_factory.as_ref(),
             tempo_bpm,
             sample_rate,
@@ -483,6 +540,7 @@ impl PlaybackTrackRuntime {
         Self {
             mix: MixControl::new(settings.gain, settings.pan, sample_rate),
             settings,
+            midi_controls,
             equalizer_control,
             processor: std::cell::UnsafeCell::new(processor),
             meter_accumulator: std::cell::UnsafeCell::new([0.0; 2]),
@@ -658,10 +716,17 @@ pub struct PlaybackPlan {
     hosted_error_track: AtomicU32,
     hosted_error_insert: AtomicU32,
     hosted_error_code: AtomicU32,
+    callback_metrics: Arc<CallbackMetrics>,
     transition_from: ArcSwapOption<PlaybackPlan>,
     transition_position: AtomicU32,
     transition_frames: u32,
     note_audition: Arc<ArcSwapOption<NoteAudition>>,
+}
+
+#[derive(Default)]
+struct CallbackMetrics {
+    load_ema: AtomicU32,
+    overruns: AtomicU64,
 }
 
 impl PlaybackPlan {
@@ -689,6 +754,7 @@ impl PlaybackPlan {
             hosted_error_track: AtomicU32::new(NO_HOSTED_ERROR),
             hosted_error_insert: AtomicU32::new(NO_HOSTED_ERROR),
             hosted_error_code: AtomicU32::new(0),
+            callback_metrics: Arc::new(CallbackMetrics::default()),
             transition_from: ArcSwapOption::empty(),
             transition_position: AtomicU32::new(0),
             transition_frames: 0,
@@ -805,6 +871,7 @@ impl PlaybackPlan {
             hosted_error_track: AtomicU32::new(NO_HOSTED_ERROR),
             hosted_error_insert: AtomicU32::new(NO_HOSTED_ERROR),
             hosted_error_code: AtomicU32::new(0),
+            callback_metrics: Arc::new(CallbackMetrics::default()),
             transition_from: ArcSwapOption::empty(),
             transition_position: AtomicU32::new(0),
             transition_frames: (sample_rate.saturating_mul(PLAYBACK_PARAMETER_FADE_MS) / 1000)
@@ -1486,6 +1553,7 @@ impl AudioEngine {
             loop_range_beats,
             output_hosted_inserts,
         );
+        new_plan.callback_metrics = Arc::clone(&previous.callback_metrics);
         new_plan.output_meter = Arc::clone(&self.plan.load().output_meter);
         new_plan.cycle_mode = cycle_mode;
         new_plan.metronome = metronome;
@@ -1513,6 +1581,51 @@ impl AudioEngine {
         track.mix.set(gain, pan);
         track.equalizer_control.set(equalizer);
         true
+    }
+
+    /// Updates only the live fader target for a track. Project fader drags use
+    /// this narrow path to avoid cloning equalizer state or rebuilding plans.
+    pub fn update_track_gain(&self, track_index: usize, gain: f32) -> bool {
+        let plan = self.plan.load();
+        let Some(track) = plan.tracks.get(track_index) else {
+            return false;
+        };
+        track.mix.set(gain, track.settings.pan);
+        true
+    }
+
+    /// Updates live gain and pan targets without cloning EQ state or rebuilding
+    /// the playback plan. The callback smooths both controls per sample.
+    pub fn update_track_mix(&self, track_index: usize, gain: f32, pan: f32) -> bool {
+        let plan = self.plan.load();
+        let Some(track) = plan.tracks.get(track_index) else {
+            return false;
+        };
+        track.mix.set(gain, pan);
+        true
+    }
+
+    /// Updates one scheduled note's velocity without rebuilding its track's
+    /// instrument or playback plan. The new value also affects an active voice.
+    pub fn update_midi_note_velocity(
+        &self,
+        track_index: usize,
+        note_id: u64,
+        velocity: u8,
+    ) -> bool {
+        let plan = self.plan.load();
+        let Some(track) = plan.tracks.get(track_index) else {
+            return false;
+        };
+        track
+            .midi_controls
+            .update_note_velocity(note_id, f32::from(velocity.min(127)) / 127.0)
+    }
+
+    /// Releases retired playback plans after a live-control update, without
+    /// requiring mutable access to the engine owner.
+    pub fn reclaim_retired_plans_from_owner(&mut self) {
+        self.reclaim_retired_plans();
     }
 
     pub fn update_output_channel_parameters(
@@ -1560,6 +1673,28 @@ impl AudioEngine {
 
     pub fn hosted_processing_diagnostic(&self) -> HostedProcessingDiagnostic {
         self.plan.load().hosted_processing_diagnostic()
+    }
+
+    /// Exponentially smoothed render time as a percentage of the callback's
+    /// audio deadline. Values above 100% indicate a callback overrun.
+    pub fn callback_load_percent(&self) -> f32 {
+        f32::from_bits(
+            self.plan
+                .load()
+                .callback_metrics
+                .load_ema
+                .load(Ordering::Relaxed),
+        ) * 100.0
+    }
+
+    /// Number of callbacks that exceeded their audio deadline or collided
+    /// with another active renderer.
+    pub fn callback_overrun_count(&self) -> u64 {
+        self.plan
+            .load()
+            .callback_metrics
+            .overruns
+            .load(Ordering::Relaxed)
     }
 
     pub fn set_playing(&self, playing: bool) {
@@ -2258,6 +2393,10 @@ fn render_frames<T>(
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
         .is_err()
     {
+        plan.load()
+            .callback_metrics
+            .overruns
+            .fetch_add(1, Ordering::Relaxed);
         for frame in samples.chunks_mut(channels) {
             for (channel, sample) in frame.iter_mut().enumerate() {
                 write_sample(sample, channel, 0.0, 0.0);
@@ -2265,6 +2404,7 @@ fn render_frames<T>(
         }
         return;
     }
+    let callback_started_at = Instant::now();
     let plan_snapshot = plan.load_full();
     let monitor_snapshot = input_monitor.load_full();
     let audition_snapshot = plan_snapshot.note_audition.load_full();
@@ -2360,6 +2500,24 @@ fn render_frames<T>(
     }
     plan_snapshot.output_meter.publish(output_peaks);
     publish_track_meters(&plan_snapshot);
+    let frame_count = samples.len() / channels;
+    if frame_count > 0 && sample_rate > 0 {
+        let budget_seconds = frame_count as f32 / sample_rate as f32;
+        let load = callback_started_at.elapsed().as_secs_f32() / budget_seconds;
+        let metrics = &plan_snapshot.callback_metrics;
+        let previous = f32::from_bits(metrics.load_ema.load(Ordering::Relaxed));
+        let smoothed = if previous.is_finite() {
+            previous + (load - previous) * 0.1
+        } else {
+            load
+        };
+        metrics
+            .load_ema
+            .store(smoothed.to_bits(), Ordering::Relaxed);
+        if load > 1.0 {
+            metrics.overruns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     drop(plan_snapshot);
     callback_generation.store(generation, Ordering::Release);
     callback_active.store(false, Ordering::SeqCst);
@@ -3166,7 +3324,7 @@ struct ScheduledMidiNote {
     end_frame: u64,
     frequency_hz: f32,
     channel: u8,
-    velocity: f32,
+    velocity_index: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -3176,6 +3334,7 @@ struct ActiveMidiVoice {
     frequency_hz: f32,
     channel: u8,
     velocity: f32,
+    velocity_index: usize,
     phase: f32,
 }
 
@@ -3203,13 +3362,16 @@ struct MidiVoice {
     active: [Option<ActiveMidiVoice>; MAX_ACTIVE_MIDI_VOICES],
     last_frame: Option<u64>,
     sample_rate: f32,
+    velocity_smoothing: f32,
     waveform: InstrumentWaveform,
+    controls: Arc<MidiEventControls>,
 }
 
 impl MidiVoice {
     fn new(
         notes: &[PlaybackMidiNote],
         controllers: &[PlaybackMidiController],
+        controls: Arc<MidiEventControls>,
         tempo_bpm: f64,
         sample_rate: u32,
         waveform: InstrumentWaveform,
@@ -3241,7 +3403,11 @@ impl MidiVoice {
                     end_frame,
                     frequency_hz: note.frequency_hz,
                     channel: note.channel,
-                    velocity: note.velocity.clamp(0.0, 1.0),
+                    velocity_index: controls
+                        .note_velocity_indices
+                        .get(&note.id)
+                        .copied()
+                        .unwrap_or(usize::MAX),
                 });
             }
         }
@@ -3305,7 +3471,9 @@ impl MidiVoice {
             active: std::array::from_fn(|_| None),
             last_frame: None,
             sample_rate: sample_rate_f64 as f32,
+            velocity_smoothing: 1.0 - (-1.0 / (sample_rate.max(1) as f32 * 0.005)).exp(),
             waveform,
+            controls,
         }
     }
 
@@ -3364,7 +3532,8 @@ impl MidiVoice {
                 end_frame: note.end_frame,
                 frequency_hz: note.frequency_hz,
                 channel: note.channel,
-                velocity: note.velocity,
+                velocity: self.controls.note_velocity(note.velocity_index),
+                velocity_index: note.velocity_index,
                 phase: phase_cycles as f32 * std::f32::consts::TAU,
             };
             let free_voice = self.active.iter().position(Option::is_none);
@@ -3395,6 +3564,8 @@ impl MidiVoice {
             let attack = (elapsed_frames as f32 / MIDI_ENVELOPE_FRAMES as f32).clamp(0.0, 1.0);
             let release = (remaining_frames as f32 / MIDI_ENVELOPE_FRAMES as f32).clamp(0.0, 1.0);
             let controller_values = self.controller_values[usize::from(voice.channel)];
+            let velocity_target = self.controls.note_velocity(voice.velocity_index);
+            voice.velocity += (velocity_target - voice.velocity) * self.velocity_smoothing;
             let voice_sample = oscillator_sample(self.waveform, voice.phase)
                 * voice.velocity
                 * MIDI_VOICE_LEVEL
@@ -3510,6 +3681,7 @@ impl ChannelProcessor {
         inserts_bypassed: bool,
         midi_notes: &[PlaybackMidiNote],
         midi_controllers: &[PlaybackMidiController],
+        controls: Arc<MidiEventControls>,
         instrument_factory: &dyn InstrumentFactory,
         tempo_bpm: f64,
         sample_rate: u32,
@@ -3534,6 +3706,7 @@ impl ChannelProcessor {
             instrument: instrument_factory.create_processor(
                 midi_notes,
                 midi_controllers,
+                controls,
                 tempo_bpm,
                 sample_rate,
             ),
@@ -4395,6 +4568,7 @@ mod processing_tests {
             false,
             &[],
             &[],
+            Arc::new(MidiEventControls::new(&[])),
             instrument_factory.as_ref(),
             120.0,
             48_000,
@@ -4409,13 +4583,22 @@ mod processing_tests {
     #[test]
     fn midi_voice_renders_notes_at_scheduled_frames_and_resets_after_seek() {
         let note = PlaybackMidiNote {
+            id: 1,
             start_beats: 1.0,
             duration_beats: 1.0,
             frequency_hz: 1_000.0,
             channel: 0,
             velocity: 1.0,
         };
-        let mut voice = MidiVoice::new(&[note], &[], 120.0, 48_000, InstrumentWaveform::Sine);
+        let controls = Arc::new(MidiEventControls::new(&[note]));
+        let mut voice = MidiVoice::new(
+            &[note],
+            &[],
+            controls,
+            120.0,
+            48_000,
+            InstrumentWaveform::Sine,
+        );
 
         assert_eq!(voice.next_sample(23_999), 0.0);
         assert_eq!(voice.next_sample(24_000), 0.0);
@@ -4435,6 +4618,7 @@ mod processing_tests {
     fn midi_voice_caps_callback_polyphony() {
         let notes = vec![
             PlaybackMidiNote {
+                id: 1,
                 start_beats: 0.0,
                 duration_beats: 4.0,
                 frequency_hz: 440.0,
@@ -4443,7 +4627,15 @@ mod processing_tests {
             };
             MAX_ACTIVE_MIDI_VOICES + 1
         ];
-        let mut voice = MidiVoice::new(&notes, &[], 120.0, 48_000, InstrumentWaveform::Sine);
+        let controls = Arc::new(MidiEventControls::new(&notes));
+        let mut voice = MidiVoice::new(
+            &notes,
+            &[],
+            controls,
+            120.0,
+            48_000,
+            InstrumentWaveform::Sine,
+        );
         voice.next_sample(0);
         assert_eq!(
             voice.active.iter().flatten().count(),
@@ -4457,8 +4649,43 @@ mod processing_tests {
     }
 
     #[test]
+    fn live_velocity_change_smooths_a_sounding_midi_voice() {
+        let note = PlaybackMidiNote {
+            id: 41,
+            start_beats: 0.0,
+            duration_beats: 4.0,
+            frequency_hz: 440.0,
+            channel: 0,
+            velocity: 1.0,
+        };
+        let controls = Arc::new(MidiEventControls::new(&[note]));
+        let mut voice = MidiVoice::new(
+            &[note],
+            &[],
+            Arc::clone(&controls),
+            120.0,
+            48_000,
+            InstrumentWaveform::Sine,
+        );
+        voice.next_frame(0);
+        assert_eq!(voice.active[0].unwrap().velocity, 1.0);
+
+        assert!(controls.update_note_velocity(41, 0.0));
+        voice.next_frame(1);
+        let velocity_after_first_sample = voice.active[0].unwrap().velocity;
+        assert!(velocity_after_first_sample < 1.0);
+        assert!(velocity_after_first_sample > 0.9);
+
+        for frame in 2..600 {
+            voice.next_frame(frame);
+        }
+        assert!(voice.active[0].unwrap().velocity < 0.1);
+    }
+
+    #[test]
     fn midi_controllers_change_voice_volume_and_pan_and_restore_after_seek() {
         let note = PlaybackMidiNote {
+            id: 1,
             start_beats: 0.0,
             duration_beats: 4.0,
             frequency_hz: 440.0,
@@ -4485,9 +4712,11 @@ mod processing_tests {
                 value: 127,
             },
         ];
+        let controls = Arc::new(MidiEventControls::new(&[note]));
         let mut voice = MidiVoice::new(
             &[note],
             &controllers,
+            controls,
             120.0,
             48_000,
             InstrumentWaveform::Sine,
@@ -4515,7 +4744,14 @@ mod processing_tests {
                 value: (index % 128) as u8,
             })
             .collect();
-        let mut voice = MidiVoice::new(&[], &controllers, 120.0, 48_000, InstrumentWaveform::Sine);
+        let mut voice = MidiVoice::new(
+            &[],
+            &controllers,
+            Arc::new(MidiEventControls::new(&[])),
+            120.0,
+            48_000,
+            InstrumentWaveform::Sine,
+        );
 
         voice.next_sample(269 * 24_000 + 1);
 
@@ -4551,7 +4787,14 @@ mod processing_tests {
                 value: 127,
             },
         ];
-        let mut voice = MidiVoice::new(&[], &controllers, 120.0, 48_000, InstrumentWaveform::Sine);
+        let mut voice = MidiVoice::new(
+            &[],
+            &controllers,
+            Arc::new(MidiEventControls::new(&[])),
+            120.0,
+            48_000,
+            InstrumentWaveform::Sine,
+        );
 
         assert_eq!(voice.controllers.len(), 2);
         voice.next_sample(0);
@@ -4797,6 +5040,7 @@ mod processing_tests {
                 &self,
                 _notes: &[PlaybackMidiNote],
                 _controllers: &[PlaybackMidiController],
+                _controls: Arc<MidiEventControls>,
                 _tempo_bpm: f64,
                 _sample_rate: u32,
             ) -> Box<dyn InstrumentProcessor> {

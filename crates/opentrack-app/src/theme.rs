@@ -223,11 +223,7 @@ pub fn install(ctx: &egui::Context) {
         } else {
             Color32::from_rgb(0, 103, 192)
         };
-        visuals.selection.bg_fill = if visuals.dark_mode {
-            Color32::from_rgb(35, 78, 115)
-        } else {
-            Color32::from_rgb(190, 220, 246)
-        };
+        visuals.selection.bg_fill = slider_highlight(&visuals);
         visuals.selection.stroke = Stroke::new(1.0, visuals.text_color());
         let mut hover_style = egui::Style {
             visuals: visuals.clone(),
@@ -257,6 +253,14 @@ pub fn install(ctx: &egui::Context) {
         style.spacing.button_padding =
             Vec2::new(spacing::BUTTON_PADDING_X, spacing::BUTTON_PADDING_Y);
     });
+}
+
+pub fn slider_highlight(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_gray(190)
+    } else {
+        Color32::from_gray(185)
+    }
 }
 
 fn install_windows_ui_font(ctx: &egui::Context) {

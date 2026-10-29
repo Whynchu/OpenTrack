@@ -78,6 +78,10 @@ pub(crate) struct State {
     marquee: Option<MarqueeGesture>,
 }
 impl State {
+    pub fn edit_drag_active(&self) -> bool {
+        self.gesture.is_some() || self.group_gesture.is_some()
+    }
+
     pub fn selected_ids(&self) -> Vec<u64> {
         self.selected
             .into_iter()
@@ -2264,6 +2268,13 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
+                    // Match the project view's full-row hover target on audio lanes.
+                    // It must leave pointer ownership to the clip edit handles below.
+                    let _ = ui.interact(
+                        Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(1200.0, 210.0)),
+                        Id::new(("track-arrange-row", self.project.tracks[0].id)),
+                        Sense::hover(),
+                    );
                     changed = show_with_tool(
                         ui,
                         &mut self.project,

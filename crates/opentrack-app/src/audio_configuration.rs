@@ -11,10 +11,18 @@ fn compact(ui: &mut egui::Ui) {
 impl OpenTrackApp {
     pub(super) fn show_audio_device_setup(&mut self, ctx: &egui::Context) -> Option<Rect> {
         if !self.device_setup_open {
+            let mut open = false;
+            dismiss_window_on_outside_click(
+                ctx,
+                Id::new("device-setup-window"),
+                &mut open,
+                None::<&egui::InnerResponse<()>>,
+            );
             return None;
         }
         let mut open = true;
         let response = egui::Window::new("Device Setup")
+            .id(Id::new("device-setup-window"))
             .open(&mut open)
             .default_size(Vec2::new(638.0, 295.0))
             .min_size(Vec2::new(638.0, 270.0))
@@ -95,6 +103,12 @@ impl OpenTrackApp {
                     });
                 });
             });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("device-setup-window"),
+            &mut open,
+            response.as_ref(),
+        );
         self.device_setup_open &= open;
         if !self.device_setup_open {
             self.set_audio_input_test(false);
@@ -505,12 +519,20 @@ impl OpenTrackApp {
 
     pub(super) fn show_project_setup(&mut self, ctx: &egui::Context) {
         if !self.project_setup_open {
+            let mut open = false;
+            dismiss_window_on_outside_click(
+                ctx,
+                Id::new("project-setup-window"),
+                &mut open,
+                None::<&egui::InnerResponse<()>>,
+            );
             return;
         }
         let mut open = true;
         let mut requested = None;
         let recording = self.is_recording();
-        egui::Window::new("Project Setup")
+        let response = egui::Window::new("Project Setup")
+            .id(Id::new("project-setup-window"))
             .open(&mut open)
             .resizable(false)
             .default_width(385.0)
@@ -574,6 +596,12 @@ impl OpenTrackApp {
                     }
                 });
             });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-setup-window"),
+            &mut open,
+            response.as_ref(),
+        );
         self.project_setup_open &= open;
         if let Some((rate, format)) = requested {
             self.request_project_rate(rate, format);
@@ -582,6 +610,13 @@ impl OpenTrackApp {
 
     pub(super) fn show_vst_connections(&mut self, ctx: &egui::Context) {
         if !self.vst_connections_open || !self.project_open {
+            let mut open = false;
+            dismiss_window_on_outside_click(
+                ctx,
+                egui::Id::new("vst-connections-window"),
+                &mut open,
+                None::<&egui::InnerResponse<()>>,
+            );
             return;
         }
         let mut open = true;
@@ -592,7 +627,7 @@ impl OpenTrackApp {
         } else {
             "VST Connections"
         };
-        egui::Window::new(title)
+        let response = egui::Window::new(title)
             .id(egui::Id::new("vst-connections-window"))
             .open(&mut open)
             .default_size(Vec2::new(820.0, 397.0))
@@ -799,6 +834,12 @@ impl OpenTrackApp {
                     .color(theme::palette(ui).muted),
                 );
             });
+        dismiss_window_on_outside_click(
+            ctx,
+            egui::Id::new("vst-connections-window"),
+            &mut open,
+            response.as_ref(),
+        );
         self.vst_connections_open = open;
     }
 
@@ -948,6 +989,13 @@ impl OpenTrackApp {
 
     pub(super) fn show_plugin_information(&mut self, ctx: &egui::Context) {
         if !self.plugin_information_open {
+            let mut open = false;
+            dismiss_window_on_outside_click(
+                ctx,
+                egui::Id::new("plugin-information-window"),
+                &mut open,
+                None::<&egui::InnerResponse<()>>,
+            );
             return;
         }
         let mut open = true;
@@ -955,7 +1003,7 @@ impl OpenTrackApp {
         let mut add_module_file = false;
         let mut scan_requested = false;
         let mut remove_folder = None;
-        egui::Window::new("Plug-in Information")
+        let response = egui::Window::new("Plug-in Information")
             .id(egui::Id::new("plugin-information-window"))
             .open(&mut open)
             .resizable(true)
@@ -1169,6 +1217,12 @@ impl OpenTrackApp {
                     }
                 }
             });
+        dismiss_window_on_outside_click(
+            ctx,
+            egui::Id::new("plugin-information-window"),
+            &mut open,
+            response.as_ref(),
+        );
         self.plugin_information_open = open;
         if let Some(index) = remove_folder {
             self.remove_vst3_plugin_folder(index);

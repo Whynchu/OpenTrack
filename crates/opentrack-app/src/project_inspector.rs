@@ -331,16 +331,18 @@ pub(super) fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
     channel_settings_window: &mut NativeWindowState,
-) -> bool {
+) -> InspectorChanges {
     let Some(track_index) = project
         .selected_track
         .map(|i| i as usize)
         .filter(|i| *i < project.tracks.len())
     else {
         ui.label("No track selected");
-        return false;
+        return InspectorChanges::default();
     };
     let mut modified = false;
+    let mut requires_plan_rebuild = false;
+    let mut live_mix_changed = false;
     let mut solo_exclusively = None;
     let group_names = project
         .tracks
@@ -436,6 +438,7 @@ pub(super) fn show(
                     0 => {
                         track.muted = !track.muted;
                         modified = true;
+                        requires_plan_rebuild = true;
                     }
                     1 => {
                         let modifiers = ui.input(|i| i.modifiers);
@@ -454,14 +457,17 @@ pub(super) fn show(
                             }
                         }
                         modified = true;
+                        requires_plan_rebuild = true;
                     }
                     2 => {
                         track.automation_read = !track.automation_read;
                         modified = true;
+                        requires_plan_rebuild = true;
                     }
                     3 => {
                         track.automation_write = !track.automation_write;
                         modified = true;
+                        requires_plan_rebuild = true;
                     }
                     _ => {}
                 }
@@ -482,6 +488,7 @@ pub(super) fn show(
         {
             track.armed = !track.armed;
             modified = true;
+            requires_plan_rebuild = true;
         }
         for (index, (label, tooltip, left, width)) in [
             ("◀", "Monitor", 29.0, 16.0),
@@ -533,14 +540,16 @@ pub(super) fn show(
         ) {
             track.gain = channel_gain::from_inspector_db(gain_db);
             modified = true;
+            live_mix_changed = true;
         }
         let mut pan_percent = track.pan * 100.0;
         if inspector_parameter_row(ui, 1, &mut pan_percent, -100.0..=100.0, "", Some("Pan")) {
             track.pan = pan_percent / 100.0;
             modified = true;
+            live_mix_changed = true;
         }
         // No delay tooltip was observed in the reference sweep.
-        modified |= inspector_parameter_row(
+        let delay_changed = inspector_parameter_row(
             ui,
             2,
             &mut track.track_delay_ms,
@@ -548,11 +557,15 @@ pub(super) fn show(
             "ms",
             None,
         );
+        modified |= delay_changed;
+        requires_plan_rebuild |= delay_changed;
 
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         ui.add_space(12.0);
-        modified |= routing_field(ui, track, true, &group_names);
-        modified |= routing_field(ui, track, false, &group_names);
+        let routing_changed = routing_field(ui, track, true, &group_names)
+            | routing_field(ui, track, false, &group_names);
+        modified |= routing_changed;
+        requires_plan_rebuild |= routing_changed;
         ui.add_space(8.0);
         field(ui, "No Track Preset", "Apply Track Preset", 22.0);
         ui.add_space(6.0);
@@ -674,5 +687,20 @@ pub(super) fn show(
             }
         }
     }
-    modified
+    InspectorChanges {
+        modified,
+        live_mix: (live_mix_changed && !requires_plan_rebuild).then_some((
+            project.tracks[track_index].id,
+            project.tracks[track_index].gain,
+            project.tracks[track_index].pan,
+        )),
+        requires_plan_rebuild,
+    }
+}
+
+#[derive(Default)]
+pub(super) struct InspectorChanges {
+    pub modified: bool,
+    pub live_mix: Option<(u64, f32, f32)>,
+    pub requires_plan_rebuild: bool,
 }

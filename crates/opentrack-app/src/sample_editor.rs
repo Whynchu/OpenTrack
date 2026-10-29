@@ -184,6 +184,7 @@ pub(super) fn show(
     transport: &mut f64,
     playing: bool,
 ) -> bool {
+    crate::view_controls::apply_solid_scrollbars(ui);
     state.note_audition = None;
     let Some((track_id, clip_id)) = state.target else {
         ui.label("Double-click an audio event to open it in the Audio Editor.");
@@ -344,7 +345,7 @@ pub(super) fn show(
     );
     let sidebar = Rect::from_min_max(
         Pos2::new(bounds.left(), overview.bottom() + 2.0),
-        Pos2::new(bounds.left() + 232.0, bounds.bottom() - 22.0),
+        Pos2::new(bounds.left() + 232.0, bounds.bottom()),
     );
     let keyboard_width = if pitch_visible { 64.0 } else { 0.0 };
     let rail_width = if pitch_visible { 20.0 } else { 0.0 };
@@ -354,10 +355,7 @@ pub(super) fn show(
     );
     let wave = Rect::from_min_max(
         ruler.left_bottom(),
-        Pos2::new(
-            ruler.right(),
-            (bounds.bottom() - 22.0).max(ruler.bottom() + 10.0),
-        ),
+        Pos2::new(ruler.right(), bounds.bottom().max(ruler.bottom() + 10.0)),
     );
     let keyboard = Rect::from_min_max(
         Pos2::new(ruler.left() - keyboard_width, wave.top()),
@@ -761,15 +759,56 @@ pub(super) fn show(
         ui.id().with("sample-overview"),
         Sense::click_and_drag(),
     );
-    if overview_response.clicked() || overview_response.dragged() {
-        if let Some(pos) = overview_response.interact_pointer_pos() {
-            let span = end - start;
-            start = (((pos.x - overview.left()) / overview.width()) as f64
-                * original.duration_seconds
+    let overview_viewport = Rect::from_min_max(
+        Pos2::new(
+            overview.left() + start as f32 / original.duration_seconds as f32 * overview.width(),
+            overview.top(),
+        ),
+        Pos2::new(
+            overview.left() + end as f32 / original.duration_seconds as f32 * overview.width(),
+            overview.bottom(),
+        ),
+    );
+    let overview_gesture_id = ui.id().with("sample-overview-gesture");
+    if overview_response.drag_started()
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+    {
+        ui.data_mut(|d| {
+            d.insert_temp(
+                overview_gesture_id,
+                (overview_viewport.contains(origin), origin.x, start),
+            )
+        });
+    }
+    if overview_response.clicked()
+        && let Some(pos) = overview_response.interact_pointer_pos()
+    {
+        let span = end - start;
+        start = (((pos.x - overview.left()) / overview.width()) as f64 * original.duration_seconds
+            - span * 0.5)
+            .clamp(0.0, (original.duration_seconds - span).max(0.0));
+        end = start + span;
+    } else if overview_response.dragged()
+        && let Some(pos) = overview_response.interact_pointer_pos()
+    {
+        let span = end - start;
+        let (move_frame, origin_x, origin_start) = ui
+            .data(|d| d.get_temp::<(bool, f32, f64)>(overview_gesture_id))
+            .unwrap_or((false, pos.x, start));
+        start = if move_frame {
+            (origin_start
+                + f64::from(pos.x - origin_x) / f64::from(overview.width())
+                    * original.duration_seconds)
+                .clamp(0.0, (original.duration_seconds - span).max(0.0))
+        } else {
+            (((pos.x - overview.left()) / overview.width()) as f64 * original.duration_seconds
                 - span * 0.5)
-                .clamp(0.0, (original.duration_seconds - span).max(0.0));
-            end = start + span;
-        }
+                .clamp(0.0, (original.duration_seconds - span).max(0.0))
+        };
+        end = start + span;
+    }
+    if overview_response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(bool, f32, f64)>(overview_gesture_id));
     }
     state.view = Some((start, end));
     let event_duration = original.duration_seconds;
@@ -1192,7 +1231,7 @@ pub(super) fn show(
     ui.painter().with_clip_rect(overview).rect_stroke(
         view_rect,
         0.0,
-        Stroke::new(1.0, theme::PLAYHEAD),
+        Stroke::new(1.0, Color32::from_gray(210)),
         egui::StrokeKind::Inside,
     );
     if !pitch_visible && *tool == EditTool::Split && response.hovered() {
@@ -1235,24 +1274,26 @@ pub(super) fn show(
         );
     }
     let footer = Rect::from_min_max(Pos2::new(ruler.left(), bounds.bottom() - 20.0), bounds.max);
-    ui.painter().rect_filled(footer, 0.0, p.surface);
-    ui.painter()
-        .with_clip_rect(footer.shrink2(Vec2::new(4.0, 0.0)))
-        .text(
-            Pos2::new(footer.left() + 4.0, footer.center().y),
-            Align2::LEFT_CENTER,
-            &state.message,
-            FontId::proportional(11.0),
-            p.text,
-        );
-    if let Some(cents) = state.notes.selected_pitch_cents() {
-        ui.painter().with_clip_rect(footer).text(
-            Pos2::new(footer.right() - 8.0, footer.center().y),
-            Align2::RIGHT_CENTER,
-            format!("Pitch offset {cents:+.1} cents"),
-            FontId::monospace(11.0),
-            p.text,
-        );
+    if !state.message.is_empty() || state.notes.selected_pitch_cents().is_some() {
+        ui.painter().rect_filled(footer, 0.0, p.surface);
+        ui.painter()
+            .with_clip_rect(footer.shrink2(Vec2::new(4.0, 0.0)))
+            .text(
+                Pos2::new(footer.left() + 4.0, footer.center().y),
+                Align2::LEFT_CENTER,
+                &state.message,
+                FontId::proportional(11.0),
+                p.text,
+            );
+        if let Some(cents) = state.notes.selected_pitch_cents() {
+            ui.painter().with_clip_rect(footer).text(
+                Pos2::new(footer.right() - 8.0, footer.center().y),
+                Align2::RIGHT_CENTER,
+                format!("Pitch offset {cents:+.1} cents"),
+                FontId::monospace(11.0),
+                p.text,
+            );
+        }
     }
     if let Some(edit) = state.notes.publish() {
         edited.pitch_time = Some(edit);

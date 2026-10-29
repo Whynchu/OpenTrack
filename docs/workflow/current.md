@@ -1,4 +1,152 @@
-# Current assignment — T057
+# Current assignment - T059
+
+## Active goal T059 - editing, playback stability, menus, and loading polish
+
+Work through these areas in small, independently reviewable steps:
+
+1. MIDI editing: add the upper-left-pointing pencil cursor and Draw/Select
+   tools; right-click opens the tool picker only over the note grid; drag a
+   marquee to select groups of notes and move selected notes together. Then
+   review runtime behavior and add any needed delete/copy/group-edit actions.
+2. Audio stability: reproduce and measure playback pops during playback alone,
+   track dB/fader adjustments, and MIDI controller changes; identify whether
+   the glitches share a real-time audio cause before changing the engine.
+3. Popup behavior: make outside-click dismissal consistent for menus and
+   popups. The user chose outside-click only; no inactivity timeout.
+4. Loading: report real project-load phases and investigate stalls from audio
+   source and plugin initialization without regressing the existing loader.
+5. First-render flashes: trace the white-box flash separately for app-owned
+   windows and plugin views, then fix initialization/render readiness.
+
+Current checkpoint: MIDI Draw/Select/Range controls, grid-only context menu,
+marquee selection, and group move are implemented in source. Project inspector
+gain/pan now update live, avoiding full playback-plan rebuilds for those
+controls. Equalizer revisions now advance only when EQ values change, avoiding
+redundant filter reconfiguration during fader drags. Selected-note velocity
+changes now update atomic per-note targets and are smoothed over 5 ms for
+already sounding notes, avoiding a full playback-plan rebuild on each slider
+drag. A focused audio unit test passes. MIDI note structure and controller
+drag gestures now defer plan reconstruction until pointer release, avoiding a
+full rebuild on every changed frame. Main app utility/configuration windows now
+close on outside clicks, and a focused egui interaction test covers the shared
+close behavior. More specialized windows still need the same rule. Menus and
+context popups already close on outside click. Popup preference is outside
+click only, with no idle timeout. Playback impact has not been measured on the
+user's audio setup. `cargo check --offline -p opentrack --features local-asio`,
+the selected-velocity audio test, and the focused popup test pass. A
+workspace-wide `--no-run` remains blocked by three standalone VST probe examples
+using older window API signatures. Runtime visual/audio review remains pending
+under the user's no-computer-use instruction.
+
+Project loading reports project-read, source-discovery, per-source opening, and
+plugin initialization stages; it initializes one VST3 insert per UI frame and
+shows the plugin name/count. A slow individual plugin can still block its frame,
+and final workspace/audio-plan setup remains on the UI thread. The dedicated
+VST3 editor host stays hidden until its view is attached and saved bounds are
+applied; first-paint behavior and app-owned window flashes need runtime review.
+
+## Previous task T057 - recovery after accidental app.rs reset
+
+## 2026-10-28 recovery after accidental app.rs reset
+
+Actual model: GPT-6.1 Sol. Recovered Project/MIDI view functions from the
+earlier session's recorded patches and shell edits, replayed in an isolated
+recovery copy. Preserved the current project loader that the user confirmed
+works. Restored Project sidebar/scrollbar placement, record-readout/time-zoom
+lane, MIDI ruler/overview navigation, note previews, neutral gray controls,
+and the controller divider. The current source and patch checkpoints are in
+`recovery-20261028-204244/`; do not reset the working tree to recover a single
+change.
+
+The group waveform was suppressed by unrelated track solo or inherited mute.
+Editing previews now retain child envelopes regardless of playback mute/solo;
+the composite remains restricted to collapsed groups (children hidden).
+The expression lane shares its actual resized height with the allocated
+note/controller stack and reserves horizontal-scrollbar space. The recovered
+note grid has its own click/drag response. Piano keys are painted in the fixed
+gutter and note hit/draw regions exclude that gutter.
+
+Focused tests pass: group envelope remains nonzero and unchanged with an
+unrelated MIDI solo plus group mute; expression header is visibly inside the
+viewport and divider size survives drag release. Existing test-only call
+signatures were repaired to compile these checks. `cargo check --offline -p
+opentrack --features local-asio` and whitespace validation pass. An ASIO-enabled
+x64 package passed with `local_asio: true`, SHA-256
+`8EAD799A049B2A305756CA5AE464525B5B155F8387DFC895F42DB1E90BE90245`.
+The broader ruler suite reports 8 passed, 8 failed, 1 ignored, including stale
+198 px header assumptions versus the current 264 px header and other fixed
+pointer coordinates; it is not claimed passing. Desktop review remains pending under the user's
+no-computer-use instruction; compilation/tests do not establish visual parity.
+
+## T058 — Realtime performance and stability program (2026-10-28)
+
+The user asked how to extract maximum performance, stability and quality from the
+engine. A source audit found that playback cost scales with the *total* clip
+count on a track rather than with audible clips, that the release build has no
+LTO/codegen tuning and no FMA, that a late callback causes a larger render burst,
+and that there is no render-side dropout counter and the callback has no
+NaN/denormal guard and no fault containment. See
+`docs/workflow/tasks/T058-realtime-performance-and-stability-program.md`.
+The packet is phased: measurement, build/fill containment, block-first rendering,
+renderer unification, fault containment, then quality. Status: ready for
+architecture review (Astra/Sol); no implementation started, and no existing
+engine behavior is changed by writing the packet.
+
+### 2026-10-28 cross-editor navigation and scrollbar pass
+
+- Project plain wheel input over the track-list/header scrolls tracks
+  vertically; plain wheel over the timeline zooms time, and the modifier paths
+  continue to map to horizontal pan and track-height scroll/zoom.
+- The Project scroll area now ends beside a dedicated right-edge track-height
+  zoom rail, so it no longer covers the vertical track scrollbar. Its bottom
+  horizontal scrollbar ends before the time-zoom slider, leaving both controls
+  side by side on the same lane.
+- MIDI and Audio Editor now apply the same solid scrollbar style as Project.
+  MIDI native wheel scrolling is disabled so shared modifier-aware wheel
+  actions do not also move the horizontal ScrollArea. Audio overview viewport
+  can be dragged directly to pan, matching MIDI overview behavior.
+- MIDI viewport rail and zoom control extend alongside the controller lane;
+  velocity dark fill applies to the slider track itself. MIDI ruler zoom/pan
+  and part viewport updates from earlier passes remain in the working tree.
+- Verification: `cargo fmt --all`, `git diff --check`, and `cargo check
+  --offline -p opentrack` passed. `build.ps1 -Architecture x64` passed with
+  local ASIO enabled. Packaged executable SHA-256:
+  `A9E8DBAABCE422DF74567832D60CB2D4EEC5C22D43076AF4FE9A2A1455BB7982`.
+- Runtime screenshot review confirmed the two Project zoom/scroll lanes do not
+  overlap. With track-height zoom temporarily raised to create overflow, plain
+  wheel over the left track headers moved the visible track rows while ruler
+  positions stayed fixed; plain wheel over the timeline changed horizontal
+  scale while track heights stayed fixed. Both view adjustments were restored.
+  Audio overview dragging shifted the visible ruler range. MIDI overview-frame
+  dragging shifted the visible bar range, and MIDI wheel zoom changed bar
+  spacing without changing pitch rows; Fit Part restored the view. The
+  modifier-wheel paths were source reviewed but not directly injected in this
+  runtime pass. The reviewed selection was saved; OpenTrack remained open at
+  that review checkpoint. The later divider/rail package and its current
+  closed-app state are recorded below. Full T057 visual parity and user
+  acceptance remain pending.
+
+### 2026-10-28 MIDI divider and navigation rail follow-up
+
+- The MIDI expression lane now has a press-origin resize gesture over its top
+  14 px strip. Dragging that divider downward reduces the expression pane;
+  resizing is gated away from controller-point edits. The lane is clamped to
+  96–480 px with a 126 px default.
+- Slider selection fills and custom zoom/pitch navigation thumbs use neutral
+  gray. Shared solid scrollbars are 16 px wide, and the Project right-side
+  track-scroll/zoom lane is 20 px wide with a 94 px zoom control, matching the
+  Audio/MIDI editor rail size and placement.
+- Formatting, `git diff --check`, `cargo check --offline -p opentrack
+  --features local-asio`, and `cargo build --offline --release -p opentrack
+  --features local-asio` passed. The packaged x64 build also passed via
+  `build.ps1 -Architecture x64`; metadata confirms `local_asio: true` and the
+  executable SHA-256 is
+  `30247E9AC3766CB67269409CC90920DDD6899B8E1DC4F1A1FFB503D66CED1BB9`.
+- The user requested no further computer use, so the current build was not
+  opened for runtime interaction or screenshot review. The earlier response-
+  based divider drag did not resize; this press-origin rework and the revised
+  slider/scrollbar colors and widths remain runtime-unverified. T057 remains in
+  rework pending that check and the user's broader visual review.
 
 ## T057 — MIDI editor framing, note preview and arrangement parity (2026-10-27)
 
@@ -8,6 +156,68 @@ snapped ghost note on hover that is committed by click. Notes should use the
 track highlight color. MIDI parts in Project should share audio-event selection
 visuals and applicable behavior, without audio gain/fade controls. See
 `docs/workflow/tasks/T057-midi-editor-and-arrangement-parity.md`.
+
+### 2026-10-28 note-preview readability follow-up
+
+Project MIDI note previews now preserve their scaled beat duration instead of
+forcing short notes to overlap at arrangement zoom. Both mini previews scale
+pitch positions to the notes' actual pitch range. Built x64 with local ASIO
+enabled, SHA-256
+`1C9199C91C892C9A2E3031652D7CC94A15843989EE56BBF7CA69CC721A15239F`.
+Reopened the saved four-note `EXAMPLE.opr` in the rebuilt app. The Transport
+Panel was closed for the review capture; four note blocks remain visible in
+the arrangement clip and piano roll. T057 visual parity and user acceptance
+remain pending. The app is left open for user review.
+
+### 2026-10-28 overview navigator follow-up
+
+The user identified that the MIDI visible-range box crossed the inspector's
+track header and did not have a clear overview role. The MIDI overview now has
+a dedicated labeled lane: its note map and interactive viewport frame start at
+the piano-roll beat-grid edge, leaving the inspector and keyboard gutter
+outside the navigator. `cargo fmt --all --check` and the x64 release build
+passed with local ASIO enabled. Packaged executable SHA-256:
+`7B2D90C27B3FBB66F81BCDC5787906909E16ABD6536F1E55C9D01C5C77AD9C8B`.
+A fresh `EXAMPLE.opr` screenshot was captured at 1920×1033. The viewport frame
+no longer crosses the inspector header; in this saved view it spans nearly the
+full overview width because the piano roll is fit to the part. OpenTrack was
+closed after capture. This targeted rework does not complete T057 parity or
+user acceptance.
+
+### 2026-10-28 MIDI map and ruler follow-up
+
+The user clarified that the overview must show the whole MIDI part at a glance,
+with a viewport frame for the currently visible piano-roll section, and a
+separate ruler below it. The viewport now maps visible piano-roll beats to the
+full part overview; clicking jumps and dragging the frame pans. The piano-roll
+ruler uses the transport's musical position formatting, seeks on click, and
+draws the shared transport playhead. Project arrangement note previews now use
+part-local note positions offset from the part's project start and clip to the
+part bounds. Formatting, `cargo check --offline -p opentrack`, and the x64
+release build passed (local ASIO enabled); executable SHA-256:
+`61C5D7F80A521B1BB0D4E223439383318C3FFDD502DD2A64A7EE9C5A274D0D9F`. Review
+then exposed that empty-cell clicks only cleared selection; note creation was
+drag-only. Empty-cell clicks now add a snapped note at the saved insert length,
+while click-drag still sets its duration. Formatting, `cargo check --offline -p
+opentrack`, and x64 release build passed again with local ASIO; current
+executable SHA-256: `F5A6B4DBE4B28820141B5F828A835179975909029045BFDC0DB2ADC8344038FB`.
+In the rebuilt app, click-created four notes and confirmed the Notes field
+incremented to four; saved `EXAMPLE.opr` and closed OpenTrack. The four-note
+MIDI Editor screenshot was captured, but Project-window note preview at this
+zoom remains too small to confirm visually. T057 remains in rework pending
+timeline comparison and user review.
+
+### 2026-10-28 readability follow-up
+
+The user identified weak semitone borders and a controller title colliding
+with the piano keyboard. The shared piano renderer now draws pixel-aligned
+one-physical-pixel separators after the key fills, across both the keyboard and
+pitch rows. Key borders use stronger contrast. The controller title now sits
+in a raised strip above its plot, to the right of the keyboard. Formatting and
+the x64 build passed with local ASIO enabled; a fresh runtime screenshot was
+captured. This targeted polish does not complete the full T057 parity review;
+user acceptance remains pending. OpenTrack was closed after review.
+
 The 2026-10-28 side-by-side screenshots reject the prior claim of visual parity.
 The MIDI editor still differs substantially in toolbar and field presentation,
 inspector/header styling, keyboard rendering and note naming, and pitch
