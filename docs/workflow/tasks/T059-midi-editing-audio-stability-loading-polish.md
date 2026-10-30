@@ -40,17 +40,20 @@ user's setup.
 ### 3. Popup dismissal
 
 - Inventory menu, context-menu, and popup behavior.
-- Make outside-click dismissal consistent.
-- Confirm whether inactivity timeout is wanted before adding automatic timeout.
+- Close menus and popups when the pointer leaves their activation point and
+  selectable area, including nested popup chains.
+- Keep the viewport containing an open popup above overlapping OpenTrack
+  windows, then restore saved pin preferences after dismissal.
 
-The user chose outside-click dismissal only, with no inactivity timeout. A
-shared handler is now applied to common transient/configuration windows: project
-load errors, Event Colors, track add/rename/delete, key command/capture/conflict,
-Workspace Organizer, About, VST3 parameter windows, Device Setup, Project Setup,
-VST Connections, and Plug-in Information. Menu bars/context popups retain egui's
-existing outside-click close behavior. A focused egui test confirms inside
-clicks keep a window open and outside clicks close it. Transport, Preferences,
-channel setup, and other specialized windows still need inventory/coverage.
+The user requested hover-leave dismissal with no inactivity timeout. A shared
+egui handler tracks the popup activation point and visible foreground areas,
+allowing movement into nested menus while closing the popup chain after the
+pointer leaves. Root UI menus and popups, Media Pool, Channel Settings, and
+Transport each run the handler. Native window ordering is coordinated across
+these viewports so popups remain usable above overlapping OpenTrack windows;
+user pin preferences resume after popups close. Focused tests cover keeping a
+popup open within its activation/foreground area and closing it after leaving.
+Runtime review of overlapping native windows remains pending.
 
 ### 4. Project and plugin loading
 
@@ -127,20 +130,19 @@ Offline local-ASIO `cargo check`, the focused audio unit test, and the app test
 binary compile pass. A workspace-wide `--no-run` is blocked by three standalone
 VST probe examples using older editor-window API signatures. Runtime interaction
 and visual review are pending. The user's instruction not to use computer
-control remains active. Popup preference is outside-click dismissal only, with
-no inactivity timeout. The background loader now reports stage progress;
+control remains active. Popup behavior follows the user's hover-leave dismissal
+request, with no inactivity timeout. The background loader now reports stage progress;
 finalization smoothness is still unresolved. The VST3 hidden-until-attached
 mitigation has not been visually verified.
 
 The current x64 local-ASIO package is `builds/x64/OpenTrack.exe`, SHA-256
 `97F6FC253AF76FBFC9BF630C939F6D541C45F886AF41AC6ECB14A419472802DE`.
 Popup investigation found that egui menu bars and popups use their default
-click-close behavior. The shared outside-click handling above now covers the
-common app-managed transient/configuration windows; the remaining specialized
-windows are still outstanding. The handler skips dismissal while an egui popup
-is open, so selecting from a nested dropdown does not close its parent window.
-The focused close-behavior test passes, and the x64 local-ASIO release build
-passes after this guard.
+click-close behavior. The shared hover-leave handling above covers root UI and
+specialized native viewports. Runtime review of overlapping native windows
+remains outstanding. The handler skips dismissal while an egui popup is open,
+so selecting from a nested dropdown does not close its parent window. Focused
+popup behavior tests and the x64 local-ASIO release build pass.
 
 Follow-up: project audio and collapsed-group rows registered a full-row
 click-and-drag interaction before the audio-event handles. That response

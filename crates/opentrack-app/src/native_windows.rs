@@ -43,6 +43,53 @@ pub(crate) fn apply_transport_pin(root: Option<isize>, pinned: bool) -> bool {
     }
 }
 
+/// Raise the main viewport within the normal application window band so an
+/// egui popup in it stays above OpenTrack's unpinned sibling viewports.
+pub(crate) fn raise_root_for_popup(root: Option<isize>) {
+    #[cfg(windows)]
+    if let Some(root) = root {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+        };
+        // SAFETY: root is the live main viewport owned by this app. No other
+        // process window is enumerated or changed, and this does not set the
+        // global topmost style.
+        unsafe {
+            SetWindowPos(
+                root as _,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = root;
+}
+
+/// Raise the unpinned Transport viewport in the normal z-order band while its
+/// own context menu is open.
+pub(crate) fn raise_transport_for_popup(root: Option<isize>) {
+    #[cfg(windows)]
+    if let Some(root) = root {
+        platform::raise_named_window(root, "Transport Panel");
+    }
+    #[cfg(not(windows))]
+    let _ = root;
+}
+
+pub(crate) fn raise_media_for_popup(root: Option<isize>) {
+    #[cfg(windows)]
+    if let Some(root) = root {
+        platform::raise_named_window(root, "Media Pool");
+    }
+    #[cfg(not(windows))]
+    let _ = root;
+}
+
 impl ChannelOwner {
     pub(crate) fn new(creation: &eframe::CreationContext<'_>) -> Self {
         if let Some(root) = creation_root(creation) {
@@ -206,6 +253,50 @@ mod platform {
             }
         }
         search.found
+    }
+
+    pub(super) fn raise_named_window(root: isize, target_title: &'static str) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+        };
+        struct Search {
+            root: HWND,
+            title: &'static str,
+        }
+        unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {
+            let search = unsafe { &*(data as *const Search) };
+            if window == search.root {
+                return 1;
+            }
+            let mut title = [0u16; 512];
+            let length = unsafe { GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32) };
+            if length > 0 && String::from_utf16_lossy(&title[..length as usize]) == search.title {
+                unsafe {
+                    SetWindowPos(
+                        window,
+                        HWND_TOP,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
+                return 0;
+            }
+            1
+        }
+        let root = root as HWND;
+        let search = Search {
+            root,
+            title: target_title,
+        };
+        unsafe {
+            let thread = GetWindowThreadProcessId(root, std::ptr::null_mut());
+            if thread != 0 {
+                EnumThreadWindows(thread, Some(visit), &search as *const Search as LPARAM);
+            }
+        }
     }
 
     unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {

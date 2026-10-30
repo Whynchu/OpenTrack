@@ -16,6 +16,8 @@ mod media_pool;
 mod metering;
 #[path = "mixer.rs"]
 mod mixer;
+#[path = "popup_behavior.rs"]
+mod popup_behavior;
 #[path = "preferences.rs"]
 mod preferences;
 #[path = "project_controls.rs"]
@@ -128,6 +130,7 @@ struct NativeWindowState {
     focus_requested: bool,
     /// Window level last sent to the compositor, so it is not re-applied per frame.
     window_level: Option<egui::viewport::WindowLevel>,
+    popup_active: bool,
 }
 
 #[derive(Default)]
@@ -140,6 +143,7 @@ struct TransportWindowState {
     window_level: Option<egui::viewport::WindowLevel>,
     /// Frames left to re-assert the level after the window is shown.
     level_settle: u8,
+    popup_active: bool,
 }
 
 impl NativeWindowState {
@@ -472,6 +476,7 @@ fn restore_native_window_state(
         viewport_live: false,
         focus_requested: false,
         window_level: None,
+        popup_active: false,
     }
 }
 
@@ -1939,6 +1944,7 @@ impl OpenTrackApp {
                 native_pin_applied: None,
                 window_level: None,
                 level_settle: 0,
+                popup_active: false,
             },
             metronome_enabled: creation
                 .storage
@@ -8572,17 +8578,22 @@ impl OpenTrackApp {
     fn show_transport_window(&mut self, ctx: &egui::Context) {
         if !self.project_open || !self.show_transport {
             self.transport_window.viewport_live = false;
+            self.transport_window.popup_active = false;
             return;
         }
 
         const SIZE: Vec2 = Vec2::new(837.0, 69.0);
+        let root_popup_open = egui::Popup::is_any_open(ctx);
+        let channel_popup_open = self.channel_settings_window.popup_active;
+        let media_popup_open = self.media_window.popup_active;
+        let higher_popup_open = root_popup_open || channel_popup_open || media_popup_open;
         let restore_bounds = if self.transport_window.viewport_live {
             None
         } else {
             self.transport_window.bounds.as_ref()
         };
         let reopening = !self.transport_window.viewport_live;
-        let transport_level = if self.transport_window.always_on_top {
+        let transport_level = if self.transport_window.always_on_top && !higher_popup_open {
             egui::viewport::WindowLevel::AlwaysOnTop
         } else {
             egui::viewport::WindowLevel::Normal
@@ -8640,17 +8651,42 @@ impl OpenTrackApp {
                         self.show_transport(ui)
                     });
                 });
+            self.transport_window.popup_active =
+                popup_behavior::close_when_pointer_leaves(window_ctx);
             bounds = native_window_bounds(window_ctx);
         });
 
+        let transport_pin = self.transport_window.always_on_top && !higher_popup_open;
         #[cfg(windows)]
-        if self.transport_window.native_pin_applied != Some(self.transport_window.always_on_top)
-            && crate::native_windows::apply_transport_pin(
-                self.root_window_handle,
-                self.transport_window.always_on_top,
-            )
+        if self.transport_window.native_pin_applied != Some(transport_pin)
+            && crate::native_windows::apply_transport_pin(self.root_window_handle, transport_pin)
         {
-            self.transport_window.native_pin_applied = Some(self.transport_window.always_on_top);
+            self.transport_window.native_pin_applied = Some(transport_pin);
+        }
+
+        if root_popup_open && ctx.input(|input| input.focused) {
+            crate::native_windows::raise_root_for_popup(self.root_window_handle);
+        } else if self.transport_window.popup_active && !higher_popup_open {
+            if !self.transport_window.always_on_top {
+                crate::native_windows::raise_transport_for_popup(self.root_window_handle);
+            }
+            if self.channel_settings_window.open {
+                let modal = self.modal_dialog_open();
+                self.channel_window_owner
+                    .apply(false, modal || self.dialog_owns_input(), modal);
+                self.channel_settings_window.window_level =
+                    Some(egui::viewport::WindowLevel::Normal);
+                ctx.send_viewport_cmd_to(
+                    egui::ViewportId::from_hash_of((
+                        CHANNEL_SETTINGS_WINDOW_ID,
+                        self.channel_settings_window.epoch,
+                    )),
+                    egui::ViewportCommand::WindowLevel(egui::viewport::WindowLevel::Normal),
+                );
+            }
+        }
+        if media_popup_open && !root_popup_open && !channel_popup_open {
+            crate::native_windows::raise_media_for_popup(self.root_window_handle);
         }
 
         if !rendered {
@@ -8684,8 +8720,10 @@ impl OpenTrackApp {
 
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
         self.update_channel_analyzer();
+        let root_popup_open = egui::Popup::is_any_open(ctx);
         if !self.channel_settings_window.open {
             self.channel_settings_window.viewport_live = false;
+            self.channel_settings_window.popup_active = false;
             return;
         }
         let live_channel_id = match self.channel_settings_window.channel_bus {
@@ -8746,10 +8784,12 @@ impl OpenTrackApp {
         // the focused application. That keeps the editor above its owner without
         // floating over every other window on the desktop.
         let owner_focused = ctx.input(|input| input.focused);
-        let desired_level = if self.channel_settings_ui.preferences.always_on_top
-            && owner_focused
-            && !dialog_open
-        {
+        let channel_should_front = !root_popup_open
+            && !self.transport_window.popup_active
+            && !self.media_window.popup_active
+            && (self.channel_settings_ui.preferences.always_on_top
+                || self.channel_settings_window.popup_active);
+        let desired_level = if channel_should_front && owner_focused && !dialog_open {
             egui::viewport::WindowLevel::AlwaysOnTop
         } else {
             egui::viewport::WindowLevel::Normal
@@ -8804,6 +8844,22 @@ impl OpenTrackApp {
                     });
                 });
             channel_settings::setup(window_ctx, &mut self.channel_settings_ui);
+            self.channel_settings_window.popup_active =
+                popup_behavior::close_when_pointer_leaves(window_ctx);
+            let channel_should_front = !root_popup_open
+                && !self.transport_window.popup_active
+                && !self.media_window.popup_active
+                && (self.channel_settings_ui.preferences.always_on_top
+                    || self.channel_settings_window.popup_active);
+            let actual_level = if channel_should_front && owner_focused && !dialog_open {
+                egui::viewport::WindowLevel::AlwaysOnTop
+            } else {
+                egui::viewport::WindowLevel::Normal
+            };
+            if self.channel_settings_window.window_level != Some(actual_level) {
+                self.channel_settings_window.window_level = Some(actual_level);
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(actual_level));
+            }
             bounds = native_window_bounds(window_ctx);
         });
         if let Some(action) = self.channel_settings_ui.pending_action.take() {
@@ -8817,20 +8873,22 @@ impl OpenTrackApp {
             self.status_message =
                 "Channel Settings window could not be created; click Edit to retry".into();
         }
-        if self.channel_window_owner.apply(
-            self.channel_settings_ui.preferences.always_on_top,
-            dialog_open,
-            modal,
-        ) {
+        let channel_should_front = !root_popup_open
+            && !self.transport_window.popup_active
+            && !self.media_window.popup_active
+            && (self.channel_settings_ui.preferences.always_on_top
+                || self.channel_settings_window.popup_active);
+        if self
+            .channel_window_owner
+            .apply(channel_should_front, dialog_open, modal)
+        {
             ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
         }
         // Windows keeps the editor above its owner through Win32 window
         // ownership. Other desktops have no owner concept, so ask the compositor
         // for a top-level window level while the preference is set.
-        #[cfg(not(windows))]
-        if self.channel_settings_window.window_level != Some(desired_level) {
-            self.channel_settings_window.window_level = Some(desired_level);
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(desired_level));
+        if root_popup_open && owner_focused {
+            crate::native_windows::raise_root_for_popup(self.root_window_handle);
         }
         self.channel_settings_window.open = open;
         self.channel_settings_window.viewport_live = open;
@@ -9047,6 +9105,7 @@ impl OpenTrackApp {
     fn show_media_window(&mut self, ctx: &egui::Context) {
         if !self.media_window.open {
             self.media_window.viewport_live = false;
+            self.media_window.popup_active = false;
             return;
         }
         let title = "Media Pool";
@@ -9073,6 +9132,7 @@ impl OpenTrackApp {
         let mut open = true;
         let mut insert = None;
         let mut bounds = None;
+        let media_popup_was_active = self.media_window.popup_active;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
@@ -9083,6 +9143,33 @@ impl OpenTrackApp {
                     insert = media_pool::show(ui, &self.data.project);
                 });
             });
+            self.media_window.popup_active = popup_behavior::close_when_pointer_leaves(window_ctx);
+            if self.media_window.popup_active
+                && !egui::Popup::is_any_open(ctx)
+                && !self.channel_settings_window.popup_active
+            {
+                if self.channel_settings_window.open {
+                    let modal = self.modal_dialog_open();
+                    self.channel_window_owner.apply(
+                        false,
+                        modal || self.dialog_owns_input(),
+                        modal,
+                    );
+                    self.channel_settings_window.window_level =
+                        Some(egui::viewport::WindowLevel::Normal);
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::from_hash_of((
+                            CHANNEL_SETTINGS_WINDOW_ID,
+                            self.channel_settings_window.epoch,
+                        )),
+                        egui::ViewportCommand::WindowLevel(egui::viewport::WindowLevel::Normal),
+                    );
+                }
+                if !media_popup_was_active {
+                    window_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    crate::native_windows::raise_media_for_popup(self.root_window_handle);
+                }
+            }
             bounds = native_window_bounds(window_ctx);
         });
         self.media_window.open = open;
@@ -10578,6 +10665,7 @@ impl eframe::App for OpenTrackApp {
                     }
                 });
             });
+        popup_behavior::close_when_pointer_leaves(&ctx);
         self.show_realtime_diagnostics(&ctx);
         if self.project_open {
             self.show_track_add_dialog(&ctx);
@@ -10612,6 +10700,7 @@ impl eframe::App for OpenTrackApp {
         if self.project_open {
             self.show_project_setup(&ctx);
         }
+        popup_behavior::close_when_pointer_leaves(&ctx);
         if !self.is_recording() {
             self.project_history.finish_frame(
                 &self.data.project,
@@ -14975,6 +15064,16 @@ fn show_midi_editor(
                             Pos2::new(piano_view.left(), pitch_area.top()),
                             Pos2::new(piano_view.right(), pitch_area.bottom()),
                         ));
+                        if *tool == EditTool::Draw
+                            && let Some(pointer) =
+                                response.hover_pos().filter(|pos| part_grid.contains(*pos))
+                        {
+                            crate::system_tool_icons::tool_cursor_at(
+                                ui,
+                                ToolbarIcon::Draw,
+                                Some(pointer),
+                            );
+                        }
                         if response.context_menu_opened()
                             || response
                                 .hover_pos()

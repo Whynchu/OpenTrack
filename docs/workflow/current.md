@@ -11,8 +11,9 @@ Work through these areas in small, independently reviewable steps:
 2. Audio stability: reproduce and measure playback pops during playback alone,
    track dB/fader adjustments, and MIDI controller changes; identify whether
    the glitches share a real-time audio cause before changing the engine.
-3. Popup behavior: make outside-click dismissal consistent for menus and
-   popups. The user chose outside-click only; no inactivity timeout.
+3. Popup behavior: close menus and popups when the pointer leaves their
+   activation point and selectable area; keep them above overlapping windows.
+   No inactivity timeout.
 4. Loading: report real project-load phases and investigate stalls from audio
    source and plugin initialization without regressing the existing loader.
 5. First-render flashes: trace the white-box flash separately for app-owned
@@ -29,9 +30,13 @@ drag. A focused audio unit test passes. MIDI note structure and controller
 drag gestures now defer plan reconstruction until pointer release, avoiding a
 full rebuild on every changed frame. Main app utility/configuration windows now
 close on outside clicks, and a focused egui interaction test covers the shared
-close behavior. More specialized windows still need the same rule. Menus and
-context popups already close on outside click. Popup preference is outside
-click only, with no idle timeout. Playback impact has not been measured on the
+close behavior. The shared hover-leave handler covers root UI popups and the
+Media Pool, Channel Settings, and Transport viewports. It keeps menus open while
+the pointer is in their activation hotspot or a foreground popup area, then
+closes the popup chain after the pointer leaves. Native window ordering is
+adjusted so the viewport containing an open popup appears above overlapping
+OpenTrack windows; saved pin preferences resume after dismissal. No inactivity
+timeout is used. Playback impact has not been measured on the
 user's audio setup. `cargo check --offline -p opentrack --features local-asio`,
 the selected-velocity audio test, and the focused popup test pass. A
 workspace-wide `--no-run` remains blocked by three standalone VST probe examples

@@ -834,6 +834,7 @@ pub(super) fn show(
         {
             let t = snap_local(to_seconds(pos.x));
             state.selection = Some((t, t));
+            *transport = original.start_beats + t * project.tempo_bpm / 60.0;
             if *tool == EditTool::Split && !pitch_visible {
                 split = true;
             }
@@ -1266,11 +1267,15 @@ pub(super) fn show(
                 Pos2::new(x(a.max(b)), wave.bottom()),
             ),
             0.0,
-            p.accent.gamma_multiply(0.15),
+            Color32::from_gray(180).gamma_multiply(0.24),
         );
         ui.painter().with_clip_rect(wave).line_segment(
             [Pos2::new(x(a), wave.top()), Pos2::new(x(a), wave.bottom())],
-            Stroke::new(1.0, p.accent),
+            Stroke::new(1.0, Color32::from_gray(205)),
+        );
+        ui.painter().with_clip_rect(wave).line_segment(
+            [Pos2::new(x(b), wave.top()), Pos2::new(x(b), wave.bottom())],
+            Stroke::new(1.0, Color32::from_gray(205)),
         );
     }
     let footer = Rect::from_min_max(Pos2::new(ruler.left(), bounds.bottom() - 20.0), bounds.max);
