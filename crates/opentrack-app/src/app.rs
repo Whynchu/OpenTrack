@@ -6263,6 +6263,58 @@ impl OpenTrackApp {
             .map(|track| track.id);
     }
 
+    fn duplicate_tracks(&mut self, clicked_track_id: Option<u64>) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before duplicating tracks".to_owned();
+            return;
+        }
+        let ids = if let Some(clicked_id) = clicked_track_id {
+            if self
+                .arrange_view_state
+                .selected_track_ids
+                .contains(&clicked_id)
+            {
+                self.arrange_view_state
+                    .selected_track_ids
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            } else {
+                vec![clicked_id]
+            }
+        } else if !self.arrange_view_state.selected_track_ids.is_empty() {
+            self.arrange_view_state
+                .selected_track_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+        } else {
+            self.data
+                .project
+                .selected_track
+                .and_then(|index| self.data.project.tracks.get(index as usize))
+                .map(|track| vec![track.id])
+                .unwrap_or_default()
+        };
+        let Some(duplicated) = self.data.project.duplicate_tracks(&ids) else {
+            self.status_message = "Could not duplicate the selected tracks".to_owned();
+            return;
+        };
+        self.arrange_view_state.selected_track_ids = duplicated.iter().copied().collect();
+        self.arrange_view_state.selection_anchor_track_id = duplicated.first().copied();
+        self.selected_midi_note_id = None;
+        self.midi_note_drag = None;
+        self.midi_note_draw = None;
+        self.midi_controller_drag = None;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Duplicated {} track{}; undo is available",
+            duplicated.len(),
+            if duplicated.len() == 1 { "" } else { "s" }
+        );
+    }
+
     fn remove_track_by_id(&mut self, track_id: u64) {
         if self.is_recording() {
             self.status_message = "Stop recording before removing a track".to_owned();
@@ -7426,7 +7478,16 @@ impl OpenTrackApp {
                             ],
                         );
                     });
-                    menu_command(ui, "Duplicate Tracks", "", false);
+                    if ui
+                        .add_enabled(
+                            selected_track_available && !self.is_recording(),
+                            egui::Button::new("Duplicate Tracks"),
+                        )
+                        .clicked()
+                    {
+                        self.duplicate_tracks(None);
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             selected_track_available && !self.is_recording(),
@@ -9204,6 +9265,9 @@ impl OpenTrackApp {
                 if can_remove {
                     self.pending_track_delete_id = Some(id);
                 }
+            }
+            Some(project_controls::Action::Duplicate(id)) => {
+                self.duplicate_tracks(Some(id));
             }
             Some(project_controls::Action::ShowAutomation(id)) => {
                 let changed = self.arrange_view_state.automation_visible.insert(id);

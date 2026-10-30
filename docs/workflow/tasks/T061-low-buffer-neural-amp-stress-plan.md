@@ -1,6 +1,6 @@
 # T061 — Low-buffer neural amp and master-chain stress plan
 
-- Status: planned; no playback stress run has been performed.
+- Status: user-created four-track GATEWAY bench identified; initial playback results reported; formal attribution matrix and soak not performed.
 - User goal: make 64 samples artifact-free on the Mackie interface with multiple
   GATEWAY Neural Amp Modeler instances and Ozone on Stereo Out. Decision
   (2026-10-29): 64 samples is the working point and the acceptance target; the
@@ -21,6 +21,45 @@
 - Scope: performance and stability evidence for playback, plug-in scaling, and
   live fader/db edits. Do not overwrite the user's project or change source
   audio. Save an isolated stress-project copy and use duplicated DI material.
+
+## Preliminary playback evidence (user report, 2026-10-29)
+
+One GATEWAY track reportedly plays without audible glitches at 32 samples;
+two GATEWAY tracks reportedly glitch at 64 samples. The user has since created
+a four-track GATEWAY stress project and reports pronounced pops and crackles
+at 64 samples. Use this as the primary repeatable bench case.
+
+Sample rate, project/build identity, plugin versions and presets, internal block
+size, master inserts, and copied callback diagnostics for the four-track run are
+not yet recorded. The 32-frame single-instance result and 64-frame multi-instance
+failures change both buffer size and instance count, so they do not isolate the
+cause. No loopback capture has been provided; do not attribute the result to the
+renderer or plugins from these reports alone.
+
+### Bench project inspection
+
+Read-only inspection of `C:\Users\Samue\Documents\EXAMPLE\STRESS TEST.opr`
+shows a 48 kHz project with four Gateway inserts. The active `Rhythm` audio track
+has one Gateway and CLA-76 Mono; three additional audio tracks each have Gateway
+but are saved muted. The `Guitars` group has CLA-76 Mono, and Stereo Out has
+CLA-76 Stereo. The muted tracks contain copies of the same `Rhythm 01.wav` media.
+OpenTrack skips muted tracks before rendering their hosted inserts when spectrum
+capture is off, so the saved state exercises one Gateway plus the three CLA-76
+inserts in the audible path, not four actively processing Gateways. This matches
+the reported crackling but does not yet test four active Gateway instances.
+
+For an actual four-instance run, use a disposable copy and unmute Audio 09,
+Audio 10, and Audio 11. Keep the saved compressor chain for the first exact
+reproduction; then bypass compressors in controlled follow-up runs to isolate
+their contribution. Do not overwrite the user's original stress project.
+
+At 64 frames, compare dry, one, two, and four GATEWAY instances using the same
+project, duplicated DI source, plugin settings, and master chain. Keep plugin
+editors closed during playback measurements. Collect the copied diagnostics
+for each run: renderer misses, ASIO overload windows, callback collisions, ASIO
+interval/duration p95 and maximum, and hosted-track block timings. If possible,
+run the same four-instance chain in another ASIO host before choosing an engine
+optimization.
 
 ## Test protocol
 

@@ -781,6 +781,158 @@ impl Project {
         self.selected_midi_part_id = None;
     }
 
+    /// Duplicates the requested arrange tracks, including their audio/MIDI
+    /// events, channel settings, EQ, and insert state. Duplicated groups carry
+    /// their descendants, with group and event identities remapped. Audio
+    /// clips keep referring to the same media files; those files are not copied.
+    /// Returns the IDs of all created tracks in arrange order.
+    pub fn duplicate_tracks(&mut self, track_ids: &[u64]) -> Option<Vec<u64>> {
+        if track_ids.is_empty() {
+            return None;
+        }
+
+        let requested = track_ids.iter().copied().collect::<BTreeSet<_>>();
+        if requested.is_empty()
+            || requested
+                .iter()
+                .any(|id| !self.tracks.iter().any(|track| track.id == *id))
+        {
+            return None;
+        }
+
+        let mut roots = requested.clone();
+        for id in &requested {
+            let mut parent_id = self
+                .tracks
+                .iter()
+                .find(|track| track.id == *id)
+                .and_then(|track| track.parent_group_id);
+            while let Some(parent) = parent_id {
+                if requested.contains(&parent) {
+                    roots.remove(id);
+                    break;
+                }
+                parent_id = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == parent)
+                    .and_then(|track| track.parent_group_id);
+            }
+        }
+
+        let mut families = Vec::new();
+        for root in self.tracks.iter().filter(|track| roots.contains(&track.id)) {
+            let mut family_ids = BTreeSet::from([root.id]);
+            loop {
+                let previous_len = family_ids.len();
+                for track in &self.tracks {
+                    if track
+                        .parent_group_id
+                        .is_some_and(|parent_id| family_ids.contains(&parent_id))
+                    {
+                        family_ids.insert(track.id);
+                    }
+                }
+                if family_ids.len() == previous_len {
+                    break;
+                }
+            }
+            let family_tracks = self
+                .tracks
+                .iter()
+                .filter(|track| family_ids.contains(&track.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            let last_source_index = self
+                .tracks
+                .iter()
+                .rposition(|track| family_ids.contains(&track.id))?;
+            families.push((last_source_index, family_tracks));
+        }
+        if families.is_empty() {
+            return None;
+        }
+
+        let mut candidate = self.clone();
+        let mut used_names = candidate
+            .tracks
+            .iter()
+            .map(|track| track.name.clone())
+            .collect::<BTreeSet<_>>();
+        let mut duplicates_by_end = std::collections::BTreeMap::new();
+        let mut duplicated_ids = Vec::new();
+
+        for (last_source_index, source_tracks) in families {
+            let mut id_map = std::collections::BTreeMap::new();
+            for source in &source_tracks {
+                let id = candidate.next_track_id;
+                candidate.next_track_id = candidate.next_track_id.checked_add(1)?;
+                if id == 0 || id >= INPUT_BUS_ID {
+                    return None;
+                }
+                id_map.insert(source.id, id);
+            }
+
+            let mut duplicates = Vec::with_capacity(source_tracks.len());
+            for source in source_tracks {
+                let mut duplicate = source.clone();
+                duplicate.id = *id_map.get(&source.id)?;
+                duplicate.name = unique_duplicate_track_name(&source.name, &mut used_names);
+                if let Some(parent_id) = source.parent_group_id
+                    && let Some(duplicate_parent_id) = id_map.get(&parent_id)
+                {
+                    duplicate.parent_group_id = Some(*duplicate_parent_id);
+                    if duplicate.group_output_auto {
+                        sync_group_default_output(&mut duplicate, Some(*duplicate_parent_id));
+                    }
+                }
+
+                for clip in &mut duplicate.clips {
+                    clip.id = candidate.next_clip_id;
+                    candidate.next_clip_id = candidate.next_clip_id.checked_add(1)?;
+                }
+                for part in &mut duplicate.midi_parts {
+                    part.id = candidate.next_midi_part_id;
+                    candidate.next_midi_part_id = candidate.next_midi_part_id.checked_add(1)?;
+                    for note in &mut part.notes {
+                        note.id = candidate.next_midi_note_id;
+                        candidate.next_midi_note_id = candidate.next_midi_note_id.checked_add(1)?;
+                    }
+                    for controller in &mut part.controller_events {
+                        controller.id = candidate.next_midi_controller_id;
+                        candidate.next_midi_controller_id =
+                            candidate.next_midi_controller_id.checked_add(1)?;
+                    }
+                }
+                candidate.next_track_number = candidate.next_track_number.checked_add(1)?;
+                duplicated_ids.push(duplicate.id);
+                duplicates.push(duplicate);
+            }
+            duplicates_by_end.insert(last_source_index, duplicates);
+        }
+
+        let mut tracks = Vec::with_capacity(candidate.tracks.len() + duplicated_ids.len());
+        for (index, track) in candidate.tracks.drain(..).enumerate() {
+            tracks.push(track);
+            if let Some(duplicates) = duplicates_by_end.remove(&index) {
+                tracks.extend(duplicates);
+            }
+        }
+        candidate.tracks = tracks;
+        candidate.selected_track = candidate
+            .tracks
+            .iter()
+            .position(|track| Some(track.id) == duplicated_ids.first().copied())
+            .and_then(|index| u32::try_from(index).ok());
+        candidate.selected_midi_part_id = None;
+        candidate.next_track_number = candidate
+            .next_track_number
+            .max(candidate.tracks.len() as u32);
+        candidate.validate().ok()?;
+        *self = candidate;
+        Some(duplicated_ids)
+    }
+
     /// Inserts a new track immediately below the selected track, or at the
     /// end when nothing is selected. Returns the inserted row index.
     pub fn insert_track_below_selection(&mut self, kind: TrackKind, audio_channels: u8) -> usize {
@@ -2093,6 +2245,20 @@ impl Project {
 
         Ok(())
     }
+}
+
+fn unique_duplicate_track_name(source: &str, used_names: &mut BTreeSet<String>) -> String {
+    let base = format!("{source} Copy");
+    if used_names.insert(base.clone()) {
+        return base;
+    }
+    for suffix in 2_u32.. {
+        let name = format!("{source} Copy {suffix}");
+        if used_names.insert(name.clone()) {
+            return name;
+        }
+    }
+    unreachable!("u32 name suffix space exhausted")
 }
 
 fn first_clip_id() -> u64 {
