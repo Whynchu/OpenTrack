@@ -18,6 +18,7 @@ use core::ffi::c_void;
 use core::fmt;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use crate::abi::{
     self, ASE_OK, AsioBool, AsioBufferInfo, AsioCallbacks, AsioTime, AsioTimeInfo, Iasio,
@@ -32,6 +33,65 @@ use crate::error::{AsioError, StreamError, check};
 /// Process-global pointer to the active stream's state; see the module
 /// docs for why this exists.
 static ACTIVE: AtomicPtr<StreamInner> = AtomicPtr::new(ptr::null_mut());
+
+const CALLBACK_TIMING_CAPACITY: usize = 2048;
+
+/// Timing captured around one complete ASIO buffer-switch callback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallbackTimingSample {
+    /// Nanoseconds between this buffer-switch entry and the prior entry.
+    pub interval_ns: u64,
+    /// Nanoseconds from buffer-switch entry through input/output conversion.
+    pub duration_ns: u64,
+}
+
+/// A drained batch of callback timings and samples overwritten before they
+/// could be read by the owner thread.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallbackTimingBatch {
+    /// Samples not overwritten before this drain.
+    pub samples: Vec<CallbackTimingSample>,
+    /// Samples overwritten in the ring since the previous drain.
+    pub overwritten: u64,
+}
+
+struct CallbackTimingSlot {
+    version: AtomicU64,
+    sequence: AtomicU64,
+    interval_ns: AtomicU64,
+    duration_ns: AtomicU64,
+}
+
+impl CallbackTimingSlot {
+    fn new() -> Self {
+        Self {
+            version: AtomicU64::new(0),
+            sequence: AtomicU64::new(u64::MAX),
+            interval_ns: AtomicU64::new(0),
+            duration_ns: AtomicU64::new(0),
+        }
+    }
+
+    fn write(&self, sequence: u64, interval_ns: u64, duration_ns: u64) {
+        self.version.fetch_add(1, Ordering::AcqRel);
+        self.interval_ns.store(interval_ns, Ordering::Relaxed);
+        self.duration_ns.store(duration_ns, Ordering::Relaxed);
+        self.sequence.store(sequence, Ordering::Relaxed);
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
+    fn read(&self, sequence: u64) -> Option<CallbackTimingSample> {
+        let before = self.version.load(Ordering::Acquire);
+        if before % 2 != 0 || self.sequence.load(Ordering::Relaxed) != sequence {
+            return None;
+        }
+        let sample = CallbackTimingSample {
+            interval_ns: self.interval_ns.load(Ordering::Relaxed),
+            duration_ns: self.duration_ns.load(Ordering::Relaxed),
+        };
+        (self.version.load(Ordering::Acquire) == before).then_some(sample)
+    }
+}
 
 /// Driver-to-host notification bits accumulated between
 /// [`Stream::take_events`] calls.
@@ -170,22 +230,44 @@ struct StreamInner {
     channels: UnsafeCell<Vec<Channel>>,
     callback: UnsafeCell<Box<dyn FnMut(CallbackContext<'_>) + Send + 'static>>,
     callback_active: AtomicBool,
+    callback_collisions: AtomicU64,
     host_callbacks: AsioCallbacks,
     current_rate: AtomicU64,
     output_ready: bool,
     events: AtomicU32,
+    last_callback_entry: UnsafeCell<Option<Instant>>,
+    callback_timing_write: AtomicU64,
+    callback_timing_read: AtomicU64,
+    callback_timing_samples: [CallbackTimingSlot; CALLBACK_TIMING_CAPACITY],
+    callback_timing_enabled: bool,
 }
 
 impl StreamInner {
     fn run_callback(&self, index: usize, time: Option<StreamTime>) {
-        if index > 1
-            || self
-                .callback_active
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-        {
+        if index > 1 {
             return;
         }
+        if self
+            .callback_active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            self.callback_collisions.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let started = self.callback_timing_enabled.then(Instant::now);
+        let interval_ns = if let Some(started) = started {
+            // SAFETY: callback_active serializes access to callback-owned state.
+            let last_entry = unsafe { &mut *self.last_callback_entry.get() };
+            last_entry.replace(started).map_or(0, |previous| {
+                started
+                    .duration_since(previous)
+                    .as_nanos()
+                    .min(u64::MAX as u128) as u64
+            })
+        } else {
+            0
+        };
         // SAFETY: this gate permits only one audio callback to access scratch or the closure.
         let channels = unsafe { &mut *self.channels.get() };
         let callback = unsafe { &mut *self.callback.get() };
@@ -221,6 +303,17 @@ impl StreamInner {
                 let vtbl = (*(driver)).lp_vtbl.as_ref().expect("null vtable");
                 let _ = (vtbl.output_ready)(driver);
             };
+        }
+        if let Some(started) = started {
+            let write = self.callback_timing_write.load(Ordering::Relaxed);
+            let slot = write as usize % CALLBACK_TIMING_CAPACITY;
+            self.callback_timing_samples[slot].write(
+                write,
+                interval_ns,
+                started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            );
+            self.callback_timing_write
+                .store(write.wrapping_add(1), Ordering::Release);
         }
         self.callback_active.store(false, Ordering::Release);
     }
@@ -389,6 +482,39 @@ impl Stream<'_> {
     pub fn take_events(&self) -> u32 {
         self.inner.events.swap(0, Ordering::Relaxed)
     }
+
+    /// Drain callbacks rejected because another ASIO buffer-switch callback
+    /// was still using the stream's shared scratch and processor state.
+    pub fn take_callback_collisions(&self) -> u64 {
+        self.inner.callback_collisions.swap(0, Ordering::Relaxed)
+    }
+
+    /// Drain complete buffer-switch callback timing samples on the owner
+    /// thread. This method allocates and must never be called from the callback.
+    pub fn take_callback_timing_samples(&self) -> CallbackTimingBatch {
+        let end = self.inner.callback_timing_write.load(Ordering::Acquire);
+        let read = self.inner.callback_timing_read.load(Ordering::Relaxed);
+        let available = end.saturating_sub(read);
+        let ring_overwritten = available.saturating_sub(CALLBACK_TIMING_CAPACITY as u64);
+        let start = read.saturating_add(ring_overwritten);
+        let mut overwritten = ring_overwritten;
+        let mut samples = Vec::with_capacity((end - start) as usize);
+        for sequence in start..end {
+            let slot = sequence as usize % CALLBACK_TIMING_CAPACITY;
+            if let Some(sample) = self.inner.callback_timing_samples[slot].read(sequence) {
+                samples.push(sample);
+            } else {
+                overwritten = overwritten.saturating_add(1);
+            }
+        }
+        self.inner
+            .callback_timing_read
+            .store(end, Ordering::Release);
+        CallbackTimingBatch {
+            samples,
+            overwritten,
+        }
+    }
 }
 
 impl Drop for Stream<'_> {
@@ -419,6 +545,18 @@ impl Driver {
         &mut self,
         config: &StreamConfig,
         callback: impl FnMut(CallbackContext<'_>) + Send + 'static,
+    ) -> Result<Stream<'_>, StreamError> {
+        self.stream_with_timing(config, callback, false)
+    }
+
+    /// Open a stream and optionally measure complete buffer-switch callback
+    /// timing. When enabled, samples are buffered without allocation and must
+    /// be drained off the callback thread.
+    pub fn stream_with_timing(
+        &mut self,
+        config: &StreamConfig,
+        callback: impl FnMut(CallbackContext<'_>) + Send + 'static,
+        measure_callback_timing: bool,
     ) -> Result<Stream<'_>, StreamError> {
         if !config.sample_rate.is_finite() || config.sample_rate <= 0.0 {
             return Err(AsioError::InvalidParameter.into());
@@ -465,6 +603,7 @@ impl Driver {
             channels: UnsafeCell::new(channels),
             callback: UnsafeCell::new(Box::new(callback)),
             callback_active: AtomicBool::new(false),
+            callback_collisions: AtomicU64::new(0),
             host_callbacks: AsioCallbacks {
                 buffer_switch: Some(buffer_switch_tr),
                 sample_rate_did_change: Some(sample_rate_did_change_tr),
@@ -474,6 +613,11 @@ impl Driver {
             current_rate: AtomicU64::new(config.sample_rate.to_bits()),
             output_ready: false,
             events: AtomicU32::new(0),
+            last_callback_entry: UnsafeCell::new(None),
+            callback_timing_write: AtomicU64::new(0),
+            callback_timing_read: AtomicU64::new(0),
+            callback_timing_samples: std::array::from_fn(|_| CallbackTimingSlot::new()),
+            callback_timing_enabled: measure_callback_timing,
         });
         let ptr = Box::into_raw(inner);
         if ACTIVE
@@ -654,7 +798,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_cb = seen.clone();
         let mut stream = driver
-            .stream(
+            .stream_with_timing(
                 &StreamConfig {
                     sample_rate: 48_000.0,
                     buffer_size: frames,
@@ -676,6 +820,7 @@ mod tests {
                     }
                     seen_cb.lock().unwrap().push(v);
                 },
+                true,
             )
             .unwrap();
         assert_eq!(stream.buffer_size, frames);
@@ -714,6 +859,13 @@ mod tests {
             assert_eq!(f32::from_le_bytes(b), 0.25);
         }
         assert_eq!(fake.output_ready_count.get(), output_ready_baseline + 2);
+        let timings = stream.take_callback_timing_samples();
+        assert_eq!(timings.overwritten, 0);
+        assert_eq!(timings.samples.len(), 2);
+        assert_eq!(timings.samples[0].interval_ns, 0);
+        assert!(timings.samples[0].duration_ns > 0);
+        assert!(timings.samples[1].interval_ns > 0);
+        assert!(timings.samples[1].duration_ns > 0);
         drop(stream);
 
         // Drop disposed the buffers and released the global slot.
@@ -749,6 +901,34 @@ mod tests {
         fake.pump(0);
         fake.pump(1);
         assert_eq!(*switches.lock().unwrap(), 2);
+        assert!(stream.take_callback_timing_samples().samples.is_empty());
+    }
+
+    #[test]
+    fn callback_timing_ring_reports_overwritten_samples() {
+        let _lock = STREAM_LOCK.lock().unwrap();
+        let mut fake = FakeDriver::new();
+        let raw = (&mut *fake) as *mut FakeDriver as *mut Iasio;
+        let mut driver = unsafe { Driver::from_raw(raw) };
+        let mut stream = driver
+            .stream_with_timing(
+                &StreamConfig {
+                    sample_rate: 48_000.0,
+                    buffer_size: 32,
+                    num_inputs: 0,
+                    num_outputs: 1,
+                },
+                |_| {},
+                true,
+            )
+            .unwrap();
+        stream.start().unwrap();
+        for index in 0..(CALLBACK_TIMING_CAPACITY + 2) {
+            fake.pump((index % 2) as i32);
+        }
+        let batch = stream.take_callback_timing_samples();
+        assert_eq!(batch.samples.len(), CALLBACK_TIMING_CAPACITY);
+        assert_eq!(batch.overwritten, 2);
     }
 
     #[test]

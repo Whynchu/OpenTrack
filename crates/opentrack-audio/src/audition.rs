@@ -4,7 +4,10 @@
 //! source. The callback only reads immutable sources and advances atomics, so a
 //! drag never moves the project playhead or rebuilds a playback plan.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU32, AtomicU64, Ordering},
+};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 
@@ -106,6 +109,7 @@ impl NoteLoop {
 pub struct NoteAudition {
     current: ArcSwap<NoteLoop>,
     previous: ArcSwapOption<NoteLoop>,
+    retired_previous: Mutex<Vec<Arc<NoteLoop>>>,
 }
 
 impl NoteAudition {
@@ -125,6 +129,7 @@ impl NoteAudition {
                 level,
             )?),
             previous: ArcSwapOption::empty(),
+            retired_previous: Mutex::new(Vec::new()),
         })
     }
 
@@ -135,8 +140,25 @@ impl NoteAudition {
         let old = self.current.swap(next_current);
         if old.gain() > 1e-6 {
             old.set_target(0.0);
-            self.previous.store(Some(old));
+            if let Some(previous) = self.previous.swap(Some(old)) {
+                self.retired_previous
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(previous);
+            }
+        } else {
+            self.retired_previous
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(old);
         }
+    }
+
+    pub(crate) fn reclaim_retired(&self) {
+        self.retired_previous
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 
     pub fn stop(&self) {

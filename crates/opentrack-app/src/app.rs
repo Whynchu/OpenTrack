@@ -743,6 +743,7 @@ pub struct OpenTrackApp {
     channel_settings_ui: ChannelSettingsUiState,
     channel_window_owner: crate::native_windows::ChannelOwner,
     mixer_window: NativeWindowState,
+    mixer_track_control_cache: Vec<(f32, f32)>,
     media_window: NativeWindowState,
     track_rename_dialog: Option<TrackRenameDialog>,
     track_add_dialog: Option<TrackAddDialog>,
@@ -753,6 +754,7 @@ pub struct OpenTrackApp {
     midi_insert_velocity: u8,
     midi_controller_number: u8,
     selected_midi_note_id: Option<u64>,
+    selected_midi_note_ids: BTreeSet<u64>,
     midi_note_drag: Option<MidiNoteDrag>,
     midi_note_draw: Option<MidiNoteDraw>,
     midi_part_draw: Option<MidiPartDraw>,
@@ -776,6 +778,8 @@ pub struct OpenTrackApp {
     about_open: bool,
     confirmed_close_request: bool,
     status_message: String,
+    realtime_diagnostic_details: String,
+    realtime_diagnostic_refreshed_at: Option<Instant>,
     project_open_error: Option<String>,
 }
 
@@ -935,7 +939,8 @@ struct MidiControllerDrag {
 #[derive(Clone, Copy)]
 enum MidiNoteDragMode {
     Move,
-    Resize,
+    ResizeStart,
+    ResizeEnd,
 }
 
 enum PendingProjectAction {
@@ -1971,6 +1976,7 @@ impl OpenTrackApp {
             },
             channel_window_owner: crate::native_windows::ChannelOwner::new(creation),
             mixer_window: NativeWindowState::default(),
+            mixer_track_control_cache: Vec::new(),
             media_window: NativeWindowState::default(),
             track_rename_dialog: None,
             track_add_dialog: None,
@@ -1981,6 +1987,7 @@ impl OpenTrackApp {
             midi_insert_velocity,
             midi_controller_number: 11,
             selected_midi_note_id: None,
+            selected_midi_note_ids: BTreeSet::new(),
             midi_note_drag: None,
             midi_note_draw: None,
             midi_part_draw: None,
@@ -2004,6 +2011,8 @@ impl OpenTrackApp {
             about_open: false,
             confirmed_close_request: false,
             status_message,
+            realtime_diagnostic_details: String::new(),
+            realtime_diagnostic_refreshed_at: None,
             project_open_error: None,
         };
         if app
@@ -4860,6 +4869,32 @@ impl OpenTrackApp {
             && !self.preferences_ui.is_open
             && self.pending_track_delete_id.is_none()
         {
+            if self.midi_editor_open && !self.selected_midi_note_ids.is_empty() {
+                self.project_history.finish_frame(&self.data.project, true);
+                if !self.project_history.begin(&self.data.project) {
+                    self.status_message =
+                        "Cannot delete notes: undo snapshot is unavailable".into();
+                    return;
+                }
+                let selected = &self.selected_midi_note_ids;
+                if let Some(part_id) = self.data.project.selected_midi_part_id {
+                    for track in &mut self.data.project.tracks {
+                        if let Some(part) =
+                            track.midi_parts.iter_mut().find(|part| part.id == part_id)
+                        {
+                            part.notes.retain(|note| !selected.contains(&note.id));
+                            break;
+                        }
+                    }
+                }
+                self.selected_midi_note_ids.clear();
+                self.selected_midi_note_id = None;
+                self.project_history.finish_frame(&self.data.project, true);
+                self.rebuild_audio_plan();
+                self.mark_modified();
+                self.status_message = "Removed selected MIDI notes; Undo restores them".into();
+                return;
+            }
             self.delete_audio_selection(modifiers.shift);
             return;
         }
@@ -8103,20 +8138,20 @@ impl OpenTrackApp {
         let position_before = self.data.transport.position_beats;
         let selection_before = self.data.project.selected_track;
         let midi_editor_visible = self.midi_editor_open;
-        let mixer_track_controls_before = (!self.sample_editor_active && !midi_editor_visible)
-            .then(|| {
+        let mut mixer_track_controls_before = std::mem::take(&mut self.mixer_track_control_cache);
+        mixer_track_controls_before.clear();
+        if !self.sample_editor_active && !midi_editor_visible {
+            mixer_track_controls_before.extend(
                 self.data
                     .project
                     .tracks
                     .iter()
-                    .map(|track| (track.gain, track.pan, track.equalizer.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+                    .map(|track| (track.gain, track.pan)),
+            );
+        }
         let mixer_output_controls_before = (
             self.data.project.output_channel.strip.gain,
             self.data.project.output_channel.strip.pan,
-            self.data.project.output_channel.strip.equalizer.clone(),
         );
         let mut mixer_selection_requested = false;
         let mut midi_live_velocity_update = None;
@@ -8129,7 +8164,7 @@ impl OpenTrackApp {
                 .and_then(|p| p.parent())
                 .map(|p| p.join("Metadata").join("PitchTime")),
         );
-        let modified = ui
+        let (modified, requires_plan_rebuild) = ui
             .scope_builder(
                 egui::UiBuilder::new()
                     .id_salt("mixer-panel-body")
@@ -8138,10 +8173,12 @@ impl OpenTrackApp {
                     ui.set_clip_rect(body_rect);
                     ui.set_width(body_rect.width());
                     if self.midi_editor_open {
-                        self.show_midi_editor_panel(ui, &mut midi_live_velocity_update)
+                        let changed =
+                            self.show_midi_editor_panel(ui, &mut midi_live_velocity_update);
+                        (changed, changed && midi_live_velocity_update.is_none())
                     } else if self.sample_editor_active {
                         self.sample_editor.cycle_enabled = self.data.transport.cycle;
-                        sample_editor::show(
+                        let changed = sample_editor::show(
                             ui,
                             &mut self.data.project,
                             &self.data.audio_sources,
@@ -8151,9 +8188,10 @@ impl OpenTrackApp {
                             self.recording_session.is_none(),
                             &mut self.data.transport.position_beats,
                             self.data.transport.playing,
-                        )
+                        );
+                        (changed, changed)
                     } else {
-                        let (changed, selection_requested) = show_mixer(
+                        let (changed, selection_requested, requires_rebuild) = show_mixer(
                             ui,
                             &mut self.data.project,
                             &self.data.track_meter_levels,
@@ -8167,7 +8205,7 @@ impl OpenTrackApp {
                             &self.vst3_plugin_catalog,
                         );
                         mixer_selection_requested |= selection_requested;
-                        changed
+                        (changed, requires_rebuild)
                     }
                 },
             )
@@ -8216,53 +8254,59 @@ impl OpenTrackApp {
                 || self.midi_controller_drag.is_some());
         let finish_pending_midi_rebuild = self.midi_pending_audio_rebuild && !midi_edit_drag_active;
         if modified || finish_pending_midi_rebuild {
-            let live_updates = self
-                .data
-                .project
-                .tracks
-                .iter()
-                .zip(mixer_track_controls_before)
-                .enumerate()
-                .filter_map(|(index, (track, (gain, pan, equalizer)))| {
-                    ((track.gain != gain) || (track.pan != pan) || (track.equalizer != equalizer))
-                        .then_some((index, track.gain, track.pan, track.equalizer.clone()))
-                })
-                .collect::<Vec<_>>();
             let output = &self.data.project.output_channel.strip;
             let output_changed = output.gain != mixer_output_controls_before.0
-                || output.pan != mixer_output_controls_before.1
-                || output.equalizer != mixer_output_controls_before.2;
-            let midi_velocity_updated =
-                midi_live_velocity_update.is_some_and(|(track_index, note_id, velocity)| {
-                    self.audio_engine.as_ref().is_some_and(|engine| {
-                        engine.update_midi_note_velocity(track_index, note_id, velocity)
-                    })
-                });
-            let live_updated = midi_velocity_updated
-                || ((!live_updates.is_empty() || output_changed)
-                    && self.audio_engine.as_ref().is_some_and(|engine| {
-                        if output_changed {
-                            engine.update_output_channel_parameters(
-                                output.gain,
-                                output.pan,
-                                &output.equalizer,
-                            );
-                        }
-                        live_updates.iter().all(|(index, gain, pan, equalizer)| {
-                            engine.update_track_channel_parameters(*index, *gain, *pan, equalizer)
-                        })
-                    }));
+                || output.pan != mixer_output_controls_before.1;
+            let mut has_live_mix_changes = output_changed;
+            let live_updated = self.audio_engine.as_ref().is_some_and(|engine| {
+                let midi_updated =
+                    midi_live_velocity_update.map_or(true, |(track, note, velocity)| {
+                        engine.update_midi_note_velocity(track, note, velocity)
+                    });
+                if output_changed {
+                    engine.update_output_channel_parameters(
+                        output.gain,
+                        output.pan,
+                        &output.equalizer,
+                    );
+                }
+                let mut mix_updated = true;
+                for (index, (track, (gain, pan))) in self
+                    .data
+                    .project
+                    .tracks
+                    .iter()
+                    .zip(mixer_track_controls_before.iter().copied())
+                    .enumerate()
+                {
+                    if track.gain != gain || track.pan != pan {
+                        has_live_mix_changes = true;
+                        mix_updated &= engine.update_track_mix(index, track.gain, track.pan);
+                    }
+                }
+                midi_updated && mix_updated
+            });
+            if self.audio_engine.is_none() {
+                has_live_mix_changes |= self
+                    .data
+                    .project
+                    .tracks
+                    .iter()
+                    .zip(mixer_track_controls_before.iter().copied())
+                    .any(|(track, (gain, pan))| track.gain != gain || track.pan != pan);
+            }
             if midi_edit_drag_active && modified {
                 self.midi_pending_audio_rebuild = true;
             } else if self.midi_pending_audio_rebuild {
                 self.rebuild_audio_plan();
-            } else if !live_updated {
+            } else if requires_plan_rebuild || (has_live_mix_changes && !live_updated) {
                 self.rebuild_audio_plan();
             }
             if modified {
                 self.mark_modified();
             }
         }
+        self.mixer_track_control_cache = mixer_track_controls_before;
     }
 
     fn update_note_audition(&mut self, ctx: &egui::Context) {
@@ -8544,7 +8588,7 @@ impl OpenTrackApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
-                    let (changed, selection_requested) = show_mixer(
+                    let (changed, selection_requested, _) = show_mixer(
                         ui,
                         &mut self.data.project,
                         &self.data.track_meter_levels,
@@ -8898,6 +8942,7 @@ impl OpenTrackApp {
                 &mut self.midi_controller_number,
                 live_velocity_update,
                 &mut self.selected_midi_note_id,
+                &mut self.selected_midi_note_ids,
                 &mut self.midi_note_drag,
                 &mut self.midi_note_draw,
                 &mut self.midi_controller_drag,
@@ -9667,8 +9712,9 @@ impl OpenTrackApp {
                             EditTool::Select,
                             true,
                         ),
+                        (ToolbarIcon::Split, "Scissors", EditTool::Split, true),
+                        (ToolbarIcon::Draw, "Draw MIDI Parts", EditTool::Draw, true),
                         (ToolbarIcon::Range, "Range Selection", EditTool::Range, true),
-                        (ToolbarIcon::Split, "Split", EditTool::Split, true),
                         (ToolbarIcon::Glue, "Glue", EditTool::Glue, true),
                         (ToolbarIcon::Erase, "Erase", EditTool::Delete, true),
                         (ToolbarIcon::Zoom, "Zoom", EditTool::Zoom, true),
@@ -9682,13 +9728,6 @@ impl OpenTrackApp {
                     }
                     let _ =
                         toolbar_icon_button(ui, ToolbarIcon::TimeWarp, "Time Warp", false, false);
-                    for (icon, tooltip, tool) in [(ToolbarIcon::Draw, "Draw", EditTool::Draw)] {
-                        let response =
-                            toolbar_icon_button(ui, icon, tooltip, self.edit_tool == tool, true);
-                        if response.clicked() {
-                            self.edit_tool = tool;
-                        }
-                    }
                     let _ = toolbar_icon_button(ui, ToolbarIcon::Line, "Line", false, false);
                     if toolbar_icon_button(
                         ui,
@@ -9773,8 +9812,8 @@ impl OpenTrackApp {
                     crate::icon_system::paint_app_icon(
                         ui,
                         Rect::from_center_size(
-                            Pos2::new(selector_rect.right() - 7.0, selector_rect.center().y),
-                            Vec2::splat(12.0),
+                            Pos2::new(selector_rect.right() - 9.0, selector_rect.center().y),
+                            Vec2::splat(18.0),
                         ),
                         crate::icon_system::IconId::ChevronDown,
                         theme::palette(ui).text,
@@ -9860,7 +9899,7 @@ impl OpenTrackApp {
         transport_panel::show(self, ui);
     }
 
-    fn show_status(&self, ui: &mut egui::Ui) {
+    fn show_status(&mut self, ui: &mut egui::Ui) {
         let modified = self.has_unsaved_changes();
         let (state, color) = if modified {
             ("MODIFIED", theme::WARNING)
@@ -9900,18 +9939,160 @@ impl OpenTrackApp {
                     );
                     ui.separator();
                     let overruns = engine.callback_overrun_count();
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "DSP {:.0}% Â· {overruns} overruns",
+                    let asio_overloads = engine.asio_overload_window_count();
+                    let asio_collisions = engine.asio_callback_collision_count();
+                    let refresh_details = self
+                        .realtime_diagnostic_refreshed_at
+                        .is_none_or(|last| last.elapsed() >= Duration::from_millis(250));
+                    if refresh_details {
+                    let diagnostic = if let Some(windows) = asio_overloads {
+                        format!(
+                            "DSP {:.0}% · {overruns} render overruns · {windows} ASIO overload windows",
                             engine.callback_load_percent(),
-                        ))
-                        .small()
-                        .color(if overruns == 0 {
-                            theme::palette(ui).muted
-                        } else {
-                            theme::WARNING
-                        }),
+                        )
+                    } else {
+                        format!(
+                            "DSP {:.0}% · {overruns} render overruns",
+                            engine.callback_load_percent(),
+                        )
+                    };
+                    let diagnostic = if let Some(timing) = engine.callback_timing_summary() {
+                        format!(
+                            "{diagnostic} | render interval p95/max {} / {} us | render duration p95/max {} / {} us | {} samples | {} lost",
+                            timing.interval_p95_us,
+                            timing.interval_max_us,
+                            timing.duration_p95_us,
+                            timing.duration_max_us,
+                            timing.samples,
+                            timing.overwritten_samples,
+                        )
+                    } else {
+                        diagnostic
+                    };
+                    let diagnostic = if let Some(timing) = engine.asio_callback_timing_summary() {
+                        let (configured_block, effective_block) =
+                            engine.hosted_internal_block_frames();
+                        let period_frames = engine.output_period_frames;
+                        let period_us = u64::from(period_frames) * 1_000_000
+                            / u64::from(engine.sample_rate.max(1));
+                        format!(
+                            "{diagnostic} | ASIO interval p95/max {} / {} us | duration p95/max {} / {} us | period {period_frames} frames / {period_us} us | host block {configured_block} configured / {effective_block} effective",
+                            timing.interval_p95_us,
+                            timing.interval_max_us,
+                            timing.duration_p95_us,
+                            timing.duration_max_us,
+                        )
+                    } else {
+                        diagnostic
+                    };
+                    let diagnostic = if let Some(timing) = engine.wasapi_callback_timing_summary() {
+                        format!(
+                            "{diagnostic} | WASAPI fill interval p95/max {} / {} us | duration p95/max {} / {} us | period {} frames | {} samples | {} lost",
+                            timing.interval_p95_us,
+                            timing.interval_max_us,
+                            timing.duration_p95_us,
+                            timing.duration_max_us,
+                            engine.output_period_frames,
+                            timing.samples,
+                            timing.overwritten_samples,
+                        )
+                    } else {
+                        diagnostic
+                    };
+                    let diagnostic = if let Some((track_index, timing)) = engine
+                        .hosted_track_timing_summaries()
+                        .into_iter()
+                        .max_by_key(|(_, timing)| timing.duration_p95_us)
+                    {
+                        format!(
+                            "{diagnostic} | hosted track {track_index} block p95 {} us / max {} us | {} samples / {} overwritten",
+                            timing.duration_p95_us,
+                            timing.duration_max_us,
+                            timing.samples,
+                            timing.overwritten_samples,
+                        )
+                    } else {
+                        diagnostic
+                    };
+                    let diagnostic = if let Some(timing) = engine.output_stage_timing_summary() {
+                        format!(
+                            "{diagnostic} | Stereo Out block p95 {} us / max {} us | {} samples / {} overwritten",
+                            timing.duration_p95_us,
+                            timing.duration_max_us,
+                            timing.samples,
+                            timing.overwritten_samples,
+                        )
+                    } else {
+                        diagnostic
+                    };
+                    let input_timing = self
+                        .recording_session
+                        .as_ref()
+                        .and_then(|session| session.recorder.wasapi_input_timing_summary())
+                        .or_else(|| {
+                            self.audio_input_probe
+                                .as_ref()
+                                .and_then(AudioInputProbe::wasapi_input_timing_summary)
+                        });
+                    let diagnostic = if let Some(timing) = input_timing {
+                        format!(
+                            "{diagnostic} | WASAPI input packet p95 {} us / max {} us | {} samples / {} overwritten",
+                            timing.duration_p95_us,
+                            timing.duration_max_us,
+                            timing.samples,
+                            timing.overwritten_samples,
+                        )
+                    } else {
+                        diagnostic
+                    };
+                    let diagnostic = format!(
+                        "Device {} | {} Hz | period {} frames | buffer {} frames | ASIO callback collisions {} | {diagnostic}",
+                        engine.device_name,
+                        engine.sample_rate,
+                        engine.output_period_frames,
+                        engine.output_buffer_frames,
+                        asio_collisions.unwrap_or(0),
                     );
+                    let diagnostic = if let Some(mmcss) = engine.asio_mmcss_summary() {
+                        format!("{diagnostic} | {mmcss}")
+                    } else {
+                        diagnostic
+                    };
+                    self.realtime_diagnostic_details = diagnostic;
+                    self.realtime_diagnostic_refreshed_at = Some(Instant::now());
+                    }
+                    let has_overruns = overruns > 0
+                        || asio_overloads.is_some_and(|count| count > 0)
+                        || asio_collisions.is_some_and(|count| count > 0);
+                    let brief = if let Some(windows) = asio_overloads {
+                        let collisions = asio_collisions.unwrap_or(0);
+                        format!(
+                            "DSP {:.0}% | {overruns} misses | {windows} ASIO overload windows | {collisions} callback collisions",
+                            engine.callback_load_percent(),
+                        )
+                    } else {
+                        format!(
+                            "DSP {:.0}% | {overruns} render misses",
+                            engine.callback_load_percent(),
+                        )
+                    };
+                    ui.label(
+                        egui::RichText::new(brief)
+                        .small()
+                        .color(if has_overruns {
+                            theme::WARNING
+                        } else {
+                            theme::palette(ui).muted
+                        }),
+                    )
+                    .on_hover_text(self.realtime_diagnostic_details.as_str())
+                    .context_menu(|ui| {
+                        if ui.button("Copy realtime diagnostics").clicked() {
+                            ui.ctx()
+                                .copy_text(self.realtime_diagnostic_details.clone());
+                            ui.close();
+                        }
+                    });
                 } else {
                     ui.label(
                         egui::RichText::new("Audio output unavailable")
@@ -10269,7 +10450,7 @@ fn filter_type_name(filter: FilterType) -> &'static str {
     }
 }
 
-/// Compact Inspector fields with original, code-drawn level/balance/time symbols.
+/// Compact Inspector fields with shared Tabler level/balance/time icons.
 fn inspector_parameter_row(
     ui: &mut egui::Ui,
     symbol: u8,
@@ -10294,50 +10475,12 @@ fn inspector_parameter_row(
             visuals.corner_radius = egui::CornerRadius::ZERO;
         }
         let (icon, _) = ui.allocate_exact_size(Vec2::new(45.0, 20.0), Sense::hover());
-        let center = Pos2::new(icon.right() - 12.0, icon.center().y);
-        let painter = ui.painter();
-        let stroke = Stroke::new(1.2, palette.text);
-        let point = |x, y| center + Vec2::new(x, y);
-        match symbol {
-            0 => {
-                painter.add(egui::Shape::convex_polygon(
-                    vec![point(-8.0, 4.0), point(7.0, -3.0), point(7.0, 4.0)],
-                    palette.text,
-                    Stroke::NONE,
-                ));
-            }
-            1 => {
-                painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        point(-7.0, -3.0),
-                        point(0.0, 3.0),
-                        point(7.0, -3.0),
-                        point(7.0, 4.0),
-                        point(-7.0, 4.0),
-                    ],
-                    palette.text,
-                    Stroke::NONE,
-                ));
-            }
-            _ => {
-                painter.circle_stroke(center, 6.0, stroke);
-                painter.line_segment([center, point(0.0, -4.0)], stroke);
-                painter.line_segment([center, point(3.0, 1.0)], stroke);
-                painter.line_segment([point(-3.0, -8.0), point(3.0, -8.0)], stroke);
-                painter.line_segment([point(-12.0, 0.0), point(-7.0, 0.0)], stroke);
-                painter.line_segment([point(7.0, 0.0), point(12.0, 0.0)], stroke);
-                painter.add(egui::Shape::convex_polygon(
-                    vec![point(-12.0, 0.0), point(-9.0, -2.5), point(-9.0, 2.5)],
-                    palette.text,
-                    Stroke::NONE,
-                ));
-                painter.add(egui::Shape::convex_polygon(
-                    vec![point(12.0, 0.0), point(9.0, -2.5), point(9.0, 2.5)],
-                    palette.text,
-                    Stroke::NONE,
-                ));
-            }
-        }
+        let icon_id = match symbol {
+            0 => crate::icon_system::IconId::Monitor,
+            1 => crate::icon_system::IconId::Pan,
+            _ => crate::icon_system::IconId::TimeAlignment,
+        };
+        crate::icon_system::paint_app_icon(ui, icon, icon_id, palette.text);
         let mut field = egui::DragValue::new(value)
             .range(range)
             .clamp_existing_to_range(false)
@@ -12455,6 +12598,7 @@ fn show_project(
                     }
                     let compact_controls =
                         (media_lane_height - if expanded { 42.0 } else { 0.0 }) < 54.0;
+                    let button_height = 14.0;
                     let text_painter = painter.with_clip_rect(Rect::from_min_size(
                         Pos2::new(row_rect.min.x + 32.0, top),
                         Vec2::new(row_header_width - 32.0, lane_height),
@@ -12492,7 +12636,6 @@ fn show_project(
                             track_color,
                         );
                     }
-                    let button_height = 14.0;
                     let take_lanes_supported = track.kind == TrackKind::Audio;
                     let group_collapse_control = track.kind == TrackKind::Group;
                     let lane_control_label = if group_collapse_control {
@@ -13811,6 +13954,7 @@ fn show_midi_editor(
     controller_number: &mut u8,
     live_velocity_update: &mut Option<(usize, u64, u8)>,
     selected_note_id: &mut Option<u64>,
+    selected_note_ids: &mut BTreeSet<u64>,
     note_drag: &mut Option<MidiNoteDrag>,
     note_draw: &mut Option<MidiNoteDraw>,
     controller_drag: &mut Option<MidiControllerDrag>,
@@ -13829,12 +13973,8 @@ fn show_midi_editor(
         return false;
     };
     let track_id = track.id;
-    let note_selection_id = ui.make_persistent_id(("midi-note-selection", track_id, part_id));
     let note_selection_drag_id =
         ui.make_persistent_id(("midi-note-selection-drag", track_id, part_id));
-    let mut selected_note_ids = ui
-        .data(|data| data.get_temp::<BTreeSet<u64>>(note_selection_id))
-        .unwrap_or_default();
     let mut selection_drag =
         ui.data(|data| data.get_temp::<MidiNoteSelectionDrag>(note_selection_drag_id));
     let track_name = track.name.clone();
@@ -13940,13 +14080,6 @@ fn show_midi_editor(
                 sample_editor::toolbar_tool(
                     ui,
                     tool,
-                    EditTool::Draw,
-                    ToolbarIcon::Draw,
-                    "Draw Notes",
-                );
-                sample_editor::toolbar_tool(
-                    ui,
-                    tool,
                     EditTool::Select,
                     ToolbarIcon::Select,
                     "Object Selection",
@@ -13954,16 +14087,16 @@ fn show_midi_editor(
                 sample_editor::toolbar_tool(
                     ui,
                     tool,
-                    EditTool::Range,
-                    ToolbarIcon::Range,
-                    "Range Selection",
+                    EditTool::Split,
+                    ToolbarIcon::Split,
+                    "Scissors",
                 );
                 sample_editor::toolbar_tool(
                     ui,
                     tool,
-                    EditTool::Split,
-                    ToolbarIcon::Split,
-                    "Scissors",
+                    EditTool::Draw,
+                    ToolbarIcon::Draw,
+                    "Draw Notes",
                 );
                 fit_part =
                     toolbar_icon_button(ui, ToolbarIcon::Zoom, "Fit Part", false, true).clicked();
@@ -14466,22 +14599,26 @@ fn show_midi_editor(
                         {
                             response.context_menu(|ui| {
                                 theme::menu_popup_style(ui.style_mut());
-                                if ui
-                                    .selectable_value(tool, EditTool::Draw, "Draw Notes")
-                                    .clicked()
-                                    || ui
-                                        .selectable_value(tool, EditTool::Select, "Select Notes")
-                                        .clicked()
-                                    || ui
-                                        .selectable_value(
-                                            tool,
-                                            EditTool::Range,
-                                            "Select Note Range",
+                                ui.horizontal(|ui| {
+                                    for (value, icon, label) in [
+                                        (EditTool::Select, ToolbarIcon::Select, "Mouse"),
+                                        (EditTool::Split, ToolbarIcon::Split, "Scissors"),
+                                        (EditTool::Draw, ToolbarIcon::Draw, "Draw Notes"),
+                                    ] {
+                                        if toolbar_icon_button(
+                                            ui,
+                                            icon,
+                                            label,
+                                            *tool == value,
+                                            true,
                                         )
                                         .clicked()
-                                {
-                                    ui.close();
-                                }
+                                        {
+                                            *tool = value;
+                                            ui.close();
+                                        }
+                                    }
+                                });
                             });
                         }
                         let note_painter = painter.with_clip_rect(part_grid);
@@ -14539,9 +14676,10 @@ fn show_midi_editor(
                                 egui::StrokeKind::Inside,
                             );
                         }
-                        if let Some(draw) = note_draw
-                            .as_ref()
-                            .filter(|draw| draw.track_id == track_id && draw.part_id == part_id)
+                        if *tool == EditTool::Draw
+                            && let Some(draw) = note_draw
+                                .as_ref()
+                                .filter(|draw| draw.track_id == track_id && draw.part_id == part_id)
                         {
                             let preview = Rect::from_min_size(
                                 Pos2::new(
@@ -14569,7 +14707,8 @@ fn show_midi_editor(
                                 egui::StrokeKind::Inside,
                             );
                         }
-                        if note_draw.is_none()
+                        if *tool == EditTool::Draw
+                            && note_draw.is_none()
                             && let Some(pointer) =
                                 response.hover_pos().filter(|pos| part_grid.contains(*pos))
                         {
@@ -14622,6 +14761,35 @@ fn show_midi_editor(
                             }
                         }
 
+                        if *tool == EditTool::Select
+                            && let Some(pointer) =
+                                response.hover_pos().filter(|pos| part_grid.contains(*pos))
+                        {
+                            let pitch =
+                                pitch_view.center + (part_grid.center().y - pointer.y) / row_height;
+                            if (0.0..=127.0).contains(&pitch)
+                                && project.tracks[track_index].midi_parts[part_index]
+                                    .notes
+                                    .iter()
+                                    .any(|note| {
+                                        if f32::from(note.pitch).round() != pitch.round() {
+                                            return false;
+                                        }
+                                        let left = canvas.min.x
+                                            + KEYBOARD_WIDTH
+                                            + note.start_beats as f32 * beat_width;
+                                        let right = left
+                                            + (note.duration_beats as f32 * beat_width).max(3.0);
+                                        let near_left = (pointer.x - left).abs() <= 6.0;
+                                        let near_right = (right - pointer.x).abs() <= 6.0;
+                                        let in_note = pointer.x >= left && pointer.x < right;
+                                        in_note && (near_left || near_right)
+                                    })
+                            {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            }
+                        }
+
                         // Note creation and editing are MIDI-editor-local gestures.
                         // Empty-space drags create notes only in Draw mode; middle-button
                         // drag belongs only to pan.
@@ -14631,7 +14799,25 @@ fn show_midi_editor(
                                 .input(|input| input.pointer.press_origin())
                                 .or_else(|| response.interact_pointer_pos());
                             if let Some(pointer) = press_position {
-                                if *tool == EditTool::Range && part_grid.contains(pointer) {
+                                let pointer_pitch = pitch_view.center
+                                    + (part_grid.center().y - pointer.y) / row_height;
+                                let pointer_beat = f64::from(
+                                    (pointer.x - canvas.min.x - KEYBOARD_WIDTH) / beat_width,
+                                );
+                                let note_under_pointer = part_grid.contains(pointer)
+                                    && project.tracks[track_index].midi_parts[part_index]
+                                        .notes
+                                        .iter()
+                                        .any(|note| {
+                                            note.pitch == pointer_pitch.round() as u8
+                                                && pointer_beat >= note.start_beats
+                                                && pointer_beat
+                                                    < note.start_beats + note.duration_beats
+                                        });
+                                if (*tool == EditTool::Range
+                                    || (*tool == EditTool::Select && !note_under_pointer))
+                                    && part_grid.contains(pointer)
+                                {
                                     let additive = ui.input(|input| input.modifiers.shift);
                                     if !additive {
                                         selected_note_ids.clear();
@@ -14643,7 +14829,7 @@ fn show_midi_editor(
                                         start: pointer,
                                         current: pointer,
                                     });
-                                } else {
+                                } else if *tool != EditTool::Split {
                                     let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
                                     let pitch_position = pitch_view.center
                                         + (part_grid.center().y - pointer.y) / row_height;
@@ -14677,6 +14863,9 @@ fn show_midi_editor(
                                                     note.pitch,
                                                     canvas.min.x
                                                         + KEYBOARD_WIDTH
+                                                        + note.start_beats as f32 * beat_width,
+                                                    canvas.min.x
+                                                        + KEYBOARD_WIDTH
                                                         + (note.start_beats + note.duration_beats)
                                                             as f32
                                                             * beat_width,
@@ -14687,11 +14876,22 @@ fn show_midi_editor(
                                             start_beats,
                                             duration_beats,
                                             note_pitch,
+                                            note_left,
                                             note_right,
                                         )) = note_hit
                                         {
-                                            let mode = if pointer.x >= note_right - 6.0 {
-                                                MidiNoteDragMode::Resize
+                                            let left_edge_distance = (pointer.x - note_left).abs();
+                                            let right_edge_distance =
+                                                (note_right - pointer.x).abs();
+                                            let mode = if *tool == EditTool::Select
+                                                && left_edge_distance <= 6.0
+                                                && left_edge_distance <= right_edge_distance
+                                            {
+                                                MidiNoteDragMode::ResizeStart
+                                            } else if *tool == EditTool::Select
+                                                && right_edge_distance <= 6.0
+                                            {
+                                                MidiNoteDragMode::ResizeEnd
                                             } else {
                                                 MidiNoteDragMode::Move
                                             };
@@ -14827,7 +15027,7 @@ fn show_midi_editor(
                                                 note.start_beats = next_start;
                                                 note.pitch = next_pitch;
                                             }
-                                            MidiNoteDragMode::Resize => {
+                                            MidiNoteDragMode::ResizeEnd => {
                                                 let max_length =
                                                     part_duration_beats - member.start_beats;
                                                 if max_length >= 0.0625 {
@@ -14840,6 +15040,25 @@ fn show_midi_editor(
                                                         snapped_length.clamp(0.0625, max_length);
                                                     modified |= note.duration_beats != next_length;
                                                     note.duration_beats = next_length;
+                                                }
+                                            }
+                                            MidiNoteDragMode::ResizeStart => {
+                                                let fixed_end =
+                                                    member.start_beats + member.duration_beats;
+                                                let latest_start = fixed_end - 0.0625;
+                                                if latest_start >= 0.0 {
+                                                    let snapped_start = ((member.start_beats
+                                                        + drag.delta_beats)
+                                                        / quantize)
+                                                        .round()
+                                                        * quantize;
+                                                    let next_start =
+                                                        snapped_start.clamp(0.0, latest_start);
+                                                    let next_duration = fixed_end - next_start;
+                                                    modified |= note.start_beats != next_start
+                                                        || note.duration_beats != next_duration;
+                                                    note.start_beats = next_start;
+                                                    note.duration_beats = next_duration;
                                                 }
                                             }
                                         }
@@ -14928,11 +15147,19 @@ fn show_midi_editor(
                                         })
                                         .map(|note| note.id);
                                     if let Some(note_id) = note_hit {
-                                        selection_drag = None;
-                                        selected_note_ids.clear();
-                                        selected_note_ids.insert(note_id);
-                                        edit_action = Some(MidiEditAction::Select(note_id));
-                                    } else if *tool == EditTool::Range {
+                                        if *tool == EditTool::Split {
+                                            let quantize = position_quantize;
+                                            let split_at =
+                                                (beat_position / quantize).round() * quantize;
+                                            edit_action =
+                                                Some(MidiEditAction::Split(note_id, split_at));
+                                        } else {
+                                            selection_drag = None;
+                                            selected_note_ids.clear();
+                                            selected_note_ids.insert(note_id);
+                                            edit_action = Some(MidiEditAction::Select(note_id));
+                                        }
+                                    } else if matches!(*tool, EditTool::Range | EditTool::Select) {
                                         selection_drag = None;
                                         *selected_note_id = None;
                                     } else if *tool == EditTool::Draw {
@@ -15430,9 +15657,37 @@ fn show_midi_editor(
             modified |= selected_note_id.is_some();
         }
         Some(MidiEditAction::Select(note_id)) => *selected_note_id = Some(note_id),
+        Some(MidiEditAction::Split(note_id, beat)) => {
+            let split_note = {
+                let part = &mut project.tracks[track_index].midi_parts[part_index];
+                if let Some(note) = part.notes.iter_mut().find(|note| note.id == note_id) {
+                    let end = note.start_beats + note.duration_beats;
+                    if beat > note.start_beats + 0.0625 && beat < end - 0.0625 {
+                        note.duration_beats = beat - note.start_beats;
+                        Some((note.pitch, note.channel, note.velocity, end - beat))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some((pitch, channel, velocity, duration)) = split_note {
+                modified |= project
+                    .add_midi_note_on_channel(
+                        track_index,
+                        part_id,
+                        beat,
+                        duration,
+                        pitch,
+                        channel,
+                        velocity,
+                    )
+                    .is_some();
+            }
+        }
         None => {}
     }
-    ui.data_mut(|data| data.insert_temp(note_selection_id, selected_note_ids));
     if let Some(drag) = selection_drag {
         ui.data_mut(|data| data.insert_temp(note_selection_drag_id, drag));
     } else {
@@ -15503,6 +15758,7 @@ mod editor_recovery_tests {
         let (mut position, mut length, mut velocity, mut controller) = (0.25, 0.25, 100, 11);
         let mut live_velocity_update = None;
         let (mut selected, mut drag, mut draw, mut cc_drag) = (None, None, None, None);
+        let mut selected_notes = BTreeSet::new();
         let (mut tool, mut transport) = (EditTool::Select, 0.0);
         let mut divider = Pos2::ZERO;
         let mut initial_header_y = 0.0;
@@ -15544,6 +15800,7 @@ mod editor_recovery_tests {
                         &mut controller,
                         &mut live_velocity_update,
                         &mut selected,
+                        &mut selected_notes,
                         &mut drag,
                         &mut draw,
                         &mut cc_drag,
@@ -15597,6 +15854,7 @@ mod editor_recovery_tests {
 enum MidiEditAction {
     Add(f64, f64, u8, u8),
     Select(u64),
+    Split(u64, f64),
 }
 
 const MIDI_QUANTIZE_VALUES: [(f64, &str); 7] = [
@@ -15662,7 +15920,7 @@ fn show_mixer(
     channel_settings_window: &mut NativeWindowState,
     channel_settings_ui: &mut ChannelSettingsUiState,
     vst3_plugin_catalog: &[PluginDescriptor],
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     if show_strips {
         show_mixer_channels(
             ui,
@@ -15674,8 +15932,8 @@ fn show_mixer(
             channel_settings_window,
         )
     } else if show_settings {
-        (
-            channel_settings::show(
+        {
+            let changed = channel_settings::show(
                 ui,
                 project,
                 meter_levels,
@@ -15685,11 +15943,11 @@ fn show_mixer(
                 input_meter_peaks,
                 output_meter_peaks,
                 vst3_plugin_catalog,
-            ),
-            false,
-        )
+            );
+            (changed, false, false)
+        }
     } else {
-        (false, false)
+        (false, false, false)
     }
 }
 
@@ -15701,7 +15959,7 @@ fn show_mixer_channels(
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     channel_settings_window: &mut NativeWindowState,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     mixer::show_channels(
         ui,
         project,

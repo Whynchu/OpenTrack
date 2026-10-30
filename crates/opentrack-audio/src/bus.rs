@@ -49,6 +49,10 @@ impl BusRuntime {
         self.mix.set(gain, pan);
         self.equalizer_control.set(equalizer);
     }
+
+    pub(crate) fn reclaim_retired(&self) {
+        self.equalizer_control.reclaim_retired();
+    }
     pub(crate) fn process(&self, left: f32, right: f32) -> (f32, f32) {
         self.process_inner(left, right, None)
     }

@@ -48,6 +48,8 @@ pub(crate) enum IconId {
     Eq,
     Send,
     Monitor,
+    Pan,
+    TimeAlignment,
     Copy,
     Paste,
     Routing,
@@ -114,6 +116,8 @@ impl IconId {
             Self::Eq => include_bytes!("../assets/tabler/chart-line.svg"),
             Self::Send => include_bytes!("../assets/tabler/send.svg"),
             Self::Monitor => include_bytes!("../assets/tabler/volume.svg"),
+            Self::Pan => include_bytes!("../assets/tabler/pan-split.svg"),
+            Self::TimeAlignment => include_bytes!("../assets/tabler/clock-hour-3.svg"),
             Self::Copy => include_bytes!("../assets/tabler/copy.svg"),
             Self::Paste => include_bytes!("../assets/tabler/clipboard.svg"),
             Self::Routing => include_bytes!("../assets/tabler/route.svg"),
@@ -403,7 +407,7 @@ pub(crate) fn paint_app_icon_on(
 mod tests {
     use super::*;
 
-    const APP_ICONS: [IconId; 32] = [
+    const APP_ICONS: [IconId; 34] = [
         IconId::TrackAudio,
         IconId::TrackMidi,
         IconId::TrackInstrument,
@@ -412,6 +416,8 @@ mod tests {
         IconId::Eq,
         IconId::Send,
         IconId::Monitor,
+        IconId::Pan,
+        IconId::TimeAlignment,
         IconId::Copy,
         IconId::Paste,
         IconId::Routing,

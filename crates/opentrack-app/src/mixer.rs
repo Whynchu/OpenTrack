@@ -149,7 +149,7 @@ pub(super) fn show_channels(
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
     settings: &mut NativeWindowState,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     let effective_states = project
         .tracks
         .iter()
@@ -193,16 +193,19 @@ pub(super) fn show_channels(
     let horizontal_scroll_needed = visible_track_count as f32 * 82.0 > track_area_width;
     let height = (area.height() - if horizontal_scroll_needed { 12.0 } else { 0.0 }).max(300.0);
     let mut modified = false;
+    let mut requires_plan_rebuild = false;
     let mut selection_requested = false;
     let mut selected = project.selected_track;
     let mut exclusive = None;
     let palette = theme::palette(ui);
     ui.painter().rect_filled(area, 0.0, palette.surface);
     let rail = Rect::from_min_size(area.min, Vec2::new(68.0, height));
+    let modified_before_sidebar = modified;
     sidebar(ui, rail, project, &mut view, &mut modified);
+    requires_plan_rebuild |= modified != modified_before_sidebar;
     let input_x = area.left() + 70.0;
     if !view.hide_input {
-        modified |= strip(
+        let (changed, _, _, rebuild) = strip(
             ui,
             Rect::from_min_size(Pos2::new(input_x, area.top()), Vec2::new(84.0, height)),
             &mut project.input_channel.strip,
@@ -216,8 +219,9 @@ pub(super) fn show_channels(
             view.hide_routing,
             &group_names,
             None,
-        )
-        .0;
+        );
+        modified |= changed;
+        requires_plan_rebuild |= rebuild;
     }
     let start = input_x + if view.hide_input { 0.0 } else { 94.0 };
     let right = area.right() - if view.hide_output { 0.0 } else { 86.0 };
@@ -242,7 +246,7 @@ pub(super) fn show_channels(
                         }
                         let (rect, _) =
                             ui.allocate_exact_size(Vec2::new(82.0, height), Sense::hover());
-                        let (changed, select, solo) = strip(
+                        let (changed, select, solo, rebuild) = strip(
                             ui,
                             rect,
                             track,
@@ -256,6 +260,7 @@ pub(super) fn show_channels(
                             effective_states.get(&track.id).copied(),
                         );
                         modified |= changed;
+                        requires_plan_rebuild |= rebuild;
                         if select {
                             settings.channel_bus = None;
                             selected = Some(index as u32);
@@ -269,7 +274,7 @@ pub(super) fn show_channels(
             });
     });
     if !view.hide_output {
-        modified |= strip(
+        let (changed, _, _, rebuild) = strip(
             ui,
             Rect::from_min_size(
                 Pos2::new(area.right() - 84.0, area.top()),
@@ -286,8 +291,9 @@ pub(super) fn show_channels(
             view.hide_routing,
             &group_names,
             None,
-        )
-        .0;
+        );
+        modified |= changed;
+        requires_plan_rebuild |= rebuild;
     }
     if project.selected_track != selected {
         project.selected_track = selected;
@@ -301,7 +307,7 @@ pub(super) fn show_channels(
         }
     }
     ui.data_mut(|data| data.insert_temp(state_id, view));
-    (modified, selection_requested)
+    (modified, selection_requested, requires_plan_rebuild)
 }
 
 fn sidebar(
@@ -748,10 +754,11 @@ fn strip(
     hide_routing: bool,
     group_names: &HashMap<u64, String>,
     effective_state: Option<(bool, bool)>,
-) -> (bool, bool, bool) {
+) -> (bool, bool, bool, bool) {
     let mut modified = false;
     let mut select = false;
     let mut exclusive = false;
+    let mut requires_plan_rebuild = false;
     let is_bus = track.id >= opentrack_core::project::INPUT_BUS_ID;
     let p = theme::palette(ui);
     ui.painter().rect_filled(r, 0.0, p.surface);
@@ -784,6 +791,7 @@ fn strip(
         ));
 
         if !hide_routing {
+            let was_modified = modified;
             routing(
                 ui,
                 at(0.0, 0.0, 82.0, 32.0),
@@ -791,6 +799,7 @@ fn strip(
                 group_names,
                 &mut modified,
             );
+            requires_plan_rebuild |= modified != was_modified;
         }
         text(
             ui,
@@ -804,7 +813,9 @@ fn strip(
             p.muted,
             Align2::LEFT_CENTER,
         );
-        modified |= input_row(ui, r, track);
+        let input_row_changed = input_row(ui, r, track);
+        modified |= input_row_changed;
+        requires_plan_rebuild |= input_row_changed;
         for right in [false, true] {
             let x = if right {
                 r.right() - 7.0
@@ -854,11 +865,14 @@ fn strip(
             if let Some(pos) = pan_response.interact_pointer_pos() {
                 track.pan = ((pos.x - pan.left()) / pan.width() * 2.0 - 1.0).clamp(-1.0, 1.0);
                 modified = true;
+                requires_plan_rebuild |=
+                    is_bus && track.id == opentrack_core::project::INPUT_BUS_ID;
             }
         }
         if pan_response.double_clicked() {
             track.pan = 0.0;
             modified = true;
+            requires_plan_rebuild |= is_bus && track.id == opentrack_core::project::INPUT_BUS_ID;
         }
         let x = pan.center().x + track.pan * pan.width() * 0.46;
         ui.painter().line_segment(
@@ -936,6 +950,7 @@ fn strip(
                     _ => track.automation_write = !track.automation_write,
                 }
                 modified = true;
+                requires_plan_rebuild = true;
             }
         }
         if control(
@@ -978,6 +993,7 @@ fn strip(
                 i.enabled = !inserts_active;
             }
             modified = true;
+            requires_plan_rebuild = true;
         }
         insert.context_menu(|ui| {
             if track.inserts.is_empty() {
@@ -1004,6 +1020,7 @@ fn strip(
         {
             track.equalizer.bypassed = !track.equalizer.bypassed;
             modified = true;
+            requires_plan_rebuild = true;
         }
         // Send audio processing is not implemented; expose the observed state and usage without a fake bypass.
         let send = control(
@@ -1039,6 +1056,7 @@ fn strip(
         {
             track.monitor = !track.monitor;
             modified = true;
+            requires_plan_rebuild = true;
         }
         if !is_bus
             && control(
@@ -1055,9 +1073,10 @@ fn strip(
         {
             track.armed = !track.armed;
             modified = true;
+            requires_plan_rebuild = true;
         }
         let fader_color = project_controls::track_color(track);
-        modified |= fader(
+        let fader_changed = fader(
             ui,
             r,
             &mut track.gain,
@@ -1067,6 +1086,8 @@ fn strip(
             held_peak,
             fader_color,
         );
+        modified |= fader_changed;
+        requires_plan_rebuild |= fader_changed && track.id == opentrack_core::project::INPUT_BUS_ID;
         let name_rect = Rect::from_min_size(
             Pos2::new(r.left(), r.bottom() - 29.0),
             Vec2::new(r.width(), 16.0),
@@ -1094,7 +1115,7 @@ fn strip(
             is_bus.then_some(track),
         );
     }
-    (modified, select, exclusive)
+    (modified, select, exclusive, requires_plan_rebuild)
 }
 
 fn footer(

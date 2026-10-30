@@ -9,6 +9,7 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use std::str::FromStr;
@@ -26,7 +27,7 @@ use windows_sys::Win32::System::Threading::{
     AvSetMmThreadPriority,
 };
 
-use crate::AudioDeviceMode;
+use crate::{AudioDeviceMode, CallbackTimingTrace, StageTimingSummary, StageTimingTrace};
 
 /// Audio thread timing metadata from the Windows capture engine.
 #[derive(Clone, Copy, Debug, Default)]
@@ -51,6 +52,7 @@ pub(crate) struct WasapiInputInfo {
 pub(crate) struct WasapiInputStream {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    timing: Option<Arc<StageTimingTrace>>,
     pub info: WasapiInputInfo,
 }
 
@@ -66,6 +68,8 @@ impl WasapiInputStream {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_failed = Arc::clone(&failed);
+        let timing = StageTimingTrace::new().map(Arc::new);
+        let worker_timing = timing.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("opentrack-wasapi-capture".to_owned())
@@ -77,6 +81,7 @@ impl WasapiInputStream {
                     requested_period_frames,
                     worker_stop,
                     worker_failed.clone(),
+                    worker_timing,
                     consume,
                     ready_tx.clone(),
                 ) {
@@ -89,6 +94,7 @@ impl WasapiInputStream {
             Ok(Ok(info)) => Ok(Self {
                 stop,
                 worker: Some(worker),
+                timing,
                 info,
             }),
             Ok(Err(error)) => {
@@ -102,6 +108,10 @@ impl WasapiInputStream {
                 ))
             }
         }
+    }
+
+    pub fn timing_summary(&self) -> Option<StageTimingSummary> {
+        self.timing.as_ref()?.summary()
     }
 }
 
@@ -313,11 +323,13 @@ impl WasapiOutputStream {
         requested_rate: Option<u32>,
         requested_period_frames: Option<u32>,
         failed: Arc<AtomicBool>,
+        callback_timing: Arc<CallbackTimingTrace>,
         make_renderer: impl FnOnce(u32, u16) -> Box<dyn FnMut(&mut [f32]) + Send> + Send + 'static,
     ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_failed = Arc::clone(&failed);
+        let worker_timing = Arc::clone(&callback_timing);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("opentrack-wasapi-render".to_owned())
@@ -329,6 +341,7 @@ impl WasapiOutputStream {
                     requested_period_frames,
                     worker_stop,
                     worker_failed.clone(),
+                    worker_timing,
                     make_renderer,
                     ready_tx.clone(),
                 ) {
@@ -374,6 +387,7 @@ fn render_worker(
     requested_period_frames: Option<u32>,
     stop: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
+    callback_timing: Arc<CallbackTimingTrace>,
     make_renderer: impl FnOnce(u32, u16) -> Box<dyn FnMut(&mut [f32]) + Send>,
     ready: mpsc::SyncSender<Result<WasapiOutputInfo, String>>,
 ) -> Result<(), String> {
@@ -635,6 +649,7 @@ fn render_worker(
         stop.store(true, Ordering::Release);
     }
 
+    let mut last_callback_entry = None;
     while !stop.load(Ordering::Acquire) {
         if let Err(error) = event.wait_for_event(100) {
             if stop.load(Ordering::Acquire) {
@@ -647,6 +662,13 @@ fn render_worker(
         if stop.load(Ordering::Acquire) {
             break;
         }
+        let callback_started = callback_timing.enabled().then(Instant::now);
+        let callback_interval = callback_started
+            .zip(last_callback_entry)
+            .map(|(now, previous)| now.duration_since(previous));
+        if let Some(now) = callback_started {
+            last_callback_entry = Some(now);
+        }
         let available = match client.get_available_space_in_frames() {
             Ok(frames) => frames,
             Err(_) => {
@@ -655,6 +677,9 @@ fn render_worker(
             }
         };
         if available == 0 {
+            if let Some(started) = callback_started {
+                callback_timing.record(callback_interval, started.elapsed());
+            }
             continue;
         }
         if fill(available as usize, &mut samples, &mut bytes, &mut renderer).is_err()
@@ -669,6 +694,9 @@ fn render_worker(
             failed.store(true, Ordering::Release);
             break;
         }
+        if let Some(started) = callback_started {
+            callback_timing.record(callback_interval, started.elapsed());
+        }
     }
     let _ = client.stop_stream();
     Ok(())
@@ -682,6 +710,7 @@ fn capture_worker(
     requested_period_frames: Option<u32>,
     stop: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
+    timing: Option<Arc<StageTimingTrace>>,
     mut consume: impl FnMut(&[f32], u16, CapturePacketInfo),
     ready: mpsc::SyncSender<Result<WasapiInputInfo, String>>,
 ) -> Result<(), String> {
@@ -901,6 +930,7 @@ fn capture_worker(
             break;
         }
         loop {
+            let packet_started = timing.as_ref().map(|_| Instant::now());
             let available = unsafe { capture.GetNextPacketSize() }.map_err(|error| {
                 format!("could not query the next WASAPI capture packet: {error}")
             })?;
@@ -959,6 +989,9 @@ fn capture_worker(
                 .map_err(|error| format!("could not release WASAPI capture data: {error}"))?;
             if frames > 0 {
                 consume(&samples[..sample_count], channels, packet_info);
+            }
+            if let (Some(started), Some(trace)) = (packet_started, timing.as_ref()) {
+                trace.record(started);
             }
         }
     }

@@ -35,8 +35,25 @@ click only, with no idle timeout. Playback impact has not been measured on the
 user's audio setup. `cargo check --offline -p opentrack --features local-asio`,
 the selected-velocity audio test, and the focused popup test pass. A
 workspace-wide `--no-run` remains blocked by three standalone VST probe examples
-using older window API signatures. Runtime visual/audio review remains pending
-under the user's no-computer-use instruction.
+using older window API signatures. The focused MIDI follow-up received runtime
+review on 2026-10-29; audio-performance checks, other T059 runtime behavior,
+and overall milestone acceptance remain open.
+
+MIDI tool/delete follow-up (2026-10-29): the MIDI editor tool strip and its
+note-grid right-click picker now use Mouse, Scissors, Pencil order. Mouse empty-
+grid drags use the existing marquee/group-move path; Scissors split a note at
+the snapped beat while retaining pitch, velocity, and channel; Pencil inserts
+notes. Project tools now place Scissors and Pencil alongside Mouse, with the
+existing MIDI-part Pencil gesture retained. Multi-note selection is transient
+app state so Delete in the active MIDI editor can remove the selected notes
+through project history and rebuild playback. `cargo fmt --all -- --check` and
+offline local-ASIO `cargo check` passed before packaging. The x64 local-ASIO
+build was visually reviewed in `Documents/EXAMPLE/EXAMPLE.opr`: toolbar order
+and the three-icon picker were confirmed, Pencil insertion and a 1/16-snapped
+Scissors split were exercised, and all test edits were undone without saving.
+Delete on a selected MIDI note changed the count 11 to 10; Undo restored 11,
+with the MIDI track intact. Playback/audio, remaining popup/loading/first-render
+work, and overall T059 acceptance remain open.
 
 Project loading reports project-read, source-discovery, per-source opening, and
 plugin initialization stages; it initializes one VST3 insert per UI frame and
@@ -50,6 +67,21 @@ group headers reflect soloed descendants, and the inspector Monitor button now
 toggles audio-track monitoring only when an input route is available. Two
 unreferenced legacy RGBA logo assets were removed. Local-ASIO compilation
 passes; runtime display/monitor review remains pending.
+
+MIDI editor follow-up: the hover note preview is visible only with Pencil
+selected. Mouse now resizes notes from either horizontal edge, with a horizontal
+resize cursor at the edge and the opposite endpoint held in place. Project
+inspector Pan uses a left/right split icon. Low-buffer GATEWAY/Ozone/CLA-76
+stress-test stages are specified in T061; no hardware stress run has been made.
+See `docs/workflow/tasks/T061-low-buffer-neural-amp-stress-plan.md`.
+
+T060 visual changes were reverted after the user said the enlarged Project
+layout felt regressive. The previous toolbar, track-header positions,
+disclosure controls, and 42 px default/36 px minimum row heights are restored;
+MIDI editing changes remain. Formatting and the x64 local-ASIO package build
+pass. The restored build was reviewed in EXAMPLE.opr and the original layout
+was confirmed; user visual acceptance remains open. See
+`docs/workflow/tasks/T060-project-icon-legibility-plan.md`.
 
 ## Previous task T057 - recovery after accidental app.rs reset
 
@@ -84,19 +116,31 @@ The broader ruler suite reports 8 passed, 8 failed, 1 ignored, including stale
 pointer coordinates; it is not claimed passing. Desktop review remains pending under the user's
 no-computer-use instruction; compilation/tests do not establish visual parity.
 
-## T058 — Realtime performance and stability program (2026-10-28)
+## T058 — Realtime performance and stability program (2026-10-29, v2)
 
-The user asked how to extract maximum performance, stability and quality from the
-engine. A source audit found that playback cost scales with the *total* clip
-count on a track rather than with audible clips, that the release build has no
-LTO/codegen tuning and no FMA, that a late callback causes a larger render burst,
-and that there is no render-side dropout counter and the callback has no
-NaN/denormal guard and no fault containment. See
-`docs/workflow/tasks/T058-realtime-performance-and-stability-program.md`.
-The packet is phased: measurement, build/fill containment, block-first rendering,
-renderer unification, fault containment, then quality. Status: ready for
-architecture review (Astra/Sol); no implementation started, and no existing
-engine behavior is changed by writing the packet.
+Goal is artifact-free playback at **64 samples** on the Mackie ASIO interface
+with GATEWAY modelers and CLA-76/Ozone on Stereo Out; the driver reports roughly
+5 ms at that setting, and 128 samples is a fallback rather than the target.
+Implemented so far: EMA renderer load and deadline-miss counters, playback-plan
+rebuild deferral during event gestures, ASIO input-bus DSP bypass when idle, and
+a release profile with fat LTO. No measured improvement or stable 64-frame
+workload is established yet.
+
+Decisions recorded 2026-10-29: the device **hard ceiling is retained** (R10
+closed — no host soft clip, knee, fold-back or limiter), and 64-frame stability
+is the acceptance target. Next approved work is Stage 1 diagnostics with three
+controls that are cheaper than profiling: a cross-host control in another ASIO
+host, an ASIO callback scheduling-class A/B (the WASAPI thread enters MMCSS "Pro
+Audio"; the ASIO driver thread currently requests neither), and an internal
+hosted-block-size comparison at a fixed period.
+
+See `docs/workflow/tasks/T058-realtime-performance-and-stability-program.md` and
+`docs/workflow/tasks/T061-low-buffer-neural-amp-stress-plan.md`. 32 frames is a
+stretch evaluated only after 64 passes its soak; it is never acceptance and must
+not delay the 64 result. Oversampling is deferred rather than dropped: the
+constraints are recorded in
+`docs/workflow/tasks/T062-optional-insert-oversampling.md`, which is blocked on a
+proven 64-frame workload and on a stated answer for the hard-ceiling overshoot.
 
 ### 2026-10-28 cross-editor navigation and scrollbar pass
 

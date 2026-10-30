@@ -76,6 +76,33 @@ runtime verification and further tracing.
 
 ## Current checkpoint
 
+### MIDI tools and note deletion follow-up (2026-10-29)
+
+The MIDI editor tool strip and its note-grid right-click picker show Mouse,
+Scissors, Pencil in that order; the context picker stays limited to the note
+grid. Mouse supports marquee selection and group movement, Pencil inserts notes,
+and Scissors splits a note at the snapped beat while preserving its pitch,
+velocity, and channel. The Project tool strip also includes Pencil beside the
+existing Mouse and Scissors tools. Delete checks the active MIDI editor's
+selected note IDs before falling back to audio selection deletion, records the
+edit in project history, and rebuilds the playback plan.
+
+Verification on 2026-10-29 used `builds/x64/OpenTrack.exe` (SHA-256
+`21937555C35F66905670B83970E9FBCE69FDACEC776AEB38393DB10A4420B46D`) with
+`Documents/EXAMPLE/EXAMPLE.opr`. The screenshot review confirmed the tool-strip
+order and three-icon right-click picker. Pencil insertion changed the visible
+note count from 11 to 12; at 1/16 position snap, Scissors split the inserted
+note and changed the count to 13. Two Undo actions restored the original
+11-note view. Selecting an existing note and pressing Delete changed the count
+from 11 to 10, and one Undo restored 11; the MIDI track remained present. The
+example was not saved.
+
+`cargo fmt --all -- --check` passes. The offline local-ASIO `cargo check`
+passed before the x64 package was produced; a final retry was denied access to
+the build-lock file by the read-only workspace sandbox. Remaining audio
+performance measurement, popup coverage, loading stalls, first-render flashes,
+and broader T059 acceptance are still open.
+
 The MIDI source now includes the top-left-pointing pencil cursor, Draw/Select/
 Range toolbar controls, a note-grid-only right-click picker, marquee selection,
 and multi-note movement with shared deltas. Project inspector gain/pan now use
@@ -138,3 +165,10 @@ an ASCII icon key. Two unreferenced legacy RGBA logo assets were removed; the
 active SVG branding and native app icon remain. `cargo check --offline -p
 opentrack --features local-asio` passes. Desktop visual and live monitoring
 review remain pending under the user's no-computer-use instruction.
+
+MIDI note-grid follow-up: the hover insertion note appears only in Pencil mode.
+Mouse-mode note edges now begin quantized left- or right-edge resize gestures;
+the opposite endpoint remains fixed and an edge-hover cursor shows horizontal
+resize. Project Inspector Pan now uses a left/right split graphic. Source
+compilation and visual/interaction review are pending. Low-buffer hosted-plugin
+stress testing is specified separately in T061.

@@ -312,6 +312,19 @@ pub struct AudioInputProbe {
 }
 
 impl AudioInputProbe {
+    /// Recent WASAPI capture packet processing time, when realtime diagnostics
+    /// were enabled before opening the probe.
+    pub fn wasapi_input_timing_summary(&self) -> Option<crate::StageTimingSummary> {
+        #[cfg(windows)]
+        {
+            self._stream.as_ref()?.timing_summary()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     pub fn open(device_id: Option<&str>) -> Result<Self, String> {
         Self::open_with_mode(device_id, crate::AudioDeviceMode::SharedLowLatency)
     }
@@ -687,6 +700,19 @@ pub struct AudioRecorder {
 }
 
 impl AudioRecorder {
+    /// Recent WASAPI capture packet processing time, when realtime diagnostics
+    /// were enabled before starting the recorder.
+    pub fn wasapi_input_timing_summary(&self) -> Option<crate::StageTimingSummary> {
+        #[cfg(windows)]
+        {
+            self.stream.as_ref()?.timing_summary()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     pub fn live_waveform(&self) -> Arc<crate::Waveform> {
         self.ring.waveform.load_full()
     }

@@ -1,17 +1,98 @@
 //! Optional local ASIO adapter. One COM owner thread runs a duplex session.
-use crate::{AudioDeviceMode, recording::AsioCapture, wasapi_backend::WasapiOutputInfo};
+use crate::{
+    AsioMmcssTrace, AudioDeviceMode, CallbackTimingTrace, recording::AsioCapture,
+    wasapi_backend::WasapiOutputInfo,
+};
 use maolan_asio::{Driver, StreamConfig};
 use std::sync::{
     Arc, Mutex, OnceLock, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::Threading::{
+    AVRT_PRIORITY_HIGH, AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW,
+    AvSetMmThreadPriority, GetCurrentThreadId,
+};
+
 use crate::AsioDeviceInfo;
 
 static CAPTURE: OnceLock<Mutex<Option<(String, Weak<AsioCapture>)>>> = OnceLock::new();
+
+struct AsioMmcssTask {
+    handle: isize,
+    thread_id: u32,
+    priority_set: bool,
+}
+
+impl AsioMmcssTask {
+    fn enter() -> Option<Self> {
+        const PRO_AUDIO: [u16; 10] = [80, 114, 111, 32, 65, 117, 100, 105, 111, 0];
+        let mut index = 0;
+        // SAFETY: task name is nul-terminated static UTF-16 and index is valid.
+        let handle = unsafe { AvSetMmThreadCharacteristicsW(PRO_AUDIO.as_ptr(), &mut index) };
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: handle was returned by AvSetMmThreadCharacteristicsW above.
+        let priority_set = unsafe { AvSetMmThreadPriority(handle, AVRT_PRIORITY_HIGH) } != 0;
+        Some(Self {
+            handle: handle as isize,
+            // SAFETY: this call returns the ID of the current callback thread.
+            thread_id: unsafe { GetCurrentThreadId() },
+            priority_set,
+        })
+    }
+
+    fn revert(self) -> bool {
+        // SAFETY: callback teardown verifies the current thread matches the
+        // thread that registered this AVRT handle.
+        unsafe { AvRevertMmThreadCharacteristics(self.handle as HANDLE) != 0 }
+    }
+}
+
+fn service_mmcss_setup(
+    trace: &AsioMmcssTrace,
+    task: &mut Option<AsioMmcssTask>,
+    attempted: &mut bool,
+) {
+    if !trace.enabled || *attempted {
+        return;
+    }
+    *attempted = true;
+    if trace.begin_setup() {
+        let started = std::time::Instant::now();
+        *task = AsioMmcssTask::enter();
+        let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        trace.finish_setup(
+            task.is_some(),
+            task.as_ref().is_some_and(|task| task.priority_set),
+            elapsed,
+            task.as_ref().map_or(0, |task| task.thread_id),
+        );
+    }
+}
+
+fn service_mmcss_teardown(trace: &AsioMmcssTrace, task: &mut Option<AsioMmcssTask>) {
+    if !trace.enabled || !trace.teardown_requested.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(registered) = task.as_ref() else {
+        if trace.state.load(Ordering::Acquire) == AsioMmcssTrace::SETUP_FAILED {
+            trace.teardown_complete.store(true, Ordering::Release);
+        }
+        return;
+    };
+    // SAFETY: this checks that AVRT reversion runs on its registering thread.
+    if unsafe { GetCurrentThreadId() } != registered.thread_id {
+        return;
+    }
+    let registered = task.take().expect("task checked above");
+    trace.finish_teardown(registered.revert());
+}
 
 pub(crate) fn capture(id: &str) -> Result<Arc<AsioCapture>, String> {
     CAPTURE
@@ -106,10 +187,18 @@ impl AsioOutputStream {
         rate: Option<u32>,
         frames: Option<u32>,
         failed: Arc<AtomicBool>,
+        overload_windows: Arc<AtomicU64>,
+        callback_collisions: Arc<AtomicU64>,
+        mmcss_trace: Arc<AsioMmcssTrace>,
+        callback_timing: Arc<CallbackTimingTrace>,
         make_renderer: impl FnOnce(u32, u16) -> Box<dyn FnMut(&mut [f32]) + Send> + Send + 'static,
     ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let overload_windows = Arc::clone(&overload_windows);
+        let callback_collisions = Arc::clone(&callback_collisions);
+        let mmcss_trace = Arc::clone(&mmcss_trace);
+        let callback_timing = Arc::clone(&callback_timing);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("opentrack-asio-owner".into())
@@ -173,31 +262,45 @@ impl AsioOutputStream {
                     ));
                     let callback_capture = Arc::clone(&capture);
                     let callback_failed = Arc::clone(&failed);
+                    let callback_mmcss_trace = Arc::clone(&mmcss_trace);
                     let mut render = make_renderer(actual_rate as u32, config.num_outputs as u16);
+                    let mut mmcss_task = None;
+                    let mut mmcss_setup_attempted = false;
                     let mut input = vec![0.0_f32; sizes.max.max(1) as usize * config.num_inputs];
                     let mut output = vec![0.0_f32; sizes.max.max(1) as usize * config.num_outputs];
                     let mut stream = driver
-                        .stream(&config, move |mut ctx| {
-                            let frames = ctx.frames();
-                            let ni = ctx.num_inputs();
-                            let no = ctx.num_outputs();
-                            if frames * ni > input.len() || frames * no > output.len() {
-                                callback_failed.store(true, Ordering::Release);
-                                return;
-                            }
-                            for ch in 0..ni {
-                                for (n, sample) in ctx.input(ch).iter().enumerate() {
-                                    input[n * ni + ch] = *sample;
+                        .stream_with_timing(
+                            &config,
+                            move |mut ctx| {
+                                service_mmcss_setup(
+                                    &callback_mmcss_trace,
+                                    &mut mmcss_task,
+                                    &mut mmcss_setup_attempted,
+                                );
+                                let frames = ctx.frames();
+                                let ni = ctx.num_inputs();
+                                let no = ctx.num_outputs();
+                                if frames * ni > input.len() || frames * no > output.len() {
+                                    callback_failed.store(true, Ordering::Release);
+                                    service_mmcss_teardown(&callback_mmcss_trace, &mut mmcss_task);
+                                    return;
                                 }
-                            }
-                            callback_capture.push(&mut input[..frames * ni]);
-                            render(&mut output[..frames * no]);
-                            for ch in 0..no {
-                                for (n, sample) in ctx.output(ch).iter_mut().enumerate() {
-                                    *sample = output[n * no + ch];
+                                for ch in 0..ni {
+                                    for (n, sample) in ctx.input(ch).iter().enumerate() {
+                                        input[n * ni + ch] = *sample;
+                                    }
                                 }
-                            }
-                        })
+                                callback_capture.push(&mut input[..frames * ni]);
+                                render(&mut output[..frames * no]);
+                                for ch in 0..no {
+                                    for (n, sample) in ctx.output(ch).iter_mut().enumerate() {
+                                        *sample = output[n * no + ch];
+                                    }
+                                }
+                                service_mmcss_teardown(&callback_mmcss_trace, &mut mmcss_task);
+                            },
+                            callback_timing.enabled(),
+                        )
                         .map_err(|e| e.to_string())?;
                     let actual_frames = stream.buffer_size as u32;
                     capture
@@ -226,6 +329,20 @@ impl AsioOutputStream {
                     let _ = ready_tx.send(Ok((output_info, info)));
                     while !worker_stop.load(Ordering::Acquire) {
                         let events = stream.take_events();
+                        let collisions = stream.take_callback_collisions();
+                        if collisions > 0 {
+                            callback_collisions.fetch_add(collisions, Ordering::Relaxed);
+                        }
+                        if callback_timing.enabled() {
+                            let timing_batch = stream.take_callback_timing_samples();
+                            callback_timing.report_overwritten(timing_batch.overwritten);
+                            for sample in timing_batch.samples {
+                                callback_timing.record_ns(sample.interval_ns, sample.duration_ns);
+                            }
+                        }
+                        if events & maolan_asio::stream::event::OVERLOAD != 0 {
+                            overload_windows.fetch_add(1, Ordering::Relaxed);
+                        }
                         if events
                             & (maolan_asio::stream::event::RESET_REQUESTED
                                 | maolan_asio::stream::event::BUFFER_SIZE_CHANGED
@@ -249,6 +366,32 @@ impl AsioOutputStream {
                             }
                         }
                         thread::sleep(Duration::from_millis(10));
+                    }
+                    mmcss_trace.request_teardown();
+                    if mmcss_trace.enabled {
+                        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+                        while !mmcss_trace.teardown_complete.load(Ordering::Acquire)
+                            && std::time::Instant::now() < deadline
+                        {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        if !mmcss_trace.teardown_complete.load(Ordering::Acquire) {
+                            mmcss_trace
+                                .state
+                                .store(AsioMmcssTrace::TEARDOWN_TIMEOUT, Ordering::Release);
+                        }
+                    }
+                    let _ = stream.stop();
+                    let collisions = stream.take_callback_collisions();
+                    if collisions > 0 {
+                        callback_collisions.fetch_add(collisions, Ordering::Relaxed);
+                    }
+                    if callback_timing.enabled() {
+                        let timing_batch = stream.take_callback_timing_samples();
+                        callback_timing.report_overwritten(timing_batch.overwritten);
+                        for sample in timing_batch.samples {
+                            callback_timing.record_ns(sample.interval_ns, sample.duration_ns);
+                        }
                     }
                     drop(stream);
                     capture.failed.store(true, Ordering::Release);

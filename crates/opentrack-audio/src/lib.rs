@@ -69,13 +69,11 @@ impl AudioDeviceMode {
     }
 }
 
-#[cfg(not(windows))]
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
 };
@@ -101,15 +99,28 @@ const TEST_TONE_HZ: f32 = 440.0;
 const TEST_TONE_LEVEL: f32 = 0.08;
 const MAX_DECODED_WAV_BYTES: u64 = 512 * 1024 * 1024;
 const PLAYBACK_PARAMETER_FADE_MS: u32 = 10;
+static ACTIVE_OUTPUT_PERIOD_FRAMES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
 
-/// Maximum frames passed to a hosted processor in one `process` call.
-///
-/// Device callbacks are split into blocks of this size so the host never asks
-/// a prepared plug-in for more frames than it declared, while keeping the
-/// per-track block scratch and PDC look-ahead bounded. The value is a fixed
-/// engine constant rather than a device buffer size because the audio callback
-/// cannot allocate a plan-sized buffer when the device period changes.
-const HOSTED_BLOCK_FRAMES: usize = 64;
+/// Maximum internal hosted block used to preallocate callback scratch.
+const HOSTED_BLOCK_CAPACITY: usize = 256;
+
+/// Internal block size for the T058 0c attribution comparison. The environment
+/// is read once off the callback; unsupported values retain the 64-frame
+/// production default.
+fn hosted_block_frames() -> usize {
+    static BLOCK_FRAMES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BLOCK_FRAMES.get_or_init(|| match std::env::var("OPENTRACK_HOSTED_BLOCK_FRAMES") {
+        Ok(value) if value == "32" => 32,
+        Ok(value) if value == "128" => 128,
+        Ok(value) if value == "256" => 256,
+        _ => 64,
+    })
+}
+
+fn effective_hosted_block_frames(configured: usize, callback_frames: usize) -> usize {
+    configured.min(callback_frames.max(1))
+}
 
 /// Upper bound used when a plug-in reports latency for delay compensation.
 ///
@@ -366,6 +377,7 @@ struct PlaybackTrackRuntime {
     hosted_latency_samples: u32,
     hosted_delay_samples: u32,
     hosted_buffers: std::cell::UnsafeCell<HostedTrackBuffers>,
+    hosted_timing: Option<StageTimingTrace>,
 }
 
 struct MixControl {
@@ -404,6 +416,7 @@ impl MixControl {
 struct EqualizerControl {
     target: ArcSwap<ChannelEqualizer>,
     revision: AtomicU64,
+    retired_targets: Mutex<Vec<Arc<ChannelEqualizer>>>,
 }
 
 impl EqualizerControl {
@@ -411,6 +424,7 @@ impl EqualizerControl {
         Arc::new(Self {
             target: ArcSwap::from_pointee(target),
             revision: AtomicU64::new(0),
+            retired_targets: Mutex::new(Vec::new()),
         })
     }
 
@@ -418,9 +432,20 @@ impl EqualizerControl {
         let current = self.target.load();
         if current.as_ref() != target {
             drop(current);
-            self.target.store(Arc::new(target.clone()));
+            let previous = self.target.swap(Arc::new(target.clone()));
+            self.retired_targets
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(previous);
             self.revision.fetch_add(1, Ordering::Release);
         }
+    }
+
+    fn reclaim_retired(&self) {
+        self.retired_targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 }
 
@@ -446,9 +471,13 @@ struct HostedTrackBuffers {
 
 impl HostedTrackBuffers {
     fn new(block_processing: bool, delay_frames: usize) -> Self {
+        let block_frames = effective_hosted_block_frames(
+            hosted_block_frames(),
+            ACTIVE_OUTPUT_PERIOD_FRAMES.load(Ordering::Relaxed),
+        );
         let block = |enabled: bool| {
             if enabled {
-                vec![0.0; HOSTED_BLOCK_FRAMES]
+                vec![0.0; block_frames]
             } else {
                 Vec::new()
             }
@@ -463,8 +492,8 @@ impl HostedTrackBuffers {
             delay_left: vec![0.0; delay_frames],
             delay_right: vec![0.0; delay_frames],
             delay_cursor: 0,
-            group_left: vec![0.0; HOSTED_BLOCK_FRAMES],
-            group_right: vec![0.0; HOSTED_BLOCK_FRAMES],
+            group_left: vec![0.0; block_frames],
+            group_right: vec![0.0; block_frames],
         }
     }
 
@@ -547,6 +576,7 @@ impl PlaybackTrackRuntime {
             hosted_latency_samples,
             hosted_delay_samples,
             hosted_buffers: std::cell::UnsafeCell::new(hosted_buffers),
+            hosted_timing: hosted_processing.then(StageTimingTrace::new).flatten(),
         }
     }
 }
@@ -700,6 +730,7 @@ pub struct PlaybackPlan {
     metronome_downbeat_frequency: f64,
     output_bus: bus::BusRuntime,
     output_hosted_inserts: Vec<HostedInsert>,
+    output_stage_timing: Option<StageTimingTrace>,
     output_meter: Arc<StereoMeter>,
     tempo_bpm: f64,
     tracks: Vec<PlaybackTrackRuntime>,
@@ -729,6 +760,405 @@ struct CallbackMetrics {
     overruns: AtomicU64,
 }
 
+const CALLBACK_TRACE_CAPACITY: usize = 2048;
+
+/// Bounded callback timing samples. Writers run on the audio callback; readers
+/// snapshot and calculate summaries on the UI/control thread.
+struct CallbackTimingTrace {
+    enabled: bool,
+    write_index: AtomicU64,
+    overwritten_samples: AtomicU64,
+    samples: [TimingSampleSlot; CALLBACK_TRACE_CAPACITY],
+}
+
+/// Opt-in ASIO callback-thread MMCSS A/B state. Registration runs only on the
+/// first driver callback; teardown is requested by the owner and completed by
+/// that callback thread before the stream is stopped.
+struct AsioMmcssTrace {
+    enabled: bool,
+    state: AtomicU8,
+    teardown_requested: AtomicBool,
+    teardown_complete: AtomicBool,
+    first_setup_ns: AtomicU64,
+    registered_thread_id: AtomicU32,
+    priority_set: AtomicBool,
+}
+
+impl AsioMmcssTrace {
+    const DISABLED: u8 = 0;
+    const PENDING: u8 = 1;
+    const SETUP: u8 = 2;
+    const ENROLLED: u8 = 3;
+    const SETUP_FAILED: u8 = 4;
+    const REVERTED: u8 = 5;
+    const REVERT_FAILED: u8 = 6;
+    const TEARDOWN_TIMEOUT: u8 = 7;
+
+    fn new() -> Self {
+        let enabled = std::env::var_os("OPENTRACK_ASIO_MMCSS").is_some_and(|v| v == "1");
+        Self {
+            enabled,
+            state: AtomicU8::new(if enabled {
+                Self::PENDING
+            } else {
+                Self::DISABLED
+            }),
+            teardown_requested: AtomicBool::new(false),
+            teardown_complete: AtomicBool::new(!enabled),
+            first_setup_ns: AtomicU64::new(0),
+            registered_thread_id: AtomicU32::new(0),
+            priority_set: AtomicBool::new(false),
+        }
+    }
+
+    fn begin_setup(&self) -> bool {
+        self.enabled
+            && !self.teardown_requested.load(Ordering::Acquire)
+            && self
+                .state
+                .compare_exchange(
+                    Self::PENDING,
+                    Self::SETUP,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    fn finish_setup(&self, enrolled: bool, priority_set: bool, setup_ns: u64, thread_id: u32) {
+        self.first_setup_ns.store(setup_ns, Ordering::Relaxed);
+        if enrolled {
+            self.registered_thread_id
+                .store(thread_id, Ordering::Relaxed);
+            self.priority_set.store(priority_set, Ordering::Relaxed);
+            self.state.store(Self::ENROLLED, Ordering::Release);
+        } else {
+            self.state.store(Self::SETUP_FAILED, Ordering::Release);
+            self.teardown_complete.store(true, Ordering::Release);
+        }
+    }
+
+    fn request_teardown(&self) {
+        self.teardown_requested.store(true, Ordering::Release);
+        if self.state.load(Ordering::Acquire) == Self::PENDING {
+            let _ = self.state.compare_exchange(
+                Self::PENDING,
+                Self::DISABLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            self.teardown_complete.store(true, Ordering::Release);
+        }
+    }
+
+    fn finish_teardown(&self, reverted: bool) {
+        self.state.store(
+            if reverted {
+                Self::REVERTED
+            } else {
+                Self::REVERT_FAILED
+            },
+            Ordering::Release,
+        );
+        self.teardown_complete.store(true, Ordering::Release);
+    }
+
+    fn summary(&self) -> String {
+        if !self.enabled {
+            return "ASIO MMCSS A/B disabled (set OPENTRACK_ASIO_MMCSS=1 to enable)".into();
+        }
+        match self.state.load(Ordering::Acquire) {
+            Self::PENDING => "ASIO MMCSS A/B waiting for first callback".into(),
+            Self::SETUP => "ASIO MMCSS A/B first callback setup in progress".into(),
+            Self::ENROLLED => format!(
+                "ASIO MMCSS enrolled on callback thread {} | high priority {} | first setup {} us | teardown pending",
+                self.registered_thread_id.load(Ordering::Relaxed),
+                if self.priority_set.load(Ordering::Relaxed) {
+                    "set"
+                } else {
+                    "not set"
+                },
+                self.first_setup_ns.load(Ordering::Relaxed) / 1_000,
+            ),
+            Self::SETUP_FAILED => format!(
+                "ASIO MMCSS registration failed | first attempt {} us",
+                self.first_setup_ns.load(Ordering::Relaxed) / 1_000,
+            ),
+            Self::REVERTED => format!(
+                "ASIO MMCSS enrolled then reverted on callback thread {} | high priority {} | first setup {} us",
+                self.registered_thread_id.load(Ordering::Relaxed),
+                if self.priority_set.load(Ordering::Relaxed) {
+                    "set"
+                } else {
+                    "not set"
+                },
+                self.first_setup_ns.load(Ordering::Relaxed) / 1_000,
+            ),
+            Self::REVERT_FAILED => format!(
+                "ASIO MMCSS teardown failed on callback thread {} | first setup {} us",
+                self.registered_thread_id.load(Ordering::Relaxed),
+                self.first_setup_ns.load(Ordering::Relaxed) / 1_000,
+            ),
+            Self::TEARDOWN_TIMEOUT => format!(
+                "ASIO MMCSS teardown callback not observed | first setup {} us",
+                self.first_setup_ns.load(Ordering::Relaxed) / 1_000,
+            ),
+            _ => "ASIO MMCSS A/B disabled".into(),
+        }
+    }
+}
+
+struct TimingSampleSlot {
+    version: AtomicU64,
+    sequence: AtomicU64,
+    interval_ns: AtomicU64,
+    duration_ns: AtomicU64,
+}
+
+impl TimingSampleSlot {
+    fn new() -> Self {
+        Self {
+            version: AtomicU64::new(0),
+            sequence: AtomicU64::new(u64::MAX),
+            interval_ns: AtomicU64::new(0),
+            duration_ns: AtomicU64::new(0),
+        }
+    }
+
+    fn write(&self, sequence: u64, interval_ns: u64, duration_ns: u64) {
+        self.version.fetch_add(1, Ordering::AcqRel);
+        self.sequence.store(sequence, Ordering::Relaxed);
+        self.interval_ns.store(interval_ns, Ordering::Relaxed);
+        self.duration_ns.store(duration_ns, Ordering::Relaxed);
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
+    fn read(&self, sequence: u64) -> Option<(u64, u64)> {
+        let before = self.version.load(Ordering::Acquire);
+        if before % 2 != 0 || self.sequence.load(Ordering::Relaxed) != sequence {
+            return None;
+        }
+        let interval = self.interval_ns.load(Ordering::Relaxed);
+        let duration = self.duration_ns.load(Ordering::Relaxed);
+        (self.version.load(Ordering::Acquire) == before).then_some((interval, duration))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CallbackTimingSummary {
+    pub samples: usize,
+    pub overwritten_samples: u64,
+    pub interval_p95_us: u64,
+    pub interval_max_us: u64,
+    pub duration_p95_us: u64,
+    pub duration_max_us: u64,
+}
+
+const STAGE_TRACE_CAPACITY: usize = 512;
+
+/// Bounded per-stage duration samples. The callback only stores one atomic
+/// duration; sorting and allocation happen when the control/UI side reads it.
+struct StageTimingTrace {
+    write_index: AtomicU64,
+    samples: [TimingSampleSlot; STAGE_TRACE_CAPACITY],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct StageTimingSummary {
+    pub samples: usize,
+    pub overwritten_samples: u64,
+    pub duration_p95_us: u64,
+    pub duration_max_us: u64,
+}
+
+impl StageTimingTrace {
+    fn new() -> Option<Self> {
+        std::env::var_os("OPENTRACK_REALTIME_DIAGNOSTICS")?;
+        Some(Self {
+            write_index: AtomicU64::new(0),
+            samples: std::array::from_fn(|_| TimingSampleSlot::new()),
+        })
+    }
+
+    fn record(&self, started: Instant) {
+        let duration = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let sequence = self.write_index.fetch_add(1, Ordering::Relaxed);
+        self.samples[sequence as usize % STAGE_TRACE_CAPACITY].write(sequence, 0, duration);
+    }
+
+    fn summary(&self) -> Option<StageTimingSummary> {
+        let end = self.write_index.load(Ordering::Acquire);
+        let count = end.min(STAGE_TRACE_CAPACITY as u64) as usize;
+        if count == 0 {
+            return None;
+        }
+        let start = end.saturating_sub(STAGE_TRACE_CAPACITY as u64);
+        let mut durations = Vec::with_capacity(count);
+        for sequence in start..end {
+            if let Some((_, value)) =
+                self.samples[sequence as usize % STAGE_TRACE_CAPACITY].read(sequence)
+            {
+                if value > 0 {
+                    durations.push(value);
+                }
+            }
+        }
+        if durations.is_empty() {
+            return None;
+        }
+        durations.sort_unstable();
+        let rank = durations
+            .len()
+            .saturating_mul(95)
+            .div_ceil(100)
+            .saturating_sub(1)
+            .min(durations.len() - 1);
+        Some(StageTimingSummary {
+            samples: durations.len(),
+            overwritten_samples: end.saturating_sub(STAGE_TRACE_CAPACITY as u64),
+            duration_p95_us: durations[rank] / 1_000,
+            duration_max_us: durations[durations.len() - 1] / 1_000,
+        })
+    }
+}
+
+impl CallbackTimingTrace {
+    fn new() -> Self {
+        Self {
+            enabled: std::env::var_os("OPENTRACK_REALTIME_DIAGNOSTICS").is_some(),
+            write_index: AtomicU64::new(0),
+            overwritten_samples: AtomicU64::new(0),
+            samples: std::array::from_fn(|_| TimingSampleSlot::new()),
+        }
+    }
+
+    fn record(&self, interval: Option<Duration>, duration: Duration) {
+        self.record_ns(
+            interval.map_or(0, |value| value.as_nanos().min(u64::MAX as u128) as u64),
+            duration.as_nanos().min(u64::MAX as u128) as u64,
+        );
+    }
+
+    fn record_ns(&self, interval_ns: u64, duration_ns: u64) {
+        let index = self.write_index.fetch_add(1, Ordering::Relaxed);
+        self.samples[index as usize % CALLBACK_TRACE_CAPACITY].write(
+            index,
+            interval_ns,
+            duration_ns,
+        );
+    }
+
+    fn report_overwritten(&self, count: u64) {
+        self.overwritten_samples.fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn summary(&self) -> Option<CallbackTimingSummary> {
+        if !self.enabled {
+            return None;
+        }
+        let end = self.write_index.load(Ordering::Acquire);
+        let count = end.min(CALLBACK_TRACE_CAPACITY as u64) as usize;
+        if count < 2 {
+            return None;
+        }
+        let start = end.saturating_sub(CALLBACK_TRACE_CAPACITY as u64);
+        let mut intervals = Vec::with_capacity(count);
+        let mut durations = Vec::with_capacity(count);
+        for sequence in start..end {
+            if let Some((interval, duration)) =
+                self.samples[sequence as usize % CALLBACK_TRACE_CAPACITY].read(sequence)
+            {
+                if interval > 0 && duration > 0 {
+                    intervals.push(interval);
+                    durations.push(duration);
+                }
+            }
+        }
+        if intervals.is_empty() || durations.is_empty() {
+            return None;
+        }
+        intervals.sort_unstable();
+        durations.sort_unstable();
+        let percentile = |values: &[u64], p: usize| -> u64 {
+            let rank = values
+                .len()
+                .saturating_mul(p)
+                .div_ceil(100)
+                .saturating_sub(1);
+            values[rank.min(values.len() - 1)] / 1_000
+        };
+        Some(CallbackTimingSummary {
+            samples: durations.len(),
+            overwritten_samples: self
+                .overwritten_samples
+                .load(Ordering::Relaxed)
+                .saturating_add(end.saturating_sub(CALLBACK_TRACE_CAPACITY as u64)),
+            interval_p95_us: percentile(&intervals, 95),
+            interval_max_us: intervals[intervals.len() - 1] / 1_000,
+            duration_p95_us: percentile(&durations, 95),
+            duration_max_us: durations[durations.len() - 1] / 1_000,
+        })
+    }
+}
+
+#[cfg(test)]
+mod callback_timing_tests {
+    use super::*;
+
+    #[test]
+    fn callback_timing_summary_reports_percentiles_and_ring_overwrites() {
+        let trace = CallbackTimingTrace {
+            enabled: true,
+            write_index: AtomicU64::new(0),
+            overwritten_samples: AtomicU64::new(0),
+            samples: std::array::from_fn(|_| TimingSampleSlot::new()),
+        };
+        for sample in 1..=CALLBACK_TRACE_CAPACITY + 2 {
+            trace.record(
+                Some(Duration::from_micros(sample as u64)),
+                Duration::from_micros((sample * 2) as u64),
+            );
+        }
+        let summary = trace.summary().unwrap();
+        assert_eq!(summary.samples, CALLBACK_TRACE_CAPACITY);
+        assert_eq!(summary.overwritten_samples, 2);
+        assert!(summary.interval_p95_us > 0);
+        assert!(summary.duration_p95_us >= summary.interval_p95_us);
+        assert_eq!(
+            summary.duration_max_us,
+            ((CALLBACK_TRACE_CAPACITY + 2) * 2) as u64
+        );
+    }
+
+    #[test]
+    fn callback_timing_summary_is_disabled_by_default_without_samples() {
+        let trace = CallbackTimingTrace {
+            enabled: false,
+            write_index: AtomicU64::new(0),
+            overwritten_samples: AtomicU64::new(0),
+            samples: std::array::from_fn(|_| TimingSampleSlot::new()),
+        };
+        assert!(trace.summary().is_none());
+    }
+}
+
+#[cfg(test)]
+mod hosted_block_size_tests {
+    use super::effective_hosted_block_frames;
+
+    #[test]
+    fn effective_hosted_block_never_exceeds_callback_frames() {
+        assert_eq!(effective_hosted_block_frames(128, 64), 64);
+        assert_eq!(effective_hosted_block_frames(256, 64), 64);
+        assert_eq!(effective_hosted_block_frames(32, 64), 32);
+        assert_eq!(effective_hosted_block_frames(128, 128), 128);
+    }
+}
+
 impl PlaybackPlan {
     fn empty() -> Self {
         Self {
@@ -739,6 +1169,7 @@ impl PlaybackPlan {
                 44100,
             ),
             output_hosted_inserts: Vec::new(),
+            output_stage_timing: None,
             output_meter: Arc::new(StereoMeter::default()),
             tempo_bpm: 120.0,
             tracks: Vec::new(),
@@ -841,6 +1272,7 @@ impl PlaybackPlan {
                 sample_rate,
             ),
             output_hosted_inserts,
+            output_stage_timing: hosted_processing.then(StageTimingTrace::new).flatten(),
             output_meter: Arc::new(StereoMeter::default()),
             tempo_bpm,
             metronome: MetronomeSettings::default(),
@@ -1014,6 +1446,14 @@ pub struct AudioEngine {
     live_midi_waveform: Arc<AtomicU8>,
     live_midi_gain: Arc<AtomicU32>,
     live_midi_dropped: Arc<AtomicU64>,
+    asio_overload_windows: Arc<AtomicU64>,
+    asio_callback_collisions: Arc<AtomicU64>,
+    asio_mmcss_trace: Arc<AsioMmcssTrace>,
+    retired_input_monitors: Mutex<Vec<Arc<AudioMonitorBuffer>>>,
+    retired_note_auditions: Mutex<Vec<Arc<NoteAudition>>>,
+    callback_timing: Arc<CallbackTimingTrace>,
+    asio_callback_timing: Arc<CallbackTimingTrace>,
+    wasapi_callback_timing: Arc<CallbackTimingTrace>,
     callback_generation: Arc<AtomicU64>,
     callback_active: Arc<AtomicBool>,
     output_stream_failed: Arc<AtomicBool>,
@@ -1058,6 +1498,9 @@ impl AudioEngine {
         requested_buffer_frames: Option<u32>,
         output_mode: AudioDeviceMode,
     ) -> Result<Self, String> {
+        // Resolve the experimental hosted block size before any real-time
+        // callback can query it; callbacks never read environment variables.
+        let _ = hosted_block_frames();
         #[cfg(windows)]
         let (device_id, endpoint_id) = if let Some(id) =
             device_id.filter(|id| id.starts_with("asio:"))
@@ -1179,6 +1622,12 @@ impl AudioEngine {
         let live_midi_waveform = Arc::new(AtomicU8::new(0));
         let live_midi_gain = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
         let live_midi_dropped = Arc::new(AtomicU64::new(0));
+        let asio_overload_windows = Arc::new(AtomicU64::new(0));
+        let asio_callback_collisions = Arc::new(AtomicU64::new(0));
+        let asio_mmcss_trace = Arc::new(AsioMmcssTrace::new());
+        let callback_timing = Arc::new(CallbackTimingTrace::new());
+        let asio_callback_timing = Arc::new(CallbackTimingTrace::new());
+        let wasapi_callback_timing = Arc::new(CallbackTimingTrace::new());
         let callback_generation = Arc::new(AtomicU64::new(0));
         let callback_active = Arc::new(AtomicBool::new(false));
         let output_stream_failed = Arc::new(AtomicBool::new(false));
@@ -1197,6 +1646,7 @@ impl AudioEngine {
             let render_generation = Arc::clone(&callback_generation);
             let render_active = Arc::clone(&callback_active);
             let worker_error = Arc::clone(&output_stream_failed);
+            let render_timing = Arc::clone(&callback_timing);
             let make_renderer =
                 move |actual_rate, actual_channels| -> Box<dyn FnMut(&mut [f32]) + Send> {
                     let channels = usize::from(actual_channels);
@@ -1216,7 +1666,16 @@ impl AudioEngine {
                         &render_generation,
                         &render_active,
                     );
+                    let timing = Arc::clone(&render_timing);
+                    let mut last_entry = None;
                     Box::new(move |samples: &mut [f32]| {
+                        let started = timing.enabled.then(Instant::now);
+                        let interval = started
+                            .zip(last_entry)
+                            .map(|(now, previous)| now.duration_since(previous));
+                        if let Some(now) = started {
+                            last_entry = Some(now);
+                        }
                         render_f32_with_midi(
                             samples,
                             channels,
@@ -1232,6 +1691,9 @@ impl AudioEngine {
                             &mut phase,
                             Some(&mut live_midi),
                         );
+                        if let Some(started) = started {
+                            timing.record(interval, started.elapsed());
+                        }
                     })
                 };
             let (windows_stream, info, asio_info) = if let Some(endpoint_id) = endpoint_id {
@@ -1241,6 +1703,7 @@ impl AudioEngine {
                     requested_sample_rate,
                     requested_buffer_frames,
                     worker_error,
+                    Arc::clone(&wasapi_callback_timing),
                     make_renderer,
                 )?;
                 let info = stream.info.clone();
@@ -1253,6 +1716,10 @@ impl AudioEngine {
                         requested_sample_rate,
                         requested_buffer_frames,
                         worker_error,
+                        Arc::clone(&asio_overload_windows),
+                        Arc::clone(&asio_callback_collisions),
+                        Arc::clone(&asio_mmcss_trace),
+                        Arc::clone(&asio_callback_timing),
                         make_renderer,
                     )?;
                     let info = stream.info.clone();
@@ -1264,6 +1731,7 @@ impl AudioEngine {
                     return Err("ASIO is unavailable in this build".into());
                 }
             };
+            ACTIVE_OUTPUT_PERIOD_FRAMES.store(info.period_frames as usize, Ordering::Release);
             return Ok(Self {
                 _windows_stream: windows_stream,
                 test_tone_enabled,
@@ -1276,6 +1744,14 @@ impl AudioEngine {
                 live_midi_waveform,
                 live_midi_gain,
                 live_midi_dropped,
+                asio_overload_windows,
+                asio_callback_collisions,
+                asio_mmcss_trace,
+                retired_input_monitors: Mutex::new(Vec::new()),
+                retired_note_auditions: Mutex::new(Vec::new()),
+                callback_timing,
+                asio_callback_timing,
+                wasapi_callback_timing,
                 callback_generation,
                 callback_active,
                 output_stream_failed,
@@ -1454,6 +1930,11 @@ impl AudioEngine {
                 live_midi_waveform,
                 live_midi_gain,
                 live_midi_dropped,
+                asio_overload_windows,
+                asio_callback_collisions,
+                asio_mmcss_trace,
+                retired_input_monitors: Mutex::new(Vec::new()),
+                retired_note_auditions: Mutex::new(Vec::new()),
                 callback_generation,
                 callback_active,
                 output_stream_failed,
@@ -1462,6 +1943,9 @@ impl AudioEngine {
                 device_name,
                 device_id,
                 asio_info: None,
+                callback_timing,
+                asio_callback_timing,
+                wasapi_callback_timing,
                 sample_rate,
                 channels: output_channels,
                 requested_buffer_frames,
@@ -1640,18 +2124,44 @@ impl AudioEngine {
             .set_channel_parameters(gain, pan, equalizer);
     }
 
-    /// Releases replaced snapshots after the audio callback has finished using them.
+    /// Releases replaced plans and callback snapshots after the audio callback
+    /// has finished using them. This prevents final Arc drops for large monitor
+    /// buffers and note-preview sources from running on the audio callback.
     pub fn reclaim_retired_plans(&mut self) {
         if self.callback_active.load(Ordering::SeqCst) {
             return;
         }
+        if let Some(audition) = self.plan.load().note_audition.load_full() {
+            audition.reclaim_retired();
+        }
+        self.retired_note_auditions
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.retired_input_monitors
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         let current = self.plan.load();
+        // First detach any snapshots reachable only through transition links.
+        // Their EQ retirement queues must be drained here as well, after the
+        // callback gate confirms no plan is currently in use.
         detach_transition_chain(&current, &mut self.retired_plans);
         let mut index = 0;
         while index < self.retired_plans.len() {
             let plan = Arc::clone(&self.retired_plans[index]);
             detach_transition_chain(&plan, &mut self.retired_plans);
             index += 1;
+        }
+        current.output_bus.reclaim_retired();
+        for track in &current.tracks {
+            track.equalizer_control.reclaim_retired();
+        }
+        for plan in &self.retired_plans {
+            plan.output_bus.reclaim_retired();
+            for track in &plan.tracks {
+                track.equalizer_control.reclaim_retired();
+            }
         }
         let callback_generation = self.callback_generation.load(Ordering::Acquire);
         let mut index = 0;
@@ -1673,6 +2183,33 @@ impl AudioEngine {
 
     pub fn hosted_processing_diagnostic(&self) -> HostedProcessingDiagnostic {
         self.plan.load().hosted_processing_diagnostic()
+    }
+
+    /// Recent hosted processing durations, keyed by zero-based project track
+    /// index. Percentiles are summarized on the calling control/UI thread.
+    pub fn hosted_track_timing_summaries(&self) -> Vec<(usize, StageTimingSummary)> {
+        self.plan
+            .load()
+            .tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, track)| {
+                track
+                    .hosted_timing
+                    .as_ref()
+                    .and_then(StageTimingTrace::summary)
+                    .map(|summary| (index, summary))
+            })
+            .collect()
+    }
+
+    /// Recent Stereo Out processing duration for one hosted render block.
+    pub fn output_stage_timing_summary(&self) -> Option<StageTimingSummary> {
+        self.plan
+            .load()
+            .output_stage_timing
+            .as_ref()
+            .and_then(StageTimingTrace::summary)
     }
 
     /// Exponentially smoothed render time as a percentage of the callback's
@@ -1697,6 +2234,51 @@ impl AudioEngine {
             .load(Ordering::Relaxed)
     }
 
+    /// Number of 10 ms ASIO owner-loop polling windows that contained one or
+    /// more driver-reported overload notifications. This is not an event count.
+    pub fn asio_overload_window_count(&self) -> Option<u64> {
+        self.asio_info.as_ref()?;
+        Some(self.asio_overload_windows.load(Ordering::Relaxed))
+    }
+
+    /// Number of ASIO buffer-switch callbacks rejected because another
+    /// callback was still using the stream's shared scratch and processor state.
+    pub fn asio_callback_collision_count(&self) -> Option<u64> {
+        self.asio_info.as_ref()?;
+        Some(self.asio_callback_collisions.load(Ordering::Relaxed))
+    }
+
+    /// Summary of the opt-in ASIO callback-thread MMCSS A/B, including its
+    /// first-callback setup cost and same-thread teardown result.
+    pub fn asio_mmcss_summary(&self) -> Option<String> {
+        self.asio_info.as_ref()?;
+        Some(self.asio_mmcss_trace.summary())
+    }
+
+    pub fn callback_timing_summary(&self) -> Option<CallbackTimingSummary> {
+        self.callback_timing.summary()
+    }
+
+    pub fn hosted_internal_block_frames(&self) -> (usize, usize) {
+        let configured = hosted_block_frames();
+        (
+            configured,
+            effective_hosted_block_frames(configured, self.output_period_frames as usize),
+        )
+    }
+
+    pub fn asio_callback_timing_summary(&self) -> Option<CallbackTimingSummary> {
+        self.asio_info.as_ref()?;
+        self.asio_callback_timing.summary()
+    }
+
+    pub fn wasapi_callback_timing_summary(&self) -> Option<CallbackTimingSummary> {
+        if self.asio_info.is_some() {
+            return None;
+        }
+        self.wasapi_callback_timing.summary()
+    }
+
     pub fn set_playing(&self, playing: bool) {
         self.playing.store(playing, Ordering::Relaxed);
     }
@@ -1719,12 +2301,28 @@ impl AudioEngine {
     }
 
     pub fn clear_note_audition(&self) {
-        self.plan.load_full().note_audition.store(None);
+        if let Some(audition) = self.plan.load_full().note_audition.swap(None) {
+            self.retired_note_auditions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(audition);
+        }
     }
 
     /// Connects or disconnects the lock-free live input-monitor buffer.
     pub fn set_input_monitor(&self, monitor: Option<Arc<AudioMonitorBuffer>>) {
-        self.input_monitor.store(monitor);
+        let replacement = monitor.clone();
+        if let Some(previous) = self.input_monitor.swap(monitor) {
+            if !replacement
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&previous, current))
+            {
+                self.retired_input_monitors
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(previous);
+            }
+        }
     }
 
     /// Enables the built-in live MIDI monitor on the default output stream.
@@ -2525,7 +3123,7 @@ fn render_frames<T>(
 
 /// Hosted block renderer used only when a plan contains hosted inserts.
 ///
-/// Every callback is split into [`HOSTED_BLOCK_FRAMES`] blocks. Each track is
+/// Every callback is split into [`HOSTED_BLOCK_CAPACITY`] blocks. Each track is
 /// rendered into its preallocated planar scratch, its built-in channel strip is
 /// applied per sample, then enabled hosted inserts run once per block in order.
 /// All buffers are plan-owned or stack arrays; failures fall back to the
@@ -2548,12 +3146,12 @@ fn render_hosted_blocks<T>(
     write_sample: &mut impl FnMut(&mut T, usize, f32, f32),
 ) {
     let frame_count = samples.len() / channels;
-    let mut monitor_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
-    let mut monitor_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
-    let mut frames = [0_u64; HOSTED_BLOCK_FRAMES];
+    let mut monitor_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+    let mut monitor_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+    let mut frames = [0_u64; HOSTED_BLOCK_CAPACITY];
     let mut block_start = 0;
     while block_start < frame_count {
-        let count = (frame_count - block_start).min(HOSTED_BLOCK_FRAMES);
+        let count = (frame_count - block_start).min(hosted_block_frames());
         for frame in frames[..count].iter_mut() {
             *frame = *output_frame;
             if playing {
@@ -2585,6 +3183,7 @@ fn render_hosted_blocks<T>(
             if inaudible && !track.settings.meter_peak.spectrum_enabled() {
                 continue;
             }
+            let stage_started = track.hosted_timing.as_ref().map(|_| Instant::now());
             render_hosted_track_block(
                 plan,
                 track,
@@ -2595,10 +3194,13 @@ fn render_hosted_blocks<T>(
                 playing,
                 sample_rate,
             );
+            if let (Some(started), Some(trace)) = (stage_started, track.hosted_timing.as_ref()) {
+                trace.record(started);
+            }
         }
 
-        let mut master_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut master_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut master_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut master_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
         for &group_index in &plan.group_order {
             // SAFETY: the callback is the sole writer of these plan-owned buffers.
             let buffers = unsafe { &mut *plan.tracks[group_index].hosted_buffers.get() };
@@ -2646,6 +3248,8 @@ fn render_hosted_blocks<T>(
             }
         }
         for &group_index in &plan.group_order {
+            let track = &plan.tracks[group_index];
+            let stage_started = track.hosted_timing.as_ref().map(|_| Instant::now());
             render_hosted_group_block(
                 plan,
                 group_index,
@@ -2654,16 +3258,20 @@ fn render_hosted_blocks<T>(
                 &mut master_left,
                 &mut master_right,
             );
+            if let (Some(started), Some(trace)) = (stage_started, track.hosted_timing.as_ref()) {
+                trace.record(started);
+            }
         }
 
-        let mut output_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut output_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut dry_output_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut dry_output_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut click_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut click_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut audition_left = [0.0_f32; HOSTED_BLOCK_FRAMES];
-        let mut audition_right = [0.0_f32; HOSTED_BLOCK_FRAMES];
+        let mut output_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut output_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut dry_output_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut dry_output_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut click_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut click_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut audition_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let mut audition_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
+        let output_stage_started = plan.output_stage_timing.as_ref().map(|_| Instant::now());
         for index in 0..count {
             let output_frame = frames[index];
             let left = master_left[index];
@@ -2727,6 +3335,11 @@ fn render_hosted_blocks<T>(
                 output_right[..count].copy_from_slice(&dry_output_right[..count]);
                 break;
             }
+        }
+        if let (Some(started), Some(trace)) =
+            (output_stage_started, plan.output_stage_timing.as_ref())
+        {
+            trace.record(started);
         }
         for index in 0..count {
             output_peaks[0] = output_peaks[0].max(output_left[index].abs());
@@ -2837,8 +3450,8 @@ fn render_hosted_group_block(
     group_index: usize,
     count: usize,
     sample_rate: u32,
-    master_left: &mut [f32; HOSTED_BLOCK_FRAMES],
-    master_right: &mut [f32; HOSTED_BLOCK_FRAMES],
+    master_left: &mut [f32; HOSTED_BLOCK_CAPACITY],
+    master_right: &mut [f32; HOSTED_BLOCK_CAPACITY],
 ) {
     let track = &plan.tracks[group_index];
     let inaudible = track.settings.muted
@@ -3716,7 +4329,7 @@ impl ChannelProcessor {
     fn process(&mut self, left: &mut f32, right: &mut f32) {
         let revision = self.equalizer_control.revision.load(Ordering::Acquire);
         if revision != self.equalizer_revision {
-            let target = self.equalizer_control.target.load();
+            let target = self.equalizer_control.target.load_full();
             self.equalizer_bypassed = target.bypassed;
             self.equalizer_wet_target = if target.bypassed { 0.0 } else { 1.0 };
             self.equalizer_wet_step = (self.equalizer_wet_target - self.equalizer_wet)
@@ -5438,7 +6051,8 @@ mod hosted_processing_tests {
             None,
         ));
         let output = render(Arc::clone(&plan), 128);
-        assert_eq!(gain.calls.load(Ordering::Relaxed), 2);
+        let expected_calls = ((128 + hosted_block_frames() - 1) / hosted_block_frames()) as u64;
+        assert_eq!(gain.calls.load(Ordering::Relaxed), expected_calls);
         assert!(plan.hosted_processing_enabled());
         for sample in output {
             assert!((sample - 0.25).abs() < 1.0e-6, "sample was {sample}");
@@ -5461,7 +6075,8 @@ mod hosted_processing_tests {
         let current = Arc::new(PlaybackPlan::new(120.0, settings(), 2, 48_000, None));
         current.begin_parameter_transition(previous);
         let output = render(Arc::clone(&current), 64);
-        assert_eq!(gain.calls.load(Ordering::Relaxed), 1);
+        let expected_calls = ((64 + hosted_block_frames() - 1) / hosted_block_frames()) as u64;
+        assert_eq!(gain.calls.load(Ordering::Relaxed), expected_calls);
         for sample in output {
             assert!((sample - 0.25).abs() < 1.0e-6, "sample was {sample}");
         }
@@ -5568,12 +6183,13 @@ mod hosted_processing_tests {
             None,
         ));
         let output = render(Arc::clone(&plan), 128);
-        assert_eq!(gain.calls.load(Ordering::Relaxed), 2);
+        let expected_calls = ((128 + hosted_block_frames() - 1) / hosted_block_frames()) as u64;
+        assert_eq!(gain.calls.load(Ordering::Relaxed), expected_calls);
         for sample in output {
             assert!((sample - 0.125).abs() < 1.0e-6, "sample was {sample}");
         }
         let diagnostic = plan.hosted_processing_diagnostic();
-        assert_eq!(diagnostic.error_count, 2);
+        assert_eq!(diagnostic.error_count, expected_calls);
         assert_eq!(diagnostic.last_track, Some(0));
         assert_eq!(diagnostic.last_insert, Some(0));
         assert!(diagnostic.last_error_code.is_some());
