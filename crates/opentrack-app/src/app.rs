@@ -137,6 +137,8 @@ struct TransportWindowState {
     always_on_top: bool,
     /// Window level last sent to the compositor, so it is not re-applied per frame.
     window_level: Option<egui::viewport::WindowLevel>,
+    /// Frames left to re-assert the level after the window is shown.
+    level_settle: u8,
 }
 
 impl NativeWindowState {
@@ -1934,6 +1936,7 @@ impl OpenTrackApp {
                     })
                     .unwrap_or(true),
                 window_level: None,
+                level_settle: 0,
             },
             metronome_enabled: creation
                 .storage
@@ -8582,9 +8585,17 @@ impl OpenTrackApp {
         } else {
             egui::viewport::WindowLevel::Normal
         };
+        if reopening {
+            self.transport_window.window_level = None;
+            self.transport_window.level_settle = 3;
+        }
         let id = egui::ViewportId::from_hash_of("floating-transport-panel-m1-position-v5");
+        // Create the window visible: a viewport created with `with_visible(false)`
+        // stays unmapped, and a window manager ignores a level request for an
+        // unmapped window. The builder already carries the restored position and
+        // size, so nothing is shown at a stale place.
         let mut builder = viewport_builder("Transport Panel", SIZE, SIZE, restore_bounds)
-            .with_visible(!reopening)
+            .with_visible(true)
             .with_decorations(false)
             .with_resizable(false)
             .with_window_level(transport_level);
@@ -8597,6 +8608,18 @@ impl OpenTrackApp {
         let mut bounds = None;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             rendered = true;
+            // Apply the level once the window is actually shown; the window is
+            // created hidden, and a window manager ignores the request while the
+            // window is unmapped.
+            let level_pending = self.transport_window.window_level != Some(transport_level);
+            if !reopening && (level_pending || self.transport_window.level_settle > 0) {
+                // A compositor ignores the request until the window is mapped, and
+                // the transport is created hidden, so repeat it briefly.
+                self.transport_window.level_settle =
+                    self.transport_window.level_settle.saturating_sub(1);
+                self.transport_window.window_level = Some(transport_level);
+                window_ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(transport_level));
+            }
             if reopening {
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
@@ -8622,16 +8645,7 @@ impl OpenTrackApp {
             self.status_message =
                 "Transport window could not be created; reopen it from the Window menu".to_owned();
         }
-        // winit applies a level to the window before it is mapped, which window
-        // managers ignore, so ask once the viewport exists. A recreated viewport
-        // starts from the level in its builder again.
-        if reopening {
-            self.transport_window.window_level = None;
-        }
-        if self.transport_window.window_level != Some(transport_level) {
-            self.transport_window.window_level = Some(transport_level);
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(transport_level));
-        }
+
         self.show_transport &= open;
         self.transport_window.viewport_live = open && self.show_transport;
         if let Some(bounds) = bounds {
