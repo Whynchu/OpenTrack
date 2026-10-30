@@ -7,7 +7,11 @@ const ACTIVATION_POINT_ID: &str = "opentrack-popup-activation-point";
 /// surface and the point that activated them. Foreground areas include nested
 /// submenus, so moving between a menu and its child keeps the chain open.
 pub(crate) fn close_when_pointer_leaves(ctx: &egui::Context) -> bool {
-    let activation_id = Id::new(ACTIVATION_POINT_ID);
+    // All viewports share one data store, so the point has to be scoped to the
+    // viewport that opened the popup. Otherwise the main window's check, which
+    // has no popup open, deletes the point the Channel Settings window stored,
+    // and that window re-seeds it from the moving pointer every frame.
+    let activation_id = Id::new((ACTIVATION_POINT_ID, ctx.viewport_id()));
     if !egui::Popup::is_any_open(ctx) {
         ctx.data_mut(|data| data.remove_temp::<Pos2>(activation_id));
         return false;
