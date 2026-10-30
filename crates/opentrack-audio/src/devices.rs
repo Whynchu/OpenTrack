@@ -77,7 +77,9 @@ pub fn available_audio_devices() -> Result<Vec<AudioDevice>, String> {
 /// One diagnostic line for devices a backend lists but cannot open.
 fn unavailable_devices_summary(host_name: &str, count: usize) -> String {
     if count == 1 {
-        format!("{host_name}: 1 listed audio device was unavailable or disconnected and was skipped")
+        format!(
+            "{host_name}: 1 listed audio device was unavailable or disconnected and was skipped"
+        )
     } else {
         format!(
             "{host_name}: {count} listed audio devices were unavailable or disconnected and were skipped"
@@ -140,9 +142,9 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
             })
         })
     };
-    let has_default = devices.iter().any(|device| {
-        AlsaPcm::parse(&device.id).is_some_and(|parsed| parsed.pcm == "default")
-    });
+    let has_default = devices
+        .iter()
+        .any(|device| AlsaPcm::parse(&device.id).is_some_and(|parsed| parsed.pcm == "default"));
 
     let mut kept: Vec<AudioDevice> = devices
         .iter()
@@ -192,8 +194,11 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
             }
         }
         if let Some(target) = kept.iter_mut().find(|device| {
-            AlsaPcm::parse(&device.id)
-                .is_some_and(|parsed| parsed.pcm == "plughw" && parsed.card == Some(card.as_str()) && parsed.dev == Some(dev.as_str()))
+            AlsaPcm::parse(&device.id).is_some_and(|parsed| {
+                parsed.pcm == "plughw"
+                    && parsed.card == Some(card.as_str())
+                    && parsed.dev == Some(dev.as_str())
+            })
         }) {
             target.supports_input = supports_input;
             target.supports_output = supports_output;
@@ -240,8 +245,7 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
     // "DMIC16kHz"); one friendly entry is enough.
     let mut seen_friendly = std::collections::HashSet::new();
     kept.retain(|device| {
-        let friendly =
-            device.name == "Laptop Speakers" || device.name == "Laptop Microphone";
+        let friendly = device.name == "Laptop Speakers" || device.name == "Laptop Microphone";
         !friendly || seen_friendly.insert(device.name.clone())
     });
 
@@ -286,10 +290,9 @@ fn clean_alsa_name(name: &str) -> String {
 fn alsa_pcm_name(card: &str, dev: &str, playback: bool) -> Option<String> {
     let index = alsa_card_index(card)?;
     let direction = if playback { "p" } else { "c" };
-    let info = std::fs::read_to_string(format!(
-        "/proc/asound/card{index}/pcm{dev}{direction}/info"
-    ))
-    .ok()?;
+    let info =
+        std::fs::read_to_string(format!("/proc/asound/card{index}/pcm{dev}{direction}/info"))
+            .ok()?;
     parse_alsa_pcm_info_name(&info)
 }
 
@@ -303,9 +306,7 @@ fn parse_alsa_pcm_info_name(info: &str) -> Option<String> {
     // `name` is frequently empty for the analog PCM; `id` still names it.
     field("name:")
         .map(str::to_owned)
-        .or_else(|| {
-            field("id:").map(|id| id.trim_end_matches(" (*)").to_owned())
-        })
+        .or_else(|| field("id:").map(|id| id.trim_end_matches(" (*)").to_owned()))
 }
 
 fn alsa_card_index(card: &str) -> Option<String> {
@@ -350,12 +351,9 @@ fn is_laptop_chassis() -> bool {
             return true;
         }
         std::fs::read_dir("/sys/class/power_supply").is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("BAT")
-            })
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("BAT"))
         })
     })
 }
@@ -461,7 +459,8 @@ pub fn scan_audio_devices() -> AudioDeviceInventory {
             });
         }
         if unavailable_in_host > 0 {
-            unavailable_summaries.push(unavailable_devices_summary(&host_name, unavailable_in_host));
+            unavailable_summaries
+                .push(unavailable_devices_summary(&host_name, unavailable_in_host));
         }
     }
     // Without any usable device the individual probe errors are the only clue
@@ -611,14 +610,21 @@ mod tests {
     #[test]
     fn alsa_card_and_pcm_names_are_read_from_proc_asound() {
         let cards = " 0 [sofhdadsp      ]: sof-hda-dsp - sof-hda-dsp\n                      Intel Corporation\n 1 [HDMI           ]: HDA-Intel - HDA Intel HDMI\n";
-        assert_eq!(parse_alsa_card_index(cards, "sofhdadsp").as_deref(), Some("0"));
+        assert_eq!(
+            parse_alsa_card_index(cards, "sofhdadsp").as_deref(),
+            Some("0")
+        );
         assert_eq!(parse_alsa_card_index(cards, "HDMI").as_deref(), Some("1"));
         assert_eq!(parse_alsa_card_index(cards, "missing"), None);
         let info = "card: 0\ndevice: 0\nsubdevice: 0\nname: HDMI 1\n";
         assert_eq!(parse_alsa_pcm_info_name(info).as_deref(), Some("HDMI 1"));
         // The analog PCM leaves `name` empty and only carries an `id`.
-        let analog = "card: 0\ndevice: 0\nsubdevice: 0\nstream: PLAYBACK\nid: HDA Analog (*)\nname: \n";
-        assert_eq!(parse_alsa_pcm_info_name(analog).as_deref(), Some("HDA Analog"));
+        let analog =
+            "card: 0\ndevice: 0\nsubdevice: 0\nstream: PLAYBACK\nid: HDA Analog (*)\nname: \n";
+        assert_eq!(
+            parse_alsa_pcm_info_name(analog).as_deref(),
+            Some("HDA Analog")
+        );
     }
 
     #[test]
@@ -673,8 +679,18 @@ mod tests {
             alsa_device("alsa:hw:CARD=0,DEV=0", "sof-hda-dsp, ", true, true),
             alsa_device("alsa:hw:CARD=testcard,DEV=0", "sof-hda-dsp, ", true, true),
             alsa_device("alsa:plughw:CARD=0,DEV=0", "sof-hda-dsp, ", false, true),
-            alsa_device("alsa:plughw:CARD=testcard,DEV=0", "sof-hda-dsp, ", false, true),
-            alsa_device("alsa:dmix:CARD=testcard,DEV=0", "sof-hda-dsp, ", false, true),
+            alsa_device(
+                "alsa:plughw:CARD=testcard,DEV=0",
+                "sof-hda-dsp, ",
+                false,
+                true,
+            ),
+            alsa_device(
+                "alsa:dmix:CARD=testcard,DEV=0",
+                "sof-hda-dsp, ",
+                false,
+                true,
+            ),
             alsa_device(
                 "alsa:plughw:CARD=testcard,DEV=3",
                 "sof-hda-dsp, HDMI 1",
@@ -706,7 +722,12 @@ mod tests {
     #[test]
     fn endpoints_sharing_a_name_keep_their_device_number() {
         let curated = curate_alsa_devices(vec![
-            alsa_device("alsa:plughw:CARD=testcard,DEV=0", "sof-hda-dsp, ", true, true),
+            alsa_device(
+                "alsa:plughw:CARD=testcard,DEV=0",
+                "sof-hda-dsp, ",
+                true,
+                true,
+            ),
             alsa_device(
                 "alsa:plughw:CARD=testcard,DEV=31",
                 "sof-hda-dsp, ",

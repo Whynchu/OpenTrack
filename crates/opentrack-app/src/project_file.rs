@@ -768,7 +768,9 @@ fn main_window_snapshot(
 /// would then fail to decode with "invalid type: null, expected f32". A dock
 /// recomputes surface rectangles on its next layout pass, so zero is a safe
 /// stand-in for a rectangle that was never measured.
-pub(crate) fn dock_state_json(dock_state: &DockState<PanelTab>) -> Result<String, ProjectFileError> {
+pub(crate) fn dock_state_json(
+    dock_state: &DockState<PanelTab>,
+) -> Result<String, ProjectFileError> {
     let mut value = serde_json::to_value(dock_state)?;
     replace_non_finite_geometry(&mut value);
     Ok(serde_json::to_string(&value)?)

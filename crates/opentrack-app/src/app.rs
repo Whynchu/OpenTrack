@@ -17667,7 +17667,10 @@ mod project_folder_tests {
     fn a_folder_without_a_project_is_adopted() {
         let root = temp_root("adopt");
         create_project_directory_layout(&root).expect("layout should be created");
-        assert!(!project_folder_is_occupied(&root, &root.join("EXAMPLE.opr")));
+        assert!(!project_folder_is_occupied(
+            &root,
+            &root.join("EXAMPLE.opr")
+        ));
         // Adopting must reuse the folders a previous attempt already created.
         create_project_directory_layout(&root).expect("layout should be reusable");
         let _ = fs::remove_dir_all(&root);

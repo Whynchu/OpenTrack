@@ -301,8 +301,12 @@ impl OpenTrackApp {
         }
         ui.vertical_centered(|ui| {
             ui.label(
-                egui::RichText::new(asio.as_ref().map(|i| i.name.as_str()).unwrap_or(audio_backend_label()))
-                    .size(16.0),
+                egui::RichText::new(
+                    asio.as_ref()
+                        .map(|i| i.name.as_str())
+                        .unwrap_or(audio_backend_label()),
+                )
+                .size(16.0),
             );
         });
         ui.add_space(8.0);
