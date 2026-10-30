@@ -126,6 +126,8 @@ struct NativeWindowState {
     epoch: u64,
     viewport_live: bool,
     focus_requested: bool,
+    /// Window level last sent to the compositor, so it is not re-applied per frame.
+    window_level: Option<egui::viewport::WindowLevel>,
 }
 
 #[derive(Default)]
@@ -140,6 +142,7 @@ impl NativeWindowState {
         if !self.open || !self.viewport_live {
             self.epoch = self.epoch.wrapping_add(1);
             self.viewport_live = false;
+            self.window_level = None;
         }
         self.channel_bus = bus;
         self.open = true;
@@ -463,6 +466,7 @@ fn restore_native_window_state(
         epoch: previous_epoch.wrapping_add(1),
         viewport_live: false,
         focus_requested: false,
+        window_level: None,
     }
 }
 
@@ -8600,10 +8604,8 @@ impl OpenTrackApp {
                         .inner_margin(egui::Margin::ZERO),
                 )
                 .show(window_ctx, |ui| {
-                    if self.input_blocked(ui.ctx()) {
-                        ui.disable();
-                    }
-                    self.show_transport(ui)
+                    let blocked = self.input_blocked(ui.ctx());
+                    blocked_input_scope(ui, blocked, |ui| self.show_transport(ui));
                 });
             bounds = native_window_bounds(window_ctx);
         });
@@ -8671,7 +8673,7 @@ impl OpenTrackApp {
         ));
         let focus_requested = self.channel_settings_window.focus_requested;
         let viewport_live = self.channel_settings_window.viewport_live;
-        if viewport_live {
+        if focus_requested {
             self.channel_settings_window.focus_requested = false;
         }
         let mut builder = viewport_builder(
@@ -8681,9 +8683,9 @@ impl OpenTrackApp {
             restore_bounds.as_ref(),
         );
         builder = builder
-            .with_visible(viewport_live)
+            .with_visible(viewport_live || focus_requested)
             .with_window_level(egui::viewport::WindowLevel::Normal);
-        if focus_requested && viewport_live {
+        if focus_requested {
             builder = builder.with_active(true);
         }
         if restore_bounds.is_none() {
@@ -8697,7 +8699,7 @@ impl OpenTrackApp {
         let mut mixer_selection_requested = false;
         ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
             rendered = true;
-            if focus_requested && viewport_live {
+            if focus_requested {
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 window_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -8709,24 +8711,24 @@ impl OpenTrackApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
-                    if self.input_blocked(ui.ctx()) {
-                        ui.disable();
-                    }
-                    let (changed, selection_requested, _) = show_mixer(
-                        ui,
-                        &mut self.data.project,
-                        &self.data.track_meter_levels,
-                        &mut self.data.peak_holds,
-                        self.data.input_channel_meter_levels,
-                        self.data.output_channel_meter_levels,
-                        false,
-                        true,
-                        &mut self.channel_settings_window,
-                        &mut self.channel_settings_ui,
-                        &self.vst3_plugin_catalog,
-                    );
-                    modified |= changed;
-                    mixer_selection_requested |= selection_requested;
+                    let blocked = self.input_blocked(ui.ctx());
+                    blocked_input_scope(ui, blocked, |ui| {
+                        let (changed, selection_requested, _) = show_mixer(
+                            ui,
+                            &mut self.data.project,
+                            &self.data.track_meter_levels,
+                            &mut self.data.peak_holds,
+                            self.data.input_channel_meter_levels,
+                            self.data.output_channel_meter_levels,
+                            false,
+                            true,
+                            &mut self.channel_settings_window,
+                            &mut self.channel_settings_ui,
+                            &self.vst3_plugin_catalog,
+                        );
+                        modified |= changed;
+                        mixer_selection_requested |= selection_requested;
+                    });
                 });
             channel_settings::setup(window_ctx, &mut self.channel_settings_ui);
             bounds = native_window_bounds(window_ctx);
@@ -8763,16 +8765,17 @@ impl OpenTrackApp {
         // ownership. Other desktops have no owner concept, so ask the compositor
         // for a top-level window level while the preference is set.
         #[cfg(not(windows))]
-        ctx.send_viewport_cmd_to(
-            id,
-            egui::ViewportCommand::WindowLevel(
-                if self.channel_settings_ui.preferences.always_on_top && !dialog_open {
-                    egui::viewport::WindowLevel::AlwaysOnTop
-                } else {
-                    egui::viewport::WindowLevel::Normal
-                },
-            ),
-        );
+        {
+            let level = if self.channel_settings_ui.preferences.always_on_top && !dialog_open {
+                egui::viewport::WindowLevel::AlwaysOnTop
+            } else {
+                egui::viewport::WindowLevel::Normal
+            };
+            if self.channel_settings_window.window_level != Some(level) {
+                self.channel_settings_window.window_level = Some(level);
+                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(level));
+            }
+        }
         self.channel_settings_window.open = open;
         self.channel_settings_window.viewport_live = open;
         if restore_bounds.is_some() {
@@ -9018,10 +9021,10 @@ impl OpenTrackApp {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
-                if self.input_blocked(ui.ctx()) {
-                    ui.disable();
-                }
-                insert = media_pool::show(ui, &self.data.project);
+                let blocked = self.input_blocked(ui.ctx());
+                blocked_input_scope(ui, blocked, |ui| {
+                    insert = media_pool::show(ui, &self.data.project);
+                });
             });
             bounds = native_window_bounds(window_ctx);
         });
@@ -10510,12 +10513,12 @@ impl eframe::App for OpenTrackApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
-                if self.input_blocked(ui.ctx()) {
-                    ui.disable();
-                }
-                if self.project_open {
-                    self.show_docked_workspace(ui);
-                }
+                let blocked = self.input_blocked(ui.ctx());
+                blocked_input_scope(ui, blocked, |ui| {
+                    if self.project_open {
+                        self.show_docked_workspace(ui);
+                    }
+                });
             });
         self.show_realtime_diagnostics(&ctx);
         if self.project_open {
@@ -17578,6 +17581,29 @@ fn update_project_load_status(progress: &Mutex<ProjectLoadStatus>, fraction: f32
         status.fraction = fraction.clamp(0.0, 1.0);
         status.phase = phase;
     }
+}
+
+/// Runs `add` with pointer input hidden while another layer owns the mouse.
+///
+/// `Ui::disable` stops widgets, but the timeline and rulers read the pointer
+/// straight from the input state, so a click aimed at a dialog above them would
+/// still select or drag underneath it. The input is restored afterwards so the
+/// dialog that is drawn later in the frame still receives it.
+fn blocked_input_scope(ui: &mut egui::Ui, blocked: bool, add: impl FnOnce(&mut egui::Ui)) {
+    if !blocked {
+        add(ui);
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let saved = ctx.input(|input| input.clone());
+    ctx.input_mut(|input| {
+        input.pointer = egui::PointerState::default();
+        input.events.clear();
+        input.smooth_scroll_delta = Vec2::ZERO;
+    });
+    ui.disable();
+    add(ui);
+    ctx.input_mut(|input| *input = saved);
 }
 
 fn dismiss_window_on_outside_click<R>(
