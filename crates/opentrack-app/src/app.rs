@@ -12214,6 +12214,28 @@ fn show_project(
                 );
             }
             let grid_painter = painter.with_clip_rect(grid_clip);
+            if *edit_tool == EditTool::Split
+                && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
+                && grid_clip.contains(pointer)
+            {
+                let beat = crate::timeline::ruler_position_beats(
+                    pointer.x,
+                    grid_left,
+                    bar_width,
+                    beats_per_bar,
+                );
+                let beat = snap_grid_beats
+                    .map_or(beat, |grid| crate::timeline::snap_beats_to_grid(beat, grid));
+                let cut_x = grid_left + (beat / beats_per_bar_f64) as f32 * bar_width;
+                grid_painter.line_segment(
+                    [
+                        Pos2::new(cut_x, grid_clip.top()),
+                        Pos2::new(cut_x, grid_clip.bottom()),
+                    ],
+                    Stroke::new(1.0, theme::PLAYHEAD),
+                );
+                crate::system_tool_icons::tool_cursor_at(ui, ToolbarIcon::Split, Some(pointer));
+            }
             grid_painter.line_segment(
                 [
                     Pos2::new(grid_left, canvas.min.y),
@@ -15523,6 +15545,9 @@ fn show_midi_editor(
                                     } else if matches!(*tool, EditTool::Range | EditTool::Select) {
                                         selection_drag = None;
                                         *selected_note_id = None;
+                                        if *tool == EditTool::Select {
+                                            selected_note_ids.clear();
+                                        }
                                     } else if *tool == EditTool::Draw {
                                         selected_note_ids.clear();
                                         let quantize = if position_quantize.is_finite()
