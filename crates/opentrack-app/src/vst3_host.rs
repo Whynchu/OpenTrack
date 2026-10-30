@@ -659,7 +659,7 @@ pub struct EditorWindow;
 
 #[cfg(not(windows))]
 impl EditorWindow {
-    pub fn create(_title: &str, _owner: isize) -> Result<Self, String> {
+    pub fn create(_title: &str, _owner: Option<isize>) -> Result<Self, String> {
         Err("native VST3 editors are only supported on Windows".to_owned())
     }
 

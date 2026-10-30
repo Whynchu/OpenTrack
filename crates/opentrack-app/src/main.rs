@@ -18,6 +18,10 @@ fn main() -> eframe::Result {
     startup_splash::show();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
+            // Wayland and X11 match a window to its application icon through
+            // this id. Without it a compositor has nothing to look up and falls
+            // back to a generic placeholder, even though an icon is supplied.
+            .with_app_id("opentrack")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
             .with_maximized(true)

@@ -8,6 +8,23 @@ fn compact(ui: &mut egui::Ui) {
     ui.spacing_mut().button_padding = Vec2::new(5.0, 2.0);
 }
 
+/// The audio API this build drives. The same Device Setup pages serve all
+/// targets, and the driver row names the backend that is actually in use.
+fn audio_backend_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "ALSA"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "CoreAudio"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        "WASAPI"
+    }
+}
+
 impl OpenTrackApp {
     pub(super) fn show_audio_device_setup(&mut self, ctx: &egui::Context) -> Option<Rect> {
         if !self.device_setup_open {
@@ -34,7 +51,7 @@ impl OpenTrackApp {
                     .as_ref()
                     .and_then(|e| e.asio_info.as_ref())
                     .map(|i| i.name.clone())
-                    .unwrap_or_else(|| "WASAPI".into());
+                    .unwrap_or_else(|| audio_backend_label().into());
                 let height = (ui.available_height() - 35.0).clamp(195.0, 230.0);
                 ui.horizontal_top(|ui| {
                     egui::Frame::group(ui.style())
@@ -141,13 +158,13 @@ impl OpenTrackApp {
                     .find(|d| Some(&d.id) == driver.as_ref())
                     .map(|d| d.name.as_str())
             })
-            .unwrap_or("WASAPI");
+            .unwrap_or(audio_backend_label());
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("audio-system-driver")
                 .width(206.0)
                 .selected_text(label)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut driver, None, "WASAPI");
+                    ui.selectable_value(&mut driver, None, audio_backend_label());
                     for device in self
                         .audio_output_devices
                         .iter()
@@ -284,7 +301,7 @@ impl OpenTrackApp {
         }
         ui.vertical_centered(|ui| {
             ui.label(
-                egui::RichText::new(asio.as_ref().map(|i| i.name.as_str()).unwrap_or("WASAPI"))
+                egui::RichText::new(asio.as_ref().map(|i| i.name.as_str()).unwrap_or(audio_backend_label()))
                     .size(16.0),
             );
         });
@@ -333,10 +350,18 @@ impl OpenTrackApp {
         } else {
             ui.label("Capture device:");
             let mut input = self.selected_input_device.clone();
-            let input_name = self
-                .resolved_input_device_name
-                .clone()
-                .unwrap_or_else(|| "Unavailable".into());
+            // Show the same label the list uses; the engine reports the raw
+            // ALSA description, which is not the name offered in the menu.
+            let input_name = match self.selected_input_device.as_deref() {
+                Some(id) => self
+                    .audio_input_devices
+                    .iter()
+                    .find(|device| device.id == id)
+                    .map(|device| device.name.clone())
+                    .or_else(|| self.resolved_input_device_name.clone())
+                    .unwrap_or_else(|| "Unavailable".into()),
+                None => "System default input".to_owned(),
+            };
             ui.add_enabled_ui(!self.is_recording(), |ui| {
                 egui::ComboBox::from_id_salt("driver-page-input")
                     .width(300.0)
@@ -361,11 +386,20 @@ impl OpenTrackApp {
             ui.add_space(6.0);
             ui.label("Playback device:");
             let mut output = self.selected_output_device.clone();
-            let name = self
-                .audio_engine
-                .as_ref()
-                .map(|e| e.device_name.clone())
-                .unwrap_or_else(|| "Unavailable".into());
+            let name = match self.selected_output_device.as_deref() {
+                Some(id) => self
+                    .audio_output_devices
+                    .iter()
+                    .find(|device| device.id == id)
+                    .map(|device| device.name.clone())
+                    .or_else(|| {
+                        self.audio_engine
+                            .as_ref()
+                            .map(|engine| engine.device_name.clone())
+                    })
+                    .unwrap_or_else(|| "Unavailable".into()),
+                None => "System default output".to_owned(),
+            };
             egui::ComboBox::from_id_salt("driver-page-output")
                 .width(300.0)
                 .selected_text(name)

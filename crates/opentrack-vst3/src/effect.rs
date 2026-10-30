@@ -15,23 +15,24 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use opentrack_plugins::{HostedProcessor, PluginClassId};
-use vst3::Steinberg::Vst::BusTypes_::kMain;
 use vst3::Steinberg::Vst::{
-    AudioBusBuffers, AudioBusBuffers__type0,
-    BusDirections_::{kInput, kOutput},
-    BusInfo, IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentHandler, IComponentTrait,
-    IConnectionPoint, IConnectionPointTrait, IEditController, IEditControllerTrait,
-    IParameterChanges,
-    MediaTypes_::kAudio,
-    ParameterInfo, ProcessContext,
-    ProcessContext_::StatesAndFlags_::kPlaying,
-    ProcessData,
-    ProcessModes_::kRealtime,
-    ProcessSetup,
-    RestartFlags_::kLatencyChanged,
-    SpeakerArr, SpeakerArrangement, String128,
-    SymbolicSampleSizes_::kSample32,
+    AudioBusBuffers, AudioBusBuffers__type0, BusInfo, IAudioProcessor, IAudioProcessorTrait,
+    IComponent, IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait,
+    IEditController, IEditControllerTrait, IParameterChanges, ParameterInfo, ProcessContext,
+    ProcessContext_::StatesAndFlags_::kPlaying, ProcessData, ProcessSetup,
+    RestartFlags_::kLatencyChanged, SpeakerArr, SpeakerArrangement, String128,
 };
+
+// `vst3` 0.3.0 gives its enum type `DefaultEnumType` the width `c_int` on
+// Windows and `c_uint` elsewhere, while the host interfaces below take `int32`
+// on every platform. Re-declare the SDK constants with the ABI type the
+// interfaces actually expect so bus negotiation compiles off Windows too.
+const kAudio: int32 = vst3::Steinberg::Vst::MediaTypes_::kAudio as int32;
+const kInput: int32 = vst3::Steinberg::Vst::BusDirections_::kInput as int32;
+const kOutput: int32 = vst3::Steinberg::Vst::BusDirections_::kOutput as int32;
+const kMain: int32 = vst3::Steinberg::Vst::BusTypes_::kMain as int32;
+const kRealtime: int32 = vst3::Steinberg::Vst::ProcessModes_::kRealtime as int32;
+const kSample32: int32 = vst3::Steinberg::Vst::SymbolicSampleSizes_::kSample32 as int32;
 use vst3::Steinberg::{
     FIDString, IBStream, IPlugFrame, IPlugView, IPluginBaseTrait, IPluginFactory, IPluginFactory3,
     IPluginFactory3Trait, IPluginFactoryTrait, int32, kNotImplemented, kResultFalse, kResultOk,

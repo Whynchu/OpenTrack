@@ -13,10 +13,15 @@
 use std::ffi::c_void;
 use std::sync::Mutex;
 
-use vst3::Steinberg::IBStream_::IStreamSeekMode_::{kIBSeekCur, kIBSeekEnd, kIBSeekSet};
 use vst3::Steinberg::{
     IBStream, IBStreamTrait, int32, int64, kInvalidArgument, kResultFalse, kResultOk, tresult,
 };
+
+// See the note in `effect.rs`: `IStreamSeekMode` is `c_uint` off Windows while
+// `IBStream::seek` takes `int32`, so compare against the ABI-width constants.
+const kIBSeekSet: int32 = vst3::Steinberg::IBStream_::IStreamSeekMode_::kIBSeekSet as int32;
+const kIBSeekCur: int32 = vst3::Steinberg::IBStream_::IStreamSeekMode_::kIBSeekCur as int32;
+const kIBSeekEnd: int32 = vst3::Steinberg::IBStream_::IStreamSeekMode_::kIBSeekEnd as int32;
 use vst3::{Class, ComWrapper};
 
 /// Upper bound for one component or controller state chunk.
