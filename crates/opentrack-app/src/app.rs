@@ -733,6 +733,8 @@ pub struct OpenTrackApp {
     audio_input_probe_status: Option<String>,
     device_test_active: bool,
     device_setup_open: bool,
+    /// True while a menu in the menu bar is open.
+    menu_open: bool,
     device_setup_page: u8,
     vst_connections_open: bool,
     vst_connections_tab: usize,
@@ -1969,6 +1971,7 @@ impl OpenTrackApp {
             audio_input_probe_status: None,
             device_test_active: false,
             device_setup_open: false,
+            menu_open: false,
             device_setup_page: 0,
             vst_connections_open: false,
             vst_connections_tab: 0,
@@ -7180,6 +7183,7 @@ impl OpenTrackApp {
     }
 
     fn show_menu(&mut self, ui: &mut egui::Ui) {
+        self.menu_open = false;
         if !self.project_open {
             self.show_empty_project_menu(ui);
             return;
@@ -7237,6 +7241,9 @@ impl OpenTrackApp {
             .style(theme::menu_bar_style)
             .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
             .ui(ui, |ui| {
+                self.menu_open = egui::containers::menu::MenuState::from_ui(ui, |state, _| {
+                    state.open_item.is_some()
+                });
                 ui.menu_button("File", |ui| {
                     if menu_command(ui, "New Project...", "Ctrl+N", true).clicked() {
                         self.request_new_project();
@@ -8554,13 +8561,6 @@ impl OpenTrackApp {
             || self.pending_track_delete_id.is_some()
     }
 
-    /// True while input belongs to a dialog, a menu or an open popup. The views
-    /// beneath must not react to clicks, drags or hovers aimed at something on
-    /// top of them.
-    fn input_blocked(&self, ctx: &egui::Context) -> bool {
-        self.dialog_owns_input() || egui::Popup::is_any_open(ctx)
-    }
-
     fn show_transport_window(&mut self, ctx: &egui::Context) {
         if !self.project_open || !self.show_transport {
             self.transport_window.viewport_live = false;
@@ -8604,8 +8604,11 @@ impl OpenTrackApp {
                         .inner_margin(egui::Margin::ZERO),
                 )
                 .show(window_ctx, |ui| {
-                    let blocked = self.input_blocked(ui.ctx());
-                    blocked_input_scope(ui, blocked, |ui| self.show_transport(ui));
+                    let pointer_blocked = self.dialog_owns_input() || self.menu_open;
+                    let overlay_open = pointer_blocked || egui::Popup::is_any_open(ui.ctx());
+                    blocked_input_scope(ui, pointer_blocked, overlay_open, |ui| {
+                        self.show_transport(ui)
+                    });
                 });
             bounds = native_window_bounds(window_ctx);
         });
@@ -8711,8 +8714,9 @@ impl OpenTrackApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
-                    let blocked = self.input_blocked(ui.ctx());
-                    blocked_input_scope(ui, blocked, |ui| {
+                    let pointer_blocked = self.dialog_owns_input() || self.menu_open;
+                    let overlay_open = pointer_blocked || egui::Popup::is_any_open(ui.ctx());
+                    blocked_input_scope(ui, pointer_blocked, overlay_open, |ui| {
                         let (changed, selection_requested, _) = show_mixer(
                             ui,
                             &mut self.data.project,
@@ -9021,8 +9025,9 @@ impl OpenTrackApp {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
-                let blocked = self.input_blocked(ui.ctx());
-                blocked_input_scope(ui, blocked, |ui| {
+                let pointer_blocked = self.dialog_owns_input() || self.menu_open;
+                let overlay_open = pointer_blocked || egui::Popup::is_any_open(ui.ctx());
+                blocked_input_scope(ui, pointer_blocked, overlay_open, |ui| {
                     insert = media_pool::show(ui, &self.data.project);
                 });
             });
@@ -10513,8 +10518,9 @@ impl eframe::App for OpenTrackApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
-                let blocked = self.input_blocked(ui.ctx());
-                blocked_input_scope(ui, blocked, |ui| {
+                let pointer_blocked = self.dialog_owns_input() || self.menu_open;
+                let overlay_open = pointer_blocked || egui::Popup::is_any_open(ui.ctx());
+                blocked_input_scope(ui, pointer_blocked, overlay_open, |ui| {
                     if self.project_open {
                         self.show_docked_workspace(ui);
                     }
@@ -17589,21 +17595,29 @@ fn update_project_load_status(progress: &Mutex<ProjectLoadStatus>, fraction: f32
 /// straight from the input state, so a click aimed at a dialog above them would
 /// still select or drag underneath it. The input is restored afterwards so the
 /// dialog that is drawn later in the frame still receives it.
-fn blocked_input_scope(ui: &mut egui::Ui, blocked: bool, add: impl FnOnce(&mut egui::Ui)) {
-    if !blocked {
+fn blocked_input_scope(
+    ui: &mut egui::Ui,
+    pointer_blocked: bool,
+    overlay_open: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    if pointer_blocked {
+        let ctx = ui.ctx().clone();
+        let saved = ctx.input(|input| input.clone());
+        ctx.input_mut(|input| {
+            input.pointer = egui::PointerState::default();
+            input.events.clear();
+            input.smooth_scroll_delta = Vec2::ZERO;
+        });
+        ui.disable();
         add(ui);
-        return;
+        ctx.input_mut(|input| *input = saved);
+    } else {
+        if overlay_open {
+            ui.disable();
+        }
+        add(ui);
     }
-    let ctx = ui.ctx().clone();
-    let saved = ctx.input(|input| input.clone());
-    ctx.input_mut(|input| {
-        input.pointer = egui::PointerState::default();
-        input.events.clear();
-        input.smooth_scroll_delta = Vec2::ZERO;
-    });
-    ui.disable();
-    add(ui);
-    ctx.input_mut(|input| *input = saved);
 }
 
 fn dismiss_window_on_outside_click<R>(
