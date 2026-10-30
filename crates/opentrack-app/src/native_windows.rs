@@ -28,6 +28,21 @@ pub(crate) fn install_resource_icons(hwnd: Option<isize>) {
     let _ = hwnd;
 }
 
+/// Reasserts the Transport viewport's Win32 z-order after it has been mapped.
+/// Winit also requests this level, but an explicit HWND_TOPMOST raises the
+/// borderless viewport above sibling owned tool windows when it is pinned.
+pub(crate) fn apply_transport_pin(root: Option<isize>, pinned: bool) -> bool {
+    #[cfg(windows)]
+    {
+        root.is_some_and(|root| platform::apply_transport_pin(root, pinned))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, pinned);
+        false
+    }
+}
+
 impl ChannelOwner {
     pub(crate) fn new(creation: &eframe::CreationContext<'_>) -> Self {
         if let Some(root) = creation_root(creation) {
@@ -119,6 +134,78 @@ mod platform {
                 SendMessageW(root as _, WM_SETICON, ICON_BIG as usize, large as isize);
             }
         }
+    }
+
+    pub(super) fn apply_transport_pin(root: isize, pinned: bool) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            WS_EX_TOPMOST,
+        };
+
+        struct Search {
+            root: HWND,
+            pinned: bool,
+            found: bool,
+        }
+
+        unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {
+            let search = unsafe { &mut *(data as *mut Search) };
+            if window == search.root {
+                return 1;
+            }
+            let mut title = [0u16; 256];
+            let length = unsafe { GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32) };
+            if length <= 0
+                || String::from_utf16_lossy(&title[..length as usize]) != "Transport Panel"
+            {
+                return 1;
+            }
+            search.found = true;
+            let is_topmost =
+                unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST as isize != 0 };
+            if search.pinned {
+                // Reinsert even when WS_EX_TOPMOST is already set. This raises
+                // Transport above other topmost/owned windows in its z-order band.
+                unsafe {
+                    SetWindowPos(
+                        window,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
+            } else if is_topmost {
+                unsafe {
+                    SetWindowPos(
+                        window,
+                        HWND_NOTOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
+            }
+            0
+        }
+
+        let root = root as HWND;
+        let mut search = Search {
+            root,
+            pinned,
+            found: false,
+        };
+        unsafe {
+            let thread = GetWindowThreadProcessId(root, std::ptr::null_mut());
+            if thread != 0 {
+                EnumThreadWindows(thread, Some(visit), &mut search as *mut Search as LPARAM);
+            }
+        }
+        search.found
     }
 
     unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {

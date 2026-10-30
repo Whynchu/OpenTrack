@@ -135,6 +135,7 @@ struct TransportWindowState {
     bounds: Option<WindowBounds>,
     viewport_live: bool,
     always_on_top: bool,
+    native_pin_applied: Option<bool>,
     /// Window level last sent to the compositor, so it is not re-applied per frame.
     window_level: Option<egui::viewport::WindowLevel>,
     /// Frames left to re-assert the level after the window is shown.
@@ -1935,6 +1936,7 @@ impl OpenTrackApp {
                         eframe::get_value(storage, "transport-window-always-on-top-v1")
                     })
                     .unwrap_or(true),
+                native_pin_applied: None,
                 window_level: None,
                 level_settle: 0,
             },
@@ -8588,6 +8590,7 @@ impl OpenTrackApp {
         if reopening {
             self.transport_window.window_level = None;
             self.transport_window.level_settle = 3;
+            self.transport_window.native_pin_applied = None;
         }
         let id = egui::ViewportId::from_hash_of("floating-transport-panel-m1-position-v5");
         // Create the window visible: a viewport created with `with_visible(false)`
@@ -8639,6 +8642,16 @@ impl OpenTrackApp {
                 });
             bounds = native_window_bounds(window_ctx);
         });
+
+        #[cfg(windows)]
+        if self.transport_window.native_pin_applied != Some(self.transport_window.always_on_top)
+            && crate::native_windows::apply_transport_pin(
+                self.root_window_handle,
+                self.transport_window.always_on_top,
+            )
+        {
+            self.transport_window.native_pin_applied = Some(self.transport_window.always_on_top);
+        }
 
         if !rendered {
             open = false;
