@@ -213,6 +213,8 @@ struct ChannelSettingsLayoutPreset {
     visible_items: Vec<ChannelSettingsViewItem>,
 }
 
+const CHANNEL_SETTINGS_PREFERENCES_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ChannelSettingsPreferences {
     #[serde(default = "default_channel_settings_items")]
@@ -221,6 +223,9 @@ struct ChannelSettingsPreferences {
     presets: Vec<ChannelSettingsLayoutPreset>,
     #[serde(default)]
     always_on_top: bool,
+    /// Bumped when a default changes, so an existing file adopts it once.
+    #[serde(default)]
+    version: u32,
 }
 
 fn default_channel_settings_items() -> Vec<ChannelSettingsViewItem> {
@@ -241,7 +246,8 @@ impl Default for ChannelSettingsPreferences {
                 visible_items: visible_items.clone(),
             }],
             visible_items,
-            always_on_top: false,
+            always_on_top: true,
+            version: CHANNEL_SETTINGS_PREFERENCES_VERSION,
         }
     }
 }
@@ -1819,6 +1825,12 @@ impl OpenTrackApp {
                 )
             })
             .unwrap_or_default();
+        let mut channel_settings_preferences = channel_settings_preferences;
+        if channel_settings_preferences.version < CHANNEL_SETTINGS_PREFERENCES_VERSION {
+            // Channel Settings starts pinned above its owner.
+            channel_settings_preferences.always_on_top = true;
+            channel_settings_preferences.version = CHANNEL_SETTINGS_PREFERENCES_VERSION;
+        }
         let vst3_plugin_folders = creation
             .storage
             .and_then(|storage| {
@@ -8538,6 +8550,13 @@ impl OpenTrackApp {
             || self.pending_track_delete_id.is_some()
     }
 
+    /// True while input belongs to a dialog, a menu or an open popup. The views
+    /// beneath must not react to clicks, drags or hovers aimed at something on
+    /// top of them.
+    fn input_blocked(&self, ctx: &egui::Context) -> bool {
+        self.dialog_owns_input() || egui::Popup::is_any_open(ctx)
+    }
+
     fn show_transport_window(&mut self, ctx: &egui::Context) {
         if !self.project_open || !self.show_transport {
             self.transport_window.viewport_live = false;
@@ -8581,7 +8600,7 @@ impl OpenTrackApp {
                         .inner_margin(egui::Margin::ZERO),
                 )
                 .show(window_ctx, |ui| {
-                    if self.dialog_owns_input() {
+                    if self.input_blocked(ui.ctx()) {
                         ui.disable();
                     }
                     self.show_transport(ui)
@@ -8690,7 +8709,7 @@ impl OpenTrackApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
-                    if self.dialog_owns_input() {
+                    if self.input_blocked(ui.ctx()) {
                         ui.disable();
                     }
                     let (changed, selection_requested, _) = show_mixer(
@@ -8999,7 +9018,7 @@ impl OpenTrackApp {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
-                if self.dialog_owns_input() {
+                if self.input_blocked(ui.ctx()) {
                     ui.disable();
                 }
                 insert = media_pool::show(ui, &self.data.project);
@@ -10491,7 +10510,7 @@ impl eframe::App for OpenTrackApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
-                if self.dialog_owns_input() {
+                if self.input_blocked(ui.ctx()) {
                     ui.disable();
                 }
                 if self.project_open {
