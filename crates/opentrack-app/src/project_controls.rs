@@ -139,6 +139,7 @@ pub(super) fn color_strip(
 #[derive(Clone, Copy)]
 pub(super) enum Action {
     Add(TrackKind),
+    Duplicate(u64),
     Remove(u64),
     ShowAutomation(u64),
     HideAllAutomation,
@@ -209,7 +210,13 @@ pub(super) fn track_menu(
         ui.menu_button("Add Track", |ui| add_items(ui, false, action));
         ui.separator();
         ui.add_enabled(false, egui::Button::new("Select All Events"));
-        ui.add_enabled(false, egui::Button::new("Duplicate Tracks"));
+        if ui
+            .add_enabled(can_remove, egui::Button::new("Duplicate Tracks"))
+            .clicked()
+        {
+            *action = Some(Action::Duplicate(track_id));
+            ui.close();
+        }
         if ui
             .add_enabled(can_remove, egui::Button::new("Remove Selected Tracks"))
             .clicked()

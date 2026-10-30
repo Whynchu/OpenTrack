@@ -320,6 +320,6 @@ figure so acceptance is not stated in units that flatter the result.
 The next ready actions are release instrumentation-overhead measurement, then
 in order: cross-host control, hosted block-granularity A/B at a fixed 64-frame
 device period, the minimal reported ASIO reproduction, and the broader T061
-chain matrix. The opt-in ASIO MMCSS A/B is pending implementation of a same-thread
-teardown handshake. Make 64 frames clean and complete its soak before any
-32-frame stretch observation.
+chain matrix. The opt-in ASIO MMCSS A/B is implemented, but needs live Mackie validation;
+a teardown timeout invalidates that run. Make 64 frames clean and complete its
+soak before any 32-frame stretch observation.

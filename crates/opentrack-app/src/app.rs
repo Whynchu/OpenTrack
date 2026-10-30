@@ -784,6 +784,7 @@ pub struct OpenTrackApp {
     status_message: String,
     realtime_diagnostic_details: String,
     realtime_diagnostic_refreshed_at: Option<Instant>,
+    realtime_diagnostics_open: bool,
     project_open_error: Option<String>,
 }
 
@@ -2020,6 +2021,7 @@ impl OpenTrackApp {
             status_message,
             realtime_diagnostic_details: String::new(),
             realtime_diagnostic_refreshed_at: None,
+            realtime_diagnostics_open: false,
             project_open_error: None,
         };
         if app
@@ -6270,6 +6272,58 @@ impl OpenTrackApp {
             .map(|track| track.id);
     }
 
+    fn duplicate_tracks(&mut self, clicked_track_id: Option<u64>) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before duplicating tracks".to_owned();
+            return;
+        }
+        let ids = if let Some(clicked_id) = clicked_track_id {
+            if self
+                .arrange_view_state
+                .selected_track_ids
+                .contains(&clicked_id)
+            {
+                self.arrange_view_state
+                    .selected_track_ids
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            } else {
+                vec![clicked_id]
+            }
+        } else if !self.arrange_view_state.selected_track_ids.is_empty() {
+            self.arrange_view_state
+                .selected_track_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+        } else {
+            self.data
+                .project
+                .selected_track
+                .and_then(|index| self.data.project.tracks.get(index as usize))
+                .map(|track| vec![track.id])
+                .unwrap_or_default()
+        };
+        let Some(duplicated) = self.data.project.duplicate_tracks(&ids) else {
+            self.status_message = "Could not duplicate the selected tracks".to_owned();
+            return;
+        };
+        self.arrange_view_state.selected_track_ids = duplicated.iter().copied().collect();
+        self.arrange_view_state.selection_anchor_track_id = duplicated.first().copied();
+        self.selected_midi_note_id = None;
+        self.midi_note_drag = None;
+        self.midi_note_draw = None;
+        self.midi_controller_drag = None;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Duplicated {} track{}; undo is available",
+            duplicated.len(),
+            if duplicated.len() == 1 { "" } else { "s" }
+        );
+    }
+
     fn remove_track_by_id(&mut self, track_id: u64) {
         if self.is_recording() {
             self.status_message = "Stop recording before removing a track".to_owned();
@@ -7433,7 +7487,16 @@ impl OpenTrackApp {
                             ],
                         );
                     });
-                    menu_command(ui, "Duplicate Tracks", "", false);
+                    if ui
+                        .add_enabled(
+                            selected_track_available && !self.is_recording(),
+                            egui::Button::new("Duplicate Tracks"),
+                        )
+                        .clicked()
+                    {
+                        self.duplicate_tracks(None);
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             selected_track_available && !self.is_recording(),
@@ -7868,6 +7931,11 @@ impl OpenTrackApp {
                     ui.separator();
                     if menu_command(ui, "Plug-in Information", "", true).clicked() {
                         self.plugin_information_open = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if menu_command(ui, "Realtime Performance...", "", true).clicked() {
+                        self.realtime_diagnostics_open = true;
                         ui.close();
                     }
                     disabled_menu_commands(
@@ -9258,6 +9326,9 @@ impl OpenTrackApp {
                     self.pending_track_delete_id = Some(id);
                 }
             }
+            Some(project_controls::Action::Duplicate(id)) => {
+                self.duplicate_tracks(Some(id));
+            }
             Some(project_controls::Action::ShowAutomation(id)) => {
                 let changed = self.arrange_view_state.automation_visible.insert(id);
                 modified |= changed;
@@ -9952,6 +10023,115 @@ impl OpenTrackApp {
         transport_panel::show(self, ui);
     }
 
+    fn realtime_diagnostic_text(&self) -> Option<String> {
+        let engine = self.audio_engine.as_ref()?;
+        let asio_overloads = engine.asio_overload_window_count();
+        let asio_collisions = engine.asio_callback_collision_count().unwrap_or(0);
+        let mut diagnostic = format!(
+            "Device {} | {} Hz | period {} frames | buffer {} frames | DSP {:.0}% | {} render misses | {} ASIO overload windows | {} ASIO callback collisions",
+            engine.device_name,
+            engine.sample_rate,
+            engine.output_period_frames,
+            engine.output_buffer_frames,
+            engine.callback_load_percent(),
+            engine.callback_overrun_count(),
+            asio_overloads.map_or_else(|| "n/a".to_owned(), |count| count.to_string()),
+            asio_collisions,
+        );
+        let mut has_callback_timing = false;
+        if let Some(timing) = engine.callback_timing_summary() {
+            has_callback_timing = true;
+            diagnostic.push_str(&format!(
+                " | render interval p95/max {} / {} us | render duration p95/max {} / {} us | {} samples / {} lost",
+                timing.interval_p95_us,
+                timing.interval_max_us,
+                timing.duration_p95_us,
+                timing.duration_max_us,
+                timing.samples,
+                timing.overwritten_samples,
+            ));
+        }
+        if let Some(timing) = engine.asio_callback_timing_summary() {
+            has_callback_timing = true;
+            let (configured_block, effective_block) = engine.hosted_internal_block_frames();
+            let period_us = u64::from(engine.output_period_frames) * 1_000_000
+                / u64::from(engine.sample_rate.max(1));
+            diagnostic.push_str(&format!(
+                " | ASIO interval p95/max {} / {} us | duration p95/max {} / {} us | period {} us | host block {} configured / {} effective",
+                timing.interval_p95_us,
+                timing.interval_max_us,
+                timing.duration_p95_us,
+                timing.duration_max_us,
+                period_us,
+                configured_block,
+                effective_block,
+            ));
+        }
+        if let Some(timing) = engine.wasapi_callback_timing_summary() {
+            has_callback_timing = true;
+            diagnostic.push_str(&format!(
+                " | WASAPI fill interval p95/max {} / {} us | duration p95/max {} / {} us | period {} frames | {} samples / {} lost",
+                timing.interval_p95_us,
+                timing.interval_max_us,
+                timing.duration_p95_us,
+                timing.duration_max_us,
+                engine.output_period_frames,
+                timing.samples,
+                timing.overwritten_samples,
+            ));
+        }
+        if let Some((track_index, timing)) = engine
+            .hosted_track_timing_summaries()
+            .into_iter()
+            .max_by_key(|(_, timing)| timing.duration_p95_us)
+        {
+            diagnostic.push_str(&format!(
+                " | hosted track {} block p95 {} us / max {} us | {} samples / {} overwritten",
+                track_index,
+                timing.duration_p95_us,
+                timing.duration_max_us,
+                timing.samples,
+                timing.overwritten_samples,
+            ));
+        }
+        if let Some(timing) = engine.output_stage_timing_summary() {
+            diagnostic.push_str(&format!(
+                " | Stereo Out block p95 {} us / max {} us | {} samples / {} overwritten",
+                timing.duration_p95_us,
+                timing.duration_max_us,
+                timing.samples,
+                timing.overwritten_samples,
+            ));
+        }
+        let input_timing = self
+            .recording_session
+            .as_ref()
+            .and_then(|session| session.recorder.wasapi_input_timing_summary())
+            .or_else(|| {
+                self.audio_input_probe
+                    .as_ref()
+                    .and_then(AudioInputProbe::wasapi_input_timing_summary)
+            });
+        if let Some(timing) = input_timing {
+            diagnostic.push_str(&format!(
+                " | WASAPI input packet p95 {} us / max {} us | {} samples / {} overwritten",
+                timing.duration_p95_us,
+                timing.duration_max_us,
+                timing.samples,
+                timing.overwritten_samples,
+            ));
+        }
+        if let Some(mmcss) = engine.asio_mmcss_summary() {
+            diagnostic.push_str(&format!(" | {mmcss}"));
+        }
+        if !has_callback_timing {
+            diagnostic.push_str(
+                " | timing rings unavailable; restart with OPENTRACK_REALTIME_DIAGNOSTICS=1",
+            );
+        }
+        Some(diagnostic)
+    }
+
     fn show_status(&mut self, ui: &mut egui::Ui) {
         let modified = self.has_unsaved_changes();
         let (state, color) = if modified {
@@ -10156,6 +10336,55 @@ impl OpenTrackApp {
             });
         });
     }
+
+    fn show_realtime_diagnostics(&mut self, ctx: &egui::Context) {
+        if !self.realtime_diagnostics_open {
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
+        if self
+            .realtime_diagnostic_refreshed_at
+            .is_none_or(|last| last.elapsed() >= Duration::from_millis(250))
+        {
+            self.realtime_diagnostic_details = self
+                .realtime_diagnostic_text()
+                .unwrap_or_else(|| "Audio output unavailable".to_owned());
+            self.realtime_diagnostic_refreshed_at = Some(Instant::now());
+        }
+
+        let mut open = self.realtime_diagnostics_open;
+        let diagnostics = self.realtime_diagnostic_details.clone();
+        egui::Window::new("Realtime Performance")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.label("Live device and audio processing measurements");
+                egui::ScrollArea::vertical()
+                    .max_height(230.0)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(&diagnostics).monospace());
+                    });
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            self.audio_engine.is_some(),
+                            egui::Button::new("Copy diagnostics"),
+                        )
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(diagnostics.clone());
+                        self.status_message = "Realtime diagnostics copied".to_owned();
+                    }
+                    if self.audio_engine.is_some()
+                        && !diagnostics.contains("timing rings unavailable")
+                    {
+                        ui.label("Timing capture active");
+                    }
+                });
+            });
+        self.realtime_diagnostics_open = open;
+    }
 }
 
 impl eframe::App for OpenTrackApp {
@@ -10274,6 +10503,7 @@ impl eframe::App for OpenTrackApp {
                     self.show_docked_workspace(ui);
                 }
             });
+        self.show_realtime_diagnostics(&ctx);
         if self.project_open {
             self.show_track_add_dialog(&ctx);
             self.show_event_colors_dialog(&ctx);
