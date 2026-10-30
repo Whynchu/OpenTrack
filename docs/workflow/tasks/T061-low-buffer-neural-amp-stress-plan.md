@@ -1,6 +1,6 @@
 # T061 — Low-buffer neural amp and master-chain stress plan
 
-- Status: four-track SLO-100 HOTONE GATEWAY bench prepared; first 64-frame telemetry received; detailed attribution and soak remain pending.
+- Status: four-track SLO-100 HOTONE GATEWAY bench prepared; three 64-frame telemetry reports received; detailed attribution and soak remain pending.
 - User goal: make 64 samples artifact-free on the Mackie interface with multiple
   GATEWAY Neural Amp Modeler instances and Ozone on Stereo Out. Decision
   (2026-10-29): 64 samples is the working point and the acceptance target; the
@@ -67,7 +67,7 @@ unlikely source of the bulk of the delay. The slowest single hosted-track block
 was 439 us p95 / 580 us max; because the report currently exposes only the
 slowest track, it does not show the total cost across all four model tracks.
 
-The `36,135 lost` callback samples and `25,672 overwritten` hosted-stage
+The `36,135 overwritten` callback samples and `25,672 overwritten` hosted-stage
 samples are rolling-ring overwrites, not extra missed audio callbacks. The
 sample counts and miss count are cumulative and are not comparable to the first
 report without equal run durations. MMCSS remained disabled. Audibility, run
@@ -102,16 +102,21 @@ Valeton Low Gain models. A second disposable copy is prepared at
 to the requested `.nam`, and all four tracks are unmuted. The model file exists
 at the supplied Downloads path. Only the length-prefixed model path was changed
 in each serialized Gateway state; its other plugin-state bytes, track inserts,
-media references, and original project were preserved. This copy has not yet
-been loaded in OpenTrack or playback-validated; use it for the four-instance
-measurement. The earlier unmuted copy retains the original model assignments
-and was removed so there is one unmuted bench copy to use for this run.
+media references, and original project were preserved. It was prepared for the
+four-instance measurement. The latest report confirms all four audio tracks
+were active, but does not identify the opened project or confirm the loaded NAM
+file. The earlier unmuted copy retains the original model assignments and was
+removed so there is one unmuted bench copy to use for this run.
 
-The current packaged release at the time of the second report was built from
-commit `1428b8f` with `local-asio`; `builds/x64/OpenTrack.exe` SHA-256 is
-`DF1D47F3F9E4E596615F5354D6B97F260528CC4D2B11C50A416F7A25E749B83C`. Hardware
-playback has produced clear callback timing evidence, but there is no captured
-output or confirmed model/project identity for the run yet.
+The first two timing reports used the package built from commit `1428b8f` with
+`local-asio`; its SHA-256 was
+`DF1D47F3F9E4E596615F5354D6B97F260528CC4D2B11C50A416F7A25E749B83C`. The
+third report includes the per-track fields added in commit `ebf7366`, so it used
+the package at `builds/x64/OpenTrack.exe` with SHA-256
+`07920FA9AA0C2D5D4DCE88802DC4A7C8BA7A04E7C025CF95BA066922244F5139` and
+`local-asio`. The four audio tracks all reported hosted processing timings,
+confirming they were active in this run. Exact loaded NAM identity and captured
+output have not been independently verified.
 
 At 64 frames, compare dry, one, two, and four GATEWAY instances using the same
 project, duplicated DI source, plugin settings, and master chain. Keep plugin
@@ -120,6 +125,26 @@ for each run: renderer misses, ASIO overload windows, callback collisions, ASIO
 interval/duration p95 and maximum, and hosted-track block timings. If possible,
 run the same four-instance chain in another ASIO host before choosing an engine
 optimization.
+
+### Third 64-frame telemetry (user report)
+
+At the same reported 48 kHz / 64-frame Mackie ASIO setting, the user supplied
+DSP EMA 71%, 1,074 render misses, zero ASIO overload windows, and zero ASIO
+callback collisions. ASIO interval p95/max was 2,009/2,590 us and callback
+duration p95/max was 1,050/2,576 us against a 1,333 us period. The p95 duration
+is below the period, but the maximum is almost twice the budget and the interval
+p95 is above one period, so deadline tail spikes remain evident. Total miss
+count cannot be compared to earlier reports without equal run durations.
+
+Per-track hosted block timings were: Guitars 15/26 us p95/max; Rhythm 449/614;
+Audio 09 380/539; Audio 10 327/438; Audio 11 332/440; Stereo Out 21/31. This
+localizes most measured block work to the four audio-track stages, consistent
+with the loaded model instances being the leading cost. Individual p95 values
+cannot be summed as if they came from the same callback, and the run report did
+not reconfirm the project/model identity or audible result, so confirm those
+before treating this as definitive attribution. Ring overwrite counts (44,317
+callback, 41,410 hosted stages) are capture-buffer turnover, not extra audio
+misses. MMCSS remained disabled.
 
 ## Test protocol
 
