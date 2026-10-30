@@ -385,7 +385,12 @@ impl ProjectFile {
 
     pub(crate) fn write(&self, path: &Path) -> Result<(), ProjectFileError> {
         self.validate()?;
-        let bytes = serde_json::to_vec_pretty(self)?;
+        // The live dock state is stored as data, not as a view-state string, so
+        // normalize it here as well: an unlaid-out dock still holds `+/-infinity`
+        // surface rectangles that JSON cannot represent.
+        let mut document = serde_json::to_value(self)?;
+        replace_non_finite_geometry(&mut document);
+        let bytes = serde_json::to_vec_pretty(&document)?;
         atomic_write(path, &bytes)?;
         Ok(())
     }
@@ -734,10 +739,7 @@ fn main_window_snapshot(
     arrange_view_state: &ArrangeViewState,
 ) -> Result<WindowSnapshot, ProjectFileError> {
     let mut view_state = std::collections::BTreeMap::new();
-    view_state.insert(
-        DOCK_STATE_KEY.to_owned(),
-        serde_json::to_string(dock_state)?,
-    );
+    view_state.insert(DOCK_STATE_KEY.to_owned(), dock_state_json(dock_state)?);
     view_state.insert(
         ARRANGE_VIEW_STATE_KEY.to_owned(),
         serde_json::to_string(arrange_view_state)?,
@@ -756,6 +758,60 @@ fn main_window_snapshot(
         restore_bounds: None,
         view_state,
     })
+}
+
+/// Encodes a dock state for a project file, replacing the non-finite geometry
+/// `egui_dock` keeps until a surface is first laid out.
+///
+/// `Rect::NOTHING` is `+/-infinity`, and JSON has no infinity, so `serde_json`
+/// writes those values as `null`. A project saved before the dock laid out
+/// would then fail to decode with "invalid type: null, expected f32". A dock
+/// recomputes surface rectangles on its next layout pass, so zero is a safe
+/// stand-in for a rectangle that was never measured.
+pub(crate) fn dock_state_json(dock_state: &DockState<PanelTab>) -> Result<String, ProjectFileError> {
+    let mut value = serde_json::to_value(dock_state)?;
+    replace_non_finite_geometry(&mut value);
+    Ok(serde_json::to_string(&value)?)
+}
+
+/// Replaces `null` and non-finite numbers inside `rect`/`viewport` geometry.
+pub(crate) fn replace_non_finite_geometry(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "rect" || key == "viewport" {
+                    replace_non_finite_rect(child);
+                }
+                replace_non_finite_geometry(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                replace_non_finite_geometry(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_non_finite_rect(rect: &mut serde_json::Value) {
+    let Some(rect) = rect.as_object_mut() else {
+        return;
+    };
+    for edge in ["min", "max"] {
+        let Some(edge) = rect.get_mut(edge).and_then(|edge| edge.as_object_mut()) else {
+            continue;
+        };
+        for axis in ["x", "y"] {
+            let finite = edge
+                .get(axis)
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(f64::is_finite);
+            if !finite {
+                edge.insert(axis.to_owned(), serde_json::Value::from(0.0));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1572,6 +1628,41 @@ mod tests {
                 .controller_events
                 .is_empty()
         );
+    }
+
+    /// A fresh dock state keeps `Rect::NOTHING` (`+/-infinity`) until the first
+    /// layout pass. Saving a project at that moment used to write `null`
+    /// geometry and then fail to decode it again with
+    /// "invalid type: null, expected f32".
+    #[test]
+    fn project_saved_before_the_dock_lays_out_can_be_reopened() {
+        let directory = std::env::temp_dir().join(format!(
+            "opentrack-unlaid-dock-{}-{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        let path = directory.join("Unlaid.opr");
+        let dock = DockState::new(vec![PanelTab::Project]);
+        let unlaid = serde_json::to_string(&dock).expect("dock state should serialize");
+        assert!(
+            unlaid.contains("null"),
+            "this test needs an unlaid-out dock, got {unlaid}"
+        );
+        let document = ProjectFile::new(
+            Project::default(),
+            initial_workspace_state(&dock).expect("workspace state should build"),
+            dock,
+            true,
+            0,
+            false,
+        );
+        document
+            .write(&path)
+            .expect("a project saved before layout should write");
+        let reopened = ProjectFile::read(&path).expect("the saved project should decode");
+        assert_eq!(reopened.version, FORMAT_VERSION);
+        let _ = fs::remove_dir_all(directory);
     }
 
     fn set_test_dock_geometry(dock_state: &mut serde_json::Value) {

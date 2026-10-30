@@ -589,6 +589,10 @@ fn viewport_builder(
 ) -> egui::ViewportBuilder {
     let mut builder = egui::ViewportBuilder::default()
         .with_title(title)
+        // Each child window is a separate Wayland/X11 toplevel, so it needs the
+        // same application id as the main window for the desktop to resolve its
+        // icon; otherwise it falls back to a generic placeholder.
+        .with_app_id("opentrack")
         .with_inner_size(default_size)
         .with_min_inner_size(minimum_size)
         .with_resizable(true)
@@ -1976,7 +1980,10 @@ impl OpenTrackApp {
                 ..Default::default()
             },
             channel_window_owner: crate::native_windows::ChannelOwner::new(creation),
-            mixer_window: NativeWindowState::default(),
+            mixer_window: NativeWindowState {
+                open: true,
+                ..NativeWindowState::default()
+            },
             mixer_track_control_cache: Vec::new(),
             media_window: NativeWindowState::default(),
             track_rename_dialog: None,
@@ -3117,7 +3124,7 @@ impl OpenTrackApp {
         let file_name = safe_project_filename(project_name);
         let root = parent.join(project_folder_name(project_name));
         let path = root.join(file_name);
-        if root.exists() || path.exists() {
+        if project_folder_is_occupied(&root, &path) {
             return Err(format!(
                 "The project folder {} already exists; choose another project name or parent folder",
                 root.display()
@@ -8509,6 +8516,27 @@ impl OpenTrackApp {
             .update(owner, choices, taps, rate);
     }
 
+    /// True while an application dialog owns input. Windows are separate
+    /// toplevels on Linux, where nothing disables the owner the way Win32 does,
+    /// so every other window is rendered disabled instead of accepting clicks.
+    fn dialog_owns_input(&self) -> bool {
+        self.device_setup_open
+            || self.vst_connections_open
+            || self.project_setup_open
+            || self.preferences_ui.is_open
+            || self.key_commands_open
+            || self.workspace_organizer_open
+            || self.about_open
+            || self.metronome_settings_open
+            || self.tempo_signature_settings_open
+            || self.project_folder_setup.is_some()
+            || self.pending_project_action.is_some()
+            || self.track_rename_dialog.is_some()
+            || self.track_add_dialog.is_some()
+            || self.event_colors_dialog.is_some()
+            || self.pending_track_delete_id.is_some()
+    }
+
     fn show_transport_window(&mut self, ctx: &egui::Context) {
         if !self.project_open || !self.show_transport {
             self.transport_window.viewport_live = false;
@@ -8551,7 +8579,12 @@ impl OpenTrackApp {
                     egui::Frame::central_panel(&window_ctx.style())
                         .inner_margin(egui::Margin::ZERO),
                 )
-                .show(window_ctx, |ui| self.show_transport(ui));
+                .show(window_ctx, |ui| {
+                    if self.dialog_owns_input() {
+                        ui.disable();
+                    }
+                    self.show_transport(ui)
+                });
             bounds = native_window_bounds(window_ctx);
         });
 
@@ -8656,6 +8689,9 @@ impl OpenTrackApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&window_ctx.style()).inner_margin(4.0))
                 .show(window_ctx, |ui| {
+                    if self.dialog_owns_input() {
+                        ui.disable();
+                    }
                     let (changed, selection_requested, _) = show_mixer(
                         ui,
                         &mut self.data.project,
@@ -8712,6 +8748,20 @@ impl OpenTrackApp {
         ) {
             ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
         }
+        // Windows keeps the editor above its owner through Win32 window
+        // ownership. Other desktops have no owner concept, so ask the compositor
+        // for a top-level window level while the preference is set.
+        #[cfg(not(windows))]
+        ctx.send_viewport_cmd_to(
+            id,
+            egui::ViewportCommand::WindowLevel(
+                if self.channel_settings_ui.preferences.always_on_top && !dialog_open {
+                    egui::viewport::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::viewport::WindowLevel::Normal
+                },
+            ),
+        );
         self.channel_settings_window.open = open;
         self.channel_settings_window.viewport_live = open;
         if restore_bounds.is_some() {
@@ -8957,6 +9007,9 @@ impl OpenTrackApp {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
+                if self.dialog_owns_input() {
+                    ui.disable();
+                }
                 insert = media_pool::show(ui, &self.data.project);
             });
             bounds = native_window_bounds(window_ctx);
@@ -10446,6 +10499,9 @@ impl eframe::App for OpenTrackApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
+                if self.dialog_owns_input() {
+                    ui.disable();
+                }
                 if self.project_open {
                     self.show_docked_workspace(ui);
                 }
@@ -17423,6 +17479,37 @@ fn create_project_directory_layout(root: &Path) -> std::io::Result<()> {
     fs::create_dir_all(root.join("Metadata"))
 }
 
+/// Files OpenTrack reads as a project.
+const PROJECT_FILE_EXTENSIONS: [&str; 3] = ["opr", "otp", "rwp"];
+
+/// True when `root` already holds a project file at its top level.
+fn folder_holds_project(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    PROJECT_FILE_EXTENSIONS
+                        .iter()
+                        .any(|known| extension.eq_ignore_ascii_case(known))
+                })
+    })
+}
+
+/// True when a new project may not take over its folder.
+///
+/// A folder that exists without a project file is adopted rather than rejected:
+/// an earlier attempt, or a cancelled save, can leave the `Audio`/`Metadata`
+/// layout behind before any project file is written.
+fn project_folder_is_occupied(root: &Path, project_file: &Path) -> bool {
+    project_file.exists() || (root.exists() && folder_holds_project(root))
+}
+
 fn project_directory_layout_exists(project_file: &Path) -> bool {
     let Some(root) = project_file.parent() else {
         return false;
@@ -17492,15 +17579,25 @@ fn dismiss_window_on_outside_click<R>(
     let was_visible_last_frame = ctx
         .data(|data| data.get_temp::<u64>(id))
         .is_some_and(|last_frame| last_frame.saturating_add(1) == frame);
+    // Picking an item in a combo box closes the popup in the same frame the
+    // click happens, so `is_any_open` is already false by the time this runs and
+    // the window would close as if the click had landed outside it. Remember
+    // that a popup was open last frame and ignore that click.
+    let popup_open = egui::Popup::is_any_open(ctx);
+    let popup_was_open = ctx
+        .data(|data| data.get_temp::<bool>(id.with("popup-open")))
+        .unwrap_or(false);
     if *open
         && was_visible_last_frame
-        && !egui::Popup::is_any_open(ctx)
+        && !popup_open
+        && !popup_was_open
         && ctx.input(|input| input.pointer.any_click())
         && response.is_some_and(|window| window.response.clicked_elsewhere())
     {
         *open = false;
     }
     ctx.data_mut(|data| {
+        data.insert_temp(id.with("popup-open"), popup_open);
         if *open {
             data.insert_temp(id, frame);
         } else {
@@ -17551,6 +17648,49 @@ fn relink_audio_source_path(project: &mut Project, old_path: &Path, new_path: &P
         }
     }
     relinked
+}
+
+#[cfg(test)]
+mod project_folder_tests {
+    use super::*;
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-folder-adopt-{}-{label}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn a_folder_without_a_project_is_adopted() {
+        let root = temp_root("adopt");
+        create_project_directory_layout(&root).expect("layout should be created");
+        assert!(!project_folder_is_occupied(&root, &root.join("EXAMPLE.opr")));
+        // Adopting must reuse the folders a previous attempt already created.
+        create_project_directory_layout(&root).expect("layout should be reusable");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_folder_holding_a_project_file_is_not_adopted() {
+        let root = temp_root("occupied");
+        create_project_directory_layout(&root).expect("layout should be created");
+        fs::write(root.join("Example.OPR"), b"{}").expect("project file should be written");
+        assert!(project_folder_is_occupied(&root, &root.join("EXAMPLE.opr")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_existing_target_project_file_is_not_overwritten() {
+        let root = temp_root("target");
+        fs::create_dir_all(&root).expect("folder should be created");
+        let project_file = root.join("EXAMPLE.opr");
+        fs::write(&project_file, b"{}").expect("project file should be written");
+        assert!(project_folder_is_occupied(&root, &project_file));
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

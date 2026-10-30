@@ -579,7 +579,7 @@ impl AudioInputProbe {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn record_probe_samples(
     samples: &[f32],
     channels: u16,

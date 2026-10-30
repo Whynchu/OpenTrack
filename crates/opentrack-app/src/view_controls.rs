@@ -29,14 +29,15 @@ pub(crate) enum WheelAction {
 }
 
 pub(crate) fn wheel(ui: &egui::Ui, bounds: Rect) -> Option<WheelAction> {
+    // Ignore the wheel when a window, menu or popup covers this area: the
+    // pointer is inside `bounds`, but it is not on this layer.
+    let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) else {
+        return None;
+    };
+    if !bounds.contains(pointer) || ui.ctx().layer_id_at(pointer) != Some(ui.layer_id()) {
+        return None;
+    }
     ui.input(|input| {
-        if !input
-            .pointer
-            .hover_pos()
-            .is_some_and(|pos| bounds.contains(pos))
-        {
-            return None;
-        }
         let mut amount = 0.0;
         let mut modifiers = input.modifiers;
         for event in &input.events {
