@@ -9989,7 +9989,7 @@ impl OpenTrackApp {
         if let Some(timing) = engine.callback_timing_summary() {
             has_callback_timing = true;
             diagnostic.push_str(&format!(
-                " | render interval p95/max {} / {} us | render duration p95/max {} / {} us | {} samples / {} lost",
+                " | render interval p95/max {} / {} us | render duration p95/max {} / {} us | {} samples / {} overwritten",
                 timing.interval_p95_us,
                 timing.interval_max_us,
                 timing.duration_p95_us,
@@ -10017,7 +10017,7 @@ impl OpenTrackApp {
         if let Some(timing) = engine.wasapi_callback_timing_summary() {
             has_callback_timing = true;
             diagnostic.push_str(&format!(
-                " | WASAPI fill interval p95/max {} / {} us | duration p95/max {} / {} us | period {} frames | {} samples / {} lost",
+                " | WASAPI fill interval p95/max {} / {} us | duration p95/max {} / {} us | period {} frames | {} samples / {} overwritten",
                 timing.interval_p95_us,
                 timing.interval_max_us,
                 timing.duration_p95_us,
@@ -10027,13 +10027,16 @@ impl OpenTrackApp {
                 timing.overwritten_samples,
             ));
         }
-        if let Some((track_index, timing)) = engine
-            .hosted_track_timing_summaries()
-            .into_iter()
-            .max_by_key(|(_, timing)| timing.duration_p95_us)
-        {
+        for (track_index, timing) in engine.hosted_track_timing_summaries() {
+            let track_label = self
+                .data
+                .project
+                .tracks
+                .get(track_index)
+                .map(|track| track.name.as_str())
+                .unwrap_or("unknown");
             diagnostic.push_str(&format!(
-                " | hosted track {} block p95 {} us / max {} us | {} samples / {} overwritten",
+                " | track {} ({track_label}) hosted block p95 {} us / max {} us | {} samples / {} overwritten",
                 track_index,
                 timing.duration_p95_us,
                 timing.duration_max_us,

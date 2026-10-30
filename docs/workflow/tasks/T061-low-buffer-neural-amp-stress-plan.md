@@ -1,6 +1,6 @@
 # T061 — Low-buffer neural amp and master-chain stress plan
 
-- Status: user-created four-track GATEWAY bench identified; initial playback results reported; formal attribution matrix and soak not performed.
+- Status: four-track SLO-100 HOTONE GATEWAY bench prepared; first 64-frame telemetry received; detailed attribution and soak remain pending.
 - User goal: make 64 samples artifact-free on the Mackie interface with multiple
   GATEWAY Neural Amp Modeler instances and Ozone on Stereo Out. Decision
   (2026-10-29): 64 samples is the working point and the acceptance target; the
@@ -36,6 +36,47 @@ failures change both buffer size and instance count, so they do not isolate the
 cause. No loopback capture has been provided; do not attribute the result to the
 renderer or plugins from these reports alone.
 
+### First 64-frame telemetry (user report)
+
+The user supplied this diagnostic summary from the Mackie ASIO device at 48 kHz
+and a 64-frame period/buffer: DSP EMA 62%, 1,712 render misses, zero ASIO
+overload windows, and zero ASIO callback collisions. The render-miss counter
+increments when an audio callback exceeds its frame-derived deadline or the
+renderer gate collides; the separate ASIO collision counter was zero. The EMA
+is smoothed load, so it can remain below 100% while individual callbacks miss
+their deadline. The ASIO driver did not report an overload in the observed
+polling windows; this does not negate the host's render misses or establish
+artifact-free output. Run duration, audible result, and confirmed project/model
+state were not included, so do not interpret 1,712 as a rate or attribute it to
+four active model instances yet.
+
+Timing capture was unavailable because the app was not launched with
+`OPENTRACK_REALTIME_DIAGNOSTICS=1`. Repeat with timing capture enabled and
+record interval/duration percentiles and hosted-track/Stereo Out timings. Keep
+the MMCSS A/B disabled for this baseline.
+
+### Second 64-frame telemetry (user report)
+
+The next report includes timing capture: Mackie ASIO at 48 kHz, 64-frame period
+and buffer, DSP EMA 64%, 2,806 render misses, zero ASIO overload windows, and
+zero ASIO callback collisions. ASIO callback interval p95/max was 2,012/2,701
+us and callback duration p95/max was 1,925/2,689 us, against a 1,333 us period.
+Both p95 durations exceed the period, so this is a clear deadline failure.
+Stereo Out took 28 us p95 / 42 us max, making the master output stage an
+unlikely source of the bulk of the delay. The slowest single hosted-track block
+was 439 us p95 / 580 us max; because the report currently exposes only the
+slowest track, it does not show the total cost across all four model tracks.
+
+The `36,135 lost` callback samples and `25,672 overwritten` hosted-stage
+samples are rolling-ring overwrites, not extra missed audio callbacks. The
+sample counts and miss count are cumulative and are not comparable to the first
+report without equal run durations. MMCSS remained disabled. Audibility, run
+duration, and confirmation of the loaded project/model were not included.
+Next capture should list each hosted track separately to compare four model
+costs; then use controlled one/two/four-instance runs if attribution still
+requires it. The driver overload signal remaining zero does not change the
+observed callback deadline failure.
+
 ### Bench project inspection
 
 Read-only inspection of `C:\Users\Samue\Documents\EXAMPLE\STRESS TEST.opr`
@@ -52,6 +93,25 @@ For an actual four-instance run, use a disposable copy and unmute Audio 09,
 Audio 10, and Audio 11. Keep the saved compressor chain for the first exact
 reproduction; then bypass compressors in controlled follow-up runs to isolate
 their contribution. Do not overwrite the user's original stress project.
+
+The user clarified that the intended load requires the specific
+`SLO-100 LOWGAIN HOTONE.nam` model in every Gateway instance. Inspection found
+that the source bench instead referenced one Edge Breakup model and three
+Valeton Low Gain models. A second disposable copy is prepared at
+`stress-bench/4x-GATEWAY-SLO100-HOTONE.opr`: all four Gateway state blobs point
+to the requested `.nam`, and all four tracks are unmuted. The model file exists
+at the supplied Downloads path. Only the length-prefixed model path was changed
+in each serialized Gateway state; its other plugin-state bytes, track inserts,
+media references, and original project were preserved. This copy has not yet
+been loaded in OpenTrack or playback-validated; use it for the four-instance
+measurement. The earlier unmuted copy retains the original model assignments
+and was removed so there is one unmuted bench copy to use for this run.
+
+The current packaged release at the time of the second report was built from
+commit `1428b8f` with `local-asio`; `builds/x64/OpenTrack.exe` SHA-256 is
+`DF1D47F3F9E4E596615F5354D6B97F260528CC4D2B11C50A416F7A25E749B83C`. Hardware
+playback has produced clear callback timing evidence, but there is no captured
+output or confirmed model/project identity for the run yet.
 
 At 64 frames, compare dry, one, two, and four GATEWAY instances using the same
 project, duplicated DI source, plugin settings, and master chain. Keep plugin
