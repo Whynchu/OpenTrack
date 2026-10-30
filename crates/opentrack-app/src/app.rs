@@ -1930,7 +1930,7 @@ impl OpenTrackApp {
                     .and_then(|storage| {
                         eframe::get_value(storage, "transport-window-always-on-top-v1")
                     })
-                    .unwrap_or(false),
+                    .unwrap_or(true),
             },
             metronome_enabled: creation
                 .storage
@@ -8628,6 +8628,19 @@ impl OpenTrackApp {
         }
     }
 
+    /// True while a confirmation or setup dialog needs the main window raised.
+    fn modal_dialog_open(&self) -> bool {
+        self.pending_project_action.is_some()
+            || self.pending_track_delete_id.is_some()
+            || self.project_rate_change.is_some()
+            || self.project_folder_setup.is_some()
+            || self.project_open_error.is_some()
+            || self.media_operation_error.is_some()
+            || self.track_add_dialog.is_some()
+            || self.track_rename_dialog.is_some()
+            || self.event_colors_dialog.is_some()
+    }
+
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
         self.update_channel_analyzer();
         if !self.channel_settings_window.open {
@@ -8685,9 +8698,16 @@ impl OpenTrackApp {
             Vec2::new(820.0, 420.0),
             restore_bounds.as_ref(),
         );
+        let modal = self.modal_dialog_open();
+        let dialog_open = modal || self.dialog_owns_input();
+        let desired_level = if self.channel_settings_ui.preferences.always_on_top && !dialog_open {
+            egui::viewport::WindowLevel::AlwaysOnTop
+        } else {
+            egui::viewport::WindowLevel::Normal
+        };
         builder = builder
             .with_visible(viewport_live || focus_requested)
-            .with_window_level(egui::viewport::WindowLevel::Normal);
+            .with_window_level(desired_level);
         if focus_requested {
             builder = builder.with_active(true);
         }
@@ -8748,16 +8768,6 @@ impl OpenTrackApp {
             self.status_message =
                 "Channel Settings window could not be created; click Edit to retry".into();
         }
-        let modal = self.pending_project_action.is_some()
-            || self.pending_track_delete_id.is_some()
-            || self.project_rate_change.is_some()
-            || self.project_folder_setup.is_some()
-            || self.project_open_error.is_some()
-            || self.media_operation_error.is_some()
-            || self.track_add_dialog.is_some()
-            || self.track_rename_dialog.is_some()
-            || self.event_colors_dialog.is_some();
-        let dialog_open = modal || self.dialog_owns_input();
         if self.channel_window_owner.apply(
             self.channel_settings_ui.preferences.always_on_top,
             dialog_open,
@@ -8769,16 +8779,9 @@ impl OpenTrackApp {
         // ownership. Other desktops have no owner concept, so ask the compositor
         // for a top-level window level while the preference is set.
         #[cfg(not(windows))]
-        {
-            let level = if self.channel_settings_ui.preferences.always_on_top && !dialog_open {
-                egui::viewport::WindowLevel::AlwaysOnTop
-            } else {
-                egui::viewport::WindowLevel::Normal
-            };
-            if self.channel_settings_window.window_level != Some(level) {
-                self.channel_settings_window.window_level = Some(level);
-                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(level));
-            }
+        if self.channel_settings_window.window_level != Some(desired_level) {
+            self.channel_settings_window.window_level = Some(desired_level);
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(desired_level));
         }
         self.channel_settings_window.open = open;
         self.channel_settings_window.viewport_live = open;
