@@ -55,6 +55,19 @@ user pin preferences resume after popups close. Focused tests cover keeping a
 popup open within its activation/foreground area and closing it after leaving.
 Runtime review of overlapping native windows remains pending.
 
+2026-10-30 follow-up: the reported sequence is opening Channel Settings, opening
+a Project context menu, then returning to Channel Settings where the first click
+passes through. Source inspection found the shared popup handler re-anchored its
+activation point on every click. When the menu was opened by right-clicking in
+Project while a Channel Settings popup was still active, the pointer position
+could be moved to the Project window and then used as the Channel Settings
+activation point. Leaving that point dismissed the popup, while a stale native
+front-level transition could make the next click hit the Project window. The
+handler now keeps the original activation point through subsequent clicks,
+including nested popup interactions; a focused regression checks that clicks
+inside a popup do not extend its activation zone. Runtime reproduction still
+needs confirmation in the Windows app.
+
 ### 4. Project and plugin loading
 
 - Map actual project-load stages and replace placeholder progress with stage

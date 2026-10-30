@@ -20,7 +20,10 @@ pub(crate) fn close_when_pointer_leaves(ctx: &egui::Context) -> bool {
     let pointer = ctx.input(|input| input.pointer.hover_pos());
     let activation_point = ctx.data(|data| data.get_temp::<Pos2>(activation_id));
     let activation_point = if ctx.input(|input| input.pointer.any_click()) {
-        pointer.or(activation_point)
+        // A newly opened popup starts a new activation cycle. Preserve the
+        // original click position; later clicks inside a nested popup must
+        // not move the point and keep the chain alive after leaving it.
+        activation_point.or(pointer)
     } else {
         activation_point.or(pointer)
     };
@@ -113,5 +116,21 @@ mod tests {
             },
         );
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn clicks_inside_popup_do_not_reanchor_activation_point() {
+        let activation = Pos2::new(30.0, 30.0);
+        let menu = Rect::from_min_max(Pos2::new(40.0, 40.0), Pos2::new(100.0, 100.0));
+        assert!(pointer_in_popup_zones(
+            Some(Pos2::new(80.0, 80.0)),
+            Some(activation),
+            &[menu]
+        ));
+        assert!(!pointer_in_popup_zones(
+            Some(Pos2::new(200.0, 200.0)),
+            Some(activation),
+            &[menu]
+        ));
     }
 }
