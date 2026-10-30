@@ -495,10 +495,10 @@ fn event_tracks_for_lane(project: &Project, lane: &Lane) -> Vec<u64> {
 }
 
 /// Time ranges represented by the collapsed group's one virtual audio event.
-/// Only cuts shared by every populated child track create selectable pieces.
-/// A shared cut is either a group split marker with matching child boundaries
-/// or source-contiguous split clips on every child track. Independent clip
-/// starts/ends stay hidden inside the continuous group event.
+/// A group split marker creates a piece boundary when any child was split at
+/// it, and a cut inferred from child clips requires source-contiguous splits on
+/// every child track. Independent clip starts/ends stay hidden inside the
+/// continuous group event.
 pub(super) fn group_audio_segments(project: &Project, group_id: u64) -> Vec<(f64, f64)> {
     let Some(group) = project
         .tracks
@@ -574,11 +574,16 @@ pub(super) fn group_audio_segments(project: &Project, group_id: u64) -> Vec<(f64
             }
         }
     }
+    // A group cut is recorded when the group itself is cut, and every clip that
+    // crossed it was split. Requiring a boundary on *every* child track dropped
+    // the cut as soon as one child had no audio at that beat, which happens
+    // routinely once takes are stacked: the group then looked uncut while the
+    // children were. Keep the cut when any child was actually split at it.
     explicit_cuts.retain(|beat| {
         beat.is_finite()
             && *beat > start + 1e-6
             && *beat < end - 1e-6
-            && child_tracks.iter().all(|track| {
+            && child_tracks.iter().any(|track| {
                 track.clips.iter().any(|clip| {
                     let clip_end =
                         clip.start_beats + clip.duration_seconds * project.tempo_bpm / 60.0;
@@ -2669,5 +2674,75 @@ mod tests {
         let undo = history.undo(&f.project).unwrap();
         assert_eq!(undo, before);
         assert_eq!(history.redo(&undo).unwrap(), f.project);
+    }
+}
+
+#[cfg(test)]
+mod group_lane_tests {
+    use super::*;
+
+    fn grouped_project() -> Project {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let group_id = project.tracks[0].id;
+        project.tracks[1].parent_group_id = Some(group_id);
+        project.tracks[2].parent_group_id = Some(group_id);
+        project
+    }
+
+    #[test]
+    fn a_group_cut_through_take_lanes_stays_visible() {
+        let mut project = grouped_project();
+        let group_id = project.tracks[0].id;
+        // Two takes stacked in one lane plus one plain clip: 4 s at 120 bpm is 8 beats.
+        project
+            .add_audio_clip(1, PathBuf::from("take-a.wav"), 0.0, 4.0)
+            .unwrap();
+        project
+            .add_audio_clip(1, PathBuf::from("take-b.wav"), 0.0, 4.0)
+            .unwrap();
+        project
+            .add_audio_clip(2, PathBuf::from("plain.wav"), 0.0, 4.0)
+            .unwrap();
+
+        let (split, _) = project.split_group_audio_clips(group_id, 4.0);
+        assert!(split, "group split should succeed");
+
+        let segments = group_audio_segments(&project, group_id);
+        assert_eq!(
+            segments.len(),
+            2,
+            "the cut should be visible on the group, got {segments:?}"
+        );
+    }
+
+    #[test]
+    fn a_group_cut_stays_visible_when_a_child_starts_later() {
+        let mut project = grouped_project();
+        let group_id = project.tracks[0].id;
+        // Lane 1 holds two takes over the whole span; lane 2 only has audio after
+        // the cut, which is what a later take in a group looks like.
+        project
+            .add_audio_clip(1, PathBuf::from("take-a.wav"), 0.0, 4.0)
+            .unwrap();
+        project
+            .add_audio_clip(1, PathBuf::from("take-b.wav"), 0.0, 4.0)
+            .unwrap();
+        project
+            .add_audio_clip(2, PathBuf::from("late.wav"), 5.0, 1.5)
+            .unwrap();
+
+        let (split, _) = project.split_group_audio_clips(group_id, 4.0);
+        assert!(split, "group split should succeed");
+
+        let segments = group_audio_segments(&project, group_id);
+        assert_eq!(
+            segments.len(),
+            2,
+            "the cut should be visible on the group, got {segments:?}"
+        );
     }
 }
