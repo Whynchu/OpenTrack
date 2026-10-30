@@ -135,6 +135,8 @@ struct TransportWindowState {
     bounds: Option<WindowBounds>,
     viewport_live: bool,
     always_on_top: bool,
+    /// Window level last sent to the compositor, so it is not re-applied per frame.
+    window_level: Option<egui::viewport::WindowLevel>,
 }
 
 impl NativeWindowState {
@@ -1931,6 +1933,7 @@ impl OpenTrackApp {
                         eframe::get_value(storage, "transport-window-always-on-top-v1")
                     })
                     .unwrap_or(true),
+                window_level: None,
             },
             metronome_enabled: creation
                 .storage
@@ -8574,16 +8577,17 @@ impl OpenTrackApp {
             self.transport_window.bounds.as_ref()
         };
         let reopening = !self.transport_window.viewport_live;
+        let transport_level = if self.transport_window.always_on_top {
+            egui::viewport::WindowLevel::AlwaysOnTop
+        } else {
+            egui::viewport::WindowLevel::Normal
+        };
         let id = egui::ViewportId::from_hash_of("floating-transport-panel-m1-position-v5");
         let mut builder = viewport_builder("Transport Panel", SIZE, SIZE, restore_bounds)
             .with_visible(!reopening)
             .with_decorations(false)
             .with_resizable(false)
-            .with_window_level(if self.transport_window.always_on_top {
-                egui::viewport::WindowLevel::AlwaysOnTop
-            } else {
-                egui::viewport::WindowLevel::Normal
-            });
+            .with_window_level(transport_level);
         if restore_bounds.is_none() {
             builder = builder.with_position(Pos2::new(552.0, 663.0));
         }
@@ -8617,6 +8621,16 @@ impl OpenTrackApp {
             open = false;
             self.status_message =
                 "Transport window could not be created; reopen it from the Window menu".to_owned();
+        }
+        // winit applies a level to the window before it is mapped, which window
+        // managers ignore, so ask once the viewport exists. A recreated viewport
+        // starts from the level in its builder again.
+        if reopening {
+            self.transport_window.window_level = None;
+        }
+        if self.transport_window.window_level != Some(transport_level) {
+            self.transport_window.window_level = Some(transport_level);
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::WindowLevel(transport_level));
         }
         self.show_transport &= open;
         self.transport_window.viewport_live = open && self.show_transport;
