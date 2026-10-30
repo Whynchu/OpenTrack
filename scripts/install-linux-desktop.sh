@@ -24,13 +24,18 @@ install -m 0644 \
     "$repo_root/crates/opentrack-app/assets/opentrack-icon.svg" \
     "$icon_dir/opentrack.svg"
 
+# Launch through XWayland. Wayland has no protocol for "keep this window above
+# others", and winit's Wayland backend implements WindowLevel as a no-op, so
+# Channel Settings and the Transport cannot stay above the main window there.
+# X11 supports _NET_WM_STATE_ABOVE, which KWin honours for XWayland clients.
+# Drop the `env -u` below to go back to native Wayland without always-on-top.
 cat >"$application_dir/opentrack.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=OpenTrack
 GenericName=Digital Audio Workstation
 Comment=Open-source DAW for recording, editing, arranging and mixing
-Exec="$executable"
+Exec=env -u WAYLAND_DISPLAY "$executable"
 Icon=opentrack
 Terminal=false
 StartupNotify=true
