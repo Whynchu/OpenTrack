@@ -8529,6 +8529,7 @@ impl OpenTrackApp {
             || self.about_open
             || self.metronome_settings_open
             || self.tempo_signature_settings_open
+            || self.realtime_diagnostics_open
             || self.project_folder_setup.is_some()
             || self.pending_project_action.is_some()
             || self.track_rename_dialog.is_some()
@@ -8731,16 +8732,7 @@ impl OpenTrackApp {
             || self.track_add_dialog.is_some()
             || self.track_rename_dialog.is_some()
             || self.event_colors_dialog.is_some();
-        let dialog_open = modal
-            || self.device_setup_open
-            || self.vst_connections_open
-            || self.project_setup_open
-            || self.preferences_ui.is_open
-            || self.key_commands_open
-            || self.workspace_organizer_open
-            || self.about_open
-            || self.metronome_settings_open
-            || self.tempo_signature_settings_open;
+        let dialog_open = modal || self.dialog_owns_input();
         if self.channel_window_owner.apply(
             self.channel_settings_ui.preferences.always_on_top,
             dialog_open,
