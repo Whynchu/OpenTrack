@@ -8700,7 +8700,15 @@ impl OpenTrackApp {
         );
         let modal = self.modal_dialog_open();
         let dialog_open = modal || self.dialog_owns_input();
-        let desired_level = if self.channel_settings_ui.preferences.always_on_top && !dialog_open {
+        // Wayland has no keep-above request and X11 only has a global one, so
+        // the "always on top" preference is honoured while OpenTrack itself is
+        // the focused application. That keeps the editor above its owner without
+        // floating over every other window on the desktop.
+        let owner_focused = ctx.input(|input| input.focused);
+        let desired_level = if self.channel_settings_ui.preferences.always_on_top
+            && owner_focused
+            && !dialog_open
+        {
             egui::viewport::WindowLevel::AlwaysOnTop
         } else {
             egui::viewport::WindowLevel::Normal
