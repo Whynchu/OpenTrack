@@ -847,3 +847,15 @@ ASIO-enabled `cargo check` pass. Release build staged at `builds/x64/OpenTrack`
 with local ASIO, SHA-256
 `a20b1044f04a3aaf49602d253179ec1e3e3c15973de3c9741a8e7c7c982451bd`. User
 visual/audio acceptance remains pending.
+
+2026-10-31 Transport drag regression fix: the Wayland overlay now applies
+pointer drag deltas to persisted Transport bounds and follows them with
+`Window::current_pos`; a five-pixel top-edge grip gives the overlay a reliable
+hit target. Native viewport dragging still uses `StartDrag`. The pure position
+regression test passes. A UI drag harness did not complete in this environment,
+so live interaction remains unverified. T062 focused checks pass: Transport drag
+(1), EQ interaction (16), audio suite (104 passed, 3 ignored), and OPR
+EQ/tonal-target round-trip (1). Fresh-target x64 Linux release with local ASIO
+is staged at `builds/x64/OpenTrack`, SHA-256
+`38ab551690f396ae0cc0c227e790e5d5d6c2ac95db18953148fca7c13ec792ac`. Live visual,
+audio, save/reopen, Windows, and device-cost acceptance remains pending.
