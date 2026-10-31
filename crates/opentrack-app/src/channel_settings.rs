@@ -952,11 +952,42 @@ fn eq_knob(
     tooltip: String,
 ) -> bool {
     let compact = rect.height() < 58.0;
-    let label_height = if compact { 8.0 } else { 10.0 };
-    let dial_size = if compact { 18.0 } else { 24.0 };
-    let dial_center_y = if compact { 20.0 } else { 25.0 };
-    let value_top = if compact { 31.0 } else { 42.0 };
-    let value_height = if compact { 16.0 } else { 18.0 };
+    let dense = rect.height() < 42.0;
+    let label_height = if dense {
+        7.0
+    } else if compact {
+        8.0
+    } else {
+        10.0
+    };
+    let dial_size = if dense {
+        16.0
+    } else if compact {
+        18.0
+    } else {
+        24.0
+    };
+    let dial_center_y = if dense {
+        15.0
+    } else if compact {
+        20.0
+    } else {
+        25.0
+    };
+    let value_top = if dense {
+        24.0
+    } else if compact {
+        31.0
+    } else {
+        42.0
+    };
+    let value_height = if dense {
+        14.0
+    } else if compact {
+        16.0
+    } else {
+        18.0
+    };
     text(
         ui,
         at(rect, 0.0, 0.0, rect.width(), label_height),
@@ -1569,7 +1600,7 @@ fn graph(
         selected_node.filter(|_| eq.band(selected_index).is_some_and(|band| band.enabled)),
         eq.band_and_dynamic_mut(selected_index),
     ) {
-        let popup_size = Vec2::new(356.0_f32.min(plot.width()), 176.0_f32.min(r.height()));
+        let popup_size = Vec2::new(344.0_f32.min(plot.width()), 144.0_f32.min(r.height()));
         let mut popup_pos = Pos2::new(
             plot.left() + 8.0 + state.eq_detail_offset.x,
             plot.top() + 6.0 + state.eq_detail_offset.y,
@@ -1654,12 +1685,12 @@ fn graph(
         } else {
             "Band audition is unavailable for the input bus"
         });
-        let section_title = at(inner, 0.0, 18.0, inner.width(), 8.0);
+        let section_title = at(inner, 0.0, 15.0, inner.width(), 7.0);
         text(ui, section_title, "STATIC EQ", 7.0, Align2::LEFT_CENTER);
         let static_width = ((inner.width() - 8.0) / 3.0).max(1.0);
-        let static_top = 24.0;
+        let static_top = 20.0;
         if band.filter == FilterType::Notch {
-            let gain_rect = at(inner, 0.0, static_top, static_width, 46.0);
+            let gain_rect = at(inner, 0.0, static_top, static_width, 38.0);
             text(
                 ui,
                 at(gain_rect, 0.0, 0.0, gain_rect.width(), 8.0),
@@ -1669,7 +1700,7 @@ fn graph(
             );
             text(
                 ui,
-                at(gain_rect, 0.0, 31.0, gain_rect.width(), 16.0),
+                at(gain_rect, 0.0, 24.0, gain_rect.width(), 14.0),
                 "N/A",
                 8.0,
                 Align2::CENTER_CENTER,
@@ -1677,7 +1708,7 @@ fn graph(
         } else {
             changed |= eq_knob(
                 ui,
-                at(inner, 0.0, static_top, static_width, 50.0),
+                at(inner, 0.0, static_top, static_width, 38.0),
                 selected_index,
                 "GAIN",
                 &mut band.gain_db,
@@ -1691,7 +1722,7 @@ fn graph(
         }
         changed |= eq_knob(
             ui,
-            at(inner, static_width + 4.0, static_top, static_width, 46.0),
+            at(inner, static_width + 4.0, static_top, static_width, 38.0),
             selected_index,
             "FREQ",
             &mut band.frequency_hz,
@@ -1709,7 +1740,7 @@ fn graph(
                 (static_width + 4.0) * 2.0,
                 static_top,
                 static_width,
-                46.0,
+                38.0,
             ),
             selected_index,
             "Q",
@@ -1739,9 +1770,9 @@ fn graph(
                 "EQ band Q / resonance".to_owned()
             },
         );
-        let filter_label = at(inner, 0.0, 74.0, 40.0, 18.0);
+        let filter_label = at(inner, 0.0, 58.0, 40.0, 18.0);
         text(ui, filter_label, "FILTER", 7.0, Align2::LEFT_CENTER);
-        let filter_rect = at(inner, 42.0, 73.0, (inner.width() - 42.0).max(1.0), 18.0);
+        let filter_rect = at(inner, 42.0, 58.0, (inner.width() - 42.0).max(1.0), 18.0);
         let filter_response = ui.interact(
             filter_rect,
             ui.id().with(("eq-popup-filter", selected_index)),
@@ -1796,7 +1827,7 @@ fn graph(
             }
         });
         let dynamic_eligible = band.filter.supports_dynamic_eq();
-        let divider_y = 94.0;
+        let divider_y = 78.0;
         ui.painter().line_segment(
             [
                 Pos2::new(inner.left(), inner.top() + divider_y),
@@ -1804,9 +1835,9 @@ fn graph(
             ],
             Stroke::new(1.0, p.grid),
         );
-        let dynamic_title = at(inner, 24.0, 96.0, inner.width() - 48.0, 14.0);
+        let dynamic_title = at(inner, 24.0, 80.0, inner.width() - 48.0, 14.0);
         text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
-        let dynamic_power_rect = at(inner, 0.0, 95.0, 20.0, 16.0);
+        let dynamic_power_rect = at(inner, 0.0, 79.0, 20.0, 16.0);
         if dynamic_eligible {
             if power(
                 ui,
@@ -1820,7 +1851,7 @@ fn graph(
                 changed = true;
             }
             let dynamic_width = ((inner.width() - 6.0) / 4.0).max(1.0);
-            let dynamic_top = 112.0;
+            let dynamic_top = 93.0;
             for (slot, (label, value, minimum, maximum, speed, suffix, log, help)) in [
                 (
                     "THRESH",
@@ -1869,7 +1900,7 @@ fn graph(
                 let x = slot as f32 * (dynamic_width + 2.0);
                 changed |= eq_knob(
                     ui,
-                    at(inner, x, dynamic_top, dynamic_width, 46.0),
+                    at(inner, x, dynamic_top, dynamic_width, 38.0),
                     selected_index,
                     label,
                     value,
@@ -2141,7 +2172,7 @@ fn strip(
     let knob = at(r, r.width() - 29.0, 91.0, 24.0, 24.0);
     let gain = ui
         .interact(knob, ui.id().with("input-gain"), Sense::click_and_drag())
-        .on_hover_text("Input Gain (use shift)");
+        .on_hover_text("Input Gain (use shift); lights show live peak level");
     context(&gain, state);
     if gain.dragged() {
         let speed = if ui.input(|i| i.modifiers.shift) {
@@ -2153,7 +2184,12 @@ fn strip(
             (track.input_gain_db - ui.input(|i| i.pointer.delta().y) * speed).clamp(-24.0, 24.0);
         changed = true;
     }
-    mixer::knob_graphic(ui, knob, track.input_gain_db);
+    mixer::knob_graphic_with_signal(
+        ui,
+        knob,
+        track.input_gain_db,
+        Some((peak, project_controls::track_color(track))),
+    );
     let body = at(r, 1.0, 123.0, r.width() - 2.0, r.height() - 125.0);
     ui.painter().rect_filled(body, 4.0, p.surface_raised);
     ui.painter().rect_stroke(

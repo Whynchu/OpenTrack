@@ -46,7 +46,10 @@ use two cascaded sections with a Butterworth-aligned Q pair; shelf transition
 width is controlled by Q. Sixteen focused EQ interaction tests pass.
 The OPR integration test now also round-trips captured tonal targets with both
 Pre and Post tap metadata; direct Channel Settings save/reopen review remains
-pending.
+pending. Mixer and Channel Settings input-gain knobs now use the supplied
+`knob_tight.svg`; their radial lights show live peak level in track color and
+turn red above 0 dBFS. EQ parameter knobs use the same artwork without signal
+lights, keeping parameter indication separate from audio level.
 Routing audit: Channel Settings edits `ChannelEqualizer`, consumed by track
 `ChannelProcessor` and output `BusRuntime`. 32-band EQ and dynamic
 processing are implemented in source, with per-band coefficient/enable ramps;
@@ -868,3 +871,17 @@ Transport drag-position regression 1/1. The release artifact remains
 `38ab551690f396ae0cc0c227e790e5d5d6c2ac95db18953148fca7c13ec792ac`. Live pointer,
 visual, listening, in-app save/reopen and device-cost review are still pending;
 the current desktop surface cannot expose OpenTrack for that review.
+
+2026-10-31 EQ detail panel compacting: popup height reduced 176→144 px and
+knob rows to 38 px with 16 px dials. Filter selector keeps its 18 px hit region;
+power controls keep 16 px. The focused EQ interaction suite remains green at
+16/16. ASIO-enabled release staged at `builds/x64/OpenTrack`, SHA-256
+`bf67454f358f720cfada241ed8e729414f2fb35bc8eadec97140f3c4c05f1128`.
+
+Plasma appearance diagnosis: `theme::install` follows only egui's System
+light/dark preference, then applies OpenTrack/egui palettes. Channel Settings
+and Transport popup menus use custom egui styles and do not read KDE color
+scheme or accent settings. Wayland renders these utility panels as egui
+in-app overlays, not Qt widgets. There is no KDE color-scheme/portal bridge or
+live Plasma theme subscription. A Plasma appearance bridge remains separate
+work; window decorations/compositor effects are distinct from widget styling.
