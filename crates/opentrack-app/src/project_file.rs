@@ -1137,6 +1137,8 @@ mod tests {
         };
         let equalizer = &mut project.tracks[0].equalizer;
         equalizer.bypassed = true;
+        equalizer.bands[0].filter = FilterType::LowShelfSoft;
+        equalizer.bands[1].filter = FilterType::HighShelfResonant;
         equalizer.additional_bands[3] = EqualizerBand {
             enabled: true,
             filter: FilterType::HighPassII,

@@ -859,3 +859,12 @@ EQ/tonal-target round-trip (1). Fresh-target x64 Linux release with local ASIO
 is staged at `builds/x64/OpenTrack`, SHA-256
 `38ab551690f396ae0cc0c227e790e5d5d6c2ac95db18953148fca7c13ec792ac`. Live visual,
 audio, save/reopen, Windows, and device-cost acceptance remains pending.
+
+T062 acceptance refresh (2026-10-31): the OPR EQ/tonal-target round-trip now
+includes the new smooth low-shelf and resonant high-shelf types. Analyzer suite
+17/17, EQ interaction suite 16/16, audio suite 104 passed/3 ignored, and the
+Transport drag-position regression 1/1. The release artifact remains
+`builds/x64/OpenTrack` (local ASIO), SHA-256
+`38ab551690f396ae0cc0c227e790e5d5d6c2ac95db18953148fca7c13ec792ac`. Live pointer,
+visual, listening, in-app save/reopen and device-cost review are still pending;
+the current desktop surface cannot expose OpenTrack for that review.
