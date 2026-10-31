@@ -448,6 +448,51 @@ impl SpectrumTap {
             .store(n.wrapping_mul(2).wrapping_add(2), Ordering::Release);
         self.written.store(n.wrapping_add(1), Ordering::Release);
     }
+    /// UI/control-thread read of a short pre-EQ RMS window. Reuses the existing
+    /// bounded tap: no FFT, allocation, or additional callback work is required.
+    pub(crate) fn input_rms_dbfs(&self) -> Option<(u64, f32)> {
+        if !self.enabled() {
+            return None;
+        }
+        let end = self.written.load(Ordering::Acquire);
+        let start = self.start.load(Ordering::Acquire);
+        let rate = self.rate.load(Ordering::Acquire);
+        if rate == 0 {
+            return None;
+        }
+        let count = (rate as usize / 50).clamp(1, 2048);
+        if end.saturating_sub(start) < count as u64 {
+            return None;
+        }
+        let mut power = 0.0_f64;
+        for n in end - count as u64..end {
+            let slot = &self.slots[n as usize % CAPACITY];
+            let expected = n.wrapping_mul(2).wrapping_add(2);
+            if slot.sequence.load(Ordering::Acquire) != expected {
+                return None;
+            }
+            let left = f64::from(f32::from_bits(slot.samples[0].load(Ordering::Relaxed)));
+            let right = f64::from(f32::from_bits(slot.samples[1].load(Ordering::Relaxed)));
+            power += (left * left + right * right) * 0.5;
+            std::sync::atomic::fence(Ordering::Acquire);
+            if slot.sequence.load(Ordering::Acquire) != expected {
+                return None;
+            }
+        }
+        if self.rate.load(Ordering::Acquire) != rate
+            || self.start.load(Ordering::Acquire) != start
+            || !self.enabled()
+        {
+            return None;
+        }
+        let db = if power > 0.0 {
+            (10.0 * (power / count as f64).log10()).max(-120.0) as f32
+        } else {
+            -120.0
+        };
+        Some((end, db))
+    }
+
     pub(crate) fn frame(
         &self,
         stage: SpectrumStage,
@@ -584,6 +629,36 @@ fn fft(data: &mut [Complex]) {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn input_rms_uses_live_pre_eq_stereo_samples_without_waiting_for_an_fft() {
+        let tap = super::SpectrumTap::new();
+        tap.enable(true);
+        for _ in 0..1024 {
+            tap.record((0.1, -0.1), (1.0, 1.0), 48_000);
+        }
+        assert!((tap.input_rms_dbfs().unwrap().1 + 20.0).abs() < 0.001);
+        assert!(
+            tap.frame(super::SpectrumStage::Pre, super::SpectrumResolution::Fast)
+                .is_none()
+        );
+        for _ in 0..960 {
+            tap.record((0.01, -0.01), (0.9, 0.9), 48_000);
+        }
+        assert!((tap.input_rms_dbfs().unwrap().1 + 40.0).abs() < 0.001);
+        for _ in 0..960 {
+            tap.record((0.0, 0.0), (1.0, 1.0), 48_000);
+        }
+        assert_eq!(tap.input_rms_dbfs().unwrap().1, -120.0);
+        tap.record((0.1, -0.1), (0.0, 0.0), 96_000);
+        assert!(tap.input_rms_dbfs().is_none());
+        for _ in 0..1920 {
+            tap.record((0.1, -0.1), (0.0, 0.0), 96_000);
+        }
+        assert!((tap.input_rms_dbfs().unwrap().1 + 20.0).abs() < 0.001);
+        tap.enable(false);
+        assert!(tap.input_rms_dbfs().is_none());
+    }
+
     use super::*;
     use std::sync::atomic::AtomicBool;
 

@@ -650,6 +650,10 @@ impl StereoMeter {
     ) -> Option<SpectrumFrame> {
         self.spectrum.get()?.frame(stage, resolution)
     }
+    /// Sequence and linked-stereo RMS of the pre-EQ signal, read off the audio thread.
+    pub fn eq_input_rms_dbfs(&self) -> Option<(u64, f32)> {
+        self.spectrum.get()?.input_rms_dbfs()
+    }
     pub(crate) fn record_spectrum(&self, pre: (f32, f32), post: (f32, f32), rate: u32) {
         if let Some(tap) = self.spectrum.get() {
             tap.record(pre, post, rate);
@@ -7240,5 +7244,23 @@ mod hosted_processing_tests {
         assert_eq!(diagnostic.last_track, Some(0));
         assert_eq!(diagnostic.last_insert, Some(0));
         assert!(diagnostic.last_error_code.is_some());
+    }
+}
+
+#[cfg(test)]
+mod eq_input_level_tests {
+    use super::*;
+    #[test]
+    fn bus_eq_input_level_includes_input_gain_and_is_independent_of_the_output_fader() {
+        let mut track = opentrack_core::project::BusChannel::output().strip;
+        track.input_gain_db = 6.0;
+        track.gain = 0.0;
+        let bus = bus::BusRuntime::new(&track, 48_000);
+        let meter = StereoMeter::default();
+        meter.enable_spectrum(true);
+        for _ in 0..2048 {
+            assert_eq!(bus.process_analyzed(0.1, -0.1, &meter, 48_000), (0.0, 0.0));
+        }
+        assert!((meter.eq_input_rms_dbfs().unwrap().1 + 14.0).abs() < 0.001);
     }
 }

@@ -120,3 +120,22 @@ keep normal brightness while preserving input blocking. Formatting,
 x64 release with local ASIO has SHA-256
 `6f4d1e9c6c6894171cf94462a55d282c8083da9c380c3fd92d0cdf70a88145e8`. No GUI
 visual review was performed.
+
+
+### 2026-10-31 Plasma window-move follow-up
+
+The user clarified that the desired Plasma feature is the Wobbly Windows
+compositor effect while dragging, not KDE colors. Wayland previously rendered
+Channel Settings and Transport as in-Project egui windows; their app-managed
+position updates bypassed the compositor's native window-move path. Both now
+use the existing native child viewport implementations on Wayland. Transport
+uses its viewport drag request, and Channel Settings moves through its native
+title bar. This should let KWin observe the move and apply enabled compositor
+effects. The code removes the Wayland-only overlays and their Project pointer
+mask. Wayland still does not support OpenTrack's requested always-on-top levels.
+`cargo fmt --all -- --check`, `git diff --check`, `cargo check --offline -p
+opentrack --features local-asio`, and the x64 Linux release build pass. No tests
+were run. The local-ASIO executable is staged at `builds/x64/OpenTrack`, SHA-256
+`e997effd1f9a77034cd99035fb21ea5e73c7324bfa95af945725ef93243d7609`; build
+metadata records `local_asio: true`. Live KWin movement and Wobbly Windows
+review remain pending.

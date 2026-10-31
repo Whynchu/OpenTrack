@@ -42,6 +42,7 @@ pub(super) struct State {
     pub resolution: SpectrumResolution,
     pub compare: Option<u64>,
     owner: Option<u64>,
+    input_level: Option<(u64, u64, Instant, f32)>,
     channel_count: Option<u8>,
     pub choices: Vec<Choice>,
     active: Vec<(u64, Arc<StereoMeter>)>,
@@ -114,6 +115,7 @@ impl State {
             tap.enable_spectrum(false);
         }
         self.owner = None;
+        self.input_level = None;
         self.channel_count = None;
         self.compare = None;
         self.stage = SpectrumStage::Post;
@@ -286,6 +288,9 @@ impl State {
                 tap.enable_spectrum(false);
                 self.frames.retain(|(key, _), _| key != id);
                 self.seen.remove(id);
+                if self.input_level.is_some_and(|(owner, ..)| owner == *id) {
+                    self.input_level = None;
+                }
             }
         }
         for (id, tap) in &wanted {
@@ -326,6 +331,25 @@ impl State {
             .map(|last| now.duration_since(last).as_secs_f32())
             .unwrap_or(0.03);
         self.last_poll = Some(now);
+        let input = owner.and_then(|id| {
+            self.active
+                .iter()
+                .find(|(active_id, _)| *active_id == id)
+                .and_then(|(_, tap)| tap.eq_input_rms_dbfs().map(|(seq, db)| (id, seq, db)))
+        });
+        match input {
+            Some((id, seq, db)) => {
+                if !self
+                    .input_level
+                    .is_some_and(|(previous_id, previous_seq, ..)| {
+                        previous_id == id && previous_seq == seq
+                    })
+                {
+                    self.input_level = Some((id, seq, now, db));
+                }
+            }
+            None => self.input_level = None,
+        }
         let active_stage = self.active_stage();
         let active_resolution = self.active_resolution();
         let analysis_dt = dt.clamp(0.0, 0.1);
@@ -398,6 +422,7 @@ impl State {
     }
 
     fn invalidate_capture_for_signal_change(&mut self) {
+        self.input_level = None;
         let had_capture = self.capture_active || self.capture_frames > 0 || self.capture_incomplete;
         self.tonal_average.clear();
         self.tonal_average_elapsed = 0.0;
@@ -804,6 +829,17 @@ impl State {
             } else {
                 self.default_rate
             })
+    }
+
+    pub fn input_level_dbfs(&self, id: u64) -> Option<f32> {
+        let (owner, _, at, db) = self.input_level?;
+        (owner == id).then(|| {
+            if at.elapsed().as_millis() > 120 {
+                -120.0
+            } else {
+                db
+            }
+        })
     }
 
     pub fn dynamic_gains_db(
@@ -1407,6 +1443,25 @@ fn update_tonal_average(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn threshold_input_level_expires_and_does_not_follow_freeze_or_another_owner() {
+        let mut state = super::State::default();
+        state.input_level = Some((1, 10, std::time::Instant::now(), -32.0));
+        state.frozen = true;
+        state.stage = opentrack_audio::SpectrumStage::Post;
+        assert_eq!(state.input_level_dbfs(1), Some(-32.0));
+        assert_eq!(state.input_level_dbfs(2), None);
+        state.input_level = Some((
+            1,
+            10,
+            std::time::Instant::now() - std::time::Duration::from_millis(200),
+            -32.0,
+        ));
+        assert_eq!(state.input_level_dbfs(1), Some(-120.0));
+        state.close();
+        assert_eq!(state.input_level_dbfs(1), None);
+    }
+
     use super::*;
     #[test]
     fn changing_channel_or_closing_resets_analysis_and_releases_taps() {

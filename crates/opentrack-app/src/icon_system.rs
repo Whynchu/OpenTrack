@@ -73,6 +73,7 @@ pub(crate) enum IconId {
     GlyphRecord,
     GlyphSolo,
     GlyphWrite,
+    Knob,
 }
 
 impl IconId {
@@ -141,6 +142,7 @@ impl IconId {
             Self::GlyphRecord => include_bytes!("../assets/original-glyphs/record.svg"),
             Self::GlyphSolo => include_bytes!("../assets/original-glyphs/solo.svg"),
             Self::GlyphWrite => include_bytes!("../assets/original-glyphs/write.svg"),
+            Self::Knob => include_bytes!("../../../knob_tight.svg"),
         }
     }
 
@@ -321,10 +323,13 @@ fn texture(ctx: &egui::Context, id: IconId, point_size: f32, ink: Color32) -> eg
         return texture;
     }
 
-    let colorized = String::from_utf8_lossy(id.svg()).replace(
-        "currentColor",
-        &format!("#{:02x}{:02x}{:02x}", ink.r(), ink.g(), ink.b()),
-    );
+    let tint = format!("#{:02x}{:02x}{:02x}", ink.r(), ink.g(), ink.b());
+    let source = String::from_utf8_lossy(id.svg());
+    let colorized = if id == IconId::Knob {
+        source.replace("#fff", &tint)
+    } else {
+        source.replace("currentColor", &tint)
+    };
     let options = resvg::usvg::Options::default();
     let tree = resvg::usvg::Tree::from_data(colorized.as_bytes(), &options)
         .expect("bundled Tabler SVG should parse");
@@ -385,6 +390,17 @@ pub(crate) fn paint_app_icon(ui: &egui::Ui, rect: Rect, id: IconId, ink: Color32
     );
 }
 
+pub(crate) fn paint_knob_asset(ui: &egui::Ui, rect: Rect, ink: Color32) {
+    let size = rect.width().min(rect.height());
+    let texture = texture(ui.ctx(), IconId::Knob, size, ink);
+    ui.painter().image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        Color32::WHITE,
+    );
+}
+
 pub(crate) fn paint_app_icon_on(
     ctx: &egui::Context,
     painter: &egui::Painter,
@@ -407,7 +423,7 @@ pub(crate) fn paint_app_icon_on(
 mod tests {
     use super::*;
 
-    const APP_ICONS: [IconId; 34] = [
+    const APP_ICONS: [IconId; 35] = [
         IconId::TrackAudio,
         IconId::TrackMidi,
         IconId::TrackInstrument,
@@ -442,6 +458,7 @@ mod tests {
         IconId::GlyphRecord,
         IconId::GlyphSolo,
         IconId::GlyphWrite,
+        IconId::Knob,
     ];
 
     const TOOLBAR_ICONS: [ToolbarIcon; 31] = [

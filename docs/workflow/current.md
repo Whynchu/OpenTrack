@@ -1,4 +1,18 @@
-# Current assignment - T059
+# Current assignment — T063
+
+## T063 — shared strip height and input-gain control
+
+User requested the extended strip match the proportions in `reference/good mixer panel.png`, fixing the centering visible in `reference/extended bad mixer panel.png`, in both Channel Settings and Mixer. The shared fader renderer now uses all available height with its existing fixed end padding; the 240 px travel cap is removed. The existing gain curve, handle and meter/footer positions are retained. Both views now use one shared input-gain/phase/value control, with 34 px artwork and hit area (previously 24 px), partly occupying the mono/stereo band while leaving its text clear. Numeric fields and the knob do not overlap. Per-frame knob dragging, Shift fine adjustment and double-click reset are shared as well. The user SVG itself is unchanged; no schema or DSP changes.
+
+Actual implementer/reviewer: GPT-6.1 Sol, baseline `fbee87f` plus the existing dirty working tree. Seven Mixer checks and 18 Channel Settings checks pass; local-ASIO compile, format and diff checks pass. Reviewed an offscreen raster of the actual Channel Settings and Mixer strip renderers at 430 and 650 px heights. Temporary rendering code was removed; the PNG stays only in `/tmp/channel-strip-height-review.png`. User accepted this channel-strip refinement and requested GitHub publication on 2026-10-31 ("this is fantastic! push to github."). Agent live desktop/hardware checks were not performed. Normal-directory local-ASIO release build passed and is staged at `builds/x64/OpenTrack`, SHA-256 `57d7be7e9678873904bce4ff7ae60bb6546e88292ebf7cad0c4d04b3ff33d0b7`.
+
+## EQ editor single-column arrangement and input LEDs — 2026-10-31
+
+User accepted the compact adjacent-label/value arrangement, requested one vertical column, and explicitly requested track-colored LEDs and a live input-dB display for Threshold. The side panel is now one 168 px strip: Gain, Frequency, Q, Filter, then Dynamic EQ power, Threshold, Range, Attack and Release. The 48 px user knob SVG remains unchanged; row spacing remains 58 px. Content height is 514 px with independent scrolling in shorter windows. Default Channel Settings size is 1120×650, minimum 1010×420, preserving usable graph width.
+
+All EQ parameter LED fills now use the selected track/bus color. Threshold lights show calibrated broadband pre-EQ linked-stereo RMS on the same -90…0 dB scale as its pointer setting; other LEDs follow their parameter values. The input reader reuses 20 ms of the existing bounded spectrum tap (maximum 2048 frames) off the callback, with no FFT or additional callback writes/allocations. Its reading is independent of output fader, Post/Pre display choice and Freeze, clears on source changes, and expires after 120 ms without fresh samples. The tooltip identifies pre-EQ input RMS. Audio processing and project schema are unchanged.
+
+Actual implementer/reviewer: GPT-6.1 Sol. All 18 Channel Settings tests pass, including track-color/input-dB LED count and single-stack geometry/input isolation. New audio checks verify calibrated pre-EQ stereo RMS, silence, rate/reset/disable, and bus input gain independent of the output fader; the stale/owner/Freeze UI-state check passes. Local-ASIO compile, formatting and diff checks pass. An offscreen raster of the actual UI shows one clean column with track-colored lights; the temporary renderer was removed and PNG remains only in `/tmp`. Running-app visual/listening and user acceptance remain pending. Normal-directory local-ASIO release build passed and is staged at `builds/x64/OpenTrack`, SHA-256 `9dbfabf375670199777b9e57a03f25fe71031fb367666ffac007329087e580ff`.
 
 ## T062 EQ and tonal reference goal
 
@@ -49,7 +63,12 @@ Pre and Post tap metadata; direct Channel Settings save/reopen review remains
 pending. Mixer and Channel Settings input-gain knobs now use the supplied
 `knob_tight.svg`; their radial lights show live peak level in track color and
 turn red above 0 dBFS. EQ parameter knobs use the same artwork without signal
-lights, keeping parameter indication separate from audio level.
+lights, keeping parameter indication separate from audio level. Linux x64
+local-ASIO release is at `builds/x64/OpenTrack`, SHA-256
+`500e59a544ccb5750aa6148b48a4df72d26cbd53cffc274d1497ff391d76757b`; visual
+and audio review remain pending. The EQ knob artwork was enlarged after the
+provided screenshot exposed a 16 px clipping area: rows are 48 px, dials are
+26 px, and the detail popup is 156 px tall.
 Routing audit: Channel Settings edits `ChannelEqualizer`, consumed by track
 `ChannelProcessor` and output `BusRuntime`. 32-band EQ and dynamic
 processing are implemented in source, with per-band coefficient/enable ramps;
@@ -182,6 +201,17 @@ and compilation pass; live pointer review remains pending.
 retain normal brightness. The existing dim treatment remains for modal
 confirmation/setup dialogs. Linux local-ASIO release rebuilt; visual review is
 pending.
+
+2026-10-31 Plasma window-move follow-up: Channel Settings and Transport now use
+native child windows in Wayland sessions instead of Project-owned egui overlays.
+This lets KWin receive window moves and apply desktop effects such as Wobbly
+Windows. The Transport drag handle uses the native viewport drag request;
+Channel Settings can move from its native title bar. Wayland still does not
+honor the app's always-on-top level requests. Linux x64 local-ASIO release is
+staged at `builds/x64/OpenTrack`, SHA-256
+`e997effd1f9a77034cd99035fb21ea5e73c7324bfa95af945725ef93243d7609`.
+Formatting, diff check, offline local-ASIO check, and release build pass. Live
+KWin effect behavior remains for user review.
 
 Wayland popup regression follow-up: the embedded Transport and Channel Settings
 now run the shared hover-leave handler, so VST selection menus and other popup
@@ -885,3 +915,11 @@ scheme or accent settings. Wayland renders these utility panels as egui
 in-app overlays, not Qt widgets. There is no KDE color-scheme/portal bridge or
 live Plasma theme subscription. A Plasma appearance bridge remains separate
 work; window decorations/compositor effects are distinct from widget styling.
+
+EQ layout correction (2026-10-31, GPT-6.1 Sol): user rejected the prior sizing. Source now uses 48 px dials, 88 px control rows with 10 px labels, separated filter and dynamic section positions, and a 384 by 280 px popup. Artwork uses foreground ink for legibility. Local-ASIO cargo check, formatting and diff check pass. Release package still contains the previous layout; new release and live visual review pending. User acceptance remains open.
+
+- EQ selected-band editor layout (2026-10-31, GPT-6.1 Luna): inspected `reference/Screenshot_20261031_110807.png` for its vertical grouping, compact hardware labels and status-light style. Channel Settings now reserves a fixed 330 px right-hand editor column, with EQ graph interaction and rendering confined to the left area; the viewport opens at 1230 px (1120 px minimum) to retain graph width. The selected band editor remains fixed while selection changes, preserves existing controls/knob SVG/accent lighting, and disabled bands can be re-enabled. Tonal view keeps its full-width analysis graph without an editor. Focused sidebar, graph hit-testing, and band strip tests pass; formatting/diff checks and local-ASIO check pass. Linux x64 local-ASIO release staged at `builds/x64/OpenTrack`, SHA-256 `4758025cade1f03f5dd7fa2ef42e6ebdd39d6f2815a1c312a134127773207266`. Runtime visual/audio review remains pending.
+
+- EQ sidebar visual correction from user review (2026-10-31, GPT-6.1 Luna): changed the selected-band editor to a vertically stacked control list beside the graph, with a taller Channel Settings viewport; retained the existing knob SVG, numeric entry, filter menu, power and solo controls. Parameter LEDs now fill all 11 ring dots across the full knob travel; Threshold dots show the selected channel live peak. Removed the SVG center pointer that caused the ghost line; double-clicking a dial resets it to the parameter default (Gain/Range 0, Frequency 1 kHz, Q 0.707, Threshold -24 dB, Attack 10 ms, Release 100 ms). Focused EQ tests (7) pass, as do local-ASIO check/release build, formatting and diff checks. Linux x64 release is staged at `builds/x64/OpenTrack`, SHA-256 `22a1b84d4e0f496c21d291966ae55b84181da0f9ea6e9b12eb305a89adf30b41`. Live visual/audio review remains pending.
+
+- User visual follow-up (2026-10-31, GPT-6.1 Luna): retained the right-side EQ panel but made its controls economical: three Static EQ knobs share one compact row, the filter selector sits immediately below, and four Dynamic EQ knobs share a second row; the viewport returns to 1230×430 (minimum 1120×420). Retains 48 px user knob artwork, full 11-light sweep, threshold live meter, no fixed center marker, and double-click parameter reset. Seven focused EQ tests, local-ASIO cargo check and release build, format and diff checks pass. Linux x64 release staged at `builds/x64/OpenTrack`, SHA-256 `4d4238895763b436d5880c9a93c2b55a01f706f3b92b47ef244cfc9f52a57fed`. Visual acceptance in the running app remains pending.

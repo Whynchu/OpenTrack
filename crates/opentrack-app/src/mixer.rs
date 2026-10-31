@@ -671,75 +671,235 @@ fn routing(
     );
 }
 
-fn input_row(ui: &mut egui::Ui, r: Rect, track: &mut Track) -> bool {
-    let at = |x, y, w, h| Rect::from_min_size(r.min + Vec2::new(x, y), Vec2::new(w, h));
-    let mut modified = false;
-    let phase = at(4.0, 53.0, 16.0, 15.0);
-    let value = at(22.0, 53.0, 30.0, 15.0);
-    let knob = at(54.0, 44.0, 24.0, 24.0);
-    if control(
+struct InputGainLayout {
+    format: Rect,
+    phase: Rect,
+    value: Rect,
+    knob: Rect,
+}
+
+fn input_gain_layout(strip: Rect, format_top: f32) -> InputGainLayout {
+    let knob = Rect::from_min_size(
+        Pos2::new(strip.right() - 36.0, strip.top() + format_top + 5.0),
+        Vec2::splat(34.0),
+    );
+    InputGainLayout {
+        format: Rect::from_min_size(
+            strip.min + Vec2::new(2.0, format_top),
+            Vec2::new((knob.left() - strip.left() - 6.0).max(1.0), 15.0),
+        ),
+        phase: Rect::from_min_size(
+            strip.min + Vec2::new(2.0, format_top + 20.0),
+            Vec2::new(16.0, 15.0),
+        ),
+        value: Rect::from_min_size(
+            strip.min + Vec2::new(20.0, format_top + 20.0),
+            Vec2::new((knob.left() - strip.left() - 22.0).max(1.0), 15.0),
+        ),
+        knob,
+    }
+}
+
+/// The same input-gain artwork, hit areas and edit behavior in both channel views.
+/// `format_top` accounts for Channel Settings' extra channel-title/selector rows.
+pub(super) fn input_gain_row(
+    ui: &mut egui::Ui,
+    strip: Rect,
+    format_top: f32,
+    track: &mut Track,
+    peak: [f32; 2],
+    track_color: Color32,
+) -> (bool, [egui::Response; 3]) {
+    let layout = input_gain_layout(strip, format_top);
+    let p = theme::palette(ui);
+    text(
         ui,
-        phase,
+        layout.format,
+        if track.audio_channels == 1 {
+            "mono"
+        } else {
+            "stereo"
+        },
+        10.0,
+        p.muted,
+        Align2::LEFT_CENTER,
+    );
+    let phase = control(
+        ui,
+        layout.phase,
         "phase",
         Icon::Phase,
         track.input_phase_inverted,
         false,
         true,
         Some("Input Phase"),
-    )
-    .clicked()
-    {
+    );
+    let mut modified = false;
+    if phase.clicked() {
         track.input_phase_inverted = !track.input_phase_inverted;
         modified = true;
     }
-    ui.scope_builder(egui::UiBuilder::new().max_rect(value), |ui| {
-        ui.spacing_mut().interact_size.y = 15.0;
-        ui.spacing_mut().button_padding = Vec2::ZERO;
-        modified |= ui
-            .add_sized(
-                [30.0, 15.0],
-                egui::DragValue::new(&mut track.input_gain_db)
-                    .range(-24.0..=24.0)
-                    .speed(0.1)
-                    .fixed_decimals(1),
-            )
-            .on_hover_text("Input Gain")
-            .changed();
-    });
-    let response = ui
-        .interact(
-            knob,
-            ui.id().with("input-gain-knob"),
-            Sense::click_and_drag(),
+    let value = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(layout.value)
+                .id_salt("input-gain-value"),
+            |ui| {
+                ui.spacing_mut().interact_size = Vec2::new(0.0, 15.0);
+                ui.spacing_mut().button_padding = Vec2::ZERO;
+                ui.style_mut().override_font_id = Some(FontId::proportional(9.0));
+                ui.add_sized(
+                    layout.value.size(),
+                    egui::DragValue::new(&mut track.input_gain_db)
+                        .range(-24.0..=24.0)
+                        .speed(0.1)
+                        .fixed_decimals(1),
+                )
+                .on_hover_text("Input Gain")
+            },
         )
-        .on_hover_text("Input Gain (use shift)");
-    if response.dragged() {
-        let speed = if ui.input(|i| i.modifiers.shift) {
+        .inner;
+    modified |= value.changed();
+    let knob = ui.interact(layout.knob, ui.id().with("input-gain-knob"), Sense::click_and_drag())
+        .on_hover_text("Input Gain (Shift for fine adjustment; double-click for 0 dB); lights show live peak level");
+    if knob.dragged() {
+        let speed = if ui.input(|input| input.modifiers.shift) {
             0.01
         } else {
             0.1
         };
+        let old = track.input_gain_db;
         track.input_gain_db =
-            (track.input_gain_db - response.drag_delta().y * speed).clamp(-24.0, 24.0);
-        modified = true;
+            (old - ui.input(|input| input.pointer.delta().y) * speed).clamp(-24.0, 24.0);
+        modified |= old != track.input_gain_db;
     }
-    if response.double_clicked() {
+    if knob.double_clicked() {
+        modified |= track.input_gain_db != 0.0;
         track.input_gain_db = 0.0;
-        modified = true;
     }
-    knob_graphic(ui, knob, track.input_gain_db);
-    modified
+    knob_graphic_with_signal(
+        ui,
+        layout.knob,
+        track.input_gain_db,
+        Some((peak, track_color)),
+    );
+    (modified, [phase, value, knob])
+}
+
+fn input_row(
+    ui: &mut egui::Ui,
+    r: Rect,
+    track: &mut Track,
+    peak: [f32; 2],
+    color: Color32,
+) -> bool {
+    input_gain_row(ui, r, 33.0, track, peak, color).0
 }
 
 pub(super) fn knob_graphic(ui: &egui::Ui, rect: Rect, gain: f32) {
+    knob_graphic_with_signal(ui, rect, gain, None);
+}
+
+pub(super) fn knob_graphic_with_value(
+    ui: &egui::Ui,
+    rect: Rect,
+    gain: f32,
+    normalized: f32,
+    color: Color32,
+) {
+    knob_graphic_inner(
+        ui,
+        rect,
+        gain,
+        None,
+        Some((normalized.clamp(0.0, 1.0), color)),
+    );
+}
+
+pub(super) fn knob_graphic_with_signal(
+    ui: &egui::Ui,
+    rect: Rect,
+    gain: f32,
+    signal: Option<([f32; 2], Color32)>,
+) {
+    knob_graphic_inner(ui, rect, gain, signal, None);
+}
+
+fn knob_graphic_inner(
+    ui: &egui::Ui,
+    rect: Rect,
+    gain: f32,
+    signal: Option<([f32; 2], Color32)>,
+    value_leds: Option<(f32, Color32)>,
+) {
     let p = theme::palette(ui);
-    let center = rect.center();
-    ui.painter().circle_filled(center, 11.0, p.surface_raised);
+    const VIEW_LEFT: f32 = 27.65;
+    const VIEW_TOP: f32 = 25.65;
+    const VIEW_WIDTH: f32 = 44.70;
+    const LEDS: [(f32, f32); 11] = [
+        (40.0, 65.32),
+        (32.68, 58.0),
+        (30.0, 48.0),
+        (32.68, 38.0),
+        (40.0, 30.68),
+        (50.0, 28.0),
+        (60.0, 30.68),
+        (67.32, 38.0),
+        (70.0, 48.0),
+        (67.32, 58.0),
+        (60.0, 65.32),
+    ];
+    let scale = rect.width().min(rect.height()) / VIEW_WIDTH;
+    let point = |x: f32, y: f32| {
+        Pos2::new(
+            rect.left() + (x - VIEW_LEFT) * scale,
+            rect.top() + (y - VIEW_TOP) * scale,
+        )
+    };
+    let center = point(50.0, 48.0);
+    let radius = 15.0 * scale;
+    ui.painter().circle_filled(center, radius, p.surface_raised);
+    crate::icon_system::paint_knob_asset(ui, rect, p.text);
+
+    // Draw the moving value pointer over the supplied knob artwork.
+    let normalized = ((gain + 24.0) / 48.0).clamp(0.0, 1.0);
+    let angle = 2.10 + normalized * 5.23;
+    let tip = center + Vec2::angled(angle) * radius * 0.78;
     ui.painter()
-        .circle_stroke(center, 11.0, Stroke::new(1.3, p.muted));
-    let angle = -std::f32::consts::FRAC_PI_2 + gain / 24.0 * 2.1;
-    let tip = center + Vec2::angled(angle) * 8.0;
-    ui.painter().circle_filled(tip, 2.0, p.text);
+        .line_segment([center, tip], Stroke::new(1.0, p.text));
+    ui.painter().circle_filled(tip, 0.9 * scale, p.text);
+
+    if let Some((fraction, color)) = value_leds {
+        let count = (fraction * LEDS.len() as f32).round() as usize;
+        paint_lit_knob_dots(ui, &LEDS, &point, scale, count, color);
+    }
+    if let Some((peaks, track_color)) = signal {
+        let peak = peaks.into_iter().fold(0.0_f32, f32::max);
+        let lit_count = (meter_fill_fraction(peak) * LEDS.len() as f32).round() as usize;
+        let light_color = if peak > 1.0 {
+            theme::RECORD
+        } else {
+            track_color
+        };
+        paint_lit_knob_dots(ui, &LEDS, &point, scale, lit_count, light_color);
+    }
+}
+
+fn paint_lit_knob_dots(
+    ui: &egui::Ui,
+    leds: &[(f32, f32); 11],
+    point: &impl Fn(f32, f32) -> Pos2,
+    scale: f32,
+    count: usize,
+    color: Color32,
+) {
+    let radius = 0.95 * scale;
+    for &(x, y) in leds.iter().take(count.min(leds.len())) {
+        let pos = point(x, y);
+        ui.painter()
+            .circle_filled(pos, radius * 2.2, color.gamma_multiply(0.32));
+        ui.painter().circle_filled(pos, radius, color);
+    }
 }
 
 fn strip(
@@ -801,19 +961,8 @@ fn strip(
             );
             requires_plan_rebuild |= modified != was_modified;
         }
-        text(
-            ui,
-            at(2.0, 33.0, 78.0, 15.0),
-            if track.audio_channels == 1 {
-                "mono"
-            } else {
-                "stereo"
-            },
-            11.0,
-            p.muted,
-            Align2::LEFT_CENTER,
-        );
-        let input_row_changed = input_row(ui, r, track);
+        let track_color = project_controls::track_color(track);
+        let input_row_changed = input_row(ui, r, track, peak, track_color);
         modified |= input_row_changed;
         requires_plan_rebuild |= input_row_changed;
         for right in [false, true] {
@@ -1178,7 +1327,9 @@ fn footer(
 fn fader_rail(r: Rect) -> Rect {
     let top = r.top() + 104.0;
     let bottom = r.bottom() - 69.0;
-    let travel = (bottom - top - 40.0).clamp(24.0, 240.0);
+    // Preserve the end padding at every height; never center a capped rail
+    // inside the growing meter/body area.
+    let travel = (bottom - top - 40.0).max(24.0);
     Rect::from_center_size(
         Pos2::new(r.left() + 50.0, (top + bottom) * 0.5),
         Vec2::new(2.0, travel),
@@ -1546,6 +1697,135 @@ fn fader_impl(
 mod bus_tests {
     use super::*;
     #[test]
+    fn enlarged_input_gain_control_keeps_mono_stereo_and_numeric_fields_clear() {
+        for (width, top) in [(82.0, 33.0), (84.0, 33.0), (86.0, 33.0), (92.0, 79.0)] {
+            for gain in [-24.0, 0.0, 24.0] {
+                let ctx = egui::Context::default();
+                let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 160.0));
+                let layout = input_gain_layout(rect, top);
+                assert_eq!(layout.knob.size(), Vec2::splat(34.0));
+                assert!(layout.knob.top() < layout.format.bottom());
+                assert!(!layout.knob.intersects(layout.format));
+                assert!(!layout.knob.intersects(layout.value));
+                assert!(!layout.phase.intersects(layout.value));
+                let mut track = opentrack_core::project::BusChannel::output().strip;
+                track.audio_channels = 2;
+                track.input_gain_db = gain;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(rect),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let (changed, [phase, value, knob]) =
+                            input_gain_row(ui, rect, top, &mut track, [0.0; 2], Color32::GREEN);
+                        assert!(!changed);
+                        assert!(!phase.rect.intersects(value.rect));
+                        assert!(
+                            !value.rect.intersects(knob.rect),
+                            "numeric editor must not expand over the larger knob"
+                        );
+                    },
+                );
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        if text.galley.text() == "stereo" {
+                            assert!(
+                                !Rect::from_min_size(text.pos, text.galley.size())
+                                    .intersects(layout.knob)
+                            );
+                        }
+                    }
+                }
+                output.textures_delta.clear();
+            }
+        }
+    }
+
+    #[test]
+    fn shared_input_gain_knob_drag_is_incremental_and_shift_is_fine() {
+        for (shift, expected) in [(false, 2.0), (true, 0.2)] {
+            for top in [33.0, 79.0] {
+                let ctx = egui::Context::default();
+                let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(92.0, 160.0));
+                let center = input_gain_layout(rect, top).knob.center();
+                let mut track = opentrack_core::project::BusChannel::output().strip;
+                let modifiers = egui::Modifiers {
+                    shift,
+                    ..Default::default()
+                };
+                for (i, (dy, button)) in [
+                    (0.0, None),
+                    (0.0, Some(true)),
+                    (-10.0, None),
+                    (-20.0, None),
+                    (-20.0, Some(false)),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let pos = center + Vec2::new(0.0, dy);
+                    let mut events = vec![
+                        egui::Event::ModifiersChanged(modifiers),
+                        egui::Event::PointerMoved(pos),
+                    ];
+                    if let Some(pressed) = button {
+                        events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers,
+                        });
+                    }
+                    let mut out = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(rect),
+                            time: Some(i as f64 * 0.05),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            input_gain_row(ui, rect, top, &mut track, [0.0; 2], Color32::GREEN);
+                        },
+                    );
+                    out.textures_delta.clear();
+                }
+                assert!((track.input_gain_db - expected).abs() < 0.0001);
+                for click in 0..2 {
+                    for pressed in [true, false] {
+                        let mut out = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(rect),
+                                time: Some(
+                                    0.4 + click as f64 * 0.1 + if pressed { 0.0 } else { 0.05 },
+                                ),
+                                events: vec![
+                                    egui::Event::PointerMoved(center),
+                                    egui::Event::PointerButton {
+                                        pos: center,
+                                        button: egui::PointerButton::Primary,
+                                        pressed,
+                                        modifiers,
+                                    },
+                                ],
+                                ..Default::default()
+                            },
+                            |ui| {
+                                input_gain_row(ui, rect, top, &mut track, [0.0; 2], Color32::GREEN);
+                            },
+                        );
+                        out.textures_delta.clear();
+                    }
+                }
+                assert_eq!(
+                    track.input_gain_db, 0.0,
+                    "double-click must reset input gain in either view"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn numeric_fader_gain_accepts_db_and_mute_but_rejects_nonfinite_input() {
         assert!((parse_gain_value("-6 dB").unwrap() - 10.0_f32.powf(-6.0 / 20.0)).abs() < 0.00001);
         assert_eq!(parse_gain_value("0"), Some(1.0));
@@ -1562,11 +1842,13 @@ mod bus_tests {
     }
 
     #[test]
-    fn fader_travel_is_bounded_and_retains_full_gain_range() {
+    fn fader_travel_fills_the_available_height_and_retains_full_gain_range() {
         for height in [320.0, 500.0, 900.0] {
             let strip = Rect::from_min_size(Pos2::ZERO, Vec2::new(84.0, height));
             let rail = fader_rail(strip);
-            assert!(rail.height() <= 240.0);
+            assert!((rail.height() - (height - 213.0)).abs() < 0.001);
+            assert!((rail.top() - (strip.top() + 124.0)).abs() < 0.001);
+            assert!((rail.bottom() - (strip.bottom() - 89.0)).abs() < 0.001);
             assert!(rail.top() - 15.5 > strip.top() + 104.0);
             assert!(rail.bottom() + 15.5 < strip.bottom() - 69.0);
             assert_eq!(channel_gain::position_to_gain(1.0), 0.0);

@@ -278,7 +278,6 @@ enum ChannelSettingsAction {
 struct ChannelSettingsUiState {
     analyzer: analyzer_view::State,
     selected_eq_band: usize,
-    eq_detail_offset: egui::Vec2,
     eq_solo: Option<(u64, usize)>,
     bus_context: bool,
     preferences: ChannelSettingsPreferences,
@@ -632,13 +631,6 @@ fn channel_window_level(
     }
 }
 
-fn wayland_session() -> bool {
-    cfg!(target_os = "linux")
-        && std::env::var("XDG_SESSION_TYPE")
-            .is_ok_and(|session| session.eq_ignore_ascii_case("wayland"))
-        && std::env::var_os("WAYLAND_DISPLAY").is_some()
-}
-
 fn window_level_request_needed(
     current: Option<egui::viewport::WindowLevel>,
     desired: egui::viewport::WindowLevel,
@@ -805,7 +797,6 @@ pub struct OpenTrackApp {
     main_window_restore_bounds: Option<WindowBounds>,
     show_transport: bool,
     transport_window: TransportWindowState,
-    wayland_overlay_pointer_capture: bool,
     metronome_enabled: bool,
     metronome_level: f32,
     metronome_pitch_midi: u8,
@@ -2021,7 +2012,6 @@ impl OpenTrackApp {
             main_window_bounds: None,
             main_window_restore_bounds: None,
             show_transport: true,
-            wayland_overlay_pointer_capture: false,
             transport_window: TransportWindowState {
                 bounds: creation
                     .storage
@@ -8683,10 +8673,6 @@ impl OpenTrackApp {
     }
 
     fn show_transport_window(&mut self, ctx: &egui::Context) {
-        if wayland_session() {
-            self.show_transport_overlay(ctx);
-            return;
-        }
         if !self.project_open || !self.show_transport {
             self.transport_window.viewport_live = false;
             self.transport_window.popup_active = false;
@@ -8810,58 +8796,6 @@ impl OpenTrackApp {
         }
     }
 
-    fn show_transport_overlay(&mut self, ctx: &egui::Context) {
-        if !self.project_open || !self.show_transport {
-            self.transport_window.viewport_live = false;
-            self.transport_window.popup_active = false;
-            return;
-        }
-        let bounds = self.transport_window.bounds.as_ref();
-        let pos = bounds
-            .map(|b| Pos2::new(b.left as f32, b.top as f32))
-            .unwrap_or(Pos2::new(552.0, 663.0));
-        let order = if self.transport_window.always_on_top {
-            egui::Order::Foreground
-        } else {
-            egui::Order::Middle
-        };
-        let mut open = true;
-        let mut panel_dragged = false;
-        let response = egui::Window::new("Transport Panel")
-            .id(egui::Id::new("wayland-transport-panel"))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .fixed_size(Vec2::new(837.0, 69.0))
-            .current_pos(pos)
-            .order(order)
-            .open(&mut open)
-            .frame(
-                egui::Frame::new()
-                    .fill(Color32::TRANSPARENT)
-                    .inner_margin(0.0),
-            )
-            .show(ctx, |ui| {
-                blocked_input_scope(
-                    ui,
-                    self.dialog_owns_input() || self.menu_open,
-                    self.modal_dialog_open(),
-                    |ui| {
-                        panel_dragged = self.show_transport(ui, true);
-                    },
-                );
-            });
-        self.transport_window.viewport_live = open && self.show_transport;
-        self.transport_window.popup_active = popup_behavior::close_when_pointer_leaves(ctx);
-        if let Some(response) = response.filter(|_| !panel_dragged) {
-            self.transport_window.bounds = Some(docked_bounds(response.response.rect));
-        }
-        if self.transport_window.viewport_live {
-            ctx.request_repaint_after(Duration::from_millis(30));
-        }
-    }
-
     /// True while a confirmation or setup dialog needs the main window raised.
     fn modal_dialog_open(&self) -> bool {
         self.pending_project_action.is_some()
@@ -8877,10 +8811,6 @@ impl OpenTrackApp {
 
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
         self.update_channel_analyzer();
-        if wayland_session() {
-            self.show_channel_settings_overlay(ctx);
-            return;
-        }
         let root_popup_open = egui::Popup::is_any_open(ctx);
         if !self.channel_settings_window.open {
             self.channel_settings_window.viewport_live = false;
@@ -8936,8 +8866,8 @@ impl OpenTrackApp {
         }
         let mut builder = viewport_builder(
             format!("VST Audio Channel Settings - {track_name}"),
-            Vec2::new(902.0, 430.0),
-            Vec2::new(820.0, 420.0),
+            Vec2::new(1120.0, 650.0),
+            Vec2::new(1010.0, 420.0),
             restore_bounds.as_ref(),
         );
         let modal = self.modal_dialog_open();
@@ -9158,169 +9088,6 @@ impl OpenTrackApp {
         if self.applied_eq_solo != desired {
             self.channel_settings_ui.eq_solo = None;
         }
-    }
-
-    fn show_channel_settings_overlay(&mut self, ctx: &egui::Context) {
-        if !self.channel_settings_window.open {
-            self.channel_settings_window.viewport_live = false;
-            self.channel_settings_window.focused = false;
-            self.channel_settings_window.popup_active = false;
-            self.channel_settings_ui.eq_solo = None;
-            return;
-        }
-        let track_name = match self.channel_settings_window.channel_bus {
-            Some(true) => self.data.project.input_channel.strip.name.clone(),
-            Some(false) => self.data.project.output_channel.strip.name.clone(),
-            None => self
-                .data
-                .project
-                .selected_track
-                .and_then(|i| self.data.project.tracks.get(i as usize))
-                .map(|track| track.name.clone())
-                .unwrap_or_else(|| "No channel selected".into()),
-        };
-        let live_channel_id = match self.channel_settings_window.channel_bus {
-            Some(true) => Some(opentrack_core::project::INPUT_BUS_ID),
-            Some(false) => Some(opentrack_core::project::OUTPUT_BUS_ID),
-            None => self
-                .data
-                .project
-                .selected_track
-                .and_then(|i| self.data.project.tracks.get(i as usize))
-                .map(|track| track.id),
-        };
-        let live_controls_before = live_channel_id.and_then(|id| {
-            self.data
-                .project
-                .channels()
-                .find(|track| track.id == id)
-                .map(|track| (id, track.gain, track.pan, track.equalizer.clone()))
-        });
-        let selection_before = self.data.project.selected_track;
-        let focus_requested = self.channel_settings_window.focus_requested;
-        let pinned = (self.channel_settings_ui.preferences.always_on_top || focus_requested)
-            && !self.dialog_owns_input()
-            && !self.menu_open;
-        let order = if pinned {
-            egui::Order::Foreground
-        } else {
-            egui::Order::Middle
-        };
-        let pos = self
-            .channel_settings_window
-            .bounds
-            .as_ref()
-            .map(|b| Pos2::new(b.left as f32, b.top as f32))
-            .unwrap_or(Pos2::new(382.0, 145.0));
-        let mut open = true;
-        let mut modified = false;
-        let mut selection_requested = false;
-        let response = egui::Window::new(format!("VST Audio Channel Settings - {track_name}"))
-            .id(egui::Id::new("wayland-channel-settings"))
-            .default_size(Vec2::new(902.0, 430.0))
-            .resizable(true)
-            .default_pos(pos)
-            .order(order)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                blocked_input_scope(
-                    ui,
-                    self.dialog_owns_input() || self.menu_open,
-                    self.modal_dialog_open(),
-                    |ui| {
-                        let (changed, requested, _) = show_mixer(
-                            ui,
-                            &mut self.data.project,
-                            &self.data.track_meter_levels,
-                            &mut self.data.peak_holds,
-                            self.data.input_channel_meter_levels,
-                            self.data.output_channel_meter_levels,
-                            false,
-                            true,
-                            &mut self.channel_settings_window,
-                            &mut self.channel_settings_ui,
-                            &self.vst3_plugin_catalog,
-                        );
-                        modified |= changed;
-                        selection_requested |= requested;
-                    },
-                );
-            });
-        channel_settings::setup(ctx, &mut self.channel_settings_ui);
-        self.channel_settings_window.popup_active = popup_behavior::close_when_pointer_leaves(ctx);
-        self.channel_settings_window.open = open;
-        if !open {
-            self.channel_settings_ui.eq_solo = None;
-        }
-        self.channel_settings_window.viewport_live = open;
-        self.channel_settings_window.focused =
-            response.as_ref().is_some_and(|r| r.response.has_focus());
-        self.channel_settings_window.focus_requested = false;
-        if let Some(response) = response {
-            self.channel_settings_window.bounds = Some(docked_bounds(response.response.rect));
-        }
-        if selection_requested || self.data.project.selected_track != selection_before {
-            self.sync_arrange_track_selection();
-        }
-        if let Some(action) = self.channel_settings_ui.pending_action.take() {
-            modified |= self.apply_channel_settings_action(action);
-        }
-        if modified {
-            let live_controls_changed = live_controls_before
-                .and_then(|(id, gain, pan, equalizer)| {
-                    let track = self.data.project.channels().find(|track| track.id == id)?;
-                    ((track.gain != gain) || (track.pan != pan) || (track.equalizer != equalizer))
-                        .then_some((id, track.gain, track.pan, track.equalizer.clone()))
-                })
-                .is_some_and(|(id, gain, pan, equalizer)| {
-                    self.audio_engine.as_ref().is_some_and(|engine| {
-                        if id == opentrack_core::project::OUTPUT_BUS_ID {
-                            engine.update_output_channel_parameters(gain, pan, &equalizer);
-                            true
-                        } else if id < opentrack_core::project::INPUT_BUS_ID {
-                            self.data
-                                .project
-                                .tracks
-                                .iter()
-                                .position(|track| track.id == id)
-                                .is_some_and(|i| {
-                                    engine.update_track_channel_parameters(i, gain, pan, &equalizer)
-                                })
-                        } else {
-                            false
-                        }
-                    })
-                });
-            if !live_controls_changed {
-                self.rebuild_audio_plan();
-            }
-            self.mark_modified();
-        }
-        self.update_channel_analyzer();
-        if open {
-            ctx.request_repaint_after(Duration::from_millis(30));
-        }
-    }
-
-    fn wayland_overlay_captures_pointer(&self, ctx: &egui::Context) -> bool {
-        if !wayland_session() {
-            return false;
-        }
-        // Project content is processed before the embedded egui windows. Mask
-        // its pointer input over their last-frame rectangles so clicks on
-        // empty panel surfaces cannot fall through to the Project controls.
-        let pointer = ctx.input(|input| input.pointer.hover_pos());
-        self.wayland_overlay_pointer_capture
-            || (self.channel_settings_window.open
-                && bounds_contain_pointer(self.channel_settings_window.bounds.as_ref(), pointer))
-            || (self.project_open
-                && self.show_transport
-                && bounds_contain_pointer(self.transport_window.bounds.as_ref(), pointer))
-    }
-
-    fn update_wayland_overlay_pointer_capture(&mut self, ctx: &egui::Context) {
-        self.wayland_overlay_pointer_capture = self.wayland_overlay_captures_pointer(ctx)
-            && ctx.input(|input| input.pointer.any_down());
     }
 
     fn apply_channel_settings_action(&mut self, action: ChannelSettingsAction) -> bool {
@@ -11047,9 +10814,7 @@ impl eframe::App for OpenTrackApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
-                let pointer_blocked = self.dialog_owns_input()
-                    || self.menu_open
-                    || self.wayland_overlay_captures_pointer(&ctx);
+                let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                 blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
                     if self.project_open {
                         self.show_docked_workspace(ui);
@@ -11068,7 +10833,6 @@ impl eframe::App for OpenTrackApp {
             self.show_track_delete_prompt(&ctx);
         }
         self.show_transport_window(&ctx);
-        self.update_wayland_overlay_pointer_capture(&ctx);
         self.show_key_commands_window(&ctx);
         self.show_unsaved_prompt(&ctx);
         self.show_project_open_error(&ctx);
@@ -11498,17 +11262,6 @@ fn docked_bounds(rect: Rect) -> WindowBounds {
         inner_height: None,
         monitor_id: None,
     }
-}
-
-fn bounds_contain_pointer(bounds: Option<&WindowBounds>, pointer: Option<Pos2>) -> bool {
-    let (Some(bounds), Some(pointer)) = (bounds, pointer) else {
-        return false;
-    };
-    Rect::from_min_size(
-        Pos2::new(bounds.left as f32, bounds.top as f32),
-        Vec2::new(bounds.width as f32, bounds.height as f32),
-    )
-    .contains(pointer)
 }
 
 #[cfg(windows)]
@@ -17360,8 +17113,8 @@ fn show_eq_dial(
     maximum: f32,
     logarithmic: bool,
     modified: &mut bool,
-) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::click_and_drag());
+) -> bool {
+    let (_rect, response) = ui.allocate_exact_size(Vec2::new(48.0, 48.0), Sense::click_and_drag());
     if response.dragged() {
         let delta = -ui.input(|input| input.pointer.delta().y);
         let old = *value;
@@ -17375,12 +17128,7 @@ fn show_eq_dial(
         }
         *modified |= old != *value;
     }
-    let normalized = if logarithmic {
-        ((*value).ln() - minimum.ln()) / (maximum.ln() - minimum.ln())
-    } else {
-        (*value - minimum) / (maximum - minimum)
-    };
-    mixer::knob_graphic(ui, rect, normalized.clamp(0.0, 1.0) * 48.0 - 24.0);
+    response.double_clicked()
 }
 
 fn linear_gain_db(gain: f32) -> f32 {
