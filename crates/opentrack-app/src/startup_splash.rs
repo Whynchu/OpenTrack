@@ -294,10 +294,11 @@ fn run_helper() -> eframe::Result {
         }
     }
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: splash_viewport_builder(),
         ..Default::default()
     };
+    crate::native_windows::configure_linux_backend(&mut options);
     eframe::run_native(
         "OpenTrack Startup Splash",
         options,

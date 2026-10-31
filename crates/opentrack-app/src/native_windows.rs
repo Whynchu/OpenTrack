@@ -1,4 +1,40 @@
 //! Keep Channel Settings above its OpenTrack owner without global topmost status.
+/// Prefer the existing X11/XWayland path where native raise/pin requests work.
+/// The pinned winit Wayland implementation makes both requests no-ops. This
+/// selects a backend only; it does not change the user's compositor settings.
+pub(crate) fn configure_linux_backend(options: &mut eframe::NativeOptions) {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::x11::EventLoopBuilderExtX11 as _;
+        let display = std::env::var("DISPLAY").ok();
+        let preference = std::env::var("OPENTRACK_WINDOW_BACKEND").ok();
+        if prefer_x11(display.as_deref(), preference.as_deref()) {
+            options.event_loop_builder = Some(Box::new(|builder| {
+                builder.with_x11();
+            }));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = options;
+}
+
+#[cfg(target_os = "linux")]
+fn prefer_x11(display: Option<&str>, preference: Option<&str>) -> bool {
+    display.is_some_and(|value| !value.is_empty())
+        && !preference.is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod backend_tests {
+    #[test]
+    fn compatibility_backend_requires_a_display_and_respects_the_native_wayland_override() {
+        assert!(super::prefer_x11(Some(":0"), None));
+        assert!(!super::prefer_x11(None, None));
+        assert!(!super::prefer_x11(Some(""), None));
+        assert!(!super::prefer_x11(Some(":0"), Some("wayland")));
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ChannelOwner {
     root: Option<isize>,

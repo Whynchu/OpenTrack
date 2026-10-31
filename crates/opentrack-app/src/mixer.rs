@@ -885,6 +885,23 @@ fn knob_graphic_inner(
     }
 }
 
+/// Brighten the emitted light without changing the track's hue. The minimum
+/// peak brightness makes dark colors readable; the white component softens
+/// saturated primaries into a luminous core rather than a dark paint fill.
+pub(super) fn knob_led_color(color: Color32) -> Color32 {
+    let peak = f32::from(color.r().max(color.g()).max(color.b()));
+    if peak == 0.0 {
+        return Color32::from_gray(239);
+    }
+    let gain = (235.0 / peak).max(1.0);
+    let channel = |value: u8| {
+        ((f32::from(value) * gain) * 0.82 + 255.0 * 0.18)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(channel(color.r()), channel(color.g()), channel(color.b()))
+}
+
 fn paint_lit_knob_dots(
     ui: &egui::Ui,
     leds: &[(f32, f32); 11],
@@ -894,11 +911,14 @@ fn paint_lit_knob_dots(
     color: Color32,
 ) {
     let radius = 0.95 * scale;
+    let light = knob_led_color(color);
     for &(x, y) in leds.iter().take(count.min(leds.len())) {
         let pos = point(x, y);
         ui.painter()
-            .circle_filled(pos, radius * 2.2, color.gamma_multiply(0.32));
-        ui.painter().circle_filled(pos, radius, color);
+            .circle_filled(pos, radius * 2.8, light.gamma_multiply(0.18));
+        ui.painter()
+            .circle_filled(pos, radius * 1.8, light.gamma_multiply(0.48));
+        ui.painter().circle_filled(pos, radius, light);
     }
 }
 
@@ -1696,6 +1716,29 @@ fn fader_impl(
 #[cfg(test)]
 mod bus_tests {
     use super::*;
+    #[test]
+    fn led_light_is_brighter_than_dark_track_colors_and_preserves_their_hue() {
+        for base in [
+            Color32::from_rgb(75, 45, 110),
+            Color32::from_gray(80),
+            Color32::from_rgb(0, 0, 150),
+            Color32::BLACK,
+        ] {
+            let light = knob_led_color(base);
+            assert!(light.r().max(light.g()).max(light.b()) >= 235);
+            assert!(
+                u32::from(light.r()) + u32::from(light.g()) + u32::from(light.b())
+                    > u32::from(base.r()) + u32::from(base.g()) + u32::from(base.b())
+            );
+        }
+        let purple = knob_led_color(Color32::from_rgb(75, 45, 110));
+        assert!(purple.b() > purple.r() && purple.r() > purple.g());
+        let gray = knob_led_color(Color32::from_gray(80));
+        assert_eq!(gray.r(), gray.g());
+        assert_eq!(gray.g(), gray.b());
+        assert_eq!(knob_led_color(Color32::WHITE), Color32::WHITE);
+    }
+
     #[test]
     fn enlarged_input_gain_control_keeps_mono_stereo_and_numeric_fields_clear() {
         for (width, top) in [(82.0, 33.0), (84.0, 33.0), (86.0, 33.0), (92.0, 79.0)] {

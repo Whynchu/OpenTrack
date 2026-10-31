@@ -4359,6 +4359,7 @@ struct ChannelProcessor {
     sample_rate: u32,
     inserts_bypassed: bool,
     equalizer: [Biquad; opentrack_core::project::MAX_EQ_BANDS],
+    // Second pass section for 24 dB filters, or a monotonic dynamic stage for shelves.
     equalizer_second: [Biquad; opentrack_core::project::MAX_EQ_BANDS],
     solo_filter: Biquad,
     solo_band: u32,
@@ -4392,11 +4393,13 @@ impl ChannelProcessor {
         });
         let second_bands = std::array::from_fn(|index| {
             let band = equalizer.band(index).unwrap();
-            let second = equalizer_band_sections(band).1.unwrap_or_else(|| {
-                let mut disabled = *band;
-                disabled.enabled = false;
-                disabled
-            });
+            let second = dynamic_shelf_band(band, 0.0)
+                .or_else(|| equalizer_band_sections(band).1)
+                .unwrap_or_else(|| {
+                    let mut disabled = *band;
+                    disabled.enabled = false;
+                    disabled
+                });
             Biquad::from_band(&second, sample_rate)
         });
         let eq_bands = std::array::from_fn(|index| *equalizer.band(index).unwrap());
@@ -4452,11 +4455,21 @@ impl ChannelProcessor {
             for (index, band) in target.all_bands().enumerate() {
                 let filter = &mut self.equalizer[index];
                 filter.update_band(band, self.sample_rate);
-                let second = equalizer_band_sections(band).1.unwrap_or_else(|| {
-                    let mut disabled = *band;
-                    disabled.enabled = false;
-                    disabled
-                });
+                let dynamic_gain = if target
+                    .dynamic_band(index)
+                    .is_some_and(|dynamic| dynamic.enabled)
+                {
+                    self.dynamic_gain_db[index]
+                } else {
+                    0.0
+                };
+                let second = dynamic_shelf_band(band, dynamic_gain)
+                    .or_else(|| equalizer_band_sections(band).1)
+                    .unwrap_or_else(|| {
+                        let mut disabled = *band;
+                        disabled.enabled = false;
+                        disabled
+                    });
                 self.equalizer_second[index].update_band(&second, self.sample_rate);
             }
             for (index, band) in target.all_bands().enumerate() {
@@ -4514,8 +4527,14 @@ impl ChannelProcessor {
                 let dynamic_gain = self.dynamic_detectors[index].process(*left, *right);
                 if self.dynamic_detectors[index].take_coefficients_due() {
                     let mut band = self.eq_bands[index];
-                    band.gain_db = (band.gain_db + dynamic_gain).clamp(-24.0, 24.0);
-                    self.equalizer[index].update_band(&band, self.sample_rate);
+                    if let Some(shelf) = dynamic_shelf_band(&band, dynamic_gain) {
+                        // Retuning the resonant static shelf reverses its opposite Q lobe.
+                        // Keep that shape and apply one-direction gain movement separately.
+                        self.equalizer_second[index].update_band(&shelf, self.sample_rate);
+                    } else {
+                        band.gain_db = (band.gain_db + dynamic_gain).clamp(-24.0, 24.0);
+                        self.equalizer[index].update_band(&band, self.sample_rate);
+                    }
                     self.dynamic_gain_db[index] = dynamic_gain;
                     self.dynamic_meter_dirty |= 1u32 << index;
                 }
@@ -4589,6 +4608,62 @@ pub fn equalizer_band_response_db(
     second.map_or(response, |second| {
         response + single_equalizer_band_response_db(&second, frequency_hz, sample_rate)
     })
+}
+
+/// The dynamic shelf stage has no opposing resonance. Q belongs to the static
+/// shelf; changing its gain used to boost the opposite flank during compression.
+fn dynamic_shelf_band(band: &EqualizerBand, movement_db: f32) -> Option<EqualizerBand> {
+    let filter = match band.filter {
+        FilterType::LowShelf
+        | FilterType::LowShelfI
+        | FilterType::LowShelfII
+        | FilterType::LowShelfIII
+        | FilterType::LowShelfIV
+        | FilterType::LowShelfSoft
+        | FilterType::LowShelfSteep
+        | FilterType::LowShelfResonant => FilterType::LowShelf,
+        FilterType::HighShelf
+        | FilterType::HighShelfSoft
+        | FilterType::HighShelfSteep
+        | FilterType::HighShelfResonant => FilterType::HighShelf,
+        _ => return None,
+    };
+    let movement_db = if movement_db.is_finite() {
+        movement_db
+    } else {
+        0.0
+    };
+    let gain_db = (band.gain_db + movement_db).clamp(-24.0, 24.0) - band.gain_db;
+    Some(EqualizerBand {
+        enabled: band.enabled && gain_db.abs() > 0.00001,
+        filter,
+        frequency_hz: band.frequency_hz,
+        gain_db,
+        // In our shelf formulation Q=1 corresponds to a monotonic S=1 shelf.
+        q: 1.0,
+    })
+}
+
+/// Static + live dynamic magnitude, shared with the graph. Bell behavior is
+/// unchanged; shelf gain movement uses the same separate stage as the processor.
+pub fn dynamic_equalizer_band_response_db(
+    band: &EqualizerBand,
+    movement_db: f32,
+    frequency_hz: f32,
+    sample_rate: u32,
+) -> f32 {
+    if let Some(dynamic) = dynamic_shelf_band(band, movement_db) {
+        equalizer_band_response_db(band, frequency_hz, sample_rate)
+            + if dynamic.enabled {
+                equalizer_band_response_db(&dynamic, frequency_hz, sample_rate)
+            } else {
+                0.0
+            }
+    } else {
+        let mut altered = *band;
+        altered.gain_db = (altered.gain_db + movement_db).clamp(-24.0, 24.0);
+        equalizer_band_response_db(&altered, frequency_hz, sample_rate)
+    }
 }
 
 fn equalizer_band_sections(band: &EqualizerBand) -> (EqualizerBand, Option<EqualizerBand>) {
@@ -7262,5 +7337,222 @@ mod eq_input_level_tests {
             assert_eq!(bus.process_analyzed(0.1, -0.1, &meter, 48_000), (0.0, 0.0));
         }
         assert!((meter.eq_input_rms_dbfs().unwrap().1 + 14.0).abs() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod dynamic_shelf_tests {
+    use super::*;
+
+    fn make_eq(filter: FilterType, movement: f32) -> ChannelEqualizer {
+        let mut eq = ChannelEqualizer::default();
+        *eq.band_mut(0).unwrap() = EqualizerBand {
+            enabled: true,
+            filter,
+            frequency_hz: 500.0,
+            gain_db: -3.0,
+            q: 0.3,
+        };
+        *eq.dynamic_band_mut(0).unwrap() = opentrack_core::project::DynamicEqBand {
+            enabled: movement != 0.0,
+            threshold_db: -60.0,
+            range_db: movement,
+            attack_ms: 0.1,
+            release_ms: 20.0,
+        };
+        eq
+    }
+
+    fn processor(eq: &ChannelEqualizer) -> (ChannelProcessor, Arc<EqualizerControl>) {
+        let control = EqualizerControl::new(eq.clone());
+        let factory = oscillator_instrument_factory(InstrumentWaveform::Sine);
+        let processor = ChannelProcessor::new(
+            eq,
+            Arc::clone(&control),
+            &[],
+            false,
+            &[],
+            &[],
+            Arc::new(MidiEventControls::new(&[])),
+            factory.as_ref(),
+            120.0,
+            48_000,
+        );
+        (processor, control)
+    }
+
+    fn render_gain(processor: &mut ChannelProcessor, frequency: f32, start: usize) -> f32 {
+        let mut input_energy = 0.0_f64;
+        let mut output_energy = 0.0_f64;
+        for frame in 0..48_000 {
+            let input = (std::f64::consts::TAU * f64::from(frequency) * (start + frame) as f64
+                / 48_000.0)
+                .sin() as f32
+                * 0.2;
+            let (mut left, mut right) = (input, -input);
+            processor.process(&mut left, &mut right);
+            assert!(left.is_finite() && right.is_finite());
+            assert!(
+                (left + right).abs() < 0.00001,
+                "linked stereo must preserve opposite-polarity input"
+            );
+            if frame >= 24_000 {
+                input_energy += f64::from(input).powi(2);
+                output_energy += f64::from(left).powi(2);
+            }
+        }
+        (10.0 * (output_energy / input_energy).log10()) as f32
+    }
+
+    #[test]
+    fn shelf_dynamic_audio_and_plotted_response_agree_without_opposite_flank_expansion() {
+        for (filter, frequencies) in [
+            (FilterType::LowShelf, [100.0, 750.0]),
+            (FilterType::HighShelf, [250.0, 5_000.0]),
+        ] {
+            for frequency in frequencies {
+                let static_eq = make_eq(filter, 0.0);
+                let baseline = render_gain(&mut processor(&static_eq).0, frequency, 0);
+                for movement in [-9.2, 9.2] {
+                    let eq = make_eq(filter, movement);
+                    let (mut proc, _) = processor(&eq);
+                    let measured = render_gain(&mut proc, frequency, 0);
+                    let gain = proc.dynamic_gain_db[0];
+                    assert!(
+                        (gain - movement).abs() < 0.05,
+                        "detector must reach the test's requested range"
+                    );
+                    let plotted = dynamic_equalizer_band_response_db(
+                        eq.band(0).unwrap(),
+                        gain,
+                        frequency,
+                        48_000,
+                    );
+                    assert!(
+                        (measured - plotted).abs() < 0.12,
+                        "{filter:?} {frequency} Hz, {movement} dB: audio {measured}, plot {plotted}"
+                    );
+                    assert!(
+                        (measured - baseline) * movement.signum() >= -0.03,
+                        "{filter:?} must not move the opposite flank in the wrong direction"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_shelf_flavors_keep_the_dynamic_delta_in_the_requested_direction() {
+        for filter in [
+            FilterType::LowShelf,
+            FilterType::LowShelfI,
+            FilterType::LowShelfII,
+            FilterType::LowShelfIII,
+            FilterType::LowShelfIV,
+            FilterType::LowShelfSoft,
+            FilterType::LowShelfSteep,
+            FilterType::LowShelfResonant,
+            FilterType::HighShelf,
+            FilterType::HighShelfSoft,
+            FilterType::HighShelfSteep,
+            FilterType::HighShelfResonant,
+        ] {
+            for q in [0.3, 0.707, 3.0] {
+                for gain_db in [-6.0, 0.0, 6.0] {
+                    let band = EqualizerBand {
+                        enabled: true,
+                        filter,
+                        frequency_hz: 500.0,
+                        gain_db,
+                        q,
+                    };
+                    for movement in [-9.0_f32, 9.0] {
+                        for index in 0..128 {
+                            let frequency = 20.0 * 1000.0_f32.powf(index as f32 / 127.0);
+                            let baseline = equalizer_band_response_db(&band, frequency, 48_000);
+                            let moving = dynamic_equalizer_band_response_db(
+                                &band, movement, frequency, 48_000,
+                            );
+                            assert!(
+                                (moving - baseline) * movement.signum() >= -0.015,
+                                "{filter:?} Q={q}, {frequency} Hz must not reverse the dynamic gain direction"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_shelf_disable_reenable_and_bypass_restore_the_correct_audio() {
+        for filter in [FilterType::LowShelf, FilterType::HighShelf] {
+            let mut eq = make_eq(filter, -9.2);
+            let (mut proc, control) = processor(&eq);
+            render_gain(&mut proc, 750.0, 0);
+            eq.dynamic_band_mut(0).unwrap().enabled = false;
+            control.set(&eq);
+            let measured = render_gain(&mut proc, 750.0, 48_000);
+            let baseline = equalizer_band_response_db(eq.band(0).unwrap(), 750.0, 48_000);
+            assert!((measured - baseline).abs() < 0.12);
+            assert!(!proc.equalizer_second[0].is_processing());
+            assert_eq!(proc.dynamic_gain_db[0], 0.0);
+            eq.dynamic_band_mut(0).unwrap().enabled = true;
+            control.set(&eq);
+            let measured = render_gain(&mut proc, 750.0, 96_000);
+            let plotted = dynamic_equalizer_band_response_db(
+                eq.band(0).unwrap(),
+                proc.dynamic_gain_db[0],
+                750.0,
+                48_000,
+            );
+            assert!((measured - plotted).abs() < 0.12);
+            eq.bypassed = true;
+            control.set(&eq);
+            assert!(render_gain(&mut proc, 750.0, 144_000).abs() < 0.03);
+            eq.bypassed = false;
+            eq.band_mut(0).unwrap().enabled = false;
+            control.set(&eq);
+            assert!(render_gain(&mut proc, 750.0, 192_000).abs() < 0.03);
+            assert!(!proc.equalizer_second[0].is_processing());
+        }
+    }
+
+    #[test]
+    fn shelf_gain_limits_and_existing_bell_response_are_preserved() {
+        for gain_db in [-24.0_f32, 24.0] {
+            let band = EqualizerBand {
+                enabled: true,
+                filter: FilterType::LowShelf,
+                frequency_hz: 500.0,
+                gain_db,
+                q: 1.0,
+            };
+            assert_eq!(
+                dynamic_equalizer_band_response_db(&band, gain_db.signum() * 9.0, 250.0, 48_000),
+                equalizer_band_response_db(&band, 250.0, 48_000)
+            );
+        }
+        for filter in [
+            FilterType::Bell,
+            FilterType::ParametricI,
+            FilterType::ParametricII,
+        ] {
+            let band = EqualizerBand {
+                enabled: true,
+                filter,
+                frequency_hz: 500.0,
+                gain_db: 6.0,
+                q: 0.707,
+            };
+            let changed = EqualizerBand {
+                gain_db: -3.0,
+                ..band
+            };
+            assert_eq!(
+                dynamic_equalizer_band_response_db(&band, -9.0, 750.0, 48_000),
+                equalizer_band_response_db(&changed, 750.0, 48_000)
+            );
+        }
     }
 }

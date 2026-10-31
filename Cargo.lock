@@ -1843,6 +1843,7 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+ "winit",
 ]
 
 [[package]]
@@ -1863,6 +1864,14 @@ dependencies = [
 
 [[package]]
 name = "opentrack-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "opentrack-eq"
 version = "0.1.0"
 dependencies = [
  "serde",

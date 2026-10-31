@@ -139,3 +139,5 @@ were run. The local-ASIO executable is staged at `builds/x64/OpenTrack`, SHA-256
 `e997effd1f9a77034cd99035fb21ea5e73c7324bfa95af945725ef93243d7609`; build
 metadata records `local_asio: true`. Live KWin movement and Wobbly Windows
 review remain pending.
+
+2026-10-31 follow-up: user chose XWayland compatibility for supported native tool-window pin/raise behavior. App-wide focus, modal Transport release, and save-prompt visibility restoration are tracked in [T064](T064-tool-window-priority-and-led-visibility.md); native Wayland fallback limitations remain explicit.

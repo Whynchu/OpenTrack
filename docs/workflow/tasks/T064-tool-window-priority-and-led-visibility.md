@@ -1,0 +1,20 @@
+# T064 — tool-window priority and LED visibility
+
+- Status: review_pending (source, focused checks and Linux build complete; desktop/user review pending).
+- Scope version: 1.
+- Desired outcome: pinned Transport/Channel Settings stay above Project, save confirmation is the frontmost OpenTrack interaction, and dark-colored LEDs are visibly illuminated.
+- R1: honor app-scoped pinning as focus moves among Project, Transport and Channel Settings; release it for app dialogs and external applications. Preserve native compositor-managed windows. User explicitly selected XWayland when available.
+- R2: show Save/Discard/Cancel above app tool/plugin windows on call; restore live windows and pin preferences after cancellation/completion, with no project-state changes from cancellation.
+- R3: brighten track-colored LED cores/halos for dark purple and gray without replacing knob artwork, changing unlit dots or changing Threshold measurement.
+- Architecture/dependency evaluation: Rust UI/platform-only changes. Direct Linux access to winit's backend-selection trait uses the exact already-resolved 0.30.13 dependency (MIT/Apache-2.0), with the X11/Wayland features already enabled by eframe; no new GUI framework, runtime protocol library, compositor configuration or audio dependency is introduced. Native Windows visibility uses the existing editor-thread command channel and Win32 ShowWindow/IsWindow boundary. No audio or persistence format changes.
+- Acceptance: cycle Project right-click popups and tool-window focus, FX raising, Alt-Tab to other apps, pin toggles, Save/Discard/Cancel from every app window, plugin editor restoration, and purple/gray LED contrast. Do not claim native Wayland pinning or Windows runtime acceptance from Linux checks.
+
+## Handoff
+
+User chose XWayland when available to retain separate native windows with supported raise/pin behavior. Linux main and splash windows now prefer the existing winit X11 backend when `DISPLAY` is advertised. `OPENTRACK_WINDOW_BACKEND=wayland` retains native Wayland for testing; pin/raise remains unsupported on that fallback. This follows the pinned winit 0.30.13 source and its [window-level documentation](https://docs.rs/winit/0.30.13/winit/window/struct.Window.html#method.set_window_level). Focus for the app-scoped pin now includes every OpenTrack viewport, including Transport, and modal dialogs release Transport's pin. Windows Channel Settings retains ordinary owner-relative ordering.
+
+Save/Discard/Cancel is now a true modal shown last in Project. On call, sibling app viewports are temporarily hidden and Project is focused once; Cancel/completion restores still-live viewports without changing saved pin preferences. Native Windows VST editor containers are hidden/restored without closing the editor or stopping processing; hidden HWNDs remain alive. This prevents tool/plugin windows from covering the save prompt without repeatedly stealing focus.
+
+All shared knob lights now use a brighter emitted-light version of the track color with two halo layers. Purple keeps its hue and gray stays neutral; the original SVG and unlit dots are unchanged. Threshold's input-RMS source and -90…0 dB mapping are retained.
+
+Actual implementer/reviewer: GPT-6.1 Sol; baseline `901de54` plus local work. Thirty-four focused checks pass: Mixer 8, Channel Settings 18, save-prompt UI/restore/focus 3, level policy 2, Linux backend policy 1, splash geometry/timing 2. Local-ASIO compile, formatting and diff checks pass. An actual egui offscreen raster confirms brighter purple/gray lights at 34/48 px; the temporary renderer was removed, PNG only under `/tmp/brighter-knob-leds-review.png`. Full-app headless initialization stalled and was stopped; the prompt's direct UI test passes. Windows cross-check is blocked by missing SDK `rc.exe`, not established as a Windows pass. Live compositor activation/stacking, desktop save-prompt priority and native VST editor restore still need runtime/user review. Normal-directory local-ASIO release build passed and is staged at `builds/x64/OpenTrack`, SHA-256 `3d32ee5512fc282066928aaf5641fa240b5c968f253afc406876c486580817ee`.

@@ -316,6 +316,16 @@ impl EditorWindow {
         }
     }
 
+    pub fn set_visible(&self, visible: bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow};
+        unsafe {
+            ShowWindow(
+                self.frame as _,
+                if visible { SW_SHOWNOACTIVATE } else { SW_HIDE },
+            );
+        }
+    }
+
     pub fn hwnd(&self) -> isize {
         self.hwnd
     }
@@ -435,9 +445,7 @@ impl EditorWindow {
     }
 
     pub fn is_alive(&self) -> bool {
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.frame as _) != 0
-        }
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.frame as _) != 0 }
     }
 }
 
@@ -453,6 +461,7 @@ impl Drop for EditorWindow {
 #[cfg(windows)]
 enum EditorCommand {
     Focus,
+    SetVisible(bool),
     SetOwner(isize),
     Close,
 }
@@ -539,6 +548,10 @@ impl EditorHost {
         let _ = self.commands.send(EditorCommand::Focus);
     }
 
+    pub fn set_visible(&self, visible: bool) {
+        let _ = self.commands.send(EditorCommand::SetVisible(visible));
+    }
+
     pub fn set_owner(&self, owner: isize) {
         if owner != 0 {
             let _ = self.commands.send(EditorCommand::SetOwner(owner));
@@ -596,11 +609,20 @@ fn editor_thread(
         alive.store(true, Ordering::Release);
         let _ = ready.send(Ok(()));
 
+        let mut visible = true;
         loop {
             let mut close = false;
             while let Ok(command) = commands.try_recv() {
                 match command {
-                    EditorCommand::Focus => window.focus(),
+                    EditorCommand::Focus => {
+                        if visible {
+                            window.focus();
+                        }
+                    }
+                    EditorCommand::SetVisible(value) => {
+                        visible = value;
+                        window.set_visible(value);
+                    }
                     EditorCommand::SetOwner(owner) => window.set_owner(owner),
                     EditorCommand::Close => close = true,
                 }
@@ -644,6 +666,8 @@ impl EditorHost {
     }
 
     pub fn focus(&self) {}
+
+    pub fn set_visible(&self, _visible: bool) {}
 
     pub fn set_owner(&self, _owner: isize) {}
 

@@ -607,6 +607,77 @@ fn native_window_bounds(ctx: &egui::Context) -> Option<WindowBounds> {
     })
 }
 
+fn app_has_focused_viewport(ctx: &egui::Context) -> bool {
+    ctx.input(|input| {
+        input
+            .raw
+            .viewports
+            .values()
+            .any(|viewport| viewport.focused == Some(true))
+    })
+}
+
+fn app_scoped_window_level(
+    pinned: bool,
+    app_focused: bool,
+    blocked: bool,
+) -> egui::viewport::WindowLevel {
+    if pinned && app_focused && !blocked {
+        egui::viewport::WindowLevel::AlwaysOnTop
+    } else {
+        egui::viewport::WindowLevel::Normal
+    }
+}
+
+#[derive(Default)]
+struct SavePromptVisibility {
+    active: bool,
+    hidden: HashSet<egui::ViewportId>,
+}
+
+impl SavePromptVisibility {
+    fn sync(&mut self, ctx: &egui::Context, active: bool) -> bool {
+        let changed = active != self.active;
+        let present = ctx.input(|input| input.raw.viewports.keys().copied().collect());
+        let (entered, commands) = self.update(active, &present);
+        for (id, visible) in commands {
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Visible(visible));
+        }
+        if entered {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        }
+        if active {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        changed
+    }
+
+    fn update(
+        &mut self,
+        active: bool,
+        present: &HashSet<egui::ViewportId>,
+    ) -> (bool, Vec<(egui::ViewportId, bool)>) {
+        let entered = active && !self.active;
+        self.active = active;
+        let commands = if active {
+            self.hidden.extend(
+                present
+                    .iter()
+                    .copied()
+                    .filter(|id| *id != egui::ViewportId::ROOT),
+            );
+            self.hidden.iter().map(|id| (*id, false)).collect()
+        } else {
+            self.hidden
+                .drain()
+                .filter(|id| present.contains(id))
+                .map(|id| (id, true))
+                .collect()
+        };
+        (entered, commands)
+    }
+}
+
 fn channel_window_level(
     pinned: bool,
     owner_focused: bool,
@@ -623,11 +694,7 @@ fn channel_window_level(
     // app-scoped as far as the platform allows and release it for dialogs.
     #[cfg(not(windows))]
     {
-        if pinned && owner_focused && !dialog_open {
-            egui::viewport::WindowLevel::AlwaysOnTop
-        } else {
-            egui::viewport::WindowLevel::Normal
-        }
+        app_scoped_window_level(pinned, owner_focused, dialog_open)
     }
 }
 
@@ -637,6 +704,137 @@ fn window_level_request_needed(
     settle_frames: u8,
 ) -> bool {
     current != Some(desired) || settle_frames > 0
+}
+
+#[cfg(test)]
+mod save_prompt_window_tests {
+    use super::*;
+    #[test]
+    fn cancel_save_prompt_restores_tool_visibility_and_focuses_only_on_call() {
+        let ctx = egui::Context::default();
+        ctx.set_embed_viewports(false);
+        let mut visibility = SavePromptVisibility::default();
+        let mut active = true;
+        let tool = egui::ViewportId::from_hash_of("test-channel");
+        let mut cancel = Pos2::ZERO;
+        for frame in 0..4 {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 500.0))),
+                time: Some(frame as f64 * 0.05),
+                ..Default::default()
+            };
+            raw.viewports.insert(tool, egui::ViewportInfo::default());
+            if frame >= 2 {
+                raw.events = vec![
+                    egui::Event::PointerMoved(cancel),
+                    egui::Event::PointerButton {
+                        pos: cancel,
+                        button: egui::PointerButton::Primary,
+                        pressed: frame == 2,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ];
+            }
+            let mut out = ctx.run_ui(raw, |_| {
+                ctx.show_viewport_deferred(tool, egui::ViewportBuilder::default(), |_, _| {});
+                if matches!(unsaved_prompt_ui(&ctx), Some(UnsavedChoice::Cancel)) {
+                    active = false;
+                }
+                visibility.sync(&ctx, active);
+            });
+            out.textures_delta.clear();
+            if frame == 1 {
+                cancel = out
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "Cancel" => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    })
+                    .expect("save prompt has a Cancel action");
+            }
+            let expected_visible = frame == 3;
+            assert!(out.viewport_output[&tool].commands.iter().any(|cmd| matches!(cmd, egui::ViewportCommand::Visible(value) if *value == expected_visible)));
+            let focused = out.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Focus));
+            assert_eq!(
+                focused,
+                frame == 0,
+                "focus the prompt on call, without stealing focus every frame"
+            );
+            out.textures_delta.clear();
+        }
+        assert!(!active);
+        assert!(visibility.hidden.is_empty());
+    }
+
+    #[test]
+    fn save_prompt_hides_all_sibling_viewports_and_restores_only_live_ones() {
+        let transport = egui::ViewportId::from_hash_of("transport");
+        let channel = egui::ViewportId::from_hash_of("channel");
+        let plugin = egui::ViewportId::from_hash_of("plugin");
+        let mut state = SavePromptVisibility::default();
+        let mut present = HashSet::from([egui::ViewportId::ROOT, transport, channel]);
+        let (entered, commands) = state.update(true, &present);
+        assert!(entered);
+        assert_eq!(
+            commands.into_iter().collect::<HashMap<_, _>>(),
+            HashMap::from([(transport, false), (channel, false)])
+        );
+        present.insert(plugin);
+        let (entered, commands) = state.update(true, &present);
+        assert!(
+            !entered,
+            "do not repeatedly steal focus while the modal is open"
+        );
+        assert!(commands.contains(&(plugin, false)));
+        present.remove(&channel);
+        let (_, commands) = state.update(false, &present);
+        assert_eq!(
+            commands.into_iter().collect::<HashMap<_, _>>(),
+            HashMap::from([(transport, true), (plugin, true)])
+        );
+        assert!(state.update(false, &present).1.is_empty());
+    }
+
+    #[test]
+    fn transport_focus_keeps_the_app_pin_and_modal_priority_releases_it() {
+        let ctx = egui::Context::default();
+        let tool = egui::ViewportId::from_hash_of("transport");
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .focused = Some(false);
+        input.viewports.insert(
+            tool,
+            egui::ViewportInfo {
+                focused: Some(true),
+                ..Default::default()
+            },
+        );
+        let mut out = ctx.run_ui(input, |ui| {
+            assert!(app_has_focused_viewport(ui.ctx()));
+            assert_eq!(
+                app_scoped_window_level(true, app_has_focused_viewport(ui.ctx()), false),
+                egui::viewport::WindowLevel::AlwaysOnTop
+            );
+            assert_eq!(
+                app_scoped_window_level(true, app_has_focused_viewport(ui.ctx()), true),
+                egui::viewport::WindowLevel::Normal
+            );
+        });
+        out.textures_delta.clear();
+        assert_eq!(
+            app_scoped_window_level(true, false, false),
+            egui::viewport::WindowLevel::Normal
+        );
+    }
 }
 
 #[cfg(all(test, not(windows)))]
@@ -789,6 +987,7 @@ pub struct OpenTrackApp {
     plugin_scan_error: Option<String>,
     root_window_handle: Option<isize>,
     startup_visibility_pending: bool,
+    save_prompt_visibility: SavePromptVisibility,
     vst3_parameter_window: Option<(u64, usize)>,
     vst3_editor_window: Option<(u64, usize)>,
     vst3_editor_host: Option<vst3_host::EditorHost>,
@@ -1638,6 +1837,27 @@ enum UnsavedChoice {
     Cancel,
 }
 
+fn unsaved_prompt_ui(ctx: &egui::Context) -> Option<UnsavedChoice> {
+    let mut choice = None;
+    egui::Modal::new(egui::Id::new("unsaved-project-changes")).show(ctx, |ui| {
+        ui.heading("Unsaved project changes");
+        ui.label("Save your changes before continuing?");
+        ui.horizontal(|ui| {
+            if ui.button("Save").clicked() {
+                choice = Some(UnsavedChoice::Save);
+            }
+            if ui.button("Discard").clicked() {
+                choice = Some(UnsavedChoice::Discard);
+            }
+            if ui.button("Cancel").clicked() {
+                choice = Some(UnsavedChoice::Cancel);
+            }
+        });
+    });
+
+    choice
+}
+
 impl OpenTrackApp {
     pub fn new(creation: &eframe::CreationContext<'_>) -> Self {
         Self::new_internal(creation, true)
@@ -2005,6 +2225,7 @@ impl OpenTrackApp {
             plugin_scan_error: None,
             root_window_handle: crate::native_windows::creation_root(creation),
             startup_visibility_pending: true,
+            save_prompt_visibility: SavePromptVisibility::default(),
             vst3_parameter_window: None,
             vst3_editor_window: None,
             vst3_editor_host: None,
@@ -3899,31 +4120,22 @@ impl OpenTrackApp {
         }
     }
 
+    fn sync_save_prompt_visibility(&mut self, ctx: &egui::Context) {
+        let active = self.pending_project_action.is_some();
+        let changed = self.save_prompt_visibility.sync(ctx, active);
+        if changed {
+            if let Some(host) = &self.vst3_editor_host {
+                host.set_visible(!active);
+            }
+        }
+    }
+
     fn show_unsaved_prompt(&mut self, ctx: &egui::Context) {
         if self.pending_project_action.is_none() {
             return;
         }
 
-        let mut choice = None;
-        egui::Window::new("Unsaved project changes")
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label("Save your changes before continuing?");
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        choice = Some(UnsavedChoice::Save);
-                    }
-                    if ui.button("Discard").clicked() {
-                        choice = Some(UnsavedChoice::Discard);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        choice = Some(UnsavedChoice::Cancel);
-                    }
-                });
-            });
+        let choice = unsaved_prompt_ui(ctx);
 
         match choice {
             Some(UnsavedChoice::Save) => {
@@ -8683,18 +8895,20 @@ impl OpenTrackApp {
         let root_popup_open = egui::Popup::is_any_open(ctx);
         let channel_popup_open = self.channel_settings_window.popup_active;
         let media_popup_open = self.media_window.popup_active;
-        let higher_popup_open = root_popup_open || channel_popup_open || media_popup_open;
+        let higher_popup_open =
+            root_popup_open || channel_popup_open || media_popup_open || self.modal_dialog_open();
+        let app_focused = app_has_focused_viewport(ctx);
         let restore_bounds = if self.transport_window.viewport_live {
             None
         } else {
             self.transport_window.bounds.as_ref()
         };
         let reopening = !self.transport_window.viewport_live;
-        let transport_level = if self.transport_window.always_on_top && !higher_popup_open {
-            egui::viewport::WindowLevel::AlwaysOnTop
-        } else {
-            egui::viewport::WindowLevel::Normal
-        };
+        let transport_level = app_scoped_window_level(
+            self.transport_window.always_on_top,
+            app_focused,
+            higher_popup_open,
+        );
         if reopening {
             self.transport_window.window_level = None;
             self.transport_window.level_settle = 3;
@@ -8760,7 +8974,8 @@ impl OpenTrackApp {
 
         // Let an open popup take precedence; the saved pin resumes immediately
         // after its popup chain closes.
-        let transport_pin = self.transport_window.always_on_top && !higher_popup_open;
+        let transport_pin =
+            self.transport_window.always_on_top && app_focused && !higher_popup_open;
         #[cfg(windows)]
         if (self.transport_window.native_pin_applied != Some(transport_pin)
             || self.transport_window.level_settle > 0)
@@ -8876,7 +9091,7 @@ impl OpenTrackApp {
         // the "always on top" preference is honoured while OpenTrack itself is
         // the focused application. That keeps the editor above its owner without
         // floating over every other window on the desktop.
-        let owner_focused = ctx.input(|input| input.focused);
+        let owner_focused = app_has_focused_viewport(ctx);
         let channel_focused = self.channel_settings_window.focused;
         let channel_should_front = !root_popup_open
             && !self.transport_window.popup_active
@@ -10834,7 +11049,6 @@ impl eframe::App for OpenTrackApp {
         }
         self.show_transport_window(&ctx);
         self.show_key_commands_window(&ctx);
-        self.show_unsaved_prompt(&ctx);
         self.show_project_open_error(&ctx);
         self.show_project_loading(&ctx);
         self.show_project_rate_change(&ctx);
@@ -10856,6 +11070,8 @@ impl eframe::App for OpenTrackApp {
         if self.project_open {
             self.show_project_setup(&ctx);
         }
+        self.show_unsaved_prompt(&ctx);
+        self.sync_save_prompt_visibility(&ctx);
         self.sync_channel_eq_solo();
         popup_behavior::close_when_pointer_leaves(&ctx);
         if !self.is_recording() {

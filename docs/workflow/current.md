@@ -1,4 +1,20 @@
-# Current assignment — T063
+# Current assignment — T065
+
+## T065 — dynamic shelf direction correction
+
+User approved fixing the audio and animation together after the low/high shelf dynamic movement was found to amplify the opposite Q flank. Static shelf gain, Q and flavor are retained; dynamic movement now uses a separate monotonic shelf stage in the existing secondary filter slot. The graph shares this response model with audio. No new dependency, project schema or knob/layout changes in this correction.
+
+Actual implementer/reviewer: GPT-6.1 Sol, baseline `901de54` plus the preserved T064 working tree. Full audio suite: 110 passed, 3 manual tests ignored. Channel Settings: 19 passed, including the actual envelope mesh direction check. Generated audio agrees with the plotted response; tests cover all shelf variants, positive/negative movement, gain limits, disable/bypass and Bell behavior. Existing OPR EQ/tonal-reference round trip passes. An offscreen render of both shelves was inspected; temporary renderer removed and image retained only at `/tmp/shelf-response-review.png`. Live listening/animation and Windows runtime remain pending. Linux local-ASIO release built and staged at `builds/x64/OpenTrack`, SHA-256 `8eea778ca70b347677c1d9bdbfd0d6fab52db0ecb6614f0c1ca5f39234d0d7f3`. See [T065](tasks/T065-dynamic-shelf-direction.md) for delivery evidence.
+
+## T064 — tool-window pinning, save-prompt priority and luminous LEDs
+
+User chose XWayland when available to retain separate native windows with supported raise/pin behavior. Linux main and splash windows now prefer the existing winit X11 backend when `DISPLAY` is advertised. `OPENTRACK_WINDOW_BACKEND=wayland` retains native Wayland for testing; pin/raise remains unsupported on that fallback. This follows the pinned winit 0.30.13 source and its [window-level documentation](https://docs.rs/winit/0.30.13/winit/window/struct.Window.html#method.set_window_level). Focus for the app-scoped pin now includes every OpenTrack viewport, including Transport, and modal dialogs release Transport's pin. Windows Channel Settings retains ordinary owner-relative ordering.
+
+Save/Discard/Cancel is now a true modal shown last in Project. On call, sibling app viewports are temporarily hidden and Project is focused once; Cancel/completion restores still-live viewports without changing saved pin preferences. Native Windows VST editor containers are hidden/restored without closing the editor or stopping processing; hidden HWNDs remain alive. This prevents tool/plugin windows from covering the save prompt without repeatedly stealing focus.
+
+All shared knob lights now use a brighter emitted-light version of the track color with two halo layers. Purple keeps its hue and gray stays neutral; the original SVG and unlit dots are unchanged. Threshold's input-RMS source and -90…0 dB mapping are retained.
+
+Actual implementer/reviewer: GPT-6.1 Sol; baseline `901de54` plus local work. Thirty-four focused checks pass: Mixer 8, Channel Settings 18, save-prompt UI/restore/focus 3, level policy 2, Linux backend policy 1, splash geometry/timing 2. Local-ASIO compile, formatting and diff checks pass. An actual egui offscreen raster confirms brighter purple/gray lights at 34/48 px; the temporary renderer was removed, PNG only under `/tmp/brighter-knob-leds-review.png`. Full-app headless initialization stalled and was stopped; the prompt's direct UI test passes. Windows cross-check is blocked by missing SDK `rc.exe`, not established as a Windows pass. Live compositor activation/stacking, desktop save-prompt priority and native VST editor restore still need runtime/user review. Normal-directory local-ASIO release build passed and is staged at `builds/x64/OpenTrack`, SHA-256 `3d32ee5512fc282066928aaf5641fa240b5c968f253afc406876c486580817ee`.
 
 ## T063 — shared strip height and input-gain control
 

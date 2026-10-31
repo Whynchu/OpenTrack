@@ -1058,11 +1058,14 @@ fn dynamic_overlay_frequency_bounds(
 ) -> (f32, f32) {
     const RESPONSE_FLOOR_DB: f32 = 0.08;
     const STEP_OCTAVES: f32 = 0.25;
-    let mut altered = *band;
-    altered.gain_db = (altered.gain_db + range_db).clamp(-24.0, 24.0);
     let response_size = |frequency| {
         let base = opentrack_audio::equalizer_band_response_db(band, frequency, sample_rate);
-        let changed = opentrack_audio::equalizer_band_response_db(&altered, frequency, sample_rate);
+        let changed = opentrack_audio::dynamic_equalizer_band_response_db(
+            band,
+            range_db,
+            frequency,
+            sample_rate,
+        );
         base.abs().max(changed.abs())
     };
     let find_edge = |direction: f32| {
@@ -1454,10 +1457,12 @@ fn graph(
             let frequency = low * (high / low).powf(t);
             let static_band =
                 opentrack_audio::equalizer_band_response_db(band, frequency, sample_rate);
-            let mut dynamic_band = *band;
-            dynamic_band.gain_db = (dynamic_band.gain_db + dynamic.range_db).clamp(-24.0, 24.0);
-            let dynamic_response =
-                opentrack_audio::equalizer_band_response_db(&dynamic_band, frequency, sample_rate);
+            let dynamic_response = opentrack_audio::dynamic_equalizer_band_response_db(
+                band,
+                dynamic.range_db,
+                frequency,
+                sample_rate,
+            );
             let aggregate_response = if eq.bypassed {
                 0.0
             } else {
@@ -1540,8 +1545,6 @@ fn graph(
             {
                 continue;
             }
-            let mut actual_band = *band;
-            actual_band.gain_db = (actual_band.gain_db + dynamic_gains[index]).clamp(-24.0, 24.0);
             let sample_rate = state.analyzer.rate(None);
             let (low, high) = dynamic_overlay_frequency_bounds(band, dynamic.range_db, sample_rate);
             let sample_count = dynamic_overlay_sample_count(low, high);
@@ -1552,8 +1555,9 @@ fn graph(
                 let frequency = low * (high / low).powf(t);
                 let static_band =
                     opentrack_audio::equalizer_band_response_db(band, frequency, sample_rate);
-                let actual_band_response = opentrack_audio::equalizer_band_response_db(
-                    &actual_band,
+                let actual_band_response = opentrack_audio::dynamic_equalizer_band_response_db(
+                    band,
+                    dynamic_gains[index],
                     frequency,
                     sample_rate,
                 );
@@ -1595,8 +1599,9 @@ fn graph(
             let actual_gain = dynamic_overlay_response_db(
                 sample_equalizer_curve(&curve_gains, band.frequency_hz),
                 opentrack_audio::equalizer_band_response_db(band, band.frequency_hz, sample_rate),
-                opentrack_audio::equalizer_band_response_db(
-                    &actual_band,
+                opentrack_audio::dynamic_equalizer_band_response_db(
+                    band,
+                    dynamic_gains[index],
                     band.frequency_hz,
                     sample_rate,
                 ),
@@ -3066,6 +3071,68 @@ mod bus_tests {
     }
 
     #[test]
+    fn shelf_envelope_mesh_never_moves_the_opposite_q_flank_against_the_requested_range() {
+        let color = Color32::from_rgb(155, 110, 190);
+        let fill = color.gamma_multiply(0.19);
+        for filter in [FilterType::LowShelf, FilterType::HighShelf] {
+            for range in [-9.2_f32, 9.2] {
+                let context = egui::Context::default();
+                let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 550.0));
+                let mut eq = ChannelEqualizer::default();
+                *eq.band_mut(0).unwrap() = opentrack_core::project::EqualizerBand {
+                    enabled: true,
+                    filter,
+                    gain_db: -3.0,
+                    frequency_hz: 500.0,
+                    q: 0.3,
+                };
+                *eq.band_mut(1).unwrap() = opentrack_core::project::EqualizerBand {
+                    enabled: true,
+                    filter: FilterType::Bell,
+                    gain_db: 3.0,
+                    frequency_hz: 1200.0,
+                    q: 1.0,
+                };
+                eq.dynamic_band_mut(0).unwrap().enabled = true;
+                eq.dynamic_band_mut(0).unwrap().range_db = range;
+                let mut state = ChannelSettingsUiState::default();
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(rect),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        graph(ui, rect, &mut eq, &mut state, color, 1, true);
+                    },
+                );
+                output.textures_delta.clear();
+                let mesh = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh)
+                            if mesh
+                                .vertices
+                                .first()
+                                .is_some_and(|vertex| vertex.color == fill) =>
+                        {
+                            Some(mesh)
+                        }
+                        _ => None,
+                    })
+                    .expect("the dynamic shelf must paint its range envelope");
+                assert!(mesh.vertices.len() > 100);
+                for pair in mesh.vertices.chunks_exact(2) {
+                    assert!(
+                        (pair[1].pos.y - pair[0].pos.y) * range.signum() <= 0.01,
+                        "{filter:?}: range envelope must not cross the aggregate reference into opposite movement"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dynamic_overlay_width_tracks_its_own_band_q() {
         let broad = opentrack_core::project::EqualizerBand {
             enabled: true,
@@ -3263,7 +3330,7 @@ mod bus_tests {
                     );
                 },
             );
-            let lit = output.shapes.iter().filter(|shape| matches!(&shape.shape, egui::Shape::Circle(circle) if circle.fill == color)).count();
+            let lit = output.shapes.iter().filter(|shape| matches!(&shape.shape, egui::Shape::Circle(circle) if circle.fill == mixer::knob_led_color(color))).count();
             output.textures_delta.clear();
             assert_eq!(
                 lit, expected,

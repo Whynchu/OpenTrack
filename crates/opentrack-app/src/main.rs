@@ -19,7 +19,7 @@ fn main() -> eframe::Result {
         return result;
     }
     startup_splash::show();
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             // Wayland and X11 match a window to its application icon through
             // this id. Without it a compositor has nothing to look up and falls
@@ -33,6 +33,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
+    native_windows::configure_linux_backend(&mut options);
     eframe::run_native(
         "OpenTrack-",
         options,
