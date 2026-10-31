@@ -213,13 +213,169 @@ fn sync_group_default_output(track: &mut Track, parent_group_id: Option<u64>) ->
     false
 }
 
-/// Built-in channel EQ. The four-band layout follows the Cubase 5 manual;
-/// parameter ranges and DSP behavior remain OpenTrack- decisions pending
-/// reference measurements.
+/// Persistent built-in channel EQ with room for up to 32 bands. The original
+/// four fields retain their legacy serialized layout; added bands default
+/// neutrally when loading older projects.
+pub const MAX_EQ_BANDS: usize = 32;
+const EXTENDED_EQ_BANDS: usize = MAX_EQ_BANDS - 8;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelEqualizer {
     pub bypassed: bool,
     pub bands: [EqualizerBand; 4],
+    /// Additional built-in EQ bands. Missing in older project files, where the
+    /// default supplies four neutral disabled bands.
+    #[serde(default = "default_additional_equalizer_bands")]
+    pub additional_bands: [EqualizerBand; 4],
+    /// Optional dynamic behavior is separate from static band shape/gain.
+    #[serde(default = "default_dynamic_equalizer_bands")]
+    pub dynamic_bands: [DynamicEqBand; 8],
+    /// Bands beyond the original eight slots, up to `MAX_EQ_BANDS`.
+    #[serde(default = "default_extended_equalizer_bands")]
+    pub extended_bands: [EqualizerBand; EXTENDED_EQ_BANDS],
+    /// Dynamic settings parallel to `extended_bands`.
+    #[serde(default = "default_extended_dynamic_equalizer_bands")]
+    pub extended_dynamic_bands: [DynamicEqBand; EXTENDED_EQ_BANDS],
+    #[serde(default)]
+    pub tonal_target: Option<TonalTarget>,
+}
+
+/// Compact, project-embedded tonal reference profile. Values are normalized
+/// band powers indexed across logarithmic frequency regions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TonalTarget {
+    pub name: String,
+    pub analysis_version: u32,
+    pub sample_rate: u32,
+    /// 0 = pre channel EQ/inserts, 1 = post channel EQ/inserts, 2 = imported file.
+    #[serde(default)]
+    pub source_stage: u8,
+    /// Basename or channel label only; projects never depend on the source file.
+    #[serde(default)]
+    pub source_name: String,
+    /// Duration represented by this profile, in seconds.
+    #[serde(default)]
+    pub analysis_seconds: f32,
+    /// Tonal profiles use 4096 points in versions 1–2 and 8192 points in v3.
+    #[serde(default = "default_tonal_fft_size")]
+    pub fft_size: u32,
+    pub band_powers: Vec<f32>,
+}
+
+fn default_tonal_fft_size() -> u32 {
+    4096
+}
+
+fn default_additional_equalizer_bands() -> [EqualizerBand; 4] {
+    [EqualizerBand::default(); 4]
+}
+
+fn default_dynamic_equalizer_bands() -> [DynamicEqBand; 8] {
+    [DynamicEqBand::default(); 8]
+}
+
+fn default_extended_equalizer_bands() -> [EqualizerBand; EXTENDED_EQ_BANDS] {
+    [EqualizerBand::default(); EXTENDED_EQ_BANDS]
+}
+
+fn default_extended_dynamic_equalizer_bands() -> [DynamicEqBand; EXTENDED_EQ_BANDS] {
+    [DynamicEqBand::default(); EXTENDED_EQ_BANDS]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DynamicEqBand {
+    pub enabled: bool,
+    pub threshold_db: f32,
+    /// Maximum gain change in dB once the detector is above threshold.
+    pub range_db: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+}
+
+impl Default for DynamicEqBand {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold_db: -24.0,
+            range_db: -6.0,
+            attack_ms: 10.0,
+            release_ms: 100.0,
+        }
+    }
+}
+
+impl ChannelEqualizer {
+    pub fn all_bands(&self) -> impl Iterator<Item = &EqualizerBand> {
+        self.bands
+            .iter()
+            .chain(self.additional_bands.iter())
+            .chain(self.extended_bands.iter())
+    }
+
+    pub fn all_bands_mut(&mut self) -> impl Iterator<Item = &mut EqualizerBand> {
+        self.bands
+            .iter_mut()
+            .chain(self.additional_bands.iter_mut())
+            .chain(self.extended_bands.iter_mut())
+    }
+
+    pub fn all_dynamic_bands(&self) -> impl Iterator<Item = &DynamicEqBand> {
+        self.dynamic_bands
+            .iter()
+            .chain(self.extended_dynamic_bands.iter())
+    }
+
+    pub fn band(&self, index: usize) -> Option<&EqualizerBand> {
+        match index {
+            0..4 => self.bands.get(index),
+            4..8 => self.additional_bands.get(index - 4),
+            8..MAX_EQ_BANDS => self.extended_bands.get(index - 8),
+            _ => None,
+        }
+    }
+
+    pub fn band_mut(&mut self, index: usize) -> Option<&mut EqualizerBand> {
+        match index {
+            0..4 => self.bands.get_mut(index),
+            4..8 => self.additional_bands.get_mut(index - 4),
+            8..MAX_EQ_BANDS => self.extended_bands.get_mut(index - 8),
+            _ => None,
+        }
+    }
+
+    pub fn dynamic_band(&self, index: usize) -> Option<&DynamicEqBand> {
+        if index < 8 {
+            self.dynamic_bands.get(index)
+        } else {
+            self.extended_dynamic_bands.get(index - 8)
+        }
+    }
+
+    pub fn dynamic_band_mut(&mut self, index: usize) -> Option<&mut DynamicEqBand> {
+        if index < 8 {
+            self.dynamic_bands.get_mut(index)
+        } else {
+            self.extended_dynamic_bands.get_mut(index - 8)
+        }
+    }
+
+    pub fn band_and_dynamic_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<(&mut EqualizerBand, &mut DynamicEqBand)> {
+        match index {
+            0..4 => Some((&mut self.bands[index], &mut self.dynamic_bands[index])),
+            4..8 => Some((
+                &mut self.additional_bands[index - 4],
+                &mut self.dynamic_bands[index],
+            )),
+            8..MAX_EQ_BANDS => Some((
+                &mut self.extended_bands[index - 8],
+                &mut self.extended_dynamic_bands[index - 8],
+            )),
+            _ => None,
+        }
+    }
 }
 
 impl Default for ChannelEqualizer {
@@ -232,6 +388,11 @@ impl Default for ChannelEqualizer {
                 EqualizerBand::with_q(FilterType::Bell, 2_000.0, 0.2),
                 EqualizerBand::with_q(FilterType::HighShelf, 12_000.0, 7.0),
             ],
+            additional_bands: default_additional_equalizer_bands(),
+            dynamic_bands: default_dynamic_equalizer_bands(),
+            extended_bands: default_extended_equalizer_bands(),
+            extended_dynamic_bands: default_extended_dynamic_equalizer_bands(),
+            tonal_target: None,
         }
     }
 }
@@ -273,6 +434,7 @@ impl Default for EqualizerBand {
 #[serde(rename_all = "snake_case")]
 pub enum FilterType {
     Bell,
+    Notch,
     LowShelf,
     HighShelf,
     LowPass,
@@ -285,6 +447,36 @@ pub enum FilterType {
     LowShelfIV,
     HighPassI,
     HighPassII,
+    LowPassII,
+    LowShelfSoft,
+    LowShelfSteep,
+    LowShelfResonant,
+    HighShelfSoft,
+    HighShelfSteep,
+    HighShelfResonant,
+}
+
+impl FilterType {
+    pub fn supports_dynamic_eq(self) -> bool {
+        matches!(
+            self,
+            Self::Bell
+                | Self::ParametricI
+                | Self::ParametricII
+                | Self::LowShelf
+                | Self::LowShelfI
+                | Self::LowShelfII
+                | Self::LowShelfIII
+                | Self::LowShelfIV
+                | Self::HighShelf
+                | Self::LowShelfSoft
+                | Self::LowShelfSteep
+                | Self::LowShelfResonant
+                | Self::HighShelfSoft
+                | Self::HighShelfSteep
+                | Self::HighShelfResonant
+        )
+    }
 }
 
 /// Oscillator shape for OpenTrack-'s starter built-in instrument.
@@ -1953,7 +2145,7 @@ impl Project {
             if !track.gain.is_finite() || !(0.0..=MAX_CHANNEL_GAIN).contains(&track.gain) {
                 return Err("channel gain must be between 0.0 and 2.0");
             }
-            for (band_index, band) in track.equalizer.bands.iter().enumerate() {
+            for band in track.equalizer.all_bands() {
                 if !band.frequency_hz.is_finite()
                     || !(20.0..=20_000.0).contains(&band.frequency_hz)
                     || !band.gain_db.is_finite()
@@ -1963,14 +2155,49 @@ impl Project {
                 {
                     return Err("equalizer parameters are outside the supported range");
                 }
-                if matches!(band_index, 1 | 2)
-                    && !matches!(
-                        band.filter,
-                        FilterType::Bell | FilterType::ParametricI | FilterType::ParametricII
-                    )
+            }
+            for dynamic in track.equalizer.all_dynamic_bands() {
+                if !dynamic.threshold_db.is_finite()
+                    || !(-90.0..=0.0).contains(&dynamic.threshold_db)
+                    || !dynamic.range_db.is_finite()
+                    || !(-18.0..=18.0).contains(&dynamic.range_db)
+                    || !dynamic.attack_ms.is_finite()
+                    || !(0.1..=2000.0).contains(&dynamic.attack_ms)
+                    || !dynamic.release_ms.is_finite()
+                    || !(1.0..=5000.0).contains(&dynamic.release_ms)
                 {
-                    return Err("EQ bands 2 and 3 must use the parametric bell filter");
+                    return Err("dynamic EQ parameters are outside the supported range");
                 }
+            }
+            if let Some(target) = &track.equalizer.tonal_target
+                && (!matches!(
+                    (target.analysis_version, target.band_powers.len()),
+                    (1, 24) | (2, 48) | (3, 96)
+                ) || target.sample_rate == 0
+                    || target.source_stage > 2
+                    || target.name.chars().count() > 128
+                    || target.source_name.chars().count() > 256
+                    || !target.analysis_seconds.is_finite()
+                    || !(0.0..=86_400.0).contains(&target.analysis_seconds)
+                    || !matches!(
+                        (target.analysis_version, target.fft_size),
+                        (1 | 2, 4096) | (3, 8192)
+                    )
+                    || !matches!(target.band_powers.len(), 24 | 48 | 96)
+                    || target
+                        .band_powers
+                        .iter()
+                        .any(|power| !power.is_finite() || *power < 0.0)
+                    || {
+                        let total = target
+                            .band_powers
+                            .iter()
+                            .map(|power| f64::from(*power))
+                            .sum::<f64>();
+                        !total.is_finite() || (total - 1.0).abs() > 1.0e-3
+                    })
+            {
+                return Err("tonal reference target is invalid");
             }
             if track.inserts.len() > 16 {
                 return Err("a track cannot contain more than 16 insert effects");
@@ -2476,14 +2703,174 @@ mod tests {
     }
 
     #[test]
-    fn middle_eq_bands_reject_shelf_filters() {
+    fn any_builtin_eq_band_accepts_any_supported_filter_shape() {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].equalizer.bands[1].filter = FilterType::LowShelf;
+        project.tracks[0].equalizer.additional_bands[0].filter = FilterType::Notch;
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn thirty_second_eq_band_has_parallel_dynamic_state_and_boundaries() {
+        let mut equalizer = ChannelEqualizer::default();
+        assert_eq!(equalizer.all_bands().count(), MAX_EQ_BANDS);
+        assert_eq!(equalizer.all_dynamic_bands().count(), MAX_EQ_BANDS);
+        let band = equalizer.band_mut(MAX_EQ_BANDS - 1).unwrap();
+        band.enabled = true;
+        band.frequency_hz = 18_000.0;
+        let (band, dynamic) = equalizer.band_and_dynamic_mut(MAX_EQ_BANDS - 1).unwrap();
+        dynamic.enabled = true;
+        dynamic.range_db = 9.0;
+        assert!(band.enabled);
+        assert_eq!(band.frequency_hz, 18_000.0);
         assert_eq!(
-            project.validate(),
-            Err("EQ bands 2 and 3 must use the parametric bell filter")
+            equalizer.dynamic_band(MAX_EQ_BANDS - 1).unwrap().range_db,
+            9.0
         );
+        assert!(equalizer.band(MAX_EQ_BANDS).is_none());
+        assert!(equalizer.band_and_dynamic_mut(MAX_EQ_BANDS).is_none());
+    }
+
+    #[test]
+    fn legacy_four_band_equalizer_loads_with_neutral_additional_bands() {
+        let legacy = serde_json::json!({
+            "bypassed": false,
+            "bands": [
+                {"enabled": true, "filter":"low_shelf", "frequency_hz":91.0, "gain_db":2.5, "q":0.8},
+                {"enabled": false, "filter":"bell", "frequency_hz":800.0, "gain_db":0.0, "q":0.7},
+                {"enabled": true, "filter":"bell", "frequency_hz":2400.0, "gain_db":-1.5, "q":1.2},
+                {"enabled": false, "filter":"high_shelf", "frequency_hz":12000.0, "gain_db":0.0, "q":0.8}
+            ]
+        });
+        let loaded: ChannelEqualizer = serde_json::from_value(legacy).unwrap();
+        assert_eq!(loaded.bands[0].frequency_hz, 91.0);
+        assert_eq!(loaded.bands[0].gain_db, 2.5);
+        assert_eq!(loaded.bands[2].gain_db, -1.5);
+        assert!(
+            loaded.additional_bands.iter().all(|band| {
+                !band.enabled && band.gain_db == 0.0 && band.frequency_hz == 1_000.0
+            })
+        );
+        assert!(loaded.extended_bands.iter().all(|band| !band.enabled));
+        assert!(
+            loaded
+                .extended_dynamic_bands
+                .iter()
+                .all(|band| !band.enabled)
+        );
+    }
+
+    #[test]
+    fn tonal_target_provenance_roundtrips_and_older_targets_get_defaults() {
+        let target = TonalTarget {
+            name: "Imported Reference".into(),
+            analysis_version: 1,
+            sample_rate: 48_000,
+            source_stage: 2,
+            source_name: "mix.wav".into(),
+            analysis_seconds: 92.5,
+            fft_size: 4096,
+            band_powers: vec![1.0 / 24.0; 24],
+        };
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].equalizer.tonal_target = Some(target.clone());
+        let encoded = serde_json::to_vec(&project).unwrap();
+        let decoded: Project = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            decoded.tracks[0].equalizer.tonal_target,
+            Some(target.clone())
+        );
+        assert!(decoded.validate().is_ok());
+
+        let mut legacy = serde_json::to_value(ChannelEqualizer::default()).unwrap();
+        legacy["tonal_target"] = serde_json::json!({
+            "name": "Older Target",
+            "analysis_version": 1,
+            "sample_rate": 44100,
+            "source_stage": 1,
+            "band_powers": vec![1.0 / 24.0; 24]
+        });
+        let migrated: ChannelEqualizer = serde_json::from_value(legacy).unwrap();
+        let migrated_target = migrated.tonal_target.unwrap();
+        assert_eq!(migrated_target.source_name, "");
+        assert_eq!(migrated_target.analysis_seconds, 0.0);
+        assert_eq!(migrated_target.fft_size, 4096);
+    }
+
+    #[test]
+    fn tonal_target_v3_accepts_96_bands_with_the_fine_fft_and_rejects_mismatches() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].equalizer.tonal_target = Some(TonalTarget {
+            name: "Fine Reference".into(),
+            analysis_version: 3,
+            sample_rate: 48_000,
+            source_stage: 2,
+            source_name: "reference.wav".into(),
+            analysis_seconds: 30.0,
+            fft_size: 8192,
+            band_powers: vec![1.0 / 96.0; 96],
+        });
+        assert!(project.validate().is_ok());
+
+        project.tracks[0]
+            .equalizer
+            .tonal_target
+            .as_mut()
+            .unwrap()
+            .fft_size = 4096;
+        assert_eq!(project.validate(), Err("tonal reference target is invalid"));
+        let target = project.tracks[0].equalizer.tonal_target.as_mut().unwrap();
+        target.fft_size = 8192;
+        target.band_powers.pop();
+        assert_eq!(project.validate(), Err("tonal reference target is invalid"));
+    }
+
+    #[test]
+    fn imported_tonal_target_metadata_is_project_validated() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].equalizer.tonal_target = Some(TonalTarget {
+            name: "File Reference".into(),
+            analysis_version: 1,
+            sample_rate: 48_000,
+            source_stage: 2,
+            source_name: "reference.wav".into(),
+            analysis_seconds: 30.0,
+            fft_size: 4096,
+            band_powers: vec![1.0 / 24.0; 24],
+        });
+        assert!(project.validate().is_ok());
+        project.tracks[0]
+            .equalizer
+            .tonal_target
+            .as_mut()
+            .unwrap()
+            .band_powers[0] = f32::MAX;
+        assert_eq!(project.validate(), Err("tonal reference target is invalid"));
+        project.tracks[0]
+            .equalizer
+            .tonal_target
+            .as_mut()
+            .unwrap()
+            .band_powers = vec![1.0; 24];
+        assert_eq!(project.validate(), Err("tonal reference target is invalid"));
+        project.tracks[0]
+            .equalizer
+            .tonal_target
+            .as_mut()
+            .unwrap()
+            .band_powers = vec![1.0 / 24.0; 24];
+        assert!(project.validate().is_ok());
+        project.tracks[0]
+            .equalizer
+            .tonal_target
+            .as_mut()
+            .unwrap()
+            .fft_size = 2048;
+        assert_eq!(project.validate(), Err("tonal reference target is invalid"));
     }
 
     #[test]

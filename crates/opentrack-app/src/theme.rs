@@ -326,6 +326,20 @@ fn install_windows_ui_font(ctx: &egui::Context) {
         );
         ctx.set_fonts(fonts);
     }
+    #[cfg(not(windows))]
+    {
+        let mut fonts = egui::FontDefinitions::default();
+        let wordmark_fonts = fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default();
+        fonts.families.insert(
+            egui::FontFamily::Name("opentrack-wordmark".into()),
+            wordmark_fonts,
+        );
+        ctx.set_fonts(fonts);
+    }
 }
 
 pub fn menu_bar_fill() -> Color32 {

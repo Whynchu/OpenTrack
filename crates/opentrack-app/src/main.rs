@@ -15,6 +15,9 @@ mod view_controls;
 
 fn main() -> eframe::Result {
     crash_log::install();
+    if let Some(result) = startup_splash::run_if_helper() {
+        return result;
+    }
     startup_splash::show();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

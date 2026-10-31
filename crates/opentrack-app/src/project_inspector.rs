@@ -700,7 +700,7 @@ pub(super) fn show(
                         }
                     }
                     "equalizers" => {
-                        for (index, band) in track.equalizer.bands.iter().enumerate() {
+                        for (index, band) in track.equalizer.all_bands().enumerate() {
                             ui.label(format!(
                                 "EQ Band {}  {:.0} Hz",
                                 index + 1,

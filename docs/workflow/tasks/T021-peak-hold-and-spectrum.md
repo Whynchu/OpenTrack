@@ -21,3 +21,22 @@ No app/hardware stream was launched, and EXAMPLE.opr was not opened or modified.
 Review on the new executable: play/monitor an audio track, verify peak remains after silence and click clears it; increase gain to overload and check red number/red above-zero meter section on track and output. Open Channel Settings, enable/alter EQ and switch Pre/Post; spectrum must follow audio while response nodes stay editable. Compare another playing channel (orange), switch owner then close/reopen: both must restore Post/None. Check input/output buses, mono/stereo, stopped streams and unchanged project dirty state. Live timing, hardware and appearance remain pending. Stop for user feedback.
 
 Release build succeeded: build.ps1 -Architecture x64 -LocalAsio. Identity: builds/x64/OpenTrack.exe: CC913709320C3677EDA3EA5F0BC1110BCF658B6094B73B6B439ECBA49C399733; crates/opentrack-app/src/app.rs: DC553EE40501FFC6D17FA83409290882E70970053456872D162EF9B038CC5F41; crates/opentrack-app/src/analyzer_view.rs: F998FC0FC7655C4D1E52D007D3591B022577096BA78B8CC57E3DD0BDDBAF1130; crates/opentrack-app/src/channel_settings.rs: E459A13954A296E1064686DA38A73825340565F91BF9982B6C6938ECE4B01D36; crates/opentrack-app/src/mixer.rs: 51877EA4BCBF7C2C1018418900FBEA3171CB8251019CB3327047486E8A3B4456; crates/opentrack-audio/src/lib.rs: 800ADA46976356E9907F212F2B98E890DFCBAA8349851E2EA631652BC3672A49; crates/opentrack-audio/src/spectrum.rs: DA401F8F10C20446B6EBD23819BEF37F7CBD36FC4F04708B7E65207ACEE31309; crates/opentrack-audio/src/bus.rs: 8B151AF5D2674A3C4225A987C55D83E76305CC3C1D7D433667BF447144469E1C; crates/opentrack-audio/src/recording.rs: 031566532F6AC64C3235820F698E320A56DA8C5E2BF96880064DCB9B97851E64
+
+## Low-frequency display resolution follow-up (2026-10-30)
+
+The Channel Settings live spectrum uses a 4096-sample FFT and 8192-sample
+capture ring, doubling frequency-bin density. At 44.1 kHz this gives about
+10.8 Hz per bin; at higher sample rates the absolute spacing scales with the
+rate. The EQ response curve itself was already drawn using 257 logarithmic
+frequency samples, so this specifically improves live spectrum detail. The
+existing temporal release smoothing remains unchanged. This increases the
+analysis window from about 46 ms to 93 ms at 44.1 kHz. Playback/UI timing and
+visual review remain pending.
+
+Linux x64 release with local ASIO was rebuilt after this change and installed
+at `builds/x64/OpenTrack`, SHA-256
+`a1e0e3f9bcec3ab6d382580ed788b0285583f60a3fe839bb83ee1af1b93b6aeb`.
+`cargo fmt --all -- --check`, `git diff --check`,
+`cargo check --offline -p opentrack --features local-asio`, and
+`cargo build --offline --release -p opentrack --features local-asio` pass. No
+tests or live audio/visual checks were run for this follow-up.

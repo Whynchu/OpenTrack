@@ -24,7 +24,10 @@ pub mod plugins;
 mod recording;
 mod spectrum;
 mod streaming;
-pub use spectrum::{SpectrumFrame, SpectrumStage};
+pub use spectrum::{
+    SpectrumFrame, SpectrumResolution, SpectrumStage, TONAL_FFT_SIZE, TONAL_PROFILE_BANDS,
+    TonalProfile, analyze_tonal_reference_wav, normalized_log_band_difference_db,
+};
 mod waveform;
 pub use waveform::{WAVEFORM_BLOCK_FRAMES, Waveform};
 #[cfg(windows)]
@@ -416,6 +419,7 @@ impl MixControl {
 struct EqualizerControl {
     target: ArcSwap<ChannelEqualizer>,
     revision: AtomicU64,
+    solo_band: AtomicU32,
     retired_targets: Mutex<Vec<Arc<ChannelEqualizer>>>,
 }
 
@@ -424,13 +428,30 @@ impl EqualizerControl {
         Arc::new(Self {
             target: ArcSwap::from_pointee(target),
             revision: AtomicU64::new(0),
+            solo_band: AtomicU32::new(0),
             retired_targets: Mutex::new(Vec::new()),
         })
     }
 
+    fn set_solo_band(&self, band: Option<usize>) {
+        self.solo_band.store(
+            band.map_or(0, |index| index.saturating_add(1)) as u32,
+            Ordering::Release,
+        );
+    }
+
     fn set(&self, target: &ChannelEqualizer) {
         let current = self.target.load();
-        if current.as_ref() != target {
+        // Tonal targets are project/analyzer state, not audio parameters. A
+        // save or rename in the tonal view must not reconfigure the channel
+        // processor or advance its real-time parameter revision.
+        let processing_changed = current.bypassed != target.bypassed
+            || current.bands != target.bands
+            || current.additional_bands != target.additional_bands
+            || current.dynamic_bands != target.dynamic_bands
+            || current.extended_bands != target.extended_bands
+            || current.extended_dynamic_bands != target.extended_dynamic_bands;
+        if processing_changed {
             drop(current);
             let previous = self.target.swap(Arc::new(target.clone()));
             self.retired_targets
@@ -585,6 +606,7 @@ impl PlaybackTrackRuntime {
 #[derive(Default)]
 pub struct StereoMeter {
     peaks: [AtomicU32; 2],
+    dynamic_eq_gain_db: [AtomicU32; opentrack_core::project::MAX_EQ_BANDS],
     spectrum: std::sync::OnceLock<spectrum::SpectrumTap>,
 }
 
@@ -602,8 +624,31 @@ impl StereoMeter {
     pub fn spectrum_enabled(&self) -> bool {
         self.spectrum.get().is_some_and(|tap| tap.enabled())
     }
+    /// Latest per-band dynamic gain movement, published by the audio callback.
+    pub fn dynamic_eq_gains_db(&self) -> [f32; opentrack_core::project::MAX_EQ_BANDS] {
+        self.dynamic_eq_gain_db
+            .each_ref()
+            .map(|gain| f32::from_bits(gain.load(Ordering::Relaxed)))
+    }
+    fn publish_dynamic_eq_gain(&self, band: usize, gain_db: f32) {
+        if let Some(gain) = self.dynamic_eq_gain_db.get(band) {
+            let gain_db = if gain_db.is_finite() {
+                gain_db.clamp(-18.0, 18.0)
+            } else {
+                0.0
+            };
+            gain.store(gain_db.to_bits(), Ordering::Relaxed);
+        }
+    }
     pub fn spectrum_frame(&self, stage: SpectrumStage) -> Option<SpectrumFrame> {
-        self.spectrum.get()?.frame(stage)
+        self.spectrum_frame_at(stage, SpectrumResolution::Balanced)
+    }
+    pub fn spectrum_frame_at(
+        &self,
+        stage: SpectrumStage,
+        resolution: SpectrumResolution,
+    ) -> Option<SpectrumFrame> {
+        self.spectrum.get()?.frame(stage, resolution)
     }
     pub(crate) fn record_spectrum(&self, pre: (f32, f32), post: (f32, f32), rate: u32) {
         if let Some(tap) = self.spectrum.get() {
@@ -2067,6 +2112,19 @@ impl AudioEngine {
         true
     }
 
+    /// Starts or stops transient EQ-band audition without changing project EQ
+    /// state or rebuilding the playback plan.
+    pub fn update_track_eq_solo_band(&self, track_index: usize, band: Option<usize>) -> bool {
+        let plan = self.plan.load();
+        let Some(track) = plan.tracks.get(track_index) else {
+            return false;
+        };
+        track
+            .equalizer_control
+            .set_solo_band(valid_eq_solo_band(band));
+        true
+    }
+
     /// Updates only the live fader target for a track. Project fader drags use
     /// this narrow path to avoid cloning equalizer state or rebuilding plans.
     pub fn update_track_gain(&self, track_index: usize, gain: f32) -> bool {
@@ -2122,6 +2180,13 @@ impl AudioEngine {
             .load()
             .output_bus
             .set_channel_parameters(gain, pan, equalizer);
+    }
+
+    pub fn update_output_eq_solo_band(&self, band: Option<usize>) {
+        self.plan
+            .load()
+            .output_bus
+            .set_eq_solo_band(valid_eq_solo_band(band));
     }
 
     /// Releases replaced plans and callback snapshots after the audio callback
@@ -2387,6 +2452,10 @@ impl AudioEngine {
     pub fn test_tone_enabled(&self) -> bool {
         self.test_tone_enabled.load(Ordering::Relaxed)
     }
+}
+
+fn valid_eq_solo_band(band: Option<usize>) -> Option<usize> {
+    band.filter(|index| *index < opentrack_core::project::MAX_EQ_BANDS)
 }
 
 const LIVE_MIDI_QUEUE_CAPACITY: usize = 2_048;
@@ -3421,6 +3490,7 @@ fn render_hosted_track_block(
         let mut left = buffers.pre_left[index];
         let mut right = buffers.pre_right[index];
         processor.process(&mut left, &mut right);
+        processor.publish_dynamic_updates(&track.settings.meter_peak);
         buffers.block_left[index] = left;
         buffers.block_right[index] = right;
         // The post-built-in signal is the dry fallback if a hosted insert fails.
@@ -3475,6 +3545,7 @@ fn render_hosted_group_block(
         buffers.pre_left[index] = left;
         buffers.pre_right[index] = right;
         processor.process(&mut left, &mut right);
+        processor.publish_dynamic_updates(&track.settings.meter_peak);
         buffers.block_left[index] = left;
         buffers.block_right[index] = right;
         buffers.dry_left[index] = left;
@@ -3632,6 +3703,7 @@ fn mix_frame_with_policy(
         track_right += instrument_right;
         let pre = (track_left, track_right);
         processor.process(&mut track_left, &mut track_right);
+        processor.publish_dynamic_updates(&track.settings.meter_peak);
         if analyze {
             track
                 .settings
@@ -3678,6 +3750,7 @@ fn mix_frame_with_policy(
         let processor = unsafe { &mut *track.processor.get() };
         let pre = (track_left, track_right);
         processor.process(&mut track_left, &mut track_right);
+        processor.publish_dynamic_updates(&track.settings.meter_peak);
         if analyze {
             track
                 .settings
@@ -4281,7 +4354,18 @@ struct ChannelProcessor {
     equalizer_revision: u64,
     sample_rate: u32,
     inserts_bypassed: bool,
-    equalizer: [Biquad; 4],
+    equalizer: [Biquad; opentrack_core::project::MAX_EQ_BANDS],
+    equalizer_second: [Biquad; opentrack_core::project::MAX_EQ_BANDS],
+    solo_filter: Biquad,
+    solo_band: u32,
+    solo_mix: f32,
+    solo_mix_target: f32,
+    solo_mix_step: f32,
+    eq_bands: [EqualizerBand; opentrack_core::project::MAX_EQ_BANDS],
+    dynamic_bands: [opentrack_core::project::DynamicEqBand; opentrack_core::project::MAX_EQ_BANDS],
+    dynamic_detectors: [DynamicEqDetector; opentrack_core::project::MAX_EQ_BANDS],
+    dynamic_gain_db: [f32; opentrack_core::project::MAX_EQ_BANDS],
+    dynamic_meter_dirty: u32,
     inserts: Vec<InsertProcessor>,
     instrument: Box<dyn InstrumentProcessor>,
 }
@@ -4299,8 +4383,24 @@ impl ChannelProcessor {
         tempo_bpm: f64,
         sample_rate: u32,
     ) -> Self {
-        let bands =
-            std::array::from_fn(|index| Biquad::from_band(&equalizer.bands[index], sample_rate));
+        let bands = std::array::from_fn(|index| {
+            Biquad::from_band(equalizer.band(index).unwrap(), sample_rate)
+        });
+        let second_bands = std::array::from_fn(|index| {
+            let band = equalizer.band(index).unwrap();
+            let second = equalizer_band_sections(band).1.unwrap_or_else(|| {
+                let mut disabled = *band;
+                disabled.enabled = false;
+                disabled
+            });
+            Biquad::from_band(&second, sample_rate)
+        });
+        let eq_bands = std::array::from_fn(|index| *equalizer.band(index).unwrap());
+        let solo_filter = Biquad::from_bandpass(&eq_bands[0], sample_rate);
+        let dynamic_bands = std::array::from_fn(|index| *equalizer.dynamic_band(index).unwrap());
+        let dynamic_detectors = std::array::from_fn(|index| {
+            DynamicEqDetector::new(&eq_bands[index], dynamic_bands[index], sample_rate)
+        });
         let inserts = inserts
             .iter()
             .map(|insert| InsertProcessor::new(insert, sample_rate))
@@ -4315,6 +4415,17 @@ impl ChannelProcessor {
             sample_rate: sample_rate.max(1),
             inserts_bypassed,
             equalizer: bands,
+            equalizer_second: second_bands,
+            solo_filter,
+            solo_band: 0,
+            solo_mix: 0.0,
+            solo_mix_target: 0.0,
+            solo_mix_step: 0.0,
+            eq_bands,
+            dynamic_bands,
+            dynamic_detectors,
+            dynamic_gain_db: [0.0; opentrack_core::project::MAX_EQ_BANDS],
+            dynamic_meter_dirty: 0,
             inserts,
             instrument: instrument_factory.create_processor(
                 midi_notes,
@@ -4334,15 +4445,82 @@ impl ChannelProcessor {
             self.equalizer_wet_target = if target.bypassed { 0.0 } else { 1.0 };
             self.equalizer_wet_step = (self.equalizer_wet_target - self.equalizer_wet)
                 / (self.sample_rate / 200).max(1) as f32;
-            for (filter, band) in self.equalizer.iter_mut().zip(target.bands.iter()) {
+            for (index, band) in target.all_bands().enumerate() {
+                let filter = &mut self.equalizer[index];
                 filter.update_band(band, self.sample_rate);
+                let second = equalizer_band_sections(band).1.unwrap_or_else(|| {
+                    let mut disabled = *band;
+                    disabled.enabled = false;
+                    disabled
+                });
+                self.equalizer_second[index].update_band(&second, self.sample_rate);
             }
+            for (index, band) in target.all_bands().enumerate() {
+                let target_dynamic = *target.dynamic_band(index).unwrap();
+                let was_dynamic = self.dynamic_bands[index].enabled
+                    && self.eq_bands[index].enabled
+                    && self.eq_bands[index].filter.supports_dynamic_eq();
+                let is_dynamic =
+                    target_dynamic.enabled && band.enabled && band.filter.supports_dynamic_eq();
+                self.eq_bands[index] = *band;
+                self.dynamic_detectors[index].configure(band, target_dynamic, self.sample_rate);
+                if was_dynamic && !is_dynamic {
+                    self.dynamic_detectors[index].reset();
+                    self.dynamic_gain_db[index] = 0.0;
+                    self.dynamic_meter_dirty |= 1u32 << index;
+                }
+            }
+            if self.solo_band > 0 {
+                self.solo_filter.update_bandpass(
+                    &self.eq_bands[(self.solo_band - 1) as usize],
+                    self.sample_rate,
+                );
+            }
+            self.dynamic_bands = std::array::from_fn(|index| *target.dynamic_band(index).unwrap());
             self.equalizer_revision = revision;
         }
         let dry = (*left, *right);
-        for band in &mut self.equalizer {
-            if band.enabled {
-                band.process(left, right);
+        let requested_solo = self.equalizer_control.solo_band.load(Ordering::Acquire);
+        if requested_solo != self.solo_band {
+            let was_inactive = self.solo_band == 0 && requested_solo > 0;
+            self.solo_band = requested_solo.min(opentrack_core::project::MAX_EQ_BANDS as u32);
+            if self.solo_band > 0 {
+                if was_inactive {
+                    self.solo_filter.reset_state();
+                }
+                self.solo_filter.update_bandpass(
+                    &self.eq_bands[(self.solo_band - 1) as usize],
+                    self.sample_rate,
+                );
+            }
+            self.solo_mix_target = if self.solo_band > 0 { 1.0 } else { 0.0 };
+            self.solo_mix_step =
+                (self.solo_mix_target - self.solo_mix) / (self.sample_rate / 200).max(1) as f32;
+        }
+        let mut solo_output = dry;
+        if self.solo_band > 0 || self.solo_mix > 0.0 {
+            self.solo_filter
+                .process(&mut solo_output.0, &mut solo_output.1);
+        }
+        for index in 0..self.equalizer.len() {
+            if self.dynamic_bands[index].enabled
+                && self.eq_bands[index].enabled
+                && self.eq_bands[index].filter.supports_dynamic_eq()
+            {
+                let dynamic_gain = self.dynamic_detectors[index].process(*left, *right);
+                if self.dynamic_detectors[index].take_coefficients_due() {
+                    let mut band = self.eq_bands[index];
+                    band.gain_db = (band.gain_db + dynamic_gain).clamp(-24.0, 24.0);
+                    self.equalizer[index].update_band(&band, self.sample_rate);
+                    self.dynamic_gain_db[index] = dynamic_gain;
+                    self.dynamic_meter_dirty |= 1u32 << index;
+                }
+            }
+            if self.equalizer[index].is_processing() {
+                self.equalizer[index].process(left, right);
+            }
+            if self.equalizer_second[index].is_processing() {
+                self.equalizer_second[index].process(left, right);
             }
         }
         if self.equalizer_wet != self.equalizer_wet_target {
@@ -4353,11 +4531,28 @@ impl ChannelProcessor {
         }
         *left = dry.0 * (1.0 - self.equalizer_wet) + *left * self.equalizer_wet;
         *right = dry.1 * (1.0 - self.equalizer_wet) + *right * self.equalizer_wet;
+        if self.solo_mix != self.solo_mix_target {
+            self.solo_mix += self.solo_mix_step;
+            if (self.solo_mix - self.solo_mix_target).abs() < 1e-4 {
+                self.solo_mix = self.solo_mix_target;
+            }
+        }
+        *left = *left * (1.0 - self.solo_mix) + solo_output.0 * self.solo_mix;
+        *right = *right * (1.0 - self.solo_mix) + solo_output.1 * self.solo_mix;
         if !self.inserts_bypassed {
             for insert in &mut self.inserts {
                 if insert.enabled() {
                     insert.process(left, right);
                 }
+            }
+        }
+    }
+
+    fn publish_dynamic_updates(&mut self, meter: &StereoMeter) {
+        let dirty = std::mem::replace(&mut self.dynamic_meter_dirty, 0);
+        for band in 0..opentrack_core::project::MAX_EQ_BANDS {
+            if dirty & (1 << band) != 0 {
+                meter.publish_dynamic_eq_gain(band, self.dynamic_gain_db[band]);
             }
         }
     }
@@ -4372,22 +4567,56 @@ pub fn channel_equalizer_response_db(
     if equalizer.bypassed {
         return 0.0;
     }
+    equalizer
+        .all_bands()
+        .filter(|band| band.enabled)
+        .map(|band| equalizer_band_response_db(band, frequency_hz, sample_rate))
+        .sum()
+}
+
+/// Magnitude of one actual channel EQ filter, using its configured Q and shape.
+pub fn equalizer_band_response_db(
+    band: &EqualizerBand,
+    frequency_hz: f32,
+    sample_rate: u32,
+) -> f32 {
+    let (first, second) = equalizer_band_sections(band);
+    let response = single_equalizer_band_response_db(&first, frequency_hz, sample_rate);
+    second.map_or(response, |second| {
+        response + single_equalizer_band_response_db(&second, frequency_hz, sample_rate)
+    })
+}
+
+fn equalizer_band_sections(band: &EqualizerBand) -> (EqualizerBand, Option<EqualizerBand>) {
+    let base_filter = match band.filter {
+        FilterType::LowPassII => FilterType::LowPass,
+        FilterType::HighPassII => FilterType::HighPassI,
+        _ => return (*band, None),
+    };
+    // A 24 dB/octave Butterworth pair uses section Q values 0.5412 and
+    // 1.3066. The band's Q scales both sections around the familiar 0.707
+    // single-pole-pair reference while preserving the requested order.
+    let q_scale = band.q.clamp(0.1, 10.0) / std::f32::consts::FRAC_1_SQRT_2;
+    let mut first = *band;
+    first.filter = base_filter;
+    first.q = (0.541_196_1 * q_scale).clamp(0.1, 10.0);
+    let mut second = first;
+    second.q = (1.306_563 * q_scale).clamp(0.1, 10.0);
+    (first, Some(second))
+}
+
+fn single_equalizer_band_response_db(
+    band: &EqualizerBand,
+    frequency_hz: f32,
+    sample_rate: u32,
+) -> f32 {
+    let f = Biquad::from_band(band, sample_rate);
     let omega = std::f32::consts::TAU * frequency_hz / sample_rate.max(1) as f32;
     let (sin, cos) = omega.sin_cos();
     let (sin2, cos2) = (2.0 * omega).sin_cos();
-    equalizer
-        .bands
-        .iter()
-        .filter(|band| band.enabled)
-        .map(|band| {
-            let f = Biquad::from_band(band, sample_rate);
-            let numerator =
-                (f.b0 + f.b1 * cos + f.b2 * cos2).powi(2) + (f.b1 * sin + f.b2 * sin2).powi(2);
-            let denominator =
-                (1.0 + f.a1 * cos + f.a2 * cos2).powi(2) + (f.a1 * sin + f.a2 * sin2).powi(2);
-            10.0 * (numerator.max(1.0e-20) / denominator.max(1.0e-20)).log10()
-        })
-        .sum()
+    let numerator = (f.b0 + f.b1 * cos + f.b2 * cos2).powi(2) + (f.b1 * sin + f.b2 * sin2).powi(2);
+    let denominator = (1.0 + f.a1 * cos + f.a2 * cos2).powi(2) + (f.a1 * sin + f.a2 * sin2).powi(2);
+    10.0 * (numerator.max(1.0e-20) / denominator.max(1.0e-20)).log10()
 }
 
 struct Biquad {
@@ -4397,17 +4626,245 @@ struct Biquad {
     b2: f32,
     a1: f32,
     a2: f32,
+    target_b0: f32,
+    target_b1: f32,
+    target_b2: f32,
+    target_a1: f32,
+    target_a2: f32,
+    step_b0: f32,
+    step_b1: f32,
+    step_b2: f32,
+    step_a1: f32,
+    step_a2: f32,
+    coefficient_ramp_remaining: u32,
+    enabled_mix: f32,
+    enabled_target: f32,
+    enabled_step: f32,
+    enabled_ramp_remaining: u32,
     left_z1: f32,
     left_z2: f32,
     right_z1: f32,
     right_z2: f32,
 }
 
+struct DynamicEqDetector {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    left_z1: f32,
+    left_z2: f32,
+    left_y1: f32,
+    left_y2: f32,
+    right_z1: f32,
+    right_z2: f32,
+    right_y1: f32,
+    right_y2: f32,
+    envelope: f32,
+    attack_coefficient: f32,
+    release_coefficient: f32,
+    threshold_db: f32,
+    range_db: f32,
+    gain_db: f32,
+    target_gain_db: f32,
+    samples_since_update: u8,
+    control_update_due: bool,
+    previous_gain_db: f32,
+}
+
+impl DynamicEqDetector {
+    fn new(
+        band: &EqualizerBand,
+        settings: opentrack_core::project::DynamicEqBand,
+        sample_rate: u32,
+    ) -> Self {
+        let mut detector = Self {
+            b0: 0.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            left_z1: 0.0,
+            left_z2: 0.0,
+            left_y1: 0.0,
+            left_y2: 0.0,
+            right_z1: 0.0,
+            right_z2: 0.0,
+            right_y1: 0.0,
+            right_y2: 0.0,
+            envelope: 0.0,
+            attack_coefficient: 0.0,
+            release_coefficient: 0.0,
+            threshold_db: -24.0,
+            range_db: 0.0,
+            gain_db: 0.0,
+            target_gain_db: 0.0,
+            samples_since_update: 0,
+            control_update_due: false,
+            previous_gain_db: 0.0,
+        };
+        detector.configure(band, settings, sample_rate);
+        detector
+    }
+
+    fn configure(
+        &mut self,
+        band: &EqualizerBand,
+        settings: opentrack_core::project::DynamicEqBand,
+        sample_rate: u32,
+    ) {
+        let sr = sample_rate.max(1) as f32;
+        let omega = std::f32::consts::TAU * band.frequency_hz.clamp(20.0, sr * 0.49) / sr;
+        let (sin, cos) = omega.sin_cos();
+        let alpha = sin / (2.0 * band.q.clamp(0.1, 10.0));
+        let a0 = 1.0 + alpha;
+        self.b0 = alpha / a0;
+        self.b1 = 0.0;
+        self.b2 = -alpha / a0;
+        self.a1 = -2.0 * cos / a0;
+        self.a2 = (1.0 - alpha) / a0;
+        let coefficient =
+            |time_ms: f32| (-1.0 / ((time_ms.clamp(0.1, 2000.0) * 0.001 * sr).max(1.0))).exp();
+        self.attack_coefficient = coefficient(settings.attack_ms);
+        self.release_coefficient = coefficient(settings.release_ms);
+        self.threshold_db = settings.threshold_db.clamp(-90.0, 0.0);
+        self.range_db = settings.range_db.clamp(-18.0, 18.0);
+    }
+
+    fn reset(&mut self) {
+        self.left_z1 = 0.0;
+        self.left_z2 = 0.0;
+        self.left_y1 = 0.0;
+        self.left_y2 = 0.0;
+        self.right_z1 = 0.0;
+        self.right_z2 = 0.0;
+        self.right_y1 = 0.0;
+        self.right_y2 = 0.0;
+        self.envelope = 0.0;
+        self.gain_db = 0.0;
+        self.target_gain_db = 0.0;
+        self.samples_since_update = 0;
+        self.control_update_due = false;
+        self.previous_gain_db = 0.0;
+    }
+
+    fn process(&mut self, left: f32, right: f32) -> f32 {
+        let l = self.b0 * left + self.b1 * self.left_z1 + self.b2 * self.left_z2
+            - self.a1 * self.left_y1
+            - self.a2 * self.left_y2;
+        self.left_z2 = self.left_z1;
+        self.left_z1 = left;
+        self.left_y2 = self.left_y1;
+        self.left_y1 = l;
+        let r = self.b0 * right + self.b1 * self.right_z1 + self.b2 * self.right_z2
+            - self.a1 * self.right_y1
+            - self.a2 * self.right_y2;
+        self.right_z2 = self.right_z1;
+        self.right_z1 = right;
+        self.right_y2 = self.right_y1;
+        self.right_y1 = r;
+        let detected = ((l * l + r * r) * 0.5).sqrt().max(1.0e-8);
+        let coefficient = if detected > self.envelope {
+            self.attack_coefficient
+        } else {
+            self.release_coefficient
+        };
+        self.envelope = coefficient * self.envelope + (1.0 - coefficient) * detected;
+        self.samples_since_update = self.samples_since_update.saturating_add(1);
+        if self.samples_since_update >= 32 {
+            self.samples_since_update = 0;
+            let level_db = 20.0 * self.envelope.max(1.0e-8).log10();
+            let over = ((level_db - self.threshold_db) / 12.0).clamp(0.0, 1.0);
+            self.target_gain_db = self.range_db * over;
+            self.control_update_due = true;
+        }
+        self.gain_db += (self.target_gain_db - self.gain_db) * 0.05;
+        self.gain_db
+    }
+
+    fn take_coefficients_due(&mut self) -> bool {
+        if !self.control_update_due {
+            return false;
+        }
+        self.control_update_due = false;
+        if (self.gain_db - self.previous_gain_db).abs() < 0.03 {
+            return false;
+        }
+        self.previous_gain_db = self.gain_db;
+        true
+    }
+}
+
 impl Biquad {
+    fn reset_state(&mut self) {
+        self.left_z1 = 0.0;
+        self.left_z2 = 0.0;
+        self.right_z1 = 0.0;
+        self.right_z2 = 0.0;
+    }
+
+    fn from_bandpass(band: &EqualizerBand, sample_rate: u32) -> Self {
+        let mut band = *band;
+        band.enabled = true;
+        let mut filter = Self::from_band(&band, sample_rate);
+        let coefficients = Self::bandpass_coefficients(&band, sample_rate);
+        [
+            &mut filter.b0,
+            &mut filter.b1,
+            &mut filter.b2,
+            &mut filter.a1,
+            &mut filter.a2,
+        ]
+        .into_iter()
+        .zip(coefficients)
+        .for_each(|(slot, value)| *slot = value);
+        filter.target_b0 = filter.b0;
+        filter.target_b1 = filter.b1;
+        filter.target_b2 = filter.b2;
+        filter.target_a1 = filter.a1;
+        filter.target_a2 = filter.a2;
+        filter.enabled_mix = 1.0;
+        filter.enabled_target = 1.0;
+        filter
+    }
+
+    fn bandpass_coefficients(band: &EqualizerBand, sample_rate: u32) -> [f32; 5] {
+        let sr = sample_rate.max(1) as f32;
+        let omega = std::f32::consts::TAU * band.frequency_hz.clamp(20.0, sr * 0.49) / sr;
+        let q = band.q.clamp(0.1, 10.0);
+        let (sin, cos) = omega.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let inverse = 1.0 / (1.0 + alpha);
+        [
+            alpha * inverse,
+            0.0,
+            -alpha * inverse,
+            -2.0 * cos * inverse,
+            (1.0 - alpha) * inverse,
+        ]
+    }
+
     fn from_band(band: &EqualizerBand, sample_rate: u32) -> Self {
+        let (band, _) = equalizer_band_sections(band);
+        let band = &band;
         let sr = sample_rate.max(1) as f32;
         let frequency = band.frequency_hz.clamp(1.0, sr * 0.49);
-        let q = band.q.clamp(0.1, 10.0);
+        let base_q = band.q.clamp(0.1, 10.0);
+        // Parametric II is the proportional-Q bell flavor: its bandwidth
+        // tightens as the requested boost/cut grows. Parametric I retains the
+        // classic constant-Q response. This is also used by the response
+        // renderer, so the graph and audio path share the same curve.
+        let q = match band.filter {
+            FilterType::ParametricII => {
+                base_q * 10.0_f32.powf(band.gain_db.abs().clamp(0.0, 24.0) / 40.0)
+            }
+            FilterType::LowShelfSoft | FilterType::HighShelfSoft => base_q * 0.62,
+            FilterType::LowShelfSteep | FilterType::HighShelfSteep => base_q * 1.65,
+            FilterType::LowShelfResonant | FilterType::HighShelfResonant => base_q * 2.6,
+            _ => base_q,
+        }
+        .clamp(0.1, 10.0);
         let omega = std::f32::consts::TAU * frequency / sr;
         let (sin, cos) = omega.sin_cos();
         let a = 10.0_f32.powf(band.gain_db / 40.0);
@@ -4421,7 +4878,8 @@ impl Biquad {
                 -2.0 * cos,
                 1.0 - alpha / a,
             ),
-            FilterType::LowPass => (
+            FilterType::Notch => (1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            FilterType::LowPass | FilterType::LowPassII => (
                 (1.0 - cos) * 0.5,
                 1.0 - cos,
                 (1.0 - cos) * 0.5,
@@ -4442,7 +4900,13 @@ impl Biquad {
             | FilterType::LowShelfII
             | FilterType::LowShelfIII
             | FilterType::LowShelfIV
-            | FilterType::HighShelf => {
+            | FilterType::LowShelfSoft
+            | FilterType::LowShelfSteep
+            | FilterType::LowShelfResonant
+            | FilterType::HighShelf
+            | FilterType::HighShelfSoft
+            | FilterType::HighShelfSteep
+            | FilterType::HighShelfResonant => {
                 let slope = (1.0 / q).clamp(0.1, 10.0);
                 let shelf_alpha =
                     sin * 0.5 * ((a + 1.0 / a) * (1.0 / slope - 1.0) + 2.0).max(0.0).sqrt();
@@ -4454,6 +4918,9 @@ impl Biquad {
                         | FilterType::LowShelfII
                         | FilterType::LowShelfIII
                         | FilterType::LowShelfIV
+                        | FilterType::LowShelfSoft
+                        | FilterType::LowShelfSteep
+                        | FilterType::LowShelfResonant
                 ) {
                     (
                         a * ((a + 1.0) - (a - 1.0) * cos + beta),
@@ -4482,6 +4949,21 @@ impl Biquad {
             b2: b2 / a0,
             a1: a1 / a0,
             a2: a2 / a0,
+            target_b0: b0 / a0,
+            target_b1: b1 / a0,
+            target_b2: b2 / a0,
+            target_a1: a1 / a0,
+            target_a2: a2 / a0,
+            step_b0: 0.0,
+            step_b1: 0.0,
+            step_b2: 0.0,
+            step_a1: 0.0,
+            step_a2: 0.0,
+            coefficient_ramp_remaining: 0,
+            enabled_mix: if band.enabled { 1.0 } else { 0.0 },
+            enabled_target: if band.enabled { 1.0 } else { 0.0 },
+            enabled_step: 0.0,
+            enabled_ramp_remaining: 0,
             left_z1: 0.0,
             left_z2: 0.0,
             right_z1: 0.0,
@@ -4491,15 +4973,84 @@ impl Biquad {
 
     fn update_band(&mut self, band: &EqualizerBand, sample_rate: u32) {
         let coefficients = Self::from_band(band, sample_rate);
+        self.update_targets(
+            [
+                coefficients.b0,
+                coefficients.b1,
+                coefficients.b2,
+                coefficients.a1,
+                coefficients.a2,
+            ],
+            sample_rate,
+        );
+        if !self.enabled && band.enabled {
+            self.left_z1 = 0.0;
+            self.left_z2 = 0.0;
+            self.right_z1 = 0.0;
+            self.right_z2 = 0.0;
+        }
+        if self.enabled != band.enabled {
+            self.enabled_target = if band.enabled { 1.0 } else { 0.0 };
+            self.enabled_step =
+                (self.enabled_target - self.enabled_mix) / (sample_rate.max(1) / 200).max(1) as f32;
+            self.enabled_ramp_remaining = (sample_rate.max(1) / 200).max(1);
+        }
         self.enabled = coefficients.enabled;
-        self.b0 = coefficients.b0;
-        self.b1 = coefficients.b1;
-        self.b2 = coefficients.b2;
-        self.a1 = coefficients.a1;
-        self.a2 = coefficients.a2;
+    }
+
+    fn update_bandpass(&mut self, band: &EqualizerBand, sample_rate: u32) {
+        self.update_targets(Self::bandpass_coefficients(band, sample_rate), sample_rate);
+    }
+
+    fn update_targets(&mut self, coefficients: [f32; 5], sample_rate: u32) {
+        let ramp = (sample_rate / 200).max(1);
+        [
+            &mut self.target_b0,
+            &mut self.target_b1,
+            &mut self.target_b2,
+            &mut self.target_a1,
+            &mut self.target_a2,
+        ]
+        .into_iter()
+        .zip(coefficients)
+        .for_each(|(slot, value)| *slot = value);
+        self.step_b0 = (self.target_b0 - self.b0) / ramp as f32;
+        self.step_b1 = (self.target_b1 - self.b1) / ramp as f32;
+        self.step_b2 = (self.target_b2 - self.b2) / ramp as f32;
+        self.step_a1 = (self.target_a1 - self.a1) / ramp as f32;
+        self.step_a2 = (self.target_a2 - self.a2) / ramp as f32;
+        self.coefficient_ramp_remaining = ramp;
+    }
+
+    fn is_processing(&self) -> bool {
+        self.enabled || self.enabled_mix > 0.0 || self.enabled_ramp_remaining > 0
     }
 
     fn process(&mut self, left: &mut f32, right: &mut f32) {
+        if self.coefficient_ramp_remaining > 0 {
+            self.b0 += self.step_b0;
+            self.b1 += self.step_b1;
+            self.b2 += self.step_b2;
+            self.a1 += self.step_a1;
+            self.a2 += self.step_a2;
+            self.coefficient_ramp_remaining -= 1;
+            if self.coefficient_ramp_remaining == 0 {
+                self.b0 = self.target_b0;
+                self.b1 = self.target_b1;
+                self.b2 = self.target_b2;
+                self.a1 = self.target_a1;
+                self.a2 = self.target_a2;
+            }
+        }
+        if self.enabled_ramp_remaining > 0 {
+            self.enabled_mix += self.enabled_step;
+            self.enabled_ramp_remaining -= 1;
+            if self.enabled_ramp_remaining == 0 {
+                self.enabled_mix = self.enabled_target;
+            }
+        }
+        let dry_left = *left;
+        let dry_right = *right;
         let input_left = *left;
         let output_left = self.b0 * input_left + self.left_z1;
         self.left_z1 = self.b1 * input_left - self.a1 * output_left + self.left_z2;
@@ -4508,8 +5059,8 @@ impl Biquad {
         let output_right = self.b0 * input_right + self.right_z1;
         self.right_z1 = self.b1 * input_right - self.a1 * output_right + self.right_z2;
         self.right_z2 = self.b2 * input_right - self.a2 * output_right;
-        *left = output_left;
-        *right = output_right;
+        *left = dry_left + (output_left - dry_left) * self.enabled_mix;
+        *right = dry_right + (output_right - dry_right) * self.enabled_mix;
     }
 }
 
@@ -4538,6 +5089,21 @@ enum InsertProcessor {
 #[cfg(test)]
 mod processing_tests {
     use super::*;
+
+    #[test]
+    fn eq_solo_routes_accept_every_band_and_reject_out_of_range_indices() {
+        assert_eq!(valid_eq_solo_band(None), None);
+        assert_eq!(valid_eq_solo_band(Some(0)), Some(0));
+        assert_eq!(valid_eq_solo_band(Some(7)), Some(7));
+        assert_eq!(
+            valid_eq_solo_band(Some(opentrack_core::project::MAX_EQ_BANDS - 1)),
+            Some(opentrack_core::project::MAX_EQ_BANDS - 1)
+        );
+        assert_eq!(
+            valid_eq_solo_band(Some(opentrack_core::project::MAX_EQ_BANDS)),
+            None
+        );
+    }
 
     #[test]
     fn split_fade_lineage_preserves_rendered_audio_and_crossfades_sum_to_unity() {
@@ -5013,6 +5579,308 @@ mod processing_tests {
     }
 
     #[test]
+    fn tonal_target_edits_do_not_advance_audio_eq_revision() {
+        let equalizer = ChannelEqualizer::default();
+        let control = EqualizerControl::new(equalizer.clone());
+        let original = control.target.load_full();
+
+        let mut target_edit = equalizer.clone();
+        target_edit.tonal_target = Some(opentrack_core::project::TonalTarget {
+            name: "Reference".into(),
+            analysis_version: 1,
+            sample_rate: 48_000,
+            source_stage: 1,
+            source_name: "Main Vocal".into(),
+            analysis_seconds: 30.0,
+            fft_size: 4096,
+            band_powers: vec![1.0 / 24.0; 24],
+        });
+        control.set(&target_edit);
+
+        assert_eq!(control.revision.load(Ordering::Acquire), 0);
+        assert!(Arc::ptr_eq(&original, &control.target.load_full()));
+
+        target_edit.bands[1].gain_db = 3.0;
+        control.set(&target_edit);
+        assert_eq!(control.revision.load(Ordering::Acquire), 1);
+        assert_eq!(control.target.load().bands[1].gain_db, 3.0);
+    }
+
+    #[test]
+    fn additional_builtin_eq_band_contributes_to_audio_response() {
+        let mut eq = ChannelEqualizer::default();
+        eq.additional_bands[0] = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 3_200.0,
+            gain_db: -5.0,
+            q: 1.1,
+        };
+        assert!((channel_equalizer_response_db(&eq, 3_200.0, 48_000) + 5.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn dynamic_eq_detector_moves_gain_after_crossing_threshold() {
+        let band = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 1_000.0,
+            gain_db: 0.0,
+            q: 1.0,
+        };
+        let settings = opentrack_core::project::DynamicEqBand {
+            enabled: true,
+            threshold_db: -36.0,
+            range_db: -6.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        let mut detector = DynamicEqDetector::new(&band, settings, 48_000);
+        let mut gain = 0.0;
+        for index in 0..20_000 {
+            let sample = (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5;
+            gain = detector.process(sample, sample);
+        }
+        assert!(gain < -4.0, "dynamic gain did not engage: {gain} dB");
+    }
+
+    #[test]
+    fn dynamic_eq_detector_supports_positive_gain_range() {
+        let band = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 1_000.0,
+            gain_db: 0.0,
+            q: 1.0,
+        };
+        let settings = opentrack_core::project::DynamicEqBand {
+            enabled: true,
+            threshold_db: -36.0,
+            range_db: 9.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        let mut detector = DynamicEqDetector::new(&band, settings, 48_000);
+        let mut gain = 0.0;
+        for index in 0..20_000 {
+            let sample = (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5;
+            gain = detector.process(sample, sample);
+        }
+        assert!(gain > 6.0, "dynamic boost did not engage: {gain} dB");
+    }
+
+    #[test]
+    fn dynamic_eq_detector_updates_level_control_every_32_samples() {
+        let band = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 1_000.0,
+            gain_db: 0.0,
+            q: 1.0,
+        };
+        let settings = opentrack_core::project::DynamicEqBand {
+            enabled: true,
+            threshold_db: -36.0,
+            range_db: -6.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        let mut detector = DynamicEqDetector::new(&band, settings, 48_000);
+        for _ in 0..31 {
+            detector.process(0.5, 0.5);
+            assert!(!detector.control_update_due);
+        }
+        detector.process(0.5, 0.5);
+        assert!(detector.control_update_due);
+        detector.take_coefficients_due();
+        assert!(!detector.control_update_due);
+    }
+
+    #[test]
+    #[ignore = "manual release-mode dynamic EQ 64/128-frame callback workload probe"]
+    fn dynamic_eq_callback_cost_probe() {
+        let sample_rate = 48_000;
+        let settings = opentrack_core::project::DynamicEqBand {
+            enabled: true,
+            threshold_db: -36.0,
+            range_db: -6.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        let frequencies =
+            std::array::from_fn::<_, { opentrack_core::project::MAX_EQ_BANDS }, _>(|index| {
+                80.0 * (10_000.0_f32 / 80.0)
+                    .powf(index as f32 / (opentrack_core::project::MAX_EQ_BANDS - 1) as f32)
+            });
+        let signal = (0..sample_rate as usize)
+            .map(|index| {
+                let phase = std::f32::consts::TAU * 1_000.0 * index as f32 / sample_rate as f32;
+                let left = phase.sin() * 0.5;
+                let right = (phase * 0.997).sin() * 0.45;
+                (left, right)
+            })
+            .collect::<Vec<_>>();
+        for block_frames in [64, 128] {
+            let mut bands = frequencies.map(|frequency_hz| EqualizerBand {
+                enabled: true,
+                filter: FilterType::Bell,
+                frequency_hz,
+                gain_db: 0.0,
+                q: 0.707,
+            });
+            let mut detectors: [DynamicEqDetector; opentrack_core::project::MAX_EQ_BANDS] =
+                std::array::from_fn(|index| {
+                    DynamicEqDetector::new(&bands[index], settings, sample_rate)
+                });
+            let mut filters: [Biquad; opentrack_core::project::MAX_EQ_BANDS] =
+                std::array::from_fn(|index| Biquad::from_band(&bands[index], sample_rate));
+            let blocks = 30 * sample_rate as usize / block_frames;
+            let mut callback_ns = Vec::with_capacity(blocks);
+            let mut checksum = 0.0_f32;
+            for block in 0..blocks {
+                let start = std::time::Instant::now();
+                for frame in 0..block_frames {
+                    let (mut left, mut right) =
+                        signal[(block * block_frames + frame) % signal.len()];
+                    for index in 0..opentrack_core::project::MAX_EQ_BANDS {
+                        let dynamic_gain = detectors[index].process(left, right);
+                        if detectors[index].take_coefficients_due() {
+                            bands[index].gain_db = dynamic_gain.clamp(-18.0, 18.0);
+                            filters[index].update_band(&bands[index], sample_rate);
+                        }
+                        filters[index].process(&mut left, &mut right);
+                    }
+                    checksum += left + right;
+                }
+                callback_ns.push(start.elapsed().as_nanos());
+            }
+            callback_ns.sort_unstable();
+            let percentile =
+                |percentile: usize| callback_ns[(blocks * percentile / 100).min(blocks - 1)];
+            let budget_ns = (block_frames as u128 * 1_000_000_000) / sample_rate as u128;
+            eprintln!(
+                "dynamic EQ probe: {} bands, 48 kHz, {block_frames} frames, 30 simulated seconds; p50={} ns, p95={} ns, p99={} ns, max={} ns, p99={:.2}% of callback budget, checksum={:.3}",
+                opentrack_core::project::MAX_EQ_BANDS,
+                percentile(50),
+                percentile(95),
+                percentile(99),
+                callback_ns[blocks - 1],
+                percentile(99) as f64 * 100.0 / budget_ns as f64,
+                std::hint::black_box(checksum),
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_eq_changes_the_channel_processor_audio_path() {
+        let mut equalizer = ChannelEqualizer::default();
+        let band_index = opentrack_core::project::MAX_EQ_BANDS - 1;
+        *equalizer.band_mut(band_index).unwrap() = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 1_000.0,
+            gain_db: 0.0,
+            q: 1.0,
+        };
+        *equalizer.dynamic_band_mut(band_index).unwrap() = opentrack_core::project::DynamicEqBand {
+            enabled: true,
+            threshold_db: -36.0,
+            range_db: -6.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        let instrument_factory = oscillator_instrument_factory(InstrumentWaveform::Sine);
+        let control = EqualizerControl::new(equalizer.clone());
+        let mut processor = ChannelProcessor::new(
+            &equalizer,
+            Arc::clone(&control),
+            &[],
+            false,
+            &[],
+            &[],
+            Arc::new(MidiEventControls::new(&[])),
+            instrument_factory.as_ref(),
+            120.0,
+            48_000,
+        );
+        let meter = StereoMeter::default();
+        let mut input_energy = 0.0_f64;
+        let mut output_energy = 0.0_f64;
+        for index in 0..24_000 {
+            let input = (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5;
+            let (mut left, mut right) = (input, input);
+            processor.process(&mut left, &mut right);
+            processor.publish_dynamic_updates(&meter);
+            if index >= 16_000 {
+                input_energy += f64::from(input * input);
+                output_energy += f64::from(left * left);
+            }
+        }
+        let gain_db = 10.0 * (output_energy / input_energy).log10();
+        assert!(
+            gain_db < -2.0,
+            "dynamic EQ audio change was {gain_db:.2} dB"
+        );
+        assert!(meter.dynamic_eq_gains_db()[band_index] < -4.0);
+
+        let mut static_only = equalizer;
+        static_only.dynamic_band_mut(band_index).unwrap().enabled = false;
+        control.set(&static_only);
+        let (mut left, mut right) = (0.0, 0.0);
+        processor.process(&mut left, &mut right);
+        processor.publish_dynamic_updates(&meter);
+        assert_eq!(meter.dynamic_eq_gains_db()[band_index], 0.0);
+    }
+
+    #[test]
+    fn eq_band_solo_isolates_selected_frequency_without_changing_eq_revision() {
+        fn render(frequency_hz: f32, center_frequency: f32, band_index: usize) -> f64 {
+            let mut equalizer = ChannelEqualizer::default();
+            let band = equalizer.band_mut(band_index).unwrap();
+            band.frequency_hz = center_frequency;
+            band.q = 1.0;
+            let control = EqualizerControl::new(equalizer.clone());
+            control.set_solo_band(valid_eq_solo_band(Some(band_index)));
+            assert_eq!(control.revision.load(Ordering::Acquire), 0);
+            let instrument_factory = oscillator_instrument_factory(InstrumentWaveform::Sine);
+            let mut processor = ChannelProcessor::new(
+                &equalizer,
+                control,
+                &[],
+                false,
+                &[],
+                &[],
+                Arc::new(MidiEventControls::new(&[])),
+                instrument_factory.as_ref(),
+                120.0,
+                48_000,
+            );
+            let mut energy = 0.0_f64;
+            for index in 0..48_000 {
+                let input =
+                    (std::f32::consts::TAU * frequency_hz * index as f32 / 48_000.0).sin() * 0.5;
+                let (mut left, mut right) = (input, input);
+                processor.process(&mut left, &mut right);
+                if index >= 24_000 {
+                    energy += f64::from(left * left);
+                }
+            }
+            energy
+        }
+
+        for (band_index, center_frequency) in [(0, 1_000.0), (31, 8_000.0)] {
+            let center_energy = render(center_frequency, center_frequency, band_index);
+            let off_band_energy = render(100.0, center_frequency, band_index);
+            assert!(
+                center_energy > off_band_energy * 20.0,
+                "band {} solo isolation ratio was {:.1} dB",
+                band_index + 1,
+                10.0 * (center_energy / off_band_energy).log10()
+            );
+        }
+    }
+
+    #[test]
     fn bell_eq_applies_requested_gain_at_center_frequency() {
         let band = EqualizerBand {
             enabled: true,
@@ -5040,6 +5908,39 @@ mod processing_tests {
     }
 
     #[test]
+    fn band_enable_and_parameter_changes_ramp_filter_state() {
+        let mut band = EqualizerBand {
+            enabled: false,
+            filter: FilterType::Bell,
+            frequency_hz: 1_000.0,
+            gain_db: 0.0,
+            q: 1.0,
+        };
+        let mut filter = Biquad::from_band(&band, 48_000);
+        band.enabled = true;
+        band.gain_db = 6.0;
+        filter.update_band(&band, 48_000);
+
+        assert_eq!(filter.enabled_mix, 0.0);
+        assert_eq!(filter.enabled_ramp_remaining, 240);
+        assert!(filter.coefficient_ramp_remaining > 0);
+        let mut left = 0.5;
+        let mut right = 0.5;
+        filter.process(&mut left, &mut right);
+        assert!((left - 0.5).abs() < 0.02);
+        assert!(filter.enabled_mix > 0.0 && filter.enabled_mix < 1.0);
+
+        for _ in 1..240 {
+            let (mut left, mut right) = (0.25, 0.25);
+            filter.process(&mut left, &mut right);
+        }
+        assert_eq!(filter.enabled_mix, 1.0);
+        assert_eq!(filter.enabled_ramp_remaining, 0);
+        assert_eq!(filter.coefficient_ramp_remaining, 0);
+        assert_eq!(filter.b0, filter.target_b0);
+    }
+
+    #[test]
     fn low_and_high_pass_filters_attenuate_their_stop_bands() {
         let low_pass_pass = measure_filter_gain(FilterType::LowPass, 1_000.0, 100.0, 0.0);
         let low_pass_stop = measure_filter_gain(FilterType::LowPass, 1_000.0, 10_000.0, 0.0);
@@ -5061,6 +5962,99 @@ mod processing_tests {
             high_pass_pass > 0.95,
             "high-pass pass-band gain was {high_pass_pass}"
         );
+    }
+
+    #[test]
+    fn second_order_pass_slopes_are_distinct_in_response_and_channel_audio() {
+        fn render_channel(high_pass: bool, second_order: bool) -> f64 {
+            let mut equalizer = ChannelEqualizer::default();
+            let band = equalizer.band_mut(0).unwrap();
+            band.enabled = true;
+            band.filter = match (high_pass, second_order) {
+                (false, false) => FilterType::LowPass,
+                (false, true) => FilterType::LowPassII,
+                (true, false) => FilterType::HighPassI,
+                (true, true) => FilterType::HighPassII,
+            };
+            band.frequency_hz = 1_000.0;
+            band.gain_db = 0.0;
+            band.q = 0.707;
+            let control = EqualizerControl::new(equalizer.clone());
+            let instrument_factory = oscillator_instrument_factory(InstrumentWaveform::Sine);
+            let mut processor = ChannelProcessor::new(
+                &equalizer,
+                control,
+                &[],
+                false,
+                &[],
+                &[],
+                Arc::new(MidiEventControls::new(&[])),
+                instrument_factory.as_ref(),
+                120.0,
+                48_000,
+            );
+            let test_frequency = if high_pass { 500.0 } else { 2_000.0 };
+            let mut input_energy = 0.0_f64;
+            let mut output_energy = 0.0_f64;
+            for index in 0..48_000 {
+                let input =
+                    (std::f32::consts::TAU * test_frequency * index as f32 / 48_000.0).sin();
+                let (mut left, mut right) = (input, input);
+                processor.process(&mut left, &mut right);
+                if index >= 24_000 {
+                    input_energy += f64::from(input * input);
+                    output_energy += f64::from(left * left);
+                }
+            }
+            10.0 * (output_energy / input_energy).log10()
+        }
+
+        let low_12 = render_channel(false, false);
+        let low_24 = render_channel(false, true);
+        let high_12 = render_channel(true, false);
+        let high_24 = render_channel(true, true);
+        assert!(
+            low_24 < low_12 - 8.0,
+            "low-pass slopes: {low_12} vs {low_24} dB"
+        );
+        assert!(
+            high_24 < high_12 - 8.0,
+            "high-pass slopes: {high_12} vs {high_24} dB"
+        );
+        for (filter, measured) in [
+            (FilterType::LowPassII, low_24),
+            (FilterType::HighPassII, high_24),
+        ] {
+            let expected = f64::from(equalizer_band_response_db(
+                &EqualizerBand {
+                    enabled: true,
+                    filter,
+                    frequency_hz: 1_000.0,
+                    gain_db: 0.0,
+                    q: 0.707,
+                },
+                if filter == FilterType::LowPassII {
+                    2_000.0
+                } else {
+                    500.0
+                },
+                48_000,
+            ));
+            assert!(
+                (measured - expected).abs() < 0.5,
+                "{filter:?}: {measured} vs {expected} dB"
+            );
+        }
+    }
+
+    #[test]
+    fn notch_filter_attenuates_its_center_frequency() {
+        let center = measure_filter_gain(FilterType::Notch, 1_000.0, 1_000.0, 0.0);
+        let lower_side = measure_filter_gain(FilterType::Notch, 1_000.0, 200.0, 0.0);
+        let upper_side = measure_filter_gain(FilterType::Notch, 1_000.0, 5_000.0, 0.0);
+        assert!(center < 0.01, "notch center gain was {center}");
+        assert!(lower_side > 0.9, "lower side gain was {lower_side}");
+        assert!(upper_side > 0.9, "upper side gain was {upper_side}");
     }
 
     #[test]
@@ -5096,6 +6090,54 @@ mod processing_tests {
         }
     }
 
+    #[test]
+    fn shelf_flavors_have_distinct_low_and_high_transition_curves() {
+        for (classic, smooth, steep, resonant, frequency) in [
+            (
+                FilterType::LowShelf,
+                FilterType::LowShelfSoft,
+                FilterType::LowShelfSteep,
+                FilterType::LowShelfResonant,
+                700.0,
+            ),
+            (
+                FilterType::HighShelf,
+                FilterType::HighShelfSoft,
+                FilterType::HighShelfSteep,
+                FilterType::HighShelfResonant,
+                1_400.0,
+            ),
+        ] {
+            let response = |filter| {
+                equalizer_band_response_db(
+                    &EqualizerBand {
+                        enabled: true,
+                        filter,
+                        frequency_hz: 1_000.0,
+                        gain_db: 9.0,
+                        q: 0.707,
+                    },
+                    frequency,
+                    48_000,
+                )
+            };
+            let values = [
+                response(classic),
+                response(smooth),
+                response(steep),
+                response(resonant),
+            ];
+            for left in 0..values.len() {
+                for right in left + 1..values.len() {
+                    assert!(
+                        (values[left] - values[right]).abs() > 0.05,
+                        "shelf responses should differ: {values:?}"
+                    );
+                }
+            }
+        }
+    }
+
     fn measure_filter_gain(
         filter: FilterType,
         frequency_hz: f32,
@@ -5110,7 +6152,9 @@ mod processing_tests {
             gain_db,
             q: 0.707,
         };
-        let mut biquad = Biquad::from_band(&band, sample_rate as u32);
+        let (first, second) = equalizer_band_sections(&band);
+        let mut biquad = Biquad::from_band(&first, sample_rate as u32);
+        let mut second_biquad = second.map(|band| Biquad::from_band(&band, sample_rate as u32));
         let mut input_energy = 0.0_f64;
         let mut output_energy = 0.0_f64;
         for index in 0..48_000 {
@@ -5119,6 +6163,9 @@ mod processing_tests {
             let mut left = input;
             let mut right = input;
             biquad.process(&mut left, &mut right);
+            if let Some(second_biquad) = &mut second_biquad {
+                second_biquad.process(&mut left, &mut right);
+            }
             if index >= 24_000 {
                 input_energy += f64::from(input * input);
                 output_energy += f64::from(left * left);

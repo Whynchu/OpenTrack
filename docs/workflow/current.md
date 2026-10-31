@@ -1,5 +1,120 @@
 # Current assignment - T059
 
+## T062 EQ and tonal reference goal
+
+The user clarified on 2026-10-30 that this feature expands the existing
+Channel Settings EQ. The user resumed the goal on 2026-10-30 after
+confirming the product direction. The first acceptance milestone is the
+existing Channel Settings EQ workflow:
+up to 32 user-created EQ bands, responsive short-spectrum analysis, dynamic EQ, and a separate
+long-capture tonal-reference mode with capture/import and saved target
+comparison. The broader goal continues through separately scoped advanced EQ
+milestones from T062's Later enhancements list after these stages are accepted.
+On resuming T062, the analyzer's stale 250 ms sequence gate was found to discard
+live frames whenever audio progressed; it now consumes distinct frames
+immediately and marks explicit capture incomplete on detected sample-stream
+discontinuity. Focused analyzer and band-strip checks pass, including capture
+invalidation, target tap summaries, efficient responsive wrapping, and band creation,
+removal, and capacity. Pointer-level app tests cover add, remove, graph
+double-click creation, and dragging the detail panel; they also exposed and
+fixed the invalid zero-rate graph fallback (48 kHz is used until a rate is
+known). The tonal toolbar displays target name/source tap and
+signals when captured target tap differs from the live comparison tap. The EQ
+strip has a bottom-right `+`; right-click removes a band in either the strip or
+graph; double-clicking empty graph space creates one at the pointer. The detail editor opens
+at the graph top and remains stationary until dragged by its title bar. Current
+project/DSP limit is 32 bands. A current local x64 Linux release with
+`local-asio` is at `builds/x64/OpenTrack`, SHA-256
+`91ee5ca435336df490d0d44184ecbb94394ab04a58bb6fe74a71e87a44116ea9`; runtime
+visual and capture review remains outstanding.
+The detail popup is grouped into Static EQ and Dynamic EQ sections. Gain,
+frequency, Q, threshold, range, attack and release have labeled knobs with
+editable numeric values. Dynamic EQ has its own power button, independent of
+band enable and the overall EQ bypass; focused interaction tests verify this.
+Its graph representation has a soft shaded maximum-range envelope and a
+brighter filled curve for live gain movement past Threshold. Each envelope
+uses its own band's Q for width and response change for dynamic pull; its upper
+edge follows the combined static EQ curve so it joins the graph continuously.
+The selected band node has a bright center and
+channel-color halo. The detail panel has static/dynamic sections in a compact
+176 px layout, with band and DYN power controls beside their headings. Dynamic
+range shading is a continuous shared-vertex mesh anchored to the combined
+static EQ response at the upper edge; the lower dynamic boundary has no
+horizontal end caps. The filter type is shown as a bordered dropdown and now
+offers explicit 12/24 dB per octave low/high-pass choices. The 24 dB options
+use two cascaded sections with a Butterworth-aligned Q pair; shelf transition
+width is controlled by Q. Sixteen focused EQ interaction tests pass.
+The OPR integration test now also round-trips captured tonal targets with both
+Pre and Post tap metadata; direct Channel Settings save/reopen review remains
+pending.
+Routing audit: Channel Settings edits `ChannelEqualizer`, consumed by track
+`ChannelProcessor` and output `BusRuntime`. 32-band EQ and dynamic
+processing are implemented in source, with per-band coefficient/enable ramps;
+band-solo audition accepts all 32 bands on tracks/groups and Stereo Out.
+Tonal view has an independent Pre/Post tap, relative-dB axis,
+reference envelope and transport-aware capture state; save dirty-state wiring
+is connected. Tonal graphs now label frequency-aligned Low, Low-Mid, High-Mid,
+and High regions; the difference view shows a ±3 dB guidance band. Short-spectrum
+Freeze and amber Peak display are implemented;
+Peak falls at 12 dB/s; Freeze preserves the last spectrum through silence, and
+transient holds clear when changing analyzer mode or tap. The display now has
+-60/-90/-120 dB ranges and 0/3/6 dB-per-octave tilt that affects only the short
+spectrum drawing. The band strip follows selection changes without fighting
+manual scroll. The short spectrum can select 2K/4K/8K FFT resolution from the
+existing 8192-sample bounded tap; long-window tonal analysis uses its 8192-point
+window and 96 interpolated log-frequency samples. Tonal graph traces get
+display-only Gaussian smoothing, and the tonal view hides the aggregate EQ
+response curve, band nodes, DYN overlays, and the selected-band detail panel;
+graph editing is disabled in that mode. Existing persisted Preferences > Metering controls temporal release
+smoothing. EQ-band solo now uses a transient, smoothed band-pass audition for
+tracks/groups and Stereo Out without dirtying EQ project state. Focused audio
+tests and local-ASIO compilation pass. The EQ detail popup is 176 px high with
+tighter section spacing and left-aligned band/DYN power buttons. Bell/parametric
+dynamic envelopes follow each band's own response until both edges return to
+within 0.08 dB of baseline, preventing a visibly clipped notch. WAV reference
+import now analyzes mono or
+stereo PCM/float files off the callback with cancellation, silence rejection,
+and stale-owner/target-change rejection; target profile and provenance are
+embedded in the project without a source-file dependency. The OPR round-trip
+test now also verifies bypass, eighth-band filter parameters and dynamic EQ
+settings together with the imported target. Generated-WAV and project migration
+tests pass. Tonal mode now has a selectable 10/30/60/120-second weighted-average
+time constant, Hold/Resume independent of explicit capture, valid-signal warm-up
+status, and Reset; it samples only the selected owner while Tonal mode is active.
+Tonal live/import analysis uses the same -90 dBFS RMS silence gate, measured
+from unwindowed stereo samples independently of frequency. Focused app tests
+cover weighting, Hold, silence gating, initialization, and
+invalidation when sample rate, channel layout, or tonal tap changes; prior
+captured data is marked incomplete and cannot be saved.
+Dynamic EQ movement is now exposed as lock-free per-band meter telemetry for
+its graph overlay; disabled/ineligible bands reset to the static curve through
+the existing smoothing ramp. Generated audio covers movement telemetry and
+disable reset. The full audio suite passes 102 tests (3 ignored), including
+dynamic movement publication through the bus meter. Attack/release exponentials
+are now cached on parameter changes; dynamic level-to-dB mapping and biquad
+coefficient updates run every 32 samples, while envelope and gain smoothing
+remain per-sample, with an explicit control-cadence check. A three-run release
+probe of eight bands at 48 kHz/128 frames on an i7-1165G7 measured p99 blocks
+of 18.7–22.1 µs (0.70–0.83% of the 2.67 ms budget); worst observed block was
+120.7 µs. An updated 32-band synthetic detector/filter probe at 48 kHz measured
+p99 72.2 µs for 64-frame blocks (5.41% of 1.33 ms) and 144.6 µs for 128-frame
+blocks (5.42% of 2.67 ms). It excludes the rest of the callback, host scheduling,
+and device/driver; physical low-buffer playback review remains open. The EQ strip now has a
+fixed bottom-right add button; right-click removes a band from the strip or
+graph, and double-click on empty graph space adds a band at the pointer. The detail editor
+opens at the graph top, stays put as selection changes, and can be dragged by
+its title. The current project/DSP supports up to 32 bands. The latest full
+app suite reports 168 passed, 15 failed, and 9 ignored;
+failures are in Channel Window lifecycle, Project ruler/drag, and Sample Editor
+tests, while focused T062 analyzer and graph tests pass. Live import/control
+behavior, dynamic overlay review, physical low-buffer cost, visual/audible review and
+target-capture accuracy remain open. The actual OPR writer/reader round-trips
+EQ bypass, eighth-band parameters, dynamic controls and a target profile without
+the source WAV; live OpenTrack save/reopen remains pending. The persistent goal
+remains active.
+See
+[T062](tasks/T062-eq-and-tonal-reference-plan.md).
+
 ## Active goal T059 - editing, playback stability, menus, and loading polish
 
 Work through these areas in small, independently reviewable steps:
@@ -43,6 +158,49 @@ workspace-wide `--no-run` remains blocked by three standalone VST probe examples
 using older window API signatures. The focused MIDI follow-up received runtime
 review on 2026-10-29; audio-performance checks, other T059 runtime behavior,
 and overall milestone acceptance remain open.
+
+2026-10-30 Wayland stacking follow-up: winit does not implement compositor
+window-level requests on Wayland, so Transport and Channel Settings now use
+foreground egui windows inside OpenTrack in that session. Their stored
+positions and pin preferences are retained; FX raises Channel Settings, and
+Transport keeps draw priority over it. Native viewports remain in use on
+Windows and non-Wayland sessions. Linux local-ASIO compilation passes; live
+stacking, dragging, and popup interaction need user review. See T048.
+
+2026-10-30 click-through correction: before Project processes its pointer input,
+the Wayland path now masks Project input while the pointer is inside Transport
+or Channel Settings. It retains capture through drags that begin inside those
+panels. The native window paths are unchanged. Linux local-ASIO release rebuilt
+at `builds/x64/OpenTrack`, SHA-256
+`6f4d1e9c6c6894171cf94462a55d282c8083da9c380c3fd92d0cdf70a88145e8`. Formatting
+and compilation pass; live pointer review remains pending.
+
+2026-10-30 focus dimming follow-up: popup menus and nonmodal utility windows
+retain normal brightness. The existing dim treatment remains for modal
+confirmation/setup dialogs. Linux local-ASIO release rebuilt; visual review is
+pending.
+
+Wayland popup regression follow-up: the embedded Transport and Channel Settings
+now run the shared hover-leave handler, so VST selection menus and other popup
+chains close after the pointer leaves both the activation point and selectable
+popup area. No inactivity timeout is used. Linux local-ASIO compilation passes;
+live interaction remains pending.
+
+Live spectrum resolution follow-up: the Channel Settings analyzer now uses a
+4096-sample FFT (10.8 Hz bins at 44.1 kHz, 2x denser than before) and an 8192
+sample ring. This addresses coarse low-frequency spectrum points; the existing
+temporal release smoothing is unchanged. The editable EQ response curve was
+already sampled at 257 logarithmic frequencies. Playback/UI latency and visual
+review remain pending. See T021.
+
+2026-10-30 z-order follow-up: an open popup keeps priority over overlapping
+windows, then the saved Transport and Channel Settings pin behavior resumes
+after dismissal. Channel Settings uses owner-relative ordering on Windows, and
+restoring its owner now explicitly reinserts it above Project after
+popup/dialog transitions. Formatting, Linux local-ASIO `cargo check`, and
+focused popup tests pass. Windows cross-compilation stopped in the app build
+script because Windows SDK `rc.exe` is unavailable; native Windows stacking and
+user review remain pending. See T048's z-order rework note.
 
 MIDI tool/delete follow-up (2026-10-29): the MIDI editor tool strip and its
 note-grid right-click picker now use Mouse, Scissors, Pencil order. Mouse empty-
@@ -341,6 +499,30 @@ startup flash. `builds/x64` was rebuilt; the installed Gateway smoke test loads
 the plug-in and processes audio successfully. The live Gateway meter behavior
 and cold-start appearance still need a GUI check because the Sky computer-use
 service is unavailable in this session.
+
+Linux splash follow-up (2026-10-30): the splash was missing because the
+non-Windows `startup_splash::show()` implementation returned `false`. Linux
+now shows the same artwork in a separate borderless eframe viewport while
+keeping the Project viewport hidden, then reveals the maximized app after at
+least two seconds measured from the splash viewport's first frame. Linux
+local-ASIO compilation passes; runtime display review is
+pending. The Windows native startup splash is unchanged. See the T055 packet.
+
+2026-10-30 follow-up: Linux runs the splash in a standalone helper process and
+waits for it to exit after the first-frame-based two-second minimum before it
+starts eframe or constructs OpenTrackApp. This prevents a hidden or empty main
+window from appearing during the splash interval.
+The Channel Settings pin on non-Windows systems follows focus in either the
+Project or Channel Settings window; it is released only when focus leaves the
+app or a dialog takes over. Clicking FX now requests focus and raises the
+Channel Settings window on Windows. Linux focused-pin and splash-duration
+tests pass. The rebuilt Linux x64 package is `builds/x64/OpenTrack`, SHA-256
+`1cfb63ec89994dfced7838bf3e2de13cbbdf120b04d5f0f25793f34eef2557d1`. The
+updated splash helper exited successfully after 2.206 seconds in a bounded
+launch check. The splash builder explicitly disables maximized/fullscreen and
+uses a distinct Linux app ID. Floating-window levels are reasserted for several
+frames after transitions. Focus, level-reassertion, and compact-splash builder
+tests pass; live visual size and stacking review remain pending.
 
 ## Sample Editor piano key labels and MIDI pencil (2026-10-27)
 
@@ -646,3 +828,22 @@ loops, audio/MIDI device paths, and plug-in runtime validation remain open. See
 ## Preserved direction
 
 Keep pitch analysis/editing/processing in Rust, preserve original audio and the accepted Mixer, and maintain the gated sequence: Batch 1 accepted; Batch 2 listening review now; Batch 3 Project scissors/wheel behavior and Mixer fader/selection only after Batch 2 acceptance. Scope remains `transport-v16-pitch-time-editing-workflows`; implementation, feature verification, and user acceptance remain separate statuses. See [the historical feature report](metrics.md) and [T042](tasks/T042-vocal-quality-and-note-transitions.md).
+
+2026-10-31 T062 filter-flavor and solo-range implementation: the EQ selector labels
+Parametric I as Bell · Constant Q and Parametric II as Bell · Proportional Q;
+Parametric II now tightens effective Q as boost/cut increases, with the same
+coefficient model used by DSP and graph response. Band solo now has a subtle
+full-height, Q-derived frequency window behind the spectrum and EQ curves.
+`cargo fmt --all -- --check` and `cargo check --offline -p opentrack --features
+local-asio` pass. No tests were run for this change. Runtime visual/audio review,
+save/reopen, Windows behavior, and full playback-cost measurement remain open.
+
+2026-10-31 T062 shelf-shape and selector-width follow-up: the EQ filter menu is
+218 px wide and its labels fit on one line. Low and high shelves each expose
+Classic, Smooth, Steep, and Resonant choices; the three added flavors have
+separate Q-scaled responses, while existing LowShelfI-IV project values retain
+their former response. Dynamic EQ supports all shelf choices. Formatting and
+ASIO-enabled `cargo check` pass. Release build staged at `builds/x64/OpenTrack`
+with local ASIO, SHA-256
+`a20b1044f04a3aaf49602d253179ec1e3e3c15973de3c9741a8e7c7c982451bd`. User
+visual/audio acceptance remains pending.

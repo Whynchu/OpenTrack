@@ -1004,8 +1004,7 @@ fn strip(
                 }
             }
         });
-        let eq_active =
-            !track.equalizer.bypassed && track.equalizer.bands.iter().any(|b| b.enabled);
+        let eq_active = !track.equalizer.bypassed && track.equalizer.all_bands().any(|b| b.enabled);
         if control(
             ui,
             at(8.0, 256.0, 21.0, 15.0),

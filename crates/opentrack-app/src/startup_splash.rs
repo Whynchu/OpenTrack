@@ -244,5 +244,109 @@ pub use windows::show;
 
 #[cfg(not(windows))]
 pub fn show() -> bool {
-    false
+    const HELPER_FLAG: &str = "--opentrack-startup-splash";
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    std::process::Command::new(executable)
+        .arg(HELPER_FLAG)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn run_if_helper() -> Option<eframe::Result> {
+    const HELPER_FLAG: &str = "--opentrack-startup-splash";
+    std::env::args()
+        .any(|argument| argument == HELPER_FLAG)
+        .then(run_helper)
+}
+
+#[cfg(windows)]
+pub(crate) fn run_if_helper() -> Option<eframe::Result> {
+    None
+}
+
+#[cfg(not(windows))]
+fn run_helper() -> eframe::Result {
+    use eframe::egui::{self, Color32};
+
+    struct SplashApp {
+        first_frame: Option<std::time::Instant>,
+    }
+
+    impl eframe::App for SplashApp {
+        fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+            let ctx = ui.ctx();
+            let started = *self.first_frame.get_or_insert_with(std::time::Instant::now);
+            if let Some(center) = egui::ViewportCommand::center_on_screen(ctx) {
+                ctx.send_viewport_cmd(center);
+            }
+            let rect = ui.max_rect();
+            ui.painter()
+                .rect_filled(rect, 0.0, Color32::from_rgb(24, 24, 24));
+            crate::icon_system::paint_splash(ui, rect);
+            if splash_minimum_elapsed(started.elapsed()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+
+    let options = eframe::NativeOptions {
+        viewport: splash_viewport_builder(),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "OpenTrack Startup Splash",
+        options,
+        Box::new(|creation| {
+            crate::theme::install(&creation.egui_ctx);
+            Ok(Box::new(SplashApp { first_frame: None }))
+        }),
+    )
+}
+
+#[cfg(not(windows))]
+fn splash_viewport_builder() -> eframe::egui::ViewportBuilder {
+    const WIDTH: f32 = 600.0;
+    const HEIGHT: f32 = 327.0;
+    eframe::egui::ViewportBuilder::default()
+        .with_title("OpenTrack")
+        .with_app_id("opentrack-startup-splash")
+        .with_inner_size([WIDTH, HEIGHT])
+        .with_min_inner_size([WIDTH, HEIGHT])
+        .with_max_inner_size([WIDTH, HEIGHT])
+        .with_maximized(false)
+        .with_fullscreen(false)
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_window_level(eframe::egui::viewport::WindowLevel::AlwaysOnTop)
+        .with_icon(crate::icons::opentrack_icon())
+}
+
+#[cfg(not(windows))]
+fn splash_minimum_elapsed(elapsed: std::time::Duration) -> bool {
+    elapsed >= std::time::Duration::from_secs(2)
+}
+
+#[cfg(all(test, not(windows)))]
+mod linux_tests {
+    use super::{splash_minimum_elapsed, splash_viewport_builder};
+    use std::time::Duration;
+
+    #[test]
+    fn linux_splash_waits_two_seconds_before_releasing_the_main_window() {
+        assert!(!splash_minimum_elapsed(Duration::from_millis(1999)));
+        assert!(splash_minimum_elapsed(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn linux_splash_forces_its_compact_non_fullscreen_size() {
+        let viewport = splash_viewport_builder();
+        assert_eq!(viewport.inner_size, Some(eframe::egui::vec2(600.0, 327.0)));
+        assert_eq!(viewport.maximized, Some(false));
+        assert_eq!(viewport.fullscreen, Some(false));
+    }
 }

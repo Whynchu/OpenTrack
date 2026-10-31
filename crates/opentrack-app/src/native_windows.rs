@@ -90,6 +90,16 @@ pub(crate) fn raise_media_for_popup(root: Option<isize>) {
     let _ = root;
 }
 
+/// Reassert Channel Settings' position when the Project FX control requests it.
+pub(crate) fn raise_channel_settings(root: Option<isize>) {
+    #[cfg(windows)]
+    if let Some(root) = root {
+        platform::raise_channel_settings(root);
+    }
+    #[cfg(not(windows))]
+    let _ = root;
+}
+
 impl ChannelOwner {
     pub(crate) fn new(creation: &eframe::CreationContext<'_>) -> Self {
         if let Some(root) = creation_root(creation) {
@@ -299,6 +309,49 @@ mod platform {
         }
     }
 
+    pub(super) fn raise_channel_settings(root: isize) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+        };
+        struct Search {
+            root: HWND,
+        }
+        unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {
+            let search = unsafe { &*(data as *const Search) };
+            if window == search.root {
+                return 1;
+            }
+            let mut title = [0u16; 512];
+            let length = unsafe { GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32) };
+            if length > 0
+                && String::from_utf16_lossy(&title[..length as usize])
+                    .starts_with("VST Audio Channel Settings - ")
+            {
+                unsafe {
+                    SetWindowPos(
+                        window,
+                        HWND_TOP,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
+                return 0;
+            }
+            1
+        }
+        let root = root as HWND;
+        let search = Search { root };
+        unsafe {
+            let thread = GetWindowThreadProcessId(root, std::ptr::null_mut());
+            if thread != 0 {
+                EnumThreadWindows(thread, Some(visit), &search as *const Search as LPARAM);
+            }
+        }
+    }
+
     unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {
         // SAFETY: `data` points to the live Search in the synchronous caller.
         let search = unsafe { &*(data as *const Search) };
@@ -319,7 +372,8 @@ mod platform {
         // SAFETY: these are live windows on this UI thread. Windows ownership
         // keeps the editor above its main window while other apps can cover both.
         unsafe {
-            if GetWindowLongPtrW(window, GWLP_HWNDPARENT) != owner {
+            let owner_changed = GetWindowLongPtrW(window, GWLP_HWNDPARENT) != owner;
+            if owner_changed {
                 SetWindowLongPtrW(window, GWLP_HWNDPARENT, owner);
             }
             if GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST as isize != 0 {
@@ -340,6 +394,19 @@ mod platform {
                 SetWindowPos(
                     window,
                     HWND_BOTTOM,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            } else if owner_changed && owner != 0 {
+                // Restoring GWLP_HWNDPARENT does not reliably put a detached
+                // tool window back above its owner. Reinsert it in the normal
+                // band so the saved owner-relative pin takes effect at once.
+                SetWindowPos(
+                    window,
+                    HWND_TOP,
                     0,
                     0,
                     0,
@@ -393,8 +460,25 @@ mod platform {
                     below = GetWindow(below, GW_HWNDNEXT);
                 }
                 assert_eq!(below, editor, "modal confirmation must be above the editor");
+                // Simulate a Project popup temporarily releasing the owner,
+                // then re-pin after the Project window has been raised.
+                apply_to_window(root, editor, false, false);
+                SetWindowPos(
+                    root,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
                 apply_to_window(root, editor, true, false);
                 assert_eq!(GetWindowLongPtrW(editor, GWLP_HWNDPARENT), root as isize);
+                assert_eq!(
+                    GetWindowLongPtrW(editor, GWL_EXSTYLE) & WS_EX_TOPMOST as isize,
+                    0,
+                    "Channel Settings pin must remain owner-relative"
+                );
                 apply_to_window(root, editor, false, false);
                 assert_eq!(GetWindowLongPtrW(editor, GWLP_HWNDPARENT), 0);
                 DestroyWindow(editor);

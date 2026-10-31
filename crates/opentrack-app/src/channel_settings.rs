@@ -201,6 +201,7 @@ pub(super) fn show(
         {
             Some(index) => index,
             None => {
+                state.eq_solo = None;
                 ui.label("Select a channel to edit.");
                 return false;
             }
@@ -224,6 +225,13 @@ pub(super) fn show(
     } else {
         &mut project.tracks[index]
     };
+    let channel_id = track.id;
+    if state
+        .eq_solo
+        .is_some_and(|(solo_channel, _)| solo_channel != channel_id)
+    {
+        state.eq_solo = None;
+    }
     let color = project_controls::track_color(track);
     let area = ui.available_rect_before_wrap();
     let visible = state.preferences.visible_items.clone();
@@ -309,6 +317,7 @@ pub(super) fn show(
                     item == ChannelSettingsViewItem::EqualizersCurveDials,
                     state,
                     color,
+                    channel_id,
                 )
             }
         }
@@ -348,40 +357,26 @@ fn slot_frame(ui: &egui::Ui, r: Rect, label: &str) {
     );
 }
 
-const EQ_BAND_1_FILTERS: &[(FilterType, &str)] = &[
-    (FilterType::ParametricI, "Parametric I"),
-    (FilterType::LowShelfI, "Low Shelf I"),
-    (FilterType::HighPassI, "High Pass I"),
-    (FilterType::HighPassII, "High Pass II"),
-    (FilterType::ParametricII, "Parametric II"),
-    (FilterType::LowShelfII, "Low Shelf II"),
-    (FilterType::LowShelfIII, "Low Shelf III"),
-    (FilterType::LowShelfIV, "Low Shelf IV"),
+const EQ_FILTER_TYPES: &[(FilterType, &str)] = &[
+    (FilterType::ParametricI, "Bell · Constant Q"),
+    (FilterType::ParametricII, "Bell · Proportional Q"),
+    (FilterType::Notch, "Notch"),
+    (FilterType::LowShelf, "Low Shelf · Classic"),
+    (FilterType::LowShelfSoft, "Low Shelf · Smooth"),
+    (FilterType::LowShelfSteep, "Low Shelf · Steep"),
+    (FilterType::LowShelfResonant, "Low Shelf · Resonant"),
+    (FilterType::HighShelf, "High Shelf · Classic"),
+    (FilterType::HighShelfSoft, "High Shelf · Smooth"),
+    (FilterType::HighShelfSteep, "High Shelf · Steep"),
+    (FilterType::HighShelfResonant, "High Shelf · Resonant"),
+    (FilterType::LowPass, "Low Pass 12 dB/oct"),
+    (FilterType::LowPassII, "Low Pass 24 dB/oct"),
+    (FilterType::HighPassI, "High Pass 12 dB/oct"),
+    (FilterType::HighPassII, "High Pass 24 dB/oct"),
 ];
 
-const EQ_PARAMETRIC_FILTERS: &[(FilterType, &str)] = &[
-    (FilterType::ParametricI, "Parametric I"),
-    (FilterType::ParametricII, "Parametric II"),
-];
-
-// The manual confirms EQ4 supports parametric, shelving, high-pass, and low-pass types.
-// This list is limited to the corresponding filter implementations currently in the model;
-// Cubase's exact EQ4 menu inventory has not been observed.
-const EQ_BAND_4_FILTERS: &[(FilterType, &str)] = &[
-    (FilterType::ParametricI, "Parametric I"),
-    (FilterType::HighShelf, "High Shelf II"),
-    (FilterType::HighPassI, "High Pass I"),
-    (FilterType::HighPassII, "High Pass II"),
-    (FilterType::LowPass, "Low Pass"),
-    (FilterType::ParametricII, "Parametric II"),
-];
-
-fn eq_filter_types(band_index: usize) -> &'static [(FilterType, &'static str)] {
-    match band_index {
-        0 => EQ_BAND_1_FILTERS,
-        1 | 2 => EQ_PARAMETRIC_FILTERS,
-        _ => EQ_BAND_4_FILTERS,
-    }
+fn eq_filter_types(_band_index: usize) -> &'static [(FilterType, &'static str)] {
+    EQ_FILTER_TYPES
 }
 
 fn eq_filter_selected(current: FilterType, choice: FilterType) -> bool {
@@ -389,16 +384,32 @@ fn eq_filter_selected(current: FilterType, choice: FilterType) -> bool {
         || matches!(
             (current, choice),
             (FilterType::Bell, FilterType::ParametricI)
-                | (FilterType::LowShelf, FilterType::LowShelfIV)
+                | (
+                    FilterType::LowShelfI
+                        | FilterType::LowShelfII
+                        | FilterType::LowShelfIII
+                        | FilterType::LowShelfIV,
+                    FilterType::LowShelf
+                )
                 | (FilterType::HighPass, FilterType::HighPassI)
         )
 }
 
 fn channel_filter_type_name(filter: FilterType) -> &'static str {
     match filter {
-        // The reference's restored EQ4 state showed High Shelf II; the model stores one generic
-        // HighShelf variant, so do not fabricate the unobserved I/III/IV variants.
-        FilterType::HighShelf => "High Shelf II",
+        FilterType::Notch => "Notch",
+        FilterType::LowShelf
+        | FilterType::LowShelfI
+        | FilterType::LowShelfII
+        | FilterType::LowShelfIII
+        | FilterType::LowShelfIV => "Low Shelf · Classic",
+        FilterType::LowShelfSoft => "Low Shelf · Smooth",
+        FilterType::LowShelfSteep => "Low Shelf · Steep",
+        FilterType::LowShelfResonant => "Low Shelf · Resonant",
+        FilterType::HighShelf => "High Shelf · Classic",
+        FilterType::HighShelfSoft => "High Shelf · Smooth",
+        FilterType::HighShelfSteep => "High Shelf · Steep",
+        FilterType::HighShelfResonant => "High Shelf · Resonant",
         _ => filter_type_name(filter),
     }
 }
@@ -752,13 +763,14 @@ fn equalizer(
     dials: bool,
     state: &mut ChannelSettingsUiState,
     color: Color32,
+    channel_id: u64,
 ) -> bool {
     let mut changed = false;
     if header(
         ui,
         r,
         "Equalizers",
-        !eq.bypassed && eq.bands.iter().any(|b| b.enabled),
+        !eq.bypassed && eq.all_bands().any(|b| b.enabled),
         state,
     ) {
         eq.bypassed = !eq.bypassed;
@@ -767,182 +779,210 @@ fn equalizer(
     let p = theme::palette(ui);
     let preset = at(r, 0.0, 24.0, r.width(), 16.0);
     ui.painter().rect_filled(preset, 0.0, p.surface_raised);
-    let bands_height = if dials { 125.0 } else { 98.0 };
+    let bands_height = 24.0;
     let bands_top = if curve {
         r.height() - bands_height
     } else {
         44.0
     };
     if curve {
-        state
+        let show_eq_bands = !state.analyzer.tonal_view;
+        let controls_height = state.analyzer.controls_height(r.width());
+        let graph_top = 22.0 + controls_height + 4.0;
+        changed |= state
             .analyzer
-            .controls(ui, at(r, 0.0, 22.0, r.width(), 24.0));
+            .controls(ui, at(r, 0.0, 22.0, r.width(), controls_height), eq);
         changed |= graph(
             ui,
-            at(r, 0.0, 50.0, r.width(), (bands_top - 54.0).max(80.0)),
+            at(
+                r,
+                0.0,
+                graph_top,
+                r.width(),
+                (bands_top - graph_top - 4.0).max(80.0),
+            ),
             eq,
             state,
             color,
+            channel_id,
+            show_eq_bands,
         );
     }
-    let width = (r.width() - 12.0) / 4.0;
-    for (i, band) in eq.bands.iter_mut().enumerate() {
-        let cell = at(r, i as f32 * (width + 4.0), bands_top, width, bands_height);
-        ui.painter().rect_filled(cell, 0.0, p.canvas);
-        let title = at(cell, 0.0, 0.0, width, 16.0);
-        ui.painter().rect_filled(title, 0.0, p.surface_raised);
-        let label = ui
-            .interact(
-                at(cell, 18.0, 0.0, width - 18.0, 16.0),
-                ui.id().with(("eq-label", i)),
-                Sense::click(),
-            )
-            .on_hover_text(format!("EQ Band {} Active", i + 1));
-        text(
-            ui,
-            title.shrink2(Vec2::new(4.0, 0.0)),
-            &format!("eq {}", i + 1),
-            10.0,
-            Align2::RIGHT_CENTER,
-        );
-        context(&label, state);
-        let response = power(
-            ui,
-            at(cell, 0.0, 0.0, 15.0, 15.0),
-            ("eq-power", i),
-            band.enabled,
-        )
-        .on_hover_text(format!("EQ Band {} Active", i + 1));
-        if response.clicked() {
-            band.enabled = !band.enabled;
-            changed = true;
-        }
-        context(&response, state);
-        changed |= number(
-            ui,
-            at(cell, 1.0, 18.0, width - 2.0, 18.0),
-            ("eq-gain", i),
-            &mut band.gain_db,
-            -24.0..=24.0,
-            0.1,
-            "",
-            format!("EQ Band {} Gain", i + 1),
-        );
-        changed |= parameter_bar(
-            ui,
-            at(cell, 4.0, 36.0, width - 8.0, 6.0),
-            ("eq-gain-bar", i),
-            &mut band.gain_db,
-            -24.0,
-            24.0,
-            false,
-            true,
-            band.enabled && !eq.bypassed,
-            color,
-        );
-        changed |= number(
-            ui,
-            at(cell, 1.0, 44.0, width - 2.0, 18.0),
-            ("eq-frequency", i),
-            &mut band.frequency_hz,
-            20.0..=20000.0,
-            1.0,
-            " Hz",
-            format!("EQ Band {} Freq", i + 1),
-        );
-        changed |= parameter_bar(
-            ui,
-            at(cell, 4.0, 62.0, width - 8.0, 6.0),
-            ("eq-frequency-bar", i),
-            &mut band.frequency_hz,
-            20.0,
-            20000.0,
-            true,
-            false,
-            band.enabled && !eq.bypassed,
-            color,
-        );
-        let filter_rect = at(cell, 1.0, 70.0, width * 0.66, 18.0);
-        let response = ui.interact(
-            filter_rect,
-            ui.id().with(("filter-type", i)),
-            Sense::click(),
-        );
-        if response.hovered() {
-            ui.painter().rect_filled(
-                filter_rect,
-                1.0,
-                theme::hover_button_fill(p.surface_raised, ui.visuals()),
-            );
-            ui.painter().rect_stroke(
-                filter_rect,
-                1.0,
-                ui.visuals().widgets.hovered.bg_stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        text(
-            ui,
-            filter_rect,
-            channel_filter_type_name(band.filter),
-            9.0,
-            Align2::LEFT_CENTER,
-        );
-        context(&response, state);
-        menu(&response, 150.0, |ui| {
-            for (kind, label) in eq_filter_types(i).iter().copied() {
-                if channel_menu_item(ui, eq_filter_selected(band.filter, kind), label).clicked() {
-                    band.filter = kind;
-                    changed = true;
-                    ui.close();
-                }
-            }
-        });
-        changed |= number(
-            ui,
-            at(cell, width * 0.68, 70.0, width * 0.31, 18.0),
-            ("eq-q", i),
-            &mut band.q,
-            0.1..=10.0,
-            0.01,
-            "",
-            format!("EQ Band {} Q", i + 1),
-        );
-        changed |= parameter_bar(
-            ui,
-            at(cell, 4.0, 88.0, width - 8.0, 6.0),
-            ("eq-q-bar", i),
-            &mut band.q,
-            0.1,
-            10.0,
-            true,
-            false,
-            band.enabled && !eq.bypassed,
-            color,
-        );
-        if dials {
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .id_salt(("eq-dials", i))
-                    .max_rect(at(cell, 0.0, 99.0, width, 24.0)),
-                |ui| {
+    let strip = at(r, 0.0, bands_top, r.width(), bands_height);
+    ui.painter().rect_filled(strip, 0.0, p.canvas);
+    let add_rect = Rect::from_min_size(
+        Pos2::new((strip.right() - 22.0).max(strip.left()), strip.top() + 2.0),
+        Vec2::new(20.0_f32.min(strip.width()), 20.0),
+    );
+    let strip_view =
+        Rect::from_min_max(strip.min, Pos2::new(add_rect.left() - 2.0, strip.bottom()));
+    let last_auto_scroll = ui.id().with("eq-band-last-auto-scroll");
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(strip_view)
+            .id_salt("eq-band-strip-viewport"),
+        |ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt("eq-band-strip-scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .scroll_source(egui::scroll_area::ScrollSource {
+                    drag: egui::scroll_area::DragScroll::Always,
+                    ..Default::default()
+                })
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        show_eq_dial(ui, &mut band.gain_db, -24.0, 24.0, false, &mut changed);
-                        show_eq_dial(
-                            ui,
-                            &mut band.frequency_hz,
-                            20.0,
-                            20000.0,
-                            true,
-                            &mut changed,
-                        );
-                        show_eq_dial(ui, &mut band.q, 0.1, 10.0, true, &mut changed);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let visible_bands = eq
+                            .all_bands()
+                            .enumerate()
+                            .filter_map(|(index, band)| band.enabled.then_some(index))
+                            .collect::<Vec<_>>();
+                        for i in visible_bands {
+                            let band = *eq.band(i).expect("valid built-in EQ band index");
+                            let (rect, response) =
+                                ui.allocate_exact_size(Vec2::new(32.0, 20.0), Sense::click());
+                            if response.clicked() {
+                                state.selected_eq_band = i;
+                            }
+                            if response.secondary_clicked() && band.enabled {
+                                remove_eq_band(eq, i);
+                                if state.eq_solo == Some((channel_id, i)) {
+                                    state.eq_solo = None;
+                                }
+                                state.selected_eq_band = eq
+                                    .all_bands()
+                                    .position(|candidate| candidate.enabled)
+                                    .unwrap_or(0);
+                                changed = true;
+                            }
+                            let selected = state.selected_eq_band == i;
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                if selected { p.surface_raised } else { p.canvas },
+                            );
+                            let text_color = if band.enabled && !eq.bypassed {
+                                color
+                            } else {
+                                p.muted
+                            };
+                            let shape_tag = match band.filter {
+                                FilterType::Bell
+                                | FilterType::ParametricI
+                                | FilterType::ParametricII => "B",
+                                FilterType::Notch => "N",
+                                FilterType::LowShelf
+                                | FilterType::LowShelfI
+                                | FilterType::LowShelfII
+                                | FilterType::LowShelfIII
+                                | FilterType::LowShelfIV
+                                | FilterType::LowShelfSoft
+                                | FilterType::LowShelfSteep
+                                | FilterType::LowShelfResonant => "LS",
+                                FilterType::HighShelf
+                                | FilterType::HighShelfSoft
+                                | FilterType::HighShelfSteep
+                                | FilterType::HighShelfResonant => "HS",
+                                FilterType::LowPass | FilterType::LowPassII => "LP",
+                                FilterType::HighPass
+                                | FilterType::HighPassI
+                                | FilterType::HighPassII => "HP",
+                            };
+                            text(
+                                ui,
+                                rect,
+                                &format!("{} {shape_tag}", i + 1),
+                                9.0,
+                                Align2::CENTER_CENTER,
+                            );
+                            ui.painter().circle_filled(
+                                Pos2::new(rect.right() - 5.0, rect.top() + 5.0),
+                                2.0,
+                                text_color,
+                            );
+                            response.on_hover_text(format!(
+                                "EQ band {}: {}",
+                                i + 1,
+                                channel_filter_type_name(band.filter)
+                            ));
+                            if selected {
+                                let selection_changed = ui.data(|data| {
+                                    data.get_temp::<usize>(last_auto_scroll) != Some(i)
+                                });
+                                if selection_changed {
+                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                    ui.data_mut(|data| data.insert_temp(last_auto_scroll, i));
+                                }
+                            }
+                        }
                     });
-                },
-            );
+                });
+        },
+    );
+    let add_response = ui.interact(add_rect, ui.id().with("eq-band-add"), Sense::click());
+    ui.painter().rect_filled(add_rect, 2.0, p.surface_raised);
+    text(ui, add_rect, "+", 14.0, Align2::CENTER_CENTER);
+    add_response.clone().on_hover_text(format!(
+        "Add EQ band (up to {})",
+        opentrack_core::project::MAX_EQ_BANDS
+    ));
+    if add_response.clicked() {
+        let next_unused_band = next_eq_band(eq);
+        if let Some(index) = next_unused_band {
+            add_eq_band(eq, index, eq_band_default_frequency(index), 0.0);
+            state.selected_eq_band = index;
+            changed = true;
         }
     }
     changed
+}
+
+fn eq_knob(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    selected_index: usize,
+    label: &str,
+    value: &mut f32,
+    minimum: f32,
+    maximum: f32,
+    speed: f64,
+    suffix: &str,
+    logarithmic: bool,
+    tooltip: String,
+) -> bool {
+    let compact = rect.height() < 58.0;
+    let label_height = if compact { 8.0 } else { 10.0 };
+    let dial_size = if compact { 18.0 } else { 24.0 };
+    let dial_center_y = if compact { 20.0 } else { 25.0 };
+    let value_top = if compact { 31.0 } else { 42.0 };
+    let value_height = if compact { 16.0 } else { 18.0 };
+    text(
+        ui,
+        at(rect, 0.0, 0.0, rect.width(), label_height),
+        label,
+        7.0,
+        Align2::CENTER_CENTER,
+    );
+    let dial = Rect::from_center_size(
+        Pos2::new(rect.center().x, rect.top() + dial_center_y),
+        Vec2::splat(dial_size),
+    );
+    let mut changed = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(dial), |ui| {
+        show_eq_dial(ui, value, minimum, maximum, logarithmic, &mut changed);
+    });
+    changed
+        | number(
+            ui,
+            at(rect, 0.0, value_top, rect.width(), value_height),
+            ("eq-knob-value", selected_index, label),
+            value,
+            minimum..=maximum,
+            speed,
+            suffix,
+            tooltip,
+        )
 }
 
 #[derive(Clone, Copy)]
@@ -958,12 +998,167 @@ fn node_position(plot: Rect, frequency: f32, gain: f32) -> Pos2 {
     )
 }
 
+fn band_node_position(plot: Rect, band: &opentrack_core::project::EqualizerBand) -> Pos2 {
+    node_position(
+        plot,
+        band.frequency_hz,
+        if band.filter == FilterType::Notch {
+            0.0
+        } else {
+            band.gain_db
+        },
+    )
+}
+
+fn solo_band_frequency_bounds(band: &opentrack_core::project::EqualizerBand) -> (f32, f32) {
+    // The band-pass audition uses this same Q. Convert its approximate
+    // half-power bandwidth from octaves to frequency bounds for the graph.
+    let q = band.q.clamp(0.1, 10.0);
+    let half_bandwidth_octaves = (2.0 * (1.0 / (2.0 * q)).asinh()) / std::f32::consts::LN_2;
+    let half_ratio = 2.0_f32.powf(half_bandwidth_octaves * 0.5);
+    (
+        (band.frequency_hz / half_ratio).clamp(20.0, 20_000.0),
+        (band.frequency_hz * half_ratio).clamp(20.0, 20_000.0),
+    )
+}
+
+fn dynamic_overlay_frequency_bounds(
+    band: &opentrack_core::project::EqualizerBand,
+    range_db: f32,
+    sample_rate: u32,
+) -> (f32, f32) {
+    const RESPONSE_FLOOR_DB: f32 = 0.08;
+    const STEP_OCTAVES: f32 = 0.25;
+    let mut altered = *band;
+    altered.gain_db = (altered.gain_db + range_db).clamp(-24.0, 24.0);
+    let response_size = |frequency| {
+        let base = opentrack_audio::equalizer_band_response_db(band, frequency, sample_rate);
+        let changed = opentrack_audio::equalizer_band_response_db(&altered, frequency, sample_rate);
+        base.abs().max(changed.abs())
+    };
+    let find_edge = |direction: f32| {
+        let mut frequency = band.frequency_hz.clamp(20.0, 20_000.0);
+        for _ in 0..64 {
+            let next = (frequency * 2.0_f32.powf(direction * STEP_OCTAVES)).clamp(20.0, 20_000.0);
+            if next == frequency || response_size(next) <= RESPONSE_FLOOR_DB {
+                return next;
+            }
+            frequency = next;
+        }
+        if direction < 0.0 { 20.0 } else { 20_000.0 }
+    };
+    (find_edge(-1.0), find_edge(1.0))
+}
+
+fn dynamic_overlay_sample_count(low: f32, high: f32) -> usize {
+    (((high / low).log2() * 24.0).ceil() as usize).clamp(64, 256)
+}
+
+fn curve_band_mesh(upper: &[Pos2], lower: &[Pos2], color: Color32) -> egui::Mesh {
+    let point_count = upper.len().min(lower.len());
+    let mut mesh = egui::Mesh::default();
+    for index in 0..point_count {
+        mesh.colored_vertex(upper[index], color);
+        mesh.colored_vertex(lower[index], color);
+    }
+    for index in 0..point_count.saturating_sub(1) {
+        let current = (index * 2) as u32;
+        let next = current + 2;
+        mesh.add_triangle(current, current + 1, next);
+        mesh.add_triangle(current + 1, next + 1, next);
+    }
+    mesh
+}
+
+fn sample_equalizer_curve(curve_db: &[f32], frequency_hz: f32) -> f32 {
+    match curve_db {
+        [] => 0.0,
+        [only] => *only,
+        _ => {
+            let normalized = (frequency_hz.clamp(20.0, 20_000.0) / 20.0).log10() / 3.0;
+            let position = normalized * (curve_db.len() - 1) as f32;
+            let lower = (position.floor() as usize).min(curve_db.len() - 2);
+            let fraction = position - lower as f32;
+            curve_db[lower] + (curve_db[lower + 1] - curve_db[lower]) * fraction
+        }
+    }
+}
+
+fn dynamic_edge_is_shaped(points: &[Pos2], baseline_y: f32) -> bool {
+    points
+        .iter()
+        .any(|point| (point.y - baseline_y).abs() > 1.0)
+}
+
+fn dynamic_overlay_response_db(
+    aggregate_response_db: f32,
+    static_band_response_db: f32,
+    altered_band_response_db: f32,
+) -> f32 {
+    aggregate_response_db + altered_band_response_db - static_band_response_db
+}
+
+fn nearest_eq_node(plot: Rect, eq: &ChannelEqualizer, pointer: Pos2) -> Option<(usize, Pos2)> {
+    eq.all_bands()
+        .enumerate()
+        .filter(|(_, band)| band.enabled)
+        .map(|(index, band)| (index, band_node_position(plot, band)))
+        .filter(|(_, node)| node.distance(pointer) <= 12.0)
+        .min_by(|(_, a), (_, b)| a.distance_sq(pointer).total_cmp(&b.distance_sq(pointer)))
+}
+
+fn next_eq_band(eq: &ChannelEqualizer) -> Option<usize> {
+    eq.all_bands().position(|band| !band.enabled)
+}
+
+fn eq_band_default_frequency(index: usize) -> f32 {
+    const INITIAL_FREQUENCIES: [f32; 8] = [
+        100.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 14_000.0,
+    ];
+    if let Some(frequency) = INITIAL_FREQUENCIES.get(index) {
+        *frequency
+    } else {
+        let extra_index = index.saturating_sub(INITIAL_FREQUENCIES.len()) as f32;
+        let extra_count = opentrack_core::project::MAX_EQ_BANDS - INITIAL_FREQUENCIES.len();
+        100.0 * 180.0_f32.powf(extra_index / (extra_count - 1) as f32)
+    }
+}
+
+fn add_eq_band(eq: &mut ChannelEqualizer, index: usize, frequency_hz: f32, gain_db: f32) -> bool {
+    let Some(band) = eq.band_mut(index) else {
+        return false;
+    };
+    *band = opentrack_core::project::EqualizerBand {
+        enabled: true,
+        filter: FilterType::Bell,
+        frequency_hz: frequency_hz.clamp(20.0, 20_000.0),
+        gain_db: gain_db.clamp(-24.0, 24.0),
+        q: 0.707,
+    };
+    eq.dynamic_band_mut(index).unwrap().enabled = false;
+    true
+}
+
+fn remove_eq_band(eq: &mut ChannelEqualizer, index: usize) -> bool {
+    let Some(band) = eq.band_mut(index) else {
+        return false;
+    };
+    if !band.enabled {
+        return false;
+    }
+    band.enabled = false;
+    eq.dynamic_band_mut(index).unwrap().enabled = false;
+    true
+}
+
 fn graph(
     ui: &mut egui::Ui,
     r: Rect,
     eq: &mut ChannelEqualizer,
     state: &mut ChannelSettingsUiState,
     color: Color32,
+    channel_id: u64,
+    show_eq_bands: bool,
 ) -> bool {
     let p = theme::palette(ui);
     let plot = r.shrink2(Vec2::new(30.0, 18.0));
@@ -971,69 +1166,89 @@ fn graph(
     let hover_position = response.hover_pos();
     let drag_id = response.id.with("drag");
     let mut changed = false;
-    let pressed = response.is_pointer_button_down_on()
+    let next_unused_band = next_eq_band(eq);
+    if show_eq_bands
+        && response.double_clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+        && nearest_eq_node(plot, eq, pos).is_none()
+        && let Some(index) = next_unused_band
+    {
+        let frequencies = [
+            100.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 14_000.0,
+        ];
+        let frequency =
+            20.0 * 1000.0_f32.powf(((pos.x - plot.left()) / plot.width()).clamp(0.0, 1.0));
+        let gain = ((plot.center().y - pos.y) / plot.height() * 48.0).clamp(-24.0, 24.0);
+        if !add_eq_band(eq, index, frequency, gain) {
+            add_eq_band(eq, index, frequencies[index], 0.0);
+        }
+        state.selected_eq_band = index;
+        changed = true;
+    }
+    if show_eq_bands
+        && response.secondary_clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+        && let Some((index, _)) = nearest_eq_node(plot, eq, pos)
+    {
+        remove_eq_band(eq, index);
+        if state.eq_solo == Some((channel_id, index)) {
+            state.eq_solo = None;
+        }
+        state.selected_eq_band = eq.all_bands().position(|band| band.enabled).unwrap_or(0);
+        changed = true;
+    }
+    let pressed = show_eq_bands
+        && response.is_pointer_button_down_on()
         && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-    if pressed
-        || response.drag_started_by(egui::PointerButton::Primary)
-        || response.clicked_by(egui::PointerButton::Primary)
+    if show_eq_bands
+        && (pressed
+            || response.drag_started_by(egui::PointerButton::Primary)
+            || response.clicked_by(egui::PointerButton::Primary))
     {
         if let Some(pos) = ui
             .input(|i| i.pointer.press_origin())
             .or(response.interact_pointer_pos())
         {
-            let nearest = eq
-                .bands
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| {
-                    node_position(plot, a.frequency_hz, a.gain_db)
-                        .distance_sq(pos)
-                        .total_cmp(&node_position(plot, b.frequency_hz, b.gain_db).distance_sq(pos))
-                })
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            let node = node_position(
-                plot,
-                eq.bands[nearest].frequency_hz,
-                eq.bands[nearest].gain_db,
-            );
-            let offset = if node.distance(pos) < 14.0 {
-                node - pos
+            if let Some((index, node)) = nearest_eq_node(plot, eq, pos) {
+                ui.data_mut(|d| {
+                    d.insert_temp(
+                        drag_id,
+                        GraphDrag {
+                            band: index,
+                            offset: node - pos,
+                        },
+                    )
+                });
+                state.selected_eq_band = index;
             } else {
-                Vec2::ZERO
-            };
-            ui.data_mut(|d| {
-                d.insert_temp(
-                    drag_id,
-                    GraphDrag {
-                        band: nearest,
-                        offset,
-                    },
-                )
-            });
-            changed |= !eq.bands[nearest].enabled || eq.bypassed;
-            eq.bands[nearest].enabled = true;
-            eq.bypassed = false;
+                ui.data_mut(|d| d.remove::<GraphDrag>(drag_id));
+            }
         }
     }
-    if pressed
-        || response.dragged_by(egui::PointerButton::Primary)
-        || response.clicked_by(egui::PointerButton::Primary)
+    if show_eq_bands
+        && (pressed
+            || response.dragged_by(egui::PointerButton::Primary)
+            || response.clicked_by(egui::PointerButton::Primary))
     {
         if let (Some(pos), Some(drag)) = (
             response.interact_pointer_pos(),
             ui.data(|d| d.get_temp::<GraphDrag>(drag_id)),
         ) {
             let pos = pos + drag.offset;
-            let band = &mut eq.bands[drag.band];
+            let band = eq.band_mut(drag.band).unwrap();
             let frequency =
                 20.0 * 1000.0_f32.powf(((pos.x - plot.left()) / plot.width()).clamp(0.0, 1.0));
             let gain = ((plot.center().y - pos.y) / plot.height() * 48.0).clamp(-24.0, 24.0);
             changed |= (band.frequency_hz - frequency).abs() > 0.001
-                || (band.gain_db - gain).abs() > 0.001;
+                || (band.filter != FilterType::Notch && (band.gain_db - gain).abs() > 0.001);
             band.frequency_hz = frequency;
-            band.gain_db = gain;
+            if band.filter != FilterType::Notch {
+                band.gain_db = gain;
+            }
         }
+    }
+    if !show_eq_bands || !response.is_pointer_button_down_on() {
+        ui.data_mut(|d| d.remove::<GraphDrag>(drag_id));
     }
     ui.painter().rect_filled(r, 1.0, p.canvas);
     for gain in [-24, -18, -12, -6, 0, 6, 12, 18, 24] {
@@ -1074,21 +1289,150 @@ fn graph(
             Align2::CENTER_CENTER,
         );
     }
+    // Keep the solo audition frequency window behind the live spectrum and EQ
+    // curves. This makes the audible band visible without hiding the data.
+    if show_eq_bands {
+        if let Some((solo_channel, solo_index)) = state.eq_solo {
+            if solo_channel == channel_id {
+                if let Some(band) = eq.band(solo_index).filter(|band| band.enabled) {
+                    let (low, high) = solo_band_frequency_bounds(band);
+                    let left = node_position(plot, low, 0.0).x;
+                    let right = node_position(plot, high, 0.0).x;
+                    let range = Rect::from_min_max(
+                        Pos2::new(left.min(right), plot.top()),
+                        Pos2::new(left.max(right), plot.bottom()),
+                    );
+                    let solo_color = color.gamma_multiply(0.10);
+                    ui.painter().rect_filled(range, 0.0, solo_color);
+                    for x in [range.left(), range.right()] {
+                        ui.painter().line_segment(
+                            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+                            Stroke::new(1.0, color.gamma_multiply(0.58)),
+                        );
+                    }
+                    text(
+                        ui,
+                        Rect::from_min_size(
+                            range.min + Vec2::new(3.0, 3.0),
+                            Vec2::new((range.width() - 6.0).max(30.0), 12.0),
+                        ),
+                        "SOLO RANGE",
+                        7.0,
+                        Align2::LEFT_TOP,
+                    );
+                }
+            }
+        }
+    }
     state.analyzer.paint(ui, plot, color);
-    let points = (0..=256)
+    let has_dynamic_bands = eq.all_bands().enumerate().any(|(index, band)| {
+        band.enabled
+            && band.filter.supports_dynamic_eq()
+            && eq
+                .dynamic_band(index)
+                .is_some_and(|dynamic| dynamic.enabled)
+    });
+    let mut response_eq = eq.clone();
+    response_eq.bypassed = false;
+    let curve_response_eq: &ChannelEqualizer = if eq.bypassed && has_dynamic_bands {
+        &response_eq
+    } else {
+        &*eq
+    };
+    let curve_gains: Vec<f32> = (0..=256)
         .map(|i| {
             let frequency = 20.0 * 1000.0_f32.powf(i as f32 / 256.0);
-            let gain = opentrack_audio::channel_equalizer_response_db(
-                eq,
+            opentrack_audio::channel_equalizer_response_db(
+                curve_response_eq,
                 frequency,
                 state.analyzer.rate(None),
             )
-            .clamp(-24.0, 24.0);
-            node_position(plot, frequency, gain)
         })
         .collect();
-    ui.painter()
-        .add(egui::Shape::line(points, Stroke::new(1.5, color)));
+    let points = curve_gains
+        .iter()
+        .enumerate()
+        .map(|(i, gain)| {
+            let frequency = 20.0 * 1000.0_f32.powf(i as f32 / 256.0);
+            node_position(
+                plot,
+                frequency,
+                if eq.bypassed {
+                    0.0
+                } else {
+                    gain.clamp(-24.0, 24.0)
+                },
+            )
+        })
+        .collect();
+    // Tonal mode owns the graph's frequency-balance trace. The aggregate EQ
+    // response can contain narrow peaks/notches that look like analyzer spikes
+    // and obscure that smoother tonal profile, so only draw it in EQ mode.
+    if show_eq_bands {
+        ui.painter()
+            .add(egui::Shape::line(points, Stroke::new(1.5, color)));
+    }
+    let dynamic_gains = (show_eq_bands && !eq.bypassed)
+        .then(|| state.analyzer.dynamic_gains_db(channel_id))
+        .flatten();
+    for (index, band) in eq.all_bands().enumerate() {
+        let dynamic = *eq.dynamic_band(index).unwrap();
+        if !show_eq_bands || !band.enabled || !dynamic.enabled || !band.filter.supports_dynamic_eq()
+        {
+            continue;
+        }
+        // Anchor the envelope to the combined static EQ curve so it joins the
+        // response at both ends. Its width and dynamic delta still come only
+        // from this band's own filter and Q.
+        let sample_rate = state.analyzer.rate(None);
+        let (low, high) = dynamic_overlay_frequency_bounds(band, dynamic.range_db, sample_rate);
+        let sample_count = dynamic_overlay_sample_count(low, high);
+        let mut static_points = Vec::with_capacity(sample_count + 1);
+        let mut dynamic_points = Vec::with_capacity(sample_count + 1);
+        for sample in 0..=sample_count {
+            let t = sample as f32 / sample_count as f32;
+            let frequency = low * (high / low).powf(t);
+            let static_band =
+                opentrack_audio::equalizer_band_response_db(band, frequency, sample_rate);
+            let mut dynamic_band = *band;
+            dynamic_band.gain_db = (dynamic_band.gain_db + dynamic.range_db).clamp(-24.0, 24.0);
+            let dynamic_response =
+                opentrack_audio::equalizer_band_response_db(&dynamic_band, frequency, sample_rate);
+            let aggregate_response = if eq.bypassed {
+                0.0
+            } else {
+                sample_equalizer_curve(&curve_gains, frequency)
+            };
+            static_points.push(node_position(
+                plot,
+                frequency,
+                aggregate_response.clamp(-24.0, 24.0),
+            ));
+            dynamic_points.push(node_position(
+                plot,
+                frequency,
+                dynamic_overlay_response_db(aggregate_response, static_band, dynamic_response)
+                    .clamp(-24.0, 24.0),
+            ));
+        }
+        ui.painter().add(egui::Shape::mesh(curve_band_mesh(
+            &static_points,
+            &dynamic_points,
+            color.gamma_multiply(0.19),
+        )));
+        // Keep the combined static EQ curve visible over the fill. If it is
+        // flat, leave the full-width graph baseline as the only line.
+        if dynamic_edge_is_shaped(&static_points, plot.center().y) {
+            ui.painter().add(egui::Shape::line(
+                static_points,
+                Stroke::new(1.5, color.gamma_multiply(0.9)),
+            ));
+        }
+        ui.painter().add(egui::Shape::line(
+            dynamic_points,
+            Stroke::new(1.5, color.gamma_multiply(0.82)),
+        ));
+    }
     if response.hovered() {
         ui.painter().rect_stroke(
             r.shrink(0.5),
@@ -1097,8 +1441,11 @@ fn graph(
             egui::StrokeKind::Inside,
         );
     }
-    for (i, band) in eq.bands.iter().enumerate() {
-        let pos = node_position(plot, band.frequency_hz, band.gain_db);
+    for (i, band) in eq.all_bands().enumerate() {
+        if !show_eq_bands || !band.enabled {
+            continue;
+        }
+        let pos = band_node_position(plot, band);
         let active = band.enabled && !eq.bypassed;
         let hovered = hover_position.is_some_and(|pointer| pos.distance(pointer) <= 9.0);
         let node_fill = if hovered {
@@ -1122,6 +1469,427 @@ fn graph(
             9.0,
             Align2::CENTER_CENTER,
         );
+    }
+    if let Some(dynamic_gains) = dynamic_gains {
+        for (index, band) in eq.all_bands().enumerate() {
+            let dynamic = *eq.dynamic_band(index).unwrap();
+            if !show_eq_bands
+                || !band.enabled
+                || !dynamic.enabled
+                || !band.filter.supports_dynamic_eq()
+            {
+                continue;
+            }
+            let mut actual_band = *band;
+            actual_band.gain_db = (actual_band.gain_db + dynamic_gains[index]).clamp(-24.0, 24.0);
+            let sample_rate = state.analyzer.rate(None);
+            let (low, high) = dynamic_overlay_frequency_bounds(band, dynamic.range_db, sample_rate);
+            let sample_count = dynamic_overlay_sample_count(low, high);
+            let mut static_points = Vec::with_capacity(sample_count + 1);
+            let mut actual_points = Vec::with_capacity(sample_count + 1);
+            for sample in 0..=sample_count {
+                let t = sample as f32 / sample_count as f32;
+                let frequency = low * (high / low).powf(t);
+                let static_band =
+                    opentrack_audio::equalizer_band_response_db(band, frequency, sample_rate);
+                let actual_band_response = opentrack_audio::equalizer_band_response_db(
+                    &actual_band,
+                    frequency,
+                    sample_rate,
+                );
+                let aggregate_response = sample_equalizer_curve(&curve_gains, frequency);
+                static_points.push(node_position(
+                    plot,
+                    frequency,
+                    aggregate_response.clamp(-24.0, 24.0),
+                ));
+                actual_points.push(node_position(
+                    plot,
+                    frequency,
+                    dynamic_overlay_response_db(
+                        aggregate_response,
+                        static_band,
+                        actual_band_response,
+                    )
+                    .clamp(-24.0, 24.0),
+                ));
+            }
+            ui.painter().add(egui::Shape::mesh(curve_band_mesh(
+                &static_points,
+                &actual_points,
+                color.gamma_multiply(0.42),
+            )));
+            // The movement fill is painted over the graph's static curve. Draw
+            // the same combined response again so the envelope stays visibly
+            // connected at its upper edge, including when a neighbor shapes it.
+            if dynamic_edge_is_shaped(&static_points, plot.center().y) {
+                ui.painter().add(egui::Shape::line(
+                    static_points,
+                    Stroke::new(1.5, color.gamma_multiply(0.9)),
+                ));
+            }
+            ui.painter().add(egui::Shape::line(
+                actual_points,
+                Stroke::new(1.5, color.gamma_multiply(0.95)),
+            ));
+            let actual_gain = dynamic_overlay_response_db(
+                sample_equalizer_curve(&curve_gains, band.frequency_hz),
+                opentrack_audio::equalizer_band_response_db(band, band.frequency_hz, sample_rate),
+                opentrack_audio::equalizer_band_response_db(
+                    &actual_band,
+                    band.frequency_hz,
+                    sample_rate,
+                ),
+            );
+            let actual_node = node_position(plot, band.frequency_hz, actual_gain);
+            ui.painter().circle_filled(actual_node, 4.2, p.text);
+            ui.painter()
+                .circle_stroke(actual_node, 4.2, Stroke::new(1.5, color));
+        }
+    }
+    let selected_index = state
+        .selected_eq_band
+        .min(opentrack_core::project::MAX_EQ_BANDS - 1);
+    let selected_node = eq
+        .band(selected_index)
+        .filter(|_| show_eq_bands)
+        .map(|band| band_node_position(plot, band));
+    if let Some(node) =
+        selected_node.filter(|_| eq.band(selected_index).is_some_and(|band| band.enabled))
+    {
+        ui.painter()
+            .circle_filled(node, 9.0, color.gamma_multiply(0.24));
+        ui.painter()
+            .circle_stroke(node, 8.0, Stroke::new(1.25, color));
+        ui.painter().circle_filled(node, 5.1, p.text);
+        ui.painter()
+            .circle_stroke(node, 5.1, Stroke::new(2.0, color));
+    }
+    if let (Some(node), Some((band, dynamic))) = (
+        selected_node.filter(|_| eq.band(selected_index).is_some_and(|band| band.enabled)),
+        eq.band_and_dynamic_mut(selected_index),
+    ) {
+        let popup_size = Vec2::new(356.0_f32.min(plot.width()), 176.0_f32.min(r.height()));
+        let mut popup_pos = Pos2::new(
+            plot.left() + 8.0 + state.eq_detail_offset.x,
+            plot.top() + 6.0 + state.eq_detail_offset.y,
+        );
+        popup_pos.x = popup_pos
+            .x
+            .clamp(plot.left(), (plot.right() - popup_size.x).max(plot.left()));
+        popup_pos.y = popup_pos
+            .y
+            .clamp(r.top(), (r.bottom() - popup_size.y).max(r.top()));
+        let popup = Rect::from_min_size(popup_pos, popup_size);
+        ui.painter().rect_filled(popup, 4.0, p.surface_raised);
+        ui.painter().rect_stroke(
+            popup,
+            4.0,
+            Stroke::new(1.0, p.grid),
+            egui::StrokeKind::Inside,
+        );
+        let inner = popup.shrink2(Vec2::new(7.0, 4.0));
+        let header = at(inner, 0.0, 0.0, inner.width(), 16.0);
+        ui.painter().rect_filled(header, 3.0, p.canvas);
+        let title_rect = at(inner, 24.0, 0.0, (inner.width() - 78.0).max(40.0), 16.0);
+        let title_response = ui.interact(
+            title_rect,
+            ui.id().with(("eq-popup-title", selected_index)),
+            Sense::drag(),
+        );
+        if title_response.dragged() {
+            state.eq_detail_offset += title_response.drag_delta();
+        }
+        text(
+            ui,
+            title_rect,
+            &format!("Band {}  ·  drag to move", selected_index + 1),
+            8.0,
+            Align2::LEFT_CENTER,
+        );
+        let enabled_rect = at(inner, 0.0, 0.0, 20.0, 16.0);
+        if power(
+            ui,
+            enabled_rect,
+            ("eq-popup-power", selected_index),
+            band.enabled,
+        )
+        .clicked()
+        {
+            band.enabled = !band.enabled;
+            changed = true;
+        }
+        let solo_supported = channel_id != opentrack_core::project::INPUT_BUS_ID;
+        let solo_active = state.eq_solo == Some((channel_id, selected_index));
+        let solo_rect = at(inner, inner.width() - 20.0, 0.0, 20.0, 16.0);
+        let solo_response = ui.interact(
+            solo_rect,
+            ui.id().with(("eq-popup-solo", selected_index)),
+            if solo_supported {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        );
+        let palette = theme::palette(ui);
+        ui.painter().rect_filled(
+            solo_rect,
+            2.0,
+            if solo_active {
+                palette.accent.gamma_multiply(0.3)
+            } else {
+                palette.canvas
+            },
+        );
+        text(ui, solo_rect, "S", 8.0, Align2::CENTER_CENTER);
+        if solo_response.clicked() {
+            state.eq_solo = if solo_active {
+                None
+            } else {
+                Some((channel_id, selected_index))
+            };
+        }
+        solo_response.on_hover_text(if solo_supported {
+            "Solo this band as a frequency-isolated audition"
+        } else {
+            "Band audition is unavailable for the input bus"
+        });
+        let section_title = at(inner, 0.0, 18.0, inner.width(), 8.0);
+        text(ui, section_title, "STATIC EQ", 7.0, Align2::LEFT_CENTER);
+        let static_width = ((inner.width() - 8.0) / 3.0).max(1.0);
+        let static_top = 24.0;
+        if band.filter == FilterType::Notch {
+            let gain_rect = at(inner, 0.0, static_top, static_width, 46.0);
+            text(
+                ui,
+                at(gain_rect, 0.0, 0.0, gain_rect.width(), 8.0),
+                "GAIN",
+                7.0,
+                Align2::CENTER_CENTER,
+            );
+            text(
+                ui,
+                at(gain_rect, 0.0, 31.0, gain_rect.width(), 16.0),
+                "N/A",
+                8.0,
+                Align2::CENTER_CENTER,
+            );
+        } else {
+            changed |= eq_knob(
+                ui,
+                at(inner, 0.0, static_top, static_width, 50.0),
+                selected_index,
+                "GAIN",
+                &mut band.gain_db,
+                -24.0,
+                24.0,
+                0.1,
+                " dB",
+                false,
+                "EQ band gain".to_owned(),
+            );
+        }
+        changed |= eq_knob(
+            ui,
+            at(inner, static_width + 4.0, static_top, static_width, 46.0),
+            selected_index,
+            "FREQ",
+            &mut band.frequency_hz,
+            20.0,
+            20000.0,
+            1.0,
+            " Hz",
+            true,
+            "EQ band center or cutoff frequency".to_owned(),
+        );
+        changed |= eq_knob(
+            ui,
+            at(
+                inner,
+                (static_width + 4.0) * 2.0,
+                static_top,
+                static_width,
+                46.0,
+            ),
+            selected_index,
+            "Q",
+            &mut band.q,
+            0.1,
+            10.0,
+            0.01,
+            "",
+            true,
+            if matches!(
+                band.filter,
+                FilterType::LowShelf
+                    | FilterType::LowShelfI
+                    | FilterType::LowShelfII
+                    | FilterType::LowShelfIII
+                    | FilterType::LowShelfIV
+                    | FilterType::HighShelf
+                    | FilterType::LowShelfSoft
+                    | FilterType::LowShelfSteep
+                    | FilterType::LowShelfResonant
+                    | FilterType::HighShelfSoft
+                    | FilterType::HighShelfSteep
+                    | FilterType::HighShelfResonant
+            ) {
+                "Shelf transition width / resonance".to_owned()
+            } else {
+                "EQ band Q / resonance".to_owned()
+            },
+        );
+        let filter_label = at(inner, 0.0, 74.0, 40.0, 18.0);
+        text(ui, filter_label, "FILTER", 7.0, Align2::LEFT_CENTER);
+        let filter_rect = at(inner, 42.0, 73.0, (inner.width() - 42.0).max(1.0), 18.0);
+        let filter_response = ui.interact(
+            filter_rect,
+            ui.id().with(("eq-popup-filter", selected_index)),
+            Sense::click(),
+        );
+        ui.painter().rect_filled(
+            filter_rect,
+            2.0,
+            if filter_response.hovered() {
+                p.surface_raised
+            } else {
+                p.canvas
+            },
+        );
+        ui.painter().rect_stroke(
+            filter_rect,
+            2.0,
+            Stroke::new(1.0, p.grid),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().line_segment(
+            [
+                Pos2::new(filter_rect.left() + 1.0, filter_rect.top() + 3.0),
+                Pos2::new(filter_rect.left() + 1.0, filter_rect.bottom() - 3.0),
+            ],
+            Stroke::new(2.0, color),
+        );
+        text(
+            ui,
+            filter_rect.shrink2(Vec2::new(8.0, 0.0)),
+            channel_filter_type_name(band.filter),
+            10.0,
+            Align2::LEFT_CENTER,
+        );
+        crate::icon_system::paint_app_icon(
+            ui,
+            Rect::from_center_size(
+                Pos2::new(filter_rect.right() - 10.0, filter_rect.center().y),
+                Vec2::splat(10.0),
+            ),
+            crate::icon_system::IconId::ChevronDown,
+            p.text,
+        );
+        let filter_response = filter_response.on_hover_text("Choose this band's filter type");
+        menu(&filter_response, 218.0, |ui| {
+            for (kind, label) in eq_filter_types(selected_index).iter().copied() {
+                if channel_menu_item(ui, eq_filter_selected(band.filter, kind), label).clicked() {
+                    band.filter = kind;
+                    changed = true;
+                    ui.close();
+                }
+            }
+        });
+        let dynamic_eligible = band.filter.supports_dynamic_eq();
+        let divider_y = 94.0;
+        ui.painter().line_segment(
+            [
+                Pos2::new(inner.left(), inner.top() + divider_y),
+                Pos2::new(inner.right(), inner.top() + divider_y),
+            ],
+            Stroke::new(1.0, p.grid),
+        );
+        let dynamic_title = at(inner, 24.0, 96.0, inner.width() - 48.0, 14.0);
+        text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
+        let dynamic_power_rect = at(inner, 0.0, 95.0, 20.0, 16.0);
+        if dynamic_eligible {
+            if power(
+                ui,
+                dynamic_power_rect,
+                ("eq-popup-dynamic-power", selected_index),
+                dynamic.enabled,
+            )
+            .clicked()
+            {
+                dynamic.enabled = !dynamic.enabled;
+                changed = true;
+            }
+            let dynamic_width = ((inner.width() - 6.0) / 4.0).max(1.0);
+            let dynamic_top = 112.0;
+            for (slot, (label, value, minimum, maximum, speed, suffix, log, help)) in [
+                (
+                    "THRESH",
+                    &mut dynamic.threshold_db,
+                    -90.0,
+                    0.0,
+                    0.5,
+                    " dB",
+                    false,
+                    "Dynamic detector threshold",
+                ),
+                (
+                    "RANGE",
+                    &mut dynamic.range_db,
+                    -18.0,
+                    18.0,
+                    0.5,
+                    " dB",
+                    false,
+                    "Maximum dynamic gain change",
+                ),
+                (
+                    "ATTACK",
+                    &mut dynamic.attack_ms,
+                    0.1,
+                    2000.0,
+                    0.1,
+                    " ms",
+                    true,
+                    "Dynamic attack time",
+                ),
+                (
+                    "RELEASE",
+                    &mut dynamic.release_ms,
+                    1.0,
+                    5000.0,
+                    1.0,
+                    " ms",
+                    true,
+                    "Dynamic release time",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x = slot as f32 * (dynamic_width + 2.0);
+                changed |= eq_knob(
+                    ui,
+                    at(inner, x, dynamic_top, dynamic_width, 46.0),
+                    selected_index,
+                    label,
+                    value,
+                    minimum,
+                    maximum,
+                    speed,
+                    suffix,
+                    log,
+                    help.to_owned(),
+                );
+            }
+        } else {
+            text(
+                ui,
+                dynamic_title,
+                "DYNAMIC EQ  ·  unavailable for this shape",
+                8.0,
+                Align2::LEFT_CENTER,
+            );
+        }
     }
     changed
 }
@@ -1518,7 +2286,7 @@ fn strip(
                 0 => !track.inserts_bypassed && track.inserts.iter().any(|insert| insert.enabled),
                 1 => {
                     !track.equalizer.bypassed
-                        && track.equalizer.bands.iter().any(|band| band.enabled)
+                        && track.equalizer.all_bands().any(|band| band.enabled)
                 }
                 _ => {
                     !track.sends_bypassed
@@ -1875,6 +2643,592 @@ pub(super) fn setup(ctx: &egui::Context, state: &mut ChannelSettingsUiState) {
 #[cfg(test)]
 mod bus_tests {
     use super::*;
+
+    fn render_equalizer_frame(
+        context: &egui::Context,
+        rect: Rect,
+        time: f64,
+        events: Vec<egui::Event>,
+        eq_state: &mut ChannelEqualizer,
+        state: &mut ChannelSettingsUiState,
+    ) {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                equalizer(
+                    ui,
+                    rect,
+                    eq_state,
+                    true,
+                    false,
+                    state,
+                    Color32::from_rgb(60, 170, 220),
+                    1,
+                );
+            },
+        );
+        output.textures_delta.clear();
+    }
+
+    fn render_graph_frame(
+        context: &egui::Context,
+        rect: Rect,
+        time: f64,
+        events: Vec<egui::Event>,
+        eq_state: &mut ChannelEqualizer,
+        state: &mut ChannelSettingsUiState,
+    ) -> bool {
+        let mut changed = false;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                changed = graph(
+                    ui,
+                    rect,
+                    eq_state,
+                    state,
+                    Color32::from_rgb(60, 170, 220),
+                    1,
+                    true,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        changed
+    }
+
+    fn pointer_button(position: Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: position,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn click_equalizer_point(
+        context: &egui::Context,
+        rect: Rect,
+        equalizer: &mut ChannelEqualizer,
+        state: &mut ChannelSettingsUiState,
+        position: Pos2,
+        button: egui::PointerButton,
+        start_frame: usize,
+    ) {
+        let time = |frame: usize| frame as f64 * 0.05;
+        render_equalizer_frame(
+            context,
+            rect,
+            time(start_frame),
+            vec![
+                egui::Event::PointerMoved(position),
+                pointer_button(position, button, true),
+            ],
+            equalizer,
+            state,
+        );
+        render_equalizer_frame(
+            context,
+            rect,
+            time(start_frame + 1),
+            vec![pointer_button(position, button, false)],
+            equalizer,
+            state,
+        );
+    }
+
+    #[test]
+    fn eq_graph_hit_testing_ignores_blank_space_and_anchors_notches_at_zero_gain() {
+        let plot = Rect::from_min_max(Pos2::new(30.0, 20.0), Pos2::new(630.0, 220.0));
+        let mut equalizer = ChannelEqualizer::default();
+        equalizer.bands[0].filter = FilterType::Notch;
+        equalizer.bands[0].gain_db = 18.0;
+        let notch_node = band_node_position(plot, &equalizer.bands[0]);
+        assert_eq!(notch_node.y, plot.center().y);
+        assert!(nearest_eq_node(plot, &equalizer, notch_node).is_none());
+        equalizer.bands[0].enabled = true;
+        assert_eq!(nearest_eq_node(plot, &equalizer, notch_node).unwrap().0, 0);
+        assert!(nearest_eq_node(plot, &equalizer, plot.right_top() - Vec2::splat(20.0)).is_none());
+    }
+
+    #[test]
+    fn eq_band_add_remove_and_capacity_follow_the_strip_workflow() {
+        let mut eq = ChannelEqualizer::default();
+        assert_eq!(next_eq_band(&eq), Some(0));
+        assert!(add_eq_band(&mut eq, 0, 2_400.0, 4.0));
+        assert!(eq.band(0).unwrap().enabled);
+        assert_eq!(eq.band(0).unwrap().frequency_hz, 2_400.0);
+        assert_eq!(eq.band(0).unwrap().gain_db, 4.0);
+        eq.dynamic_bands[0].enabled = true;
+        assert!(remove_eq_band(&mut eq, 0));
+        assert!(!eq.band(0).unwrap().enabled);
+        assert!(!eq.dynamic_bands[0].enabled);
+        for index in 0..opentrack_core::project::MAX_EQ_BANDS {
+            assert!(add_eq_band(&mut eq, index, 100.0 * (index + 1) as f32, 0.0));
+        }
+        assert_eq!(next_eq_band(&eq), None);
+        assert!(!add_eq_band(
+            &mut eq,
+            opentrack_core::project::MAX_EQ_BANDS,
+            1_000.0,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn eq_strip_plus_adds_bands_and_right_click_removes_only_the_target() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let plus = Pos2::new(388.0, 288.0);
+        let first_band = Pos2::new(20.0, 286.0);
+        let mut equalizer = ChannelEqualizer::default();
+        let mut state = ChannelSettingsUiState::default();
+
+        render_equalizer_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            plus,
+            egui::PointerButton::Primary,
+            1,
+        );
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            plus,
+            egui::PointerButton::Primary,
+            3,
+        );
+        assert!(equalizer.band(0).unwrap().enabled);
+        assert!(equalizer.band(1).unwrap().enabled);
+
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            first_band,
+            egui::PointerButton::Secondary,
+            5,
+        );
+        assert!(!equalizer.band(0).unwrap().enabled);
+        assert!(equalizer.band(1).unwrap().enabled);
+    }
+
+    #[test]
+    fn dynamic_power_is_independent_from_band_power() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let plus = Pos2::new(388.0, 288.0);
+        let mut equalizer = ChannelEqualizer::default();
+        let mut state = ChannelSettingsUiState::default();
+
+        render_equalizer_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            plus,
+            egui::PointerButton::Primary,
+            1,
+        );
+        assert!(equalizer.band(0).unwrap().enabled);
+        assert!(!equalizer.dynamic_band(0).unwrap().enabled);
+
+        let mut changed = false;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                time: Some(0.15),
+                ..Default::default()
+            },
+            |ui| {
+                changed = super::equalizer(
+                    ui,
+                    rect,
+                    &mut equalizer,
+                    true,
+                    false,
+                    &mut state,
+                    Color32::from_rgb(60, 170, 220),
+                    1,
+                );
+            },
+        );
+        let labels = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for label in [
+            "STATIC EQ",
+            "GAIN",
+            "FREQ",
+            "Q",
+            "FILTER",
+            "DYNAMIC EQ",
+            "THRESH",
+            "RANGE",
+            "ATTACK",
+            "RELEASE",
+        ] {
+            assert!(
+                labels.iter().any(|rendered| rendered == label),
+                "missing {label} knob label"
+            );
+        }
+        output.textures_delta.clear();
+        assert!(!changed);
+        let filter_control = context
+            .read_response(
+                egui::Id::new((egui::ViewportId::ROOT, "__top_ui")).with(("eq-popup-filter", 0)),
+            )
+            .expect("filter type is an interactive control");
+        assert!(filter_control.rect.height() >= 18.0);
+        let dynamic_power = context
+            .read_response(
+                egui::Id::new((egui::ViewportId::ROOT, "__top_ui"))
+                    .with(("eq-popup-dynamic-power", 0)),
+            )
+            .expect("dynamic EQ has a separate power button")
+            .rect
+            .center();
+
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            dynamic_power,
+            egui::PointerButton::Primary,
+            3,
+        );
+        assert!(equalizer.dynamic_band(0).unwrap().enabled);
+        assert!(equalizer.band(0).unwrap().enabled);
+
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            dynamic_power,
+            egui::PointerButton::Primary,
+            5,
+        );
+        assert!(!equalizer.dynamic_band(0).unwrap().enabled);
+        assert!(equalizer.band(0).unwrap().enabled);
+    }
+
+    #[test]
+    fn filter_picker_exposes_distinct_pass_slopes_and_legacy_aliases() {
+        assert!(
+            EQ_FILTER_TYPES.iter().any(|(kind, label)| {
+                *kind == FilterType::LowPass && label.contains("12 dB/oct")
+            })
+        );
+        assert!(EQ_FILTER_TYPES.iter().any(|(kind, label)| {
+            *kind == FilterType::LowPassII && label.contains("24 dB/oct")
+        }));
+        assert!(EQ_FILTER_TYPES.iter().any(|(kind, label)| {
+            *kind == FilterType::HighPassI && label.contains("12 dB/oct")
+        }));
+        assert!(EQ_FILTER_TYPES.iter().any(|(kind, label)| {
+            *kind == FilterType::HighPassII && label.contains("24 dB/oct")
+        }));
+        assert!(eq_filter_selected(
+            FilterType::HighPass,
+            FilterType::HighPassI
+        ));
+        assert!(!eq_filter_selected(
+            FilterType::HighPassII,
+            FilterType::HighPassI
+        ));
+        assert!(eq_filter_selected(
+            FilterType::Bell,
+            FilterType::ParametricI
+        ));
+        assert!(eq_filter_selected(
+            FilterType::LowShelfIII,
+            FilterType::LowShelf
+        ));
+    }
+
+    #[test]
+    fn tonal_mode_hides_band_editor_and_disables_graph_band_gestures() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let mut equalizer = ChannelEqualizer::default();
+        equalizer.bands[0].enabled = true;
+        equalizer.dynamic_bands[0].enabled = true;
+        let mut state = ChannelSettingsUiState::default();
+        state.analyzer.tonal_view = true;
+
+        render_equalizer_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
+        let root = egui::Id::new((egui::ViewportId::ROOT, "__top_ui"));
+        assert!(
+            context
+                .read_response(root.with(("eq-popup-power", 0)))
+                .is_none()
+        );
+        assert!(
+            context
+                .read_response(root.with(("eq-popup-dynamic-power", 0)))
+                .is_none()
+        );
+
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            Pos2::new(350.0, 120.0),
+            egui::PointerButton::Primary,
+            1,
+        );
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            Pos2::new(350.0, 120.0),
+            egui::PointerButton::Primary,
+            3,
+        );
+        assert!(equalizer.band(0).unwrap().enabled);
+        assert_eq!(next_eq_band(&equalizer), Some(1));
+    }
+
+    #[test]
+    fn dynamic_overlay_width_tracks_its_own_band_q() {
+        let broad = opentrack_core::project::EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 1_000.0,
+            gain_db: 6.0,
+            q: 0.7,
+        };
+        let mut narrow = broad;
+        narrow.q = 4.0;
+        let broad_bounds = dynamic_overlay_frequency_bounds(&broad, -6.0, 48_000);
+        let narrow_bounds = dynamic_overlay_frequency_bounds(&narrow, -6.0, 48_000);
+        assert!(broad_bounds.1 / broad_bounds.0 > narrow_bounds.1 / narrow_bounds.0);
+        for (band, (low, high)) in [(broad, broad_bounds), (narrow, narrow_bounds)] {
+            let mut altered = band;
+            altered.gain_db = (altered.gain_db - 6.0).clamp(-24.0, 24.0);
+            for frequency in [low, high] {
+                assert!(
+                    opentrack_audio::equalizer_band_response_db(&band, frequency, 48_000).abs()
+                        <= 0.08
+                );
+                assert!(
+                    opentrack_audio::equalizer_band_response_db(&altered, frequency, 48_000).abs()
+                        <= 0.08
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_envelope_uses_a_single_connected_ribbon_mesh() {
+        let upper = [
+            Pos2::new(0.0, 10.0),
+            Pos2::new(5.0, 4.0),
+            Pos2::new(10.0, 10.0),
+        ];
+        let lower = [
+            Pos2::new(0.0, 12.0),
+            Pos2::new(5.0, 18.0),
+            Pos2::new(10.0, 12.0),
+        ];
+        let mesh = curve_band_mesh(&upper, &lower, Color32::WHITE);
+
+        assert_eq!(mesh.vertices.len(), 6);
+        assert_eq!(mesh.indices.len(), 12);
+        assert_eq!(mesh.vertices[0].pos, upper[0]);
+        assert_eq!(mesh.vertices[2].pos, upper[1]);
+        assert_eq!(mesh.vertices[4].pos, upper[2]);
+    }
+
+    #[test]
+    fn equalizer_curve_sampling_matches_its_log_frequency_polyline() {
+        let curve = [0.0, 6.0, 12.0];
+
+        assert_eq!(sample_equalizer_curve(&curve, 20.0), 0.0);
+        assert_eq!(
+            sample_equalizer_curve(&curve, 20.0 * 1000.0_f32.sqrt()),
+            6.0
+        );
+        assert_eq!(sample_equalizer_curve(&curve, 20_000.0), 12.0);
+        assert_eq!(sample_equalizer_curve(&[], 1_000.0), 0.0);
+    }
+
+    #[test]
+    fn dynamic_flat_static_edge_does_not_draw_a_bounded_baseline() {
+        let flat = [Pos2::new(0.0, 20.0), Pos2::new(5.0, 20.0)];
+        let shaped = [Pos2::new(0.0, 20.0), Pos2::new(5.0, 8.0)];
+
+        assert!(!dynamic_edge_is_shaped(&flat, 20.0));
+        assert!(dynamic_edge_is_shaped(&shaped, 20.0));
+    }
+
+    #[test]
+    fn dynamic_overlay_anchors_to_aggregate_but_keeps_its_own_band_delta() {
+        let aggregate_db = -4.0;
+        let static_band_db = 0.0;
+        let altered_band_db = -6.0;
+
+        let upper_edge = dynamic_overlay_response_db(aggregate_db, static_band_db, static_band_db);
+        let lower_edge = dynamic_overlay_response_db(aggregate_db, static_band_db, altered_band_db);
+
+        assert_eq!(upper_edge, aggregate_db);
+        assert_eq!(lower_edge - upper_edge, altered_band_db - static_band_db);
+    }
+
+    #[test]
+    fn empty_graph_double_click_adds_a_band_at_pointer_frequency_and_gain() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let position = Pos2::new(350.0, 150.0);
+        let mut equalizer = ChannelEqualizer::default();
+        let mut state = ChannelSettingsUiState::default();
+
+        render_equalizer_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            position,
+            egui::PointerButton::Primary,
+            1,
+        );
+        click_equalizer_point(
+            &context,
+            rect,
+            &mut equalizer,
+            &mut state,
+            position,
+            egui::PointerButton::Primary,
+            3,
+        );
+        assert!(equalizer.band(0).unwrap().enabled);
+        assert!(equalizer.band(0).unwrap().frequency_hz > 5_000.0);
+        assert!(equalizer.band(0).unwrap().gain_db > 0.0);
+    }
+
+    #[test]
+    fn right_clicking_graph_node_removes_band_and_clears_its_dynamic_solo_state() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 300.0));
+        let plot = rect.shrink2(Vec2::new(30.0, 18.0));
+        let mut equalizer = ChannelEqualizer::default();
+        equalizer.additional_bands[3] = opentrack_core::project::EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 18_000.0,
+            gain_db: 0.0,
+            q: 0.707,
+        };
+        equalizer.dynamic_bands[7].enabled = true;
+        let node = band_node_position(plot, &equalizer.additional_bands[3]);
+        let mut state = ChannelSettingsUiState::default();
+        state.eq_solo = Some((1, 7));
+        assert_eq!(nearest_eq_node(plot, &equalizer, node).unwrap().0, 7);
+
+        render_graph_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
+        let time = |frame| frame as f64 * 0.05;
+        render_graph_frame(
+            &context,
+            rect,
+            time(1),
+            vec![
+                egui::Event::PointerMoved(node),
+                pointer_button(node, egui::PointerButton::Secondary, true),
+            ],
+            &mut equalizer,
+            &mut state,
+        );
+        let changed = render_graph_frame(
+            &context,
+            rect,
+            time(2),
+            vec![pointer_button(node, egui::PointerButton::Secondary, false)],
+            &mut equalizer,
+            &mut state,
+        );
+        assert!(changed, "graph-node right-click should report an EQ edit");
+        assert!(!equalizer.additional_bands[3].enabled);
+        assert!(!equalizer.dynamic_bands[7].enabled);
+        assert_eq!(state.eq_solo, None);
+    }
+
+    #[test]
+    fn eq_detail_panel_moves_from_its_title_without_following_the_selected_node() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 300.0));
+        let mut equalizer = ChannelEqualizer::default();
+        equalizer.bands[0].enabled = true;
+        equalizer.bands[0].frequency_hz = 1_000.0;
+        equalizer.bands[1].enabled = true;
+        equalizer.bands[1].frequency_hz = 4_000.0;
+        let mut state = ChannelSettingsUiState::default();
+        render_graph_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
+        let start = Pos2::new(100.0, 32.0);
+        let end = Pos2::new(140.0, 52.0);
+        render_graph_frame(
+            &context,
+            rect,
+            0.05,
+            vec![
+                egui::Event::PointerMoved(start),
+                pointer_button(start, egui::PointerButton::Primary, true),
+            ],
+            &mut equalizer,
+            &mut state,
+        );
+        render_graph_frame(
+            &context,
+            rect,
+            0.10,
+            vec![egui::Event::PointerMoved(end)],
+            &mut equalizer,
+            &mut state,
+        );
+        render_graph_frame(
+            &context,
+            rect,
+            0.15,
+            vec![pointer_button(end, egui::PointerButton::Primary, false)],
+            &mut equalizer,
+            &mut state,
+        );
+        assert!(state.eq_detail_offset.x > 30.0);
+        assert!(state.eq_detail_offset.y > 10.0);
+
+        let panel_offset = state.eq_detail_offset;
+        state.selected_eq_band = 1;
+        render_graph_frame(&context, rect, 0.20, Vec::new(), &mut equalizer, &mut state);
+        assert_eq!(state.eq_detail_offset, panel_offset);
+    }
+
     #[test]
     fn both_bus_editors_render_with_no_arrange_tracks_or_selected_track() {
         let ctx = egui::Context::default();

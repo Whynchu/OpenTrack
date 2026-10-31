@@ -31,3 +31,51 @@
 - Ledger IDs updated; report command/result: T055 status in `docs/workflow/current.md` and this task packet.
 - Failures/unknowns/pending acceptance: user reports the first revised splash lacked the expected OpenTrack branding, had black bars, and left the app minimized. The current revision uses the exact supplied artwork ratio on a single grey canvas and delays creation of the main window until splash completion. It has not been visually run because the Sky computer-use service was unavailable. Verify cold-start splash and maximized main window; verify Ozone analyzer and level meters during playback with pointer still. If Ozone remains static, inspect VST3 host run-loop/timer callbacks and audio context notifications.
 - Next ready task: user review.
+
+## Linux splash follow-up (2026-10-30)
+
+- Cause: `startup_splash::show()` was implemented only for Windows; the
+  non-Windows implementation returned `false`, so Linux launched the main app
+  directly without showing the splash.
+- Change: Linux now creates a separate borderless 600×327 eframe viewport with
+  the same bundled artwork and dark grey background. The main Project viewport
+  remains hidden until the splash viewport's first frame has been visible for
+  at least two seconds, then it
+  is closed and the normal maximized app is shown. This uses the existing
+  eframe event loop, avoiding a second Linux windowing event loop.
+- Verification: Linux x64 local-ASIO `cargo check` passes. A focused test
+  verifies the two-second lower bound; runtime display check is pending.
+- Windows startup code is unchanged. Windows release build and visual review
+  remain separate checks.
+- Additional checks: Linux release build with local-ASIO enabled succeeded;
+  `.build-cache/release/opentrack` SHA-256
+  `ce2a41eb838aa44f1f5e346bf44c43fd861ac52d5966c4008d3703b4af93faf0`.
+  A seven-second debug launch reached the timeout without a startup panic after
+  registering the splash wordmark font. The desktop automation inventory had no
+  app surface, so the splash could not be visually confirmed; ALSA emitted the
+  environment's duplex-device warnings during launch.
+- 2026-10-30 follow-up: the initial Linux version showed the splash in a
+  secondary viewport while eframe had already created the hidden main
+  viewport. The user reported that this still opened an empty main window.
+  Linux now launches the same executable in splash-helper mode and waits for
+  that standalone eframe process to exit after the first-frame-based two-second
+  minimum. Only then does the parent start eframe and construct OpenTrackApp.
+  If the helper cannot start, startup falls through to the normal app.
+- Verification: Linux local-ASIO check and the two-second timing test pass.
+- Verification: Linux local-ASIO check and the two-second timing test pass.
+  Running the packaged splash helper alone returned success after 2.105
+  seconds, and because the parent is blocked on that process, main eframe
+  startup occurs afterward. Visual appearance remains pending because desktop
+  automation exposes no app surface.
+- Packaged Linux x64 release: `builds/x64/OpenTrack`, SHA-256
+  `1cfb63ec89994dfced7838bf3e2de13cbbdf120b04d5f0f25793f34eef2557d1`;
+  `builds/x64/build-info.json` records `platform: linux-x86_64` and
+  `profile: release`.
+- Splash sizing follow-up: assign a splash-specific Linux app ID and explicitly
+  request the fixed 600×327 point size with maximized/fullscreen disabled. This
+  avoids inheriting the maximized state of the main app/window-manager class.
+  A focused builder test checks those settings; visual size confirmation is
+  pending.
+- Bounded launch of the updated package's splash helper exited successfully
+  after 2.206 seconds; this confirms startup behavior but not its on-screen
+  dimensions.

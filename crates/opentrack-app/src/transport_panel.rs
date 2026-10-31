@@ -143,12 +143,38 @@ fn seek(app: &mut OpenTrackApp, beat: f64) {
     }
 }
 
-pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui) {
+fn move_embedded_panel(bounds: &mut Option<WindowBounds>, panel: Rect, delta: Vec2) {
+    let bounds = bounds.get_or_insert_with(|| docked_bounds(panel));
+    bounds.left += f64::from(delta.x);
+    bounds.top += f64::from(delta.y);
+}
+
+pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) -> bool {
     let (panel, panel_response) = ui.allocate_exact_size(SIZE, Sense::click_and_drag());
-    if panel_response.drag_started() {
+    let drag_handle_rect = Rect::from_min_size(
+        Pos2::new(panel.center().x - 15.0, panel.top()),
+        Vec2::new(30.0, 5.0),
+    );
+    let drag_handle = ui.interact(
+        drag_handle_rect,
+        ui.id().with("transport-panel-drag-handle"),
+        Sense::click_and_drag(),
+    );
+    if embedded && (panel_response.dragged() || drag_handle.dragged()) {
+        // The Wayland fallback is an egui window inside Project, not a native
+        // viewport. Move its persisted position directly because StartDrag
+        // only applies to native viewports and the panel owns this drag.
+        let delta = if drag_handle.dragged() {
+            drag_handle.drag_delta()
+        } else {
+            panel_response.drag_delta()
+        };
+        move_embedded_panel(&mut app.transport_window.bounds, panel, delta);
+    } else if !embedded && (panel_response.drag_started() || drag_handle.drag_started()) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
-    panel_response.context_menu(|ui| {
+    let panel_dragged = panel_response.dragged() || drag_handle.dragged();
+    panel_response.clone().context_menu(|ui| {
         theme::menu_popup_style(ui.style_mut());
         ui.set_min_width(190.0);
         if ui
@@ -167,6 +193,14 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui) {
         Stroke::new(1.0, p.grid),
         egui::StrokeKind::Inside,
     );
+    let grip = Rect::from_min_size(
+        Pos2::new(panel.center().x - 7.0, panel.top() + 1.0),
+        Vec2::new(14.0, 1.5),
+    );
+    ui.painter().rect_filled(grip, 1.0, p.muted);
+    drag_handle
+        .clone()
+        .on_hover_text("Drag here to move the Transport panel");
     for x in [17.0, 127.0, 247.0, 524.0, 644.0, 741.0, 821.0] {
         ui.painter().line_segment(
             [o + Vec2::new(x, 3.0), o + Vec2::new(x, 65.0)],
@@ -607,6 +641,7 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui) {
     if record.clicked() {
         app.toggle_recording();
     }
+    panel_dragged
 }
 
 pub(super) fn settings(app: &mut OpenTrackApp, ctx: &egui::Context) {
@@ -719,6 +754,24 @@ pub(super) fn tempo_signature_settings(app: &mut OpenTrackApp, ctx: &egui::Conte
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_transport_drag_applies_delta_to_saved_position() {
+        let mut bounds = None;
+        let panel = Rect::from_min_size(Pos2::new(100.0, 80.0), SIZE);
+        move_embedded_panel(&mut bounds, panel, Vec2::new(36.0, 24.0));
+        let moved = bounds
+            .as_ref()
+            .expect("first drag establishes the saved position");
+        assert!((moved.left - 136.0).abs() < 0.1);
+        assert!((moved.top - 104.0).abs() < 0.1);
+
+        move_embedded_panel(&mut bounds, panel, Vec2::new(-6.0, 12.0));
+        let moved = bounds.as_ref().unwrap();
+        assert!((moved.left - 130.0).abs() < 0.1);
+        assert!((moved.top - 116.0).abs() < 0.1);
+    }
+
     #[test]
     fn click_control_toggles_real_state_and_ctrl_opens_setup_without_project_edit() {
         let ctx = egui::Context::default();
@@ -733,7 +786,9 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| show(&mut app, ui),
+                |ui| {
+                    show(&mut app, ui, false);
+                },
             );
             output.textures_delta.clear();
             output

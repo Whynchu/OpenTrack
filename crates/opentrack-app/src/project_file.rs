@@ -940,7 +940,9 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use egui_dock::DockState;
-    use opentrack_core::project::{FilterType, Project, Track, TrackKind};
+    use opentrack_core::project::{
+        DynamicEqBand, EqualizerBand, FilterType, Project, TonalTarget, Track, TrackKind,
+    };
     use opentrack_core::workspaces::ProjectWorkspaceState;
 
     use crate::app::PanelTab;
@@ -1117,6 +1119,109 @@ mod tests {
             opentrack_core::project::CycleMode::Loop
         );
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn built_in_eq_and_tonal_reference_round_trip_through_opr_without_source_media() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let target = TonalTarget {
+            name: "Imported Mix".into(),
+            analysis_version: 3,
+            sample_rate: 44_100,
+            source_stage: 2,
+            source_name: "reference.wav".into(),
+            analysis_seconds: 45.0,
+            fft_size: 8192,
+            band_powers: vec![1.0 / 96.0; 96],
+        };
+        let equalizer = &mut project.tracks[0].equalizer;
+        equalizer.bypassed = true;
+        equalizer.additional_bands[3] = EqualizerBand {
+            enabled: true,
+            filter: FilterType::HighPassII,
+            frequency_hz: 42.0,
+            gain_db: 0.0,
+            q: 0.82,
+        };
+        equalizer.dynamic_bands[7] = DynamicEqBand {
+            enabled: true,
+            threshold_db: -31.5,
+            range_db: 5.0,
+            attack_ms: 12.0,
+            release_ms: 210.0,
+        };
+        equalizer.extended_bands[23] = EqualizerBand {
+            enabled: true,
+            filter: FilterType::Bell,
+            frequency_hz: 17_500.0,
+            gain_db: -2.0,
+            q: 1.25,
+        };
+        equalizer.extended_bands[22] = EqualizerBand {
+            enabled: true,
+            filter: FilterType::LowPassII,
+            frequency_hz: 12_000.0,
+            gain_db: 0.0,
+            q: 0.707,
+        };
+        equalizer.extended_dynamic_bands[23] = DynamicEqBand {
+            enabled: true,
+            threshold_db: -40.0,
+            range_db: 7.5,
+            attack_ms: 6.0,
+            release_ms: 300.0,
+        };
+        equalizer.tonal_target = Some(target);
+        let expected_equalizer = equalizer.clone();
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-tonal-target-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        document.write(&path).unwrap();
+        let restored = ProjectFile::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(restored.project.tracks[0].equalizer, expected_equalizer);
+        assert!(restored.project.validate().is_ok());
+    }
+
+    #[test]
+    fn captured_tonal_reference_round_trips_pre_and_post_tap_metadata() {
+        for source_stage in [0, 1] {
+            let mut project = Project::default();
+            project.add_track(TrackKind::Audio);
+            project.tracks[0].equalizer.tonal_target = Some(TonalTarget {
+                name: "Captured Reference".into(),
+                analysis_version: 1,
+                sample_rate: 48_000,
+                source_stage,
+                source_name: "Vocal Bus".into(),
+                analysis_seconds: 27.5,
+                fft_size: 4096,
+                band_powers: vec![1.0 / 24.0; 24],
+            });
+            let expected = project.tracks[0].equalizer.tonal_target.clone();
+            let dock = finite_test_dock_state();
+            let workspace = initial_workspace_state(&dock).unwrap();
+            let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+            let path = std::env::temp_dir().join(format!(
+                "opentrack-captured-tonal-{}-{source_stage}-{}.opr",
+                std::process::id(),
+                TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+
+            document.write(&path).unwrap();
+            let restored = ProjectFile::read(&path).unwrap();
+            fs::remove_file(&path).unwrap();
+
+            assert_eq!(restored.project.tracks[0].equalizer.tonal_target, expected);
+            assert!(restored.project.validate().is_ok());
+        }
     }
 
     #[test]

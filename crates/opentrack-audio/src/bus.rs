@@ -50,6 +50,10 @@ impl BusRuntime {
         self.equalizer_control.set(equalizer);
     }
 
+    pub(crate) fn set_eq_solo_band(&self, band: Option<usize>) {
+        self.equalizer_control.set_solo_band(band);
+    }
+
     pub(crate) fn reclaim_retired(&self) {
         self.equalizer_control.reclaim_retired();
     }
@@ -83,7 +87,11 @@ impl BusRuntime {
         let pre = (left, right);
         // SAFETY: only the serialized audio callback accesses processor state.
         unsafe {
-            (&mut *self.processor.get()).process(&mut left, &mut right);
+            let processor = &mut *self.processor.get();
+            processor.process(&mut left, &mut right);
+            if let Some((meter, _)) = analysis {
+                processor.publish_dynamic_updates(meter);
+            }
         }
         if let Some((meter, rate)) = analysis {
             meter.record_spectrum(pre, (left, right), rate);
@@ -249,9 +257,62 @@ mod tests {
         }
         let pre = meter.spectrum_frame(SpectrumStage::Pre).unwrap();
         let post = meter.spectrum_frame(SpectrumStage::Post).unwrap();
-        assert!((pre.bins_dbfs[64] + 12.0412).abs() < 0.05);
-        assert!((post.bins_dbfs[64] - pre.bins_dbfs[64] - 6.0).abs() < 0.1);
+        // Balanced analysis now uses a 4096-sample window: 1500 Hz is bin 128.
+        assert!((pre.bins_dbfs[128] + 12.0412).abs() < 0.05);
+        assert!((post.bins_dbfs[128] - pre.bins_dbfs[128] - 6.0).abs() < 0.1);
     }
+
+    #[test]
+    fn analyzed_bus_publishes_dynamic_eq_movement_to_its_meter() {
+        let mut settings = opentrack_core::project::BusChannel::output().strip;
+        settings.equalizer.bands[1].enabled = true;
+        settings.equalizer.bands[1].frequency_hz = 1_000.0;
+        settings.equalizer.dynamic_bands[1] = opentrack_core::project::DynamicEqBand {
+            enabled: true,
+            threshold_db: -36.0,
+            range_db: -6.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        let bus = BusRuntime::new(&settings, 48_000);
+        let meter = StereoMeter::default();
+        for index in 0..24_000 {
+            let sample = (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5;
+            bus.process_analyzed(sample, sample, &meter, 48_000);
+        }
+        assert!(meter.dynamic_eq_gains_db()[1] < -4.0);
+    }
+
+    #[test]
+    fn output_bus_eq_solo_auditions_the_32nd_band() {
+        fn render(input_frequency: f32) -> f64 {
+            let mut settings = opentrack_core::project::BusChannel::output().strip;
+            let band = settings.equalizer.band_mut(31).unwrap();
+            band.frequency_hz = 8_000.0;
+            band.q = 1.0;
+            let bus = BusRuntime::new(&settings, 48_000);
+            bus.set_eq_solo_band(Some(31));
+            let mut energy = 0.0_f64;
+            for index in 0..48_000 {
+                let sample =
+                    (std::f32::consts::TAU * input_frequency * index as f32 / 48_000.0).sin() * 0.5;
+                let output = bus.process(sample, sample);
+                if index >= 24_000 {
+                    energy += f64::from(output.0 * output.0);
+                }
+            }
+            energy
+        }
+
+        let center_energy = render(8_000.0);
+        let off_band_energy = render(100.0);
+        assert!(
+            center_energy > off_band_energy * 20.0,
+            "Stereo Out band 32 solo isolation ratio was {:.1} dB",
+            10.0 * (center_energy / off_band_energy).log10()
+        );
+    }
+
     #[test]
     fn bus_eq_and_insert_bypass_restore_unprocessed_samples() {
         let mut settings = opentrack_core::project::BusChannel::output().strip;
