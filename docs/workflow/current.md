@@ -8,7 +8,7 @@ Further polish: steepened the curved section step to follow the SSL reference mo
 
 The divider now rises steeply in the clear space between the static controls, and the dynamic controls sit higher with the power switch centered above Range. Actual egui shapes and textures were rendered offscreen for inspection; 25 Channel Settings checks passed. Release build and live gesture review remain pending.
 
-The matching 20 px power switches are centered below their section headings; the static switch is centered above FREQ and the dynamic switch above RANGE. Actual egui rendering was inspected and the 25 focused Channel Settings checks passed; live review and release build remain pending.
+The matching 16 px power switches are centered below their section headings; the static switch is centered above FREQ and the dynamic switch above RANGE. The divider ends halfway between the FREQ and THRESH knob bounds. The 25 focused Channel Settings checks passed; live review remains pending.
 
 The selected-band editor uses a narrow staggered strip with the filter at the top, labels under the existing knob artwork, a stepped section divider, and a compact value editor anchored beside the hovered knob. Static and dynamic DSP and project data are unchanged. Implementer/reviewer: GPT-6.1 Terra. The 25 focused Channel Settings tests pass; interactive hover editing and visual review in the application remain pending. The user requested a standalone design preview and no application launch during this work.
 

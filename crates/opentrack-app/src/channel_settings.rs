@@ -1990,7 +1990,7 @@ fn graph(
                             8.0,
                             Align2::LEFT_CENTER,
                         );
-                        let enabled_rect = at(inner, 76.0, 73.0, 20.0, 20.0);
+                        let enabled_rect = at(inner, 78.0, 75.0, 16.0, 16.0);
                         if power(
                             ui,
                             enabled_rect,
@@ -2194,10 +2194,10 @@ fn graph(
                             let eased = t * t * (3.0 - 2.0 * t);
                             divider.push(Pos2::new(
                                 inner.left() + inner.width() * (0.48 + 0.08 * t),
-                                inner.top() + 212.0 - 32.0 * eased,
+                                inner.top() + 212.0 - 30.0 * eased,
                             ));
                         }
-                        divider.push(Pos2::new(inner.right(), inner.top() + 180.0));
+                        divider.push(Pos2::new(inner.right(), inner.top() + 182.0));
                         ui.painter().add(egui::Shape::line(
                             divider,
                             Stroke::new(1.0, p.text.gamma_multiply(0.55)),
@@ -2205,7 +2205,7 @@ fn graph(
                         let dynamic_title = at(inner, 0.0, 215.0, 60.0, 14.0);
                         text(ui, dynamic_title, "DYNAMIC EQ", 9.0, Align2::CENTER_CENTER);
                         // Use the open left column beside Threshold for the section switch.
-                        let dynamic_power_rect = at(inner, 20.0, 233.0, 20.0, 20.0);
+                        let dynamic_power_rect = at(inner, 22.0, 235.0, 16.0, 16.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
