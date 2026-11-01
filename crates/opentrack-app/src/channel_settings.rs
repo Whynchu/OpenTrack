@@ -1990,7 +1990,7 @@ fn graph(
                             8.0,
                             Align2::LEFT_CENTER,
                         );
-                        let enabled_rect = at(inner, 78.0, 75.0, 16.0, 16.0);
+                        let enabled_rect = at(inner, 78.0, 87.0, 16.0, 16.0);
                         if power(
                             ui,
                             enabled_rect,
@@ -2037,7 +2037,7 @@ fn graph(
                         } else {
                             "Band audition is unavailable for the input bus"
                         });
-                        let section_title = at(inner, 56.0, 55.0, 60.0, 14.0);
+                        let section_title = at(inner, 56.0, 67.0, 60.0, 14.0);
                         text(ui, section_title, "STATIC EQ", 9.0, Align2::CENTER_CENTER);
                         let static_width = inner.width();
                         if band.filter == FilterType::Notch {
@@ -2194,10 +2194,10 @@ fn graph(
                             let eased = t * t * (3.0 - 2.0 * t);
                             divider.push(Pos2::new(
                                 inner.left() + inner.width() * (0.48 + 0.08 * t),
-                                inner.top() + 212.0 - 30.0 * eased,
+                                inner.top() + 212.0 - 24.0 * eased,
                             ));
                         }
-                        divider.push(Pos2::new(inner.right(), inner.top() + 182.0));
+                        divider.push(Pos2::new(inner.right(), inner.top() + 188.0));
                         ui.painter().add(egui::Shape::line(
                             divider,
                             Stroke::new(1.0, p.text.gamma_multiply(0.55)),
