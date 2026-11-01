@@ -368,55 +368,63 @@ fn visible_slots(configured: Option<usize>, used: usize) -> usize {
 }
 
 /// Clickable regions of one insert/send row. Every region shares the row's
-/// centre line so the text, the arrows and the buttons line up.
+/// centre line. The number leads the row; power, bypass and the editor eye
+/// only exist for slots that hold a plug-in.
 #[derive(Clone, Copy)]
 struct SlotRects {
+    index: Rect,
     power: Rect,
+    bypass: Rect,
     view: Rect,
     chevron: Rect,
     label: Rect,
-    index: Rect,
     /// One hit region for the chevron and the name: they are the same button.
     list: Rect,
 }
 
 impl SlotRects {
-    fn new(cell: Rect, has_view: bool) -> Self {
-        let button_top = cell.center().y - SLOT_BUTTON * 0.5;
-        let power = Rect::from_min_size(
-            Pos2::new(cell.left() + 1.0, button_top),
-            Vec2::splat(SLOT_BUTTON),
+    fn new(cell: Rect, has_plugin: bool, has_eye: bool) -> Self {
+        let index = Rect::from_min_size(
+            Pos2::new(cell.left() + 1.0, cell.top()),
+            Vec2::new(10.0, cell.height()),
         );
-        let view = Rect::from_min_size(
-            Pos2::new(power.right() + 1.0, button_top),
-            Vec2::splat(SLOT_BUTTON),
-        );
-        let chevron_left = if has_view {
-            view.right() + 2.0
+        let top = cell.center().y - SLOT_BUTTON * 0.5;
+        let mut x = index.right() + 1.0;
+        let mut button = |x: &mut f32| {
+            let rect = Rect::from_min_size(Pos2::new(*x, top), Vec2::splat(SLOT_BUTTON));
+            *x += SLOT_BUTTON + 1.0;
+            rect
+        };
+        let (power, bypass, view) = if has_plugin {
+            let power = button(&mut x);
+            let bypass = button(&mut x);
+            let view = if has_eye {
+                button(&mut x)
+            } else {
+                Rect::NOTHING
+            };
+            (power, bypass, view)
         } else {
-            power.right() + 2.0
+            (Rect::NOTHING, Rect::NOTHING, Rect::NOTHING)
         };
         let chevron = Rect::from_center_size(
-            Pos2::new(chevron_left + SLOT_CHEVRON * 0.5, cell.center().y),
+            Pos2::new(x + SLOT_CHEVRON * 0.5, cell.center().y),
             Vec2::splat(SLOT_CHEVRON),
-        );
-        let index = Rect::from_min_max(
-            Pos2::new(cell.right() - 14.0, cell.top()),
-            Pos2::new(cell.right() - 2.0, cell.bottom()),
         );
         let label = Rect::from_min_max(
             Pos2::new(chevron.right() + 4.0, cell.top()),
             Pos2::new(
-                (index.left() - 6.0).max(chevron.right() + 4.0),
+                (cell.right() - 3.0).max(chevron.right() + 4.0),
                 cell.bottom(),
             ),
         );
         Self {
+            index,
             power,
+            bypass,
             view,
             chevron,
             label,
-            index,
             list: Rect::from_min_max(
                 Pos2::new(chevron.left(), label.top()),
                 Pos2::new(label.right(), label.bottom()),
@@ -502,6 +510,34 @@ fn view_button(
         ink
     };
     paint_eye(ui, r.shrink(2.0), ink, open);
+    response
+}
+
+/// Bypass keeps the plug-in loaded but removes it from the audio chain.
+fn bypass_button(
+    ui: &mut egui::Ui,
+    r: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    active: bool,
+) -> egui::Response {
+    let response = ui.interact(r, ui.id().with(id), Sense::click());
+    let p = theme::palette(ui);
+    let base = if active { p.accent } else { p.surface_raised };
+    let ink = theme::paint_control(ui, r, &response, base, true, false);
+    let ink = if active {
+        project_controls::label_ink(base)
+    } else {
+        ink
+    };
+    let center = r.center();
+    let radius = r.width() * 0.30;
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(1.0, ink));
+    let arm = radius * 0.72;
+    ui.painter().line_segment(
+        [center - Vec2::splat(arm), center + Vec2::splat(arm)],
+        Stroke::new(1.0, ink),
+    );
     response
 }
 
@@ -615,7 +651,9 @@ fn inserts(
     for i in 0..rows {
         let cell = slot_cell(r, i);
         slot_row(ui, cell);
+        let has_plugin = track.inserts.get(i).is_some();
         let enabled = track.inserts.get(i).is_some_and(|effect| effect.enabled);
+        let bypassed = track.inserts.get(i).is_some_and(|effect| effect.bypassed);
         let is_legacy_compressor = track.inserts.get(i).is_some_and(|effect| {
             matches!(
                 &effect.kind,
@@ -626,46 +664,64 @@ fn inserts(
             .inserts
             .get(i)
             .is_some_and(|effect| matches!(&effect.kind, InsertEffectKind::Vst3 { .. }));
-        let has_view = is_vst3 && state.vst3_editor_available.contains(&i);
-        let rects = SlotRects::new(cell, has_view);
+        let rects = SlotRects::new(cell, has_plugin, is_vst3);
         slot_number(ui, rects.index, i + 1);
         let p = theme::palette(ui);
-        let power = power(
-            ui,
-            rects.power,
-            ("insert-power", i),
-            enabled && !is_legacy_compressor,
-        )
-        .on_hover_text(if is_legacy_compressor {
-            "Removed built-in effect; replace it with a VST3 plug-in or remove the slot.".to_owned()
-        } else {
-            format!(
-                "{} Insert {}",
-                if enabled { "Deactivate" } else { "Activate" },
-                i + 1
+        if has_plugin {
+            let power = power(
+                ui,
+                rects.power,
+                ("insert-power", i),
+                enabled && !is_legacy_compressor,
             )
-        });
-        context(&power, state);
-        if power.clicked() && !is_legacy_compressor {
-            if let Some(effect) = track.inserts.get_mut(i) {
-                effect.enabled = !effect.enabled;
-                changed = true;
+            .on_hover_text(if is_legacy_compressor {
+                "Removed built-in effect; replace it with a VST3 plug-in or remove the slot."
+                    .to_owned()
+            } else {
+                format!(
+                    "{} Insert {} (powered off plug-ins are unloaded)",
+                    if enabled { "Turn off" } else { "Turn on" },
+                    i + 1
+                )
+            });
+            context(&power, state);
+            if power.clicked() && !is_legacy_compressor {
+                if let Some(effect) = track.inserts.get_mut(i) {
+                    effect.enabled = !effect.enabled;
+                    if !effect.enabled && is_vst3 {
+                        state.vst3_power_off = Some((track.id, i));
+                    }
+                    changed = true;
+                }
             }
-        }
-        if has_view {
-            let editor_open = state.vst3_editor == Some((track.id, i));
-            let view = view_button(ui, rects.view, ("insert-view", i), editor_open).on_hover_text(
-                if editor_open {
-                    "Hide Plug-in Editor"
+            let bypass = bypass_button(ui, rects.bypass, ("insert-bypass", i), bypassed)
+                .on_hover_text(if bypassed {
+                    "Bypassed: removed from the chain, plug-in stays loaded"
                 } else {
-                    "Show Plug-in Editor"
-                },
-            );
-            if view.clicked() {
-                if editor_open {
-                    state.vst3_editor_close = Some((track.id, i));
-                } else {
-                    state.vst3_parameter_slot = Some((track.id, i));
+                    "Bypass: remove from the chain but keep the plug-in loaded"
+                });
+            if bypass.clicked() {
+                if let Some(effect) = track.inserts.get_mut(i) {
+                    effect.bypassed = !effect.bypassed;
+                    changed = true;
+                }
+            }
+            if is_vst3 {
+                let editor_open = state.vst3_editor == Some((track.id, i));
+                let view = view_button(ui, rects.view, ("insert-view", i), editor_open)
+                    .on_hover_text(if !enabled {
+                        "Power the insert on to open its editor"
+                    } else if editor_open {
+                        "Hide Plug-in Editor"
+                    } else {
+                        "Show Plug-in Editor"
+                    });
+                if view.clicked() && enabled {
+                    if editor_open {
+                        state.vst3_editor_close = Some((track.id, i));
+                    } else {
+                        state.vst3_parameter_slot = Some((track.id, i));
+                    }
                 }
             }
         }
@@ -673,13 +729,22 @@ fn inserts(
         // The editor moved to its own button so the two actions are not confused.
         let list = ui
             .interact(rects.list, ui.id().with(("insert-list", i)), Sense::click())
-            .on_hover_text(if track.inserts.get(i).is_some() {
-                "Choose or Replace Plug-in"
+            .on_hover_text(if has_plugin {
+                "Choose or Replace Plug-in (right-click removes the row)"
             } else {
                 "Add Plug-in"
             });
         slot_hover(ui, rects.list, &list);
-        context(&list, state);
+        if list.secondary_clicked() {
+            if has_plugin {
+                if i + 1 == rows && rows > 1 {
+                    state.insert_rows.insert(track.id, rows - 1);
+                }
+                state.remove_insert = Some((track.id, i));
+            } else if rows > 1 {
+                state.insert_rows.insert(track.id, rows - 1);
+            }
+        }
         crate::icon_system::paint_app_icon(
             ui,
             rects.chevron.shrink(1.0),
@@ -716,6 +781,7 @@ fn inserts(
                         i.min(track.inserts.len()),
                         InsertEffect {
                             enabled: true,
+                            bypassed: false,
                             kind,
                         },
                     );
@@ -790,24 +856,52 @@ fn sends(
     for i in 0..rows {
         let cell = slot_cell(r, i);
         slot_row(ui, cell);
-        let rects = SlotRects::new(cell, false);
+        let has_target = track
+            .send_routing
+            .get(i)
+            .is_some_and(|destination| destination.is_some());
+        let rects = SlotRects::new(cell, has_target, false);
         slot_number(ui, rects.index, i + 1);
         let key = (track.id, i);
         let enabled = state.enabled_sends.contains(&key);
-        let power = power(ui, rects.power, ("send-power", i), enabled).on_hover_text(format!(
-            "{} Send {}",
-            if enabled { "Deactivate" } else { "Activate" },
-            i + 1
-        ));
-        context(&power, state);
-        if power.clicked() && !state.enabled_sends.remove(&key) {
-            state.enabled_sends.insert(key);
+        if has_target {
+            let power = power(ui, rects.power, ("send-power", i), enabled).on_hover_text(format!(
+                "{} Send {}",
+                if enabled { "Deactivate" } else { "Activate" },
+                i + 1
+            ));
+            context(&power, state);
+            if power.clicked() && !state.enabled_sends.remove(&key) {
+                state.enabled_sends.insert(key);
+            }
         }
         // Chevron and destination name are one button.
         let list = ui
             .interact(rects.list, ui.id().with(("send-list", i)), Sense::click())
-            .on_hover_text("Choose Send Destination");
+            .on_hover_text("Choose Send Destination (right-click removes the row)");
         slot_hover(ui, rects.list, &list);
+        if list.secondary_clicked() {
+            if i < track.send_routing.len() {
+                track.send_routing.remove(i);
+                changed = true;
+            }
+            state.enabled_sends = state
+                .enabled_sends
+                .iter()
+                .filter_map(|(track_id, slot)| {
+                    if *track_id != track.id || *slot < i {
+                        Some((*track_id, *slot))
+                    } else if *slot > i {
+                        Some((*track_id, *slot - 1))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if i + 1 == rows && rows > 1 {
+                state.send_rows.insert(track.id, rows - 1);
+            }
+        }
         crate::icon_system::paint_app_icon(
             ui,
             rects.chevron.shrink(1.0),
@@ -2983,6 +3077,28 @@ mod bus_tests {
         }
     }
 
+    fn render_inserts_frame(
+        context: &egui::Context,
+        rect: Rect,
+        time: f64,
+        events: Vec<egui::Event>,
+        track: &mut Track,
+        state: &mut ChannelSettingsUiState,
+    ) {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                inserts(ui, rect, track, state, &[]);
+            },
+        );
+        output.textures_delta.clear();
+    }
+
     fn click_equalizer_point(
         context: &egui::Context,
         rect: Rect,
@@ -3579,23 +3695,22 @@ mod bus_tests {
     }
 
     #[test]
-    fn insert_and_send_rows_keep_one_text_line_and_share_the_chevron_centre() {
-        for has_view in [false, true] {
+    fn insert_and_send_rows_lead_with_the_number_and_share_one_centre() {
+        for has_eye in [false, true] {
             let cell = Rect::from_min_size(Pos2::new(12.0, 40.0), Vec2::new(146.0, SLOT_HEIGHT));
-            let rects = SlotRects::new(cell, has_view);
+            let rects = SlotRects::new(cell, true, has_eye);
             assert_eq!(rects.label.center().y, cell.center().y);
             assert_eq!(rects.chevron.center().y, cell.center().y);
-            assert_eq!(rects.power.center().y, cell.center().y);
-            assert!(rects.power.top() >= cell.top());
-            assert!(rects.power.bottom() <= cell.bottom());
-            if has_view {
-                assert!(rects.view.right() <= rects.chevron.left());
-            } else {
-                assert!(rects.power.right() <= rects.chevron.left());
+            assert!(
+                rects.index.right() <= rects.power.left(),
+                "number leads the row"
+            );
+            assert!(rects.power.right() <= rects.bypass.left());
+            if has_eye {
+                assert!(rects.bypass.right() <= rects.view.left());
             }
             assert!(rects.chevron.right() < rects.label.left());
-            assert!(rects.label.right() < rects.index.left());
-            assert!(rects.chevron.center().y == rects.label.center().y);
+            assert!(rects.label.right() <= cell.right());
             assert!(
                 rects.list.contains_rect(rects.chevron) && rects.list.contains_rect(rects.label),
                 "the chevron and the name must be one hit region"
@@ -3606,6 +3721,15 @@ mod bus_tests {
             );
             assert!(cell.contains_rect(rects.chevron));
         }
+        let cell = Rect::from_min_size(Pos2::new(12.0, 40.0), Vec2::new(146.0, SLOT_HEIGHT));
+        let empty = SlotRects::new(cell, false, false);
+        assert_eq!(
+            empty.power,
+            Rect::NOTHING,
+            "empty slots hide the power button"
+        );
+        assert_eq!(empty.bypass, Rect::NOTHING);
+        assert_eq!(empty.view, Rect::NOTHING);
         // Eight compact rows plus the header stay well inside a normal panel.
         assert!(SLOT_FIRST_TOP + 8.0 * SLOT_PITCH < 240.0);
         let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
@@ -3632,6 +3756,7 @@ mod bus_tests {
         let mut track = opentrack_core::project::BusChannel::output().strip;
         track.inserts = vec![InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "0123456789abcdef0123456789abcdef".to_owned(),
                 module_path: std::path::PathBuf::from("test.vst3"),
@@ -3642,36 +3767,26 @@ mod bus_tests {
             },
         }];
         let mut state = ChannelSettingsUiState::default();
-        state.vst3_editor_available = vec![0];
         let track_id = track.id;
-        let eye = SlotRects::new(slot_cell(rect, 0), true).view.center();
-        let mut frame =
-            |time: f64, events: Vec<egui::Event>, state: &mut ChannelSettingsUiState| {
-                let mut output = context.run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(rect),
-                        time: Some(time),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| {
-                        inserts(ui, rect, &mut track, state, &[]);
-                    },
-                );
-                output.textures_delta.clear();
-            };
-        frame(-0.1, Vec::new(), &mut state);
-        frame(
+        let eye = SlotRects::new(slot_cell(rect, 0), true, true).view.center();
+        render_inserts_frame(&context, rect, -0.1, Vec::new(), &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
             0.0,
             vec![
                 egui::Event::PointerMoved(eye),
                 pointer_button(eye, egui::PointerButton::Primary, true),
             ],
+            &mut track,
             &mut state,
         );
-        frame(
+        render_inserts_frame(
+            &context,
+            rect,
             0.1,
             vec![pointer_button(eye, egui::PointerButton::Primary, false)],
+            &mut track,
             &mut state,
         );
         assert_eq!(
@@ -3680,23 +3795,124 @@ mod bus_tests {
             "the eye must request the plug-in editor"
         );
         state.vst3_editor = Some((track_id, 0));
-        frame(
+        render_inserts_frame(
+            &context,
+            rect,
             0.2,
             vec![
                 egui::Event::PointerMoved(eye),
                 pointer_button(eye, egui::PointerButton::Primary, true),
             ],
+            &mut track,
             &mut state,
         );
-        frame(
+        render_inserts_frame(
+            &context,
+            rect,
             0.3,
             vec![pointer_button(eye, egui::PointerButton::Primary, false)],
+            &mut track,
             &mut state,
         );
         assert_eq!(
             state.vst3_editor_close,
             Some((track_id, 0)),
             "a lit eye must close the editor it opened"
+        );
+    }
+
+    #[test]
+    fn insert_row_power_bypass_and_right_click_actions() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
+        let mut track = opentrack_core::project::BusChannel::output().strip;
+        track.inserts = vec![InsertEffect {
+            enabled: true,
+            bypassed: false,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                module_path: std::path::PathBuf::from("test.vst3"),
+                name: "Test Plug-in".to_owned(),
+                vendor: String::new(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        }];
+        let mut state = ChannelSettingsUiState::default();
+        let track_id = track.id;
+        let rects = SlotRects::new(slot_cell(rect, 0), true, true);
+        let click = |time: f64, point: Pos2, button: egui::PointerButton| {
+            (
+                time,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    pointer_button(point, button, true),
+                ],
+            )
+        };
+        render_inserts_frame(&context, rect, -0.1, Vec::new(), &mut track, &mut state);
+        let (time, events) = click(0.0, rects.bypass.center(), egui::PointerButton::Primary);
+        render_inserts_frame(&context, rect, time, events, &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            0.1,
+            vec![pointer_button(
+                rects.bypass.center(),
+                egui::PointerButton::Primary,
+                false,
+            )],
+            &mut track,
+            &mut state,
+        );
+        assert!(
+            track.inserts[0].bypassed,
+            "bypass removes it from the chain"
+        );
+        assert!(track.inserts[0].enabled, "bypass keeps the plug-in loaded");
+
+        let (time, events) = click(0.2, rects.power.center(), egui::PointerButton::Primary);
+        render_inserts_frame(&context, rect, time, events, &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            0.3,
+            vec![pointer_button(
+                rects.power.center(),
+                egui::PointerButton::Primary,
+                false,
+            )],
+            &mut track,
+            &mut state,
+        );
+        assert!(
+            !track.inserts[0].enabled,
+            "power off deactivates the insert"
+        );
+        assert_eq!(
+            state.vst3_power_off,
+            Some((track_id, 0)),
+            "the app must unload the powered-off plug-in"
+        );
+
+        let (time, events) = click(0.4, rects.list.center(), egui::PointerButton::Secondary);
+        render_inserts_frame(&context, rect, time, events, &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            0.5,
+            vec![pointer_button(
+                rects.list.center(),
+                egui::PointerButton::Secondary,
+                false,
+            )],
+            &mut track,
+            &mut state,
+        );
+        assert_eq!(
+            state.remove_insert,
+            Some((track_id, 0)),
+            "right-clicking the row removes the insert"
         );
     }
 

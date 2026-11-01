@@ -298,8 +298,10 @@ struct ChannelSettingsUiState {
     vst3_parameter_slot: Option<(u64, usize)>,
     /// Insert whose open editor should be closed (the eye was switched off).
     vst3_editor_close: Option<(u64, usize)>,
-    /// Insert slots of the shown channel whose plug-in exposes an editor.
-    vst3_editor_available: Vec<usize>,
+    /// Powered-off VST3 insert; its live state is captured before it unloads.
+    vst3_power_off: Option<(u64, usize)>,
+    /// Insert row the user removed by right-clicking it.
+    remove_insert: Option<(u64, usize)>,
     /// Plug-in editor currently shown, mirrored from the host window state.
     vst3_editor: Option<(u64, usize)>,
     /// Rack rows the user has opened with the "+" box, per channel.
@@ -9073,6 +9075,50 @@ impl OpenTrackApp {
             || self.event_colors_dialog.is_some()
     }
 
+    /// Removes one insert slot from a channel, preserving live plug-in state for
+    /// the inserts whose slot indices shift down.
+    fn remove_channel_insert(&mut self, track_id: u64, slot: usize) -> bool {
+        let present = self
+            .data
+            .project
+            .channels()
+            .find(|track| track.id == track_id)
+            .is_some_and(|track| slot < track.inserts.len());
+        if !present {
+            return false;
+        }
+        self.vst3_runtime.capture_states(&mut self.data.project);
+        if self
+            .vst3_editor_window
+            .is_some_and(|(id, _)| id == track_id)
+        {
+            self.close_vst3_editor();
+        }
+        let strip = if track_id == opentrack_core::project::INPUT_BUS_ID {
+            Some(&mut self.data.project.input_channel.strip)
+        } else if track_id == opentrack_core::project::OUTPUT_BUS_ID {
+            Some(&mut self.data.project.output_channel.strip)
+        } else {
+            self.data
+                .project
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == track_id)
+        };
+        let removed = strip.is_some_and(|strip| {
+            if slot < strip.inserts.len() {
+                strip.inserts.remove(slot);
+                true
+            } else {
+                false
+            }
+        });
+        if removed {
+            self.mark_modified();
+        }
+        removed
+    }
+
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
         self.update_channel_analyzer();
         let root_popup_open = egui::Popup::is_any_open(ctx);
@@ -9094,16 +9140,7 @@ impl OpenTrackApp {
                 .map(|track| track.id),
         };
         // Mirror the host editor state into the panel so the eye button can show
-        // whether this slot's editor is up, and offer the toggle for slots whose
-        // plug-in actually exposes one.
-        let editor_slots = live_channel_id
-            .map(|id| {
-                (0..8)
-                    .filter(|slot| self.vst3_runtime.has_editor(id, *slot))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        self.channel_settings_ui.vst3_editor_available = editor_slots;
+        // whether this slot's editor is up.
         self.channel_settings_ui.vst3_editor = self.vst3_editor_window;
         let live_controls_before = live_channel_id.and_then(|id| {
             self.data
@@ -9295,6 +9332,21 @@ impl OpenTrackApp {
         }
         if let Some(bounds) = bounds {
             self.channel_settings_window.bounds = Some(bounds);
+        }
+        if let Some((track_id, _slot)) = self.channel_settings_ui.vst3_power_off.take() {
+            // Keep the plug-in's last state before the instance is unloaded, then
+            // let the plan rebuild drop it so a powered-off plug-in costs no CPU.
+            self.vst3_runtime.capture_states(&mut self.data.project);
+            if self
+                .vst3_editor_window
+                .is_some_and(|(id, _)| id == track_id)
+            {
+                self.close_vst3_editor();
+            }
+            modified = true;
+        }
+        if let Some((track_id, slot)) = self.channel_settings_ui.remove_insert.take() {
+            modified |= self.remove_channel_insert(track_id, slot);
         }
         if modified {
             let live_controls_changed = live_controls_before

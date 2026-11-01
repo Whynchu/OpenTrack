@@ -6389,6 +6389,7 @@ mod processing_tests {
     fn stereo_delay_returns_the_wet_impulse_at_the_configured_frame() {
         let effect = InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::StereoDelay {
                 time_ms: 200.0,
                 feedback: 0.0,
@@ -6408,9 +6409,31 @@ mod processing_tests {
     }
 
     #[test]
+    fn bypassed_inserts_stay_loaded_but_leave_the_chain() {
+        let effect = InsertEffect {
+            enabled: true,
+            bypassed: true,
+            kind: InsertEffectKind::TestGenerator {
+                waveform: GeneratorWaveform::Sine,
+                frequency_hz: 1_000.0,
+                gain_db: -6.0,
+            },
+        };
+        let processor = InsertProcessor::new(&effect, 48_000);
+        assert!(!processor.enabled(), "bypass must skip audio processing");
+        let mut powered_off = effect.clone();
+        powered_off.bypassed = false;
+        powered_off.enabled = false;
+        assert!(!InsertProcessor::new(&powered_off, 48_000).enabled());
+        powered_off.enabled = true;
+        assert!(InsertProcessor::new(&powered_off, 48_000).enabled());
+    }
+
+    #[test]
     fn test_generator_insert_emits_audio_on_an_empty_track() {
         let effect = InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::TestGenerator {
                 waveform: GeneratorWaveform::Sine,
                 frequency_hz: 1_000.0,
@@ -7043,7 +7066,7 @@ impl InsertProcessor {
                     .expect("fallback TestGenerator parameters are valid")
                 });
                 Self::TestGenerator {
-                    enabled: insert.enabled,
+                    enabled: insert.enabled && !insert.bypassed,
                     generator,
                 }
             }
@@ -7055,7 +7078,7 @@ impl InsertProcessor {
                 let delay_frames = ((*time_ms * sample_rate as f32 / 1_000.0).round() as usize)
                     .clamp(1, sample_rate.max(1) as usize * 2);
                 Self::StereoDelay {
-                    enabled: insert.enabled,
+                    enabled: insert.enabled && !insert.bypassed,
                     left: vec![0.0; delay_frames],
                     right: vec![0.0; delay_frames],
                     cursor: 0,
@@ -7065,7 +7088,7 @@ impl InsertProcessor {
             }
             InsertEffectKind::LegacyUnavailableCompressor { .. } => Self::UnavailableLegacy,
             InsertEffectKind::Vst3 { .. } => Self::Vst3Passthrough {
-                enabled: insert.enabled,
+                enabled: insert.enabled && !insert.bypassed,
             },
         }
     }

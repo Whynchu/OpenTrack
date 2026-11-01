@@ -758,6 +758,10 @@ impl Runtime {
                     continue;
                 };
                 let key = (track.id, slot);
+                // A powered-off plug-in is unloaded rather than left running.
+                if !insert.enabled {
+                    continue;
+                }
                 wanted.insert(key);
                 if self
                     .failed_class
@@ -834,6 +838,9 @@ impl Runtime {
         let Some(insert) = track.inserts.get(slot) else {
             return false;
         };
+        if !insert.enabled {
+            return false;
+        }
         let InsertEffectKind::Vst3 {
             class_id,
             module_path,
@@ -910,7 +917,7 @@ impl Runtime {
                 let processor: Arc<dyn HostedProcessor> = instance.effect.clone();
                 Some(HostedInsert {
                     processor,
-                    enabled: insert.enabled && !track.inserts_bypassed,
+                    enabled: insert.enabled && !insert.bypassed && !track.inserts_bypassed,
                 })
             })
             .collect()
@@ -1106,6 +1113,7 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "37545356433663536c612d3736207374".to_owned(),
                 module_path: module.to_path_buf(),
@@ -1147,6 +1155,7 @@ mod tests {
             project.add_track(TrackKind::Audio);
             project.tracks[0].inserts.push(InsertEffect {
                 enabled: true,
+                bypassed: false,
                 kind: InsertEffectKind::Vst3 {
                     class_id: class.to_owned(),
                     module_path: module.to_path_buf(),
@@ -1200,6 +1209,7 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "0de7aef2de004e4f41414d6137325247".to_owned(),
                 module_path: module.to_path_buf(),
@@ -1231,6 +1241,7 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "37545356433663536c612d3736207374".to_owned(),
                 module_path: module.to_path_buf(),
@@ -1282,6 +1293,7 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "37545356433663536c612d3736207374".to_owned(),
                 module_path: module.to_path_buf(),
@@ -1324,6 +1336,7 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "54545356356474616472206e6f766100".to_owned(),
                 module_path: module.to_path_buf(),

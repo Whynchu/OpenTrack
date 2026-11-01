@@ -1504,6 +1504,7 @@ mod tests {
         track.equalizer.bands[0].gain_db = 3.0;
         track.inserts.push(opentrack_core::project::InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: opentrack_core::project::InsertEffectKind::StereoDelay {
                 time_ms: 250.0,
                 feedback: 0.4,
@@ -1512,6 +1513,7 @@ mod tests {
         });
         track.inserts.push(opentrack_core::project::InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: opentrack_core::project::InsertEffectKind::TestGenerator {
                 waveform: opentrack_core::project::GeneratorWaveform::PinkNoise,
                 frequency_hz: 1_000.0,
@@ -1520,6 +1522,7 @@ mod tests {
         });
         track.inserts.push(opentrack_core::project::InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: opentrack_core::project::InsertEffectKind::LegacyUnavailableCompressor {
                 threshold_db: -18.0,
                 ratio: 3.0,
@@ -1632,6 +1635,7 @@ mod tests {
             .inserts
             .push(opentrack_core::project::InsertEffect {
                 enabled: true,
+                bypassed: false,
                 kind: opentrack_core::project::InsertEffectKind::StereoDelay {
                     time_ms: 240.0,
                     feedback: 0.3,

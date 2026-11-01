@@ -338,6 +338,7 @@ mod tests {
         );
         settings.inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::StereoDelay {
                 time_ms: 10.0,
                 feedback: 0.0,

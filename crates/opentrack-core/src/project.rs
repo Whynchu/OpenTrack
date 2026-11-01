@@ -507,7 +507,11 @@ pub enum GeneratorWaveform {
 /// Cubase plug-in name is used only after its implementation is measured.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InsertEffect {
+    /// Powered state. A powered-off VST3 insert is unloaded, not just skipped.
     pub enabled: bool,
+    /// Bypassed inserts stay loaded but are removed from the audio chain.
+    #[serde(default)]
+    pub bypassed: bool,
     pub kind: InsertEffectKind,
 }
 
@@ -2879,6 +2883,7 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::StereoDelay {
                 time_ms: 3_000.0,
                 feedback: 0.2,
@@ -2941,6 +2946,7 @@ mod bus_tests {
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
             enabled: true,
+            bypassed: false,
             kind: InsertEffectKind::Vst3 {
                 class_id: "0de7aef2de004e4f41414d6137325247".to_owned(),
                 module_path: PathBuf::from(r"C:\Program Files\Common Files\VST3\Gateway.vst3"),
