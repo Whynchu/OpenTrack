@@ -1513,10 +1513,10 @@ fn eq_editor_knob_rect(inner: Rect, section: usize, slot: usize) -> Rect {
             _ => (6.0, 142.0),
         },
         _ => match slot {
-            0 => (62.0, 242.0),
-            1 => (6.0, 278.0),
-            2 => (62.0, 314.0),
-            _ => (6.0, 350.0),
+            0 => (62.0, 210.0),
+            1 => (6.0, 254.0),
+            2 => (62.0, 290.0),
+            _ => (6.0, 326.0),
         },
     };
     at(inner, x, y, 48.0, 59.0)
@@ -2193,19 +2193,19 @@ fn graph(
                             let t = step as f32 / 12.0;
                             let eased = t * t * (3.0 - 2.0 * t);
                             divider.push(Pos2::new(
-                                inner.left() + inner.width() * (0.34 + 0.22 * t),
-                                inner.top() + 212.0 - 14.0 * eased,
+                                inner.left() + inner.width() * (0.48 + 0.08 * t),
+                                inner.top() + 212.0 - 32.0 * eased,
                             ));
                         }
-                        divider.push(Pos2::new(inner.right(), inner.top() + 198.0));
+                        divider.push(Pos2::new(inner.right(), inner.top() + 180.0));
                         ui.painter().add(egui::Shape::line(
                             divider,
                             Stroke::new(1.0, p.text.gamma_multiply(0.55)),
                         ));
-                        let dynamic_title = at(inner, 0.0, 220.0, inner.width(), 14.0);
+                        let dynamic_title = at(inner, 0.0, 215.0, inner.width(), 14.0);
                         text(ui, dynamic_title, "DYNAMIC EQ", 9.0, Align2::LEFT_CENTER);
                         // Use the open left column beside Threshold for the section switch.
-                        let dynamic_power_rect = at(inner, 20.0, 258.0, 20.0, 16.0);
+                        let dynamic_power_rect = at(inner, 20.0, 235.0, 20.0, 16.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
@@ -3291,7 +3291,7 @@ mod bus_tests {
             .find_map(|shape| match &shape.shape {
                 egui::Shape::Text(text) if text.galley.text() == "DYNAMIC EQ" => Some(Pos2::new(
                     text.pos.x + 30.0,
-                    text.pos.y + text.galley.size().y * 0.5 + 39.0,
+                    text.pos.y + text.galley.size().y * 0.5 + 21.0,
                 )),
                 _ => None,
             })
