@@ -657,7 +657,7 @@ impl State {
                             })
                             .response
                             .on_hover_text(
-                                "Display tilt only; it does not change audio or tonal capture.",
+                                "Display weighting only: tilts the spectrum and tonal curves around 1 kHz; it does not change audio or tonal capture.",
                             );
                         egui::ComboBox::from_id_salt("spectrum-resolution")
                             .width(34.0)
@@ -977,10 +977,18 @@ impl State {
                             .collect::<Vec<_>>(),
                         Color32::from_rgb(245, 155, 55),
                         true,
+                        self.tilt_db_per_octave,
                     );
                 }
                 if self.tonal_average.len() == TONAL_BANDS {
-                    paint_tonal_profile(ui, tonal_plot, &self.tonal_average, own, false);
+                    paint_tonal_profile(
+                        ui,
+                        tonal_plot,
+                        &self.tonal_average,
+                        own,
+                        false,
+                        self.tilt_db_per_octave,
+                    );
                 }
             }
         }
@@ -1245,12 +1253,67 @@ fn tilt_compensated_db(level_db: f32, frequency_hz: f32, db_per_octave: i8) -> f
     level_db + f32::from(db_per_octave) * (1_000.0 / frequency_hz.max(1.0)).log2()
 }
 
+fn tonal_band_index(frequency_hz: f32) -> usize {
+    (((frequency_hz.clamp(20.0, 20_000.0) / 20.0).ln() / 1_000.0_f32.ln()) * TONAL_BANDS as f32)
+        .round()
+        .clamp(0.0, (TONAL_BANDS - 1) as f32) as usize
+}
+
+/// Display-only weighting: dB added to band `index` at the given tilt, zero at
+/// 1 kHz and positive below it, like the tonal-balance reference weighting.
+fn tonal_weighting_db(index: usize, tilt_db_per_octave: i8) -> f32 {
+    let cadence = (1_000.0_f32).log2() / TONAL_BANDS as f32;
+    let above_reference = (50.0_f32).log2();
+    let octaves_below_khz = above_reference - (index as f32 + 0.5) * cadence;
+    f32::from(tilt_db_per_octave) * octaves_below_khz
+}
+
+/// Broad target bands: average the target curve over each labelled region and
+/// paint one translucent band there, behind the precise curve. This follows the
+/// tonal-balance idea of judging broad ranges rather than a single line.
+fn paint_tonal_target_bands(ui: &egui::Ui, plot: Rect, relative_db: &[f32], color: Color32) {
+    const TOLERANCE_DB: f32 = 3.0;
+    if relative_db.len() != TONAL_BANDS {
+        return;
+    }
+    let y_of = |db: f32| {
+        plot.center().y
+            - (db / 48.0 * plot.height()).clamp(-plot.height() / 2.0, plot.height() / 2.0)
+    };
+    for window in TONAL_REGION_BOUNDARIES.windows(2) {
+        let (start_hz, _) = window[0];
+        let end_hz = window[1].0;
+        let first = tonal_band_index(start_hz);
+        let last = tonal_band_index(end_hz)
+            .max(first + 1)
+            .min(relative_db.len());
+        let slice = &relative_db[first..last];
+        if slice.is_empty() {
+            continue;
+        }
+        let mean = slice.iter().sum::<f32>() / slice.len() as f32;
+        let band = Rect::from_min_max(
+            Pos2::new(
+                tonal_frequency_x(plot, start_hz) + 1.0,
+                y_of(mean + TOLERANCE_DB),
+            ),
+            Pos2::new(
+                tonal_frequency_x(plot, end_hz) - 1.0,
+                y_of(mean - TOLERANCE_DB),
+            ),
+        );
+        ui.painter()
+            .rect_filled(band, 2.0, color.gamma_multiply(0.11));
+    }
+}
+
 fn paint_tonal_profile(
     ui: &egui::Ui,
     plot: Rect,
     powers: &[f64],
     color: Color32,
     show_target_range: bool,
+    tilt_db_per_octave: i8,
 ) {
     if powers.len() != TONAL_BANDS {
         return;
@@ -1261,7 +1324,11 @@ fn paint_tonal_profile(
     }
     let relative_db = powers
         .iter()
-        .map(|power| (10.0 * (power.max(mean * 1.0e-6) / mean).log10()) as f32)
+        .enumerate()
+        .map(|(index, power)| {
+            let relative = (10.0 * (power.max(mean * 1.0e-6) / mean).log10()) as f32;
+            relative + tonal_weighting_db(index, tilt_db_per_octave)
+        })
         .collect::<Vec<_>>();
     let relative_db = smooth_tonal_display_curve(&relative_db);
     let point_at = |index: usize, db: f32| {
@@ -1271,22 +1338,7 @@ fn paint_tonal_profile(
         Pos2::new(x, y)
     };
     if show_target_range {
-        const TARGET_TOLERANCE_DB: f32 = 3.0;
-        let mut mesh = egui::Mesh::default();
-        for index in 0..TONAL_BANDS - 1 {
-            let lower_left = point_at(index, relative_db[index] - TARGET_TOLERANCE_DB);
-            let upper_left = point_at(index, relative_db[index] + TARGET_TOLERANCE_DB);
-            let lower_right = point_at(index + 1, relative_db[index + 1] - TARGET_TOLERANCE_DB);
-            let upper_right = point_at(index + 1, relative_db[index + 1] + TARGET_TOLERANCE_DB);
-            let base = mesh.vertices.len() as u32;
-            let fill = color.gamma_multiply(0.16);
-            for position in [lower_left, upper_left, lower_right, upper_right] {
-                mesh.colored_vertex(position, fill);
-            }
-            mesh.add_triangle(base, base + 1, base + 2);
-            mesh.add_triangle(base + 1, base + 3, base + 2);
-        }
-        ui.painter().add(egui::Shape::mesh(mesh));
+        paint_tonal_target_bands(ui, plot, &relative_db, color);
     }
     let points = relative_db
         .iter()
@@ -1355,8 +1407,10 @@ fn paint_tonal_difference(
 }
 
 fn smooth_tonal_display_curve(values: &[f32]) -> Vec<f32> {
-    const RADIUS: isize = 3;
-    const SIGMA: f32 = 1.15;
+    // Broad smoothing for the tonal curves: roughly a third of an octave at the
+    // 96-band resolution, while the persisted analysis stays at full detail.
+    const RADIUS: isize = 5;
+    const SIGMA: f32 = 1.9;
     values
         .iter()
         .enumerate()
@@ -1813,6 +1867,29 @@ mod tests {
         assert_eq!(tilt_compensated_db(-24.0, 1_000.0, 6), -24.0);
         assert_eq!(tilt_compensated_db(-24.0, 500.0, 6), -18.0);
         assert_eq!(tilt_compensated_db(-24.0, 2_000.0, 6), -30.0);
+    }
+
+    #[test]
+    fn tonal_weighting_is_zero_at_one_khz_and_tilts_symmetrically() {
+        let center = tonal_band_index(1_000.0);
+        assert!(tonal_weighting_db(center, 6).abs() < 0.8);
+        for tilt in [3_i8, 6] {
+            assert!(tonal_weighting_db(0, tilt) > 0.0);
+            assert!(tonal_weighting_db(TONAL_BANDS - 1, tilt) < 0.0);
+            assert!(
+                (tonal_weighting_db(0, tilt) * 2.0 - tonal_weighting_db(0, tilt * 2)).abs() < 0.01,
+                "weighting scales with the tilt setting"
+            );
+        }
+        assert_eq!(tonal_weighting_db(30, 0), 0.0);
+    }
+
+    #[test]
+    fn tonal_band_index_covers_the_audio_range_and_one_khz_sits_above_mid() {
+        assert_eq!(tonal_band_index(20.0), 0);
+        assert_eq!(tonal_band_index(20_000.0), TONAL_BANDS - 1);
+        let khz = tonal_band_index(1_000.0);
+        assert!(khz > TONAL_BANDS / 2 && khz < TONAL_BANDS);
     }
 
     #[test]
