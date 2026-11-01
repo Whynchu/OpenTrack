@@ -10,8 +10,8 @@ There is no single exhaustive list generated from the running application. This 
 
 | Location | Disabled item(s) / gap | Evidence |
 | --- | --- | --- |
-| File > Import | Audio CD, Video File, MIDI File, Track Archive, Tempo Track, MusicXML, OMF and other entries in the same disabled block | `crates/opentrack-app/src/app.rs`, `disabled_menu_commands` near 7714 |
-| File > Export | Audio Mixdown, Selected Tracks, Tempo Track | `app.rs`, near 7728 |
+| File > Import | Audio and MIDI File actions are implemented in source; Audio CD, Video File, Track Archive, Tempo Track, MusicXML and OMF remain disabled. MIDI import currently supports format-0/1 PPQ notes and CC into new MIDI tracks. | `crates/opentrack-app/src/app.rs`; MIDI worker in `crates/opentrack-app/src/midi_file.rs`; behavior in `crates/opentrack-core/src/midi_file.rs` |
+| File > Export | Audio Mixdown and MIDI File actions are implemented in source. Selected Tracks and Tempo Track remain unavailable. | `app.rs`, near 7728; audio worker `audio_export.rs`; MIDI worker `midi_file.rs` |
 | File > Edit | Paste at Origin, Split at Cursor/Loop, selection/range actions, duplicate/repeat/fill-loop, move-to locators, lock/mute/group and other entries in disabled blocks | `app.rs`, near 7807–7892; some adjacent operations are live |
 | Project menu/context menu | Arranger, FX Channel, Folder, Marker, Ruler, Signature, Tempo, Transpose and Video tracks; Remove Empty Tracks; several window/panel actions; automation bulk actions; track preset/settings actions | `app.rs` near 7930–7979; `project_controls.rs` lines 150–265 |
 | Audio menu | Process actions (fade, envelope, gain, merge, normalize, DC offset, etc.), audio plug-in/effect categories, hitpoint actions, realtime/offline plug-ins, and advanced analysis entries | `app.rs` near 8027–8083; categories without a registered effect show “No implemented effects” near 17574 |
@@ -59,7 +59,7 @@ Potential missing/disabled window destinations include VST Connections, Control 
 - The keyboard command catalog registers many reference commands, and dispatch has a generic fallback. A registered command is not automatically a live menu action; compare each ID with handler behavior and menu enabled state.
 - `app.rs` is roughly 19,761 lines and includes broad application wiring. Feature work that touches its dispatch/state areas requires a single integration owner.
 - Sends have stored/UI state but send DSP is explicitly absent (`mixer.rs` around 1203); routing controls need an engine contract before implementation.
-- Automation, cycle takes, MIDI file interchange, Control Room and CPR project interchange are broader workflow gaps documented elsewhere. They require task-specific requirements and evidence, not one-off control patches.
+- Automation, cycle takes, Control Room and CPR project interchange are broader workflow gaps documented elsewhere. MIDI file note/CC exchange now has a bounded initial implementation; it still needs fixture and runtime acceptance.
 - Disabled items may be intentionally unavailable. Remove or label stale legacy items only after product-scope review.
 
 ## Next audit steps
@@ -100,8 +100,8 @@ Exceptions found: Add Track speaker/instrument choices above; MIDI toolbar Snap 
 | Sends | Destination/rack UI and stored route metadata exist, but no audible send DSP and no complete persistent per-send enabled/level state. | `app.rs` Track send fields; `channel_settings.rs`; `mixer.rs:1203`; T015/T020. Older statements that the sends section itself is absent are stale for ordinary track editors. |
 | MIDI arrangement | Moving/resizing MIDI parts appears implemented in current app source, despite older docs. | `app.rs:13978-14026,14175`; `docs/midi-editor.md:40` should be corrected. Physical MIDI output ports remain absent; current live input path/hardware has separate validation limits. |
 | Audio recording | WAV recording, take paths, undo/redo/discard recovery and waveform preview exist. Automatic recovery after abnormal termination is absent; hardware timing/reliability remains unverified. | `opentrack-audio/src/recording.rs`, `opentrack-app/src/recording_undo.rs`, `docs/workflow/tasks/T016-recording-undo-and-waveforms.md:11`; older T011 capture description may be stale. |
-| Audio export | No audio mixdown/export path surfaced in app menus/source; File > Export entries are disabled. | `app.rs:7727-7738`; requires a separate rendering/export acceptance packet. |
-| MIDI files | MIDI notes/controller events persist and edit in OPR, but MIDI File import/export actions and file policy are absent. | Preferences inventory PREF-20; File/Media menu disabled ranges; `docs/midi-editor.md`. |
+| Audio export | Initial stereo WAV mixdown is implemented in source with offline rendering, progress and cancellation. Runtime playback parity/listening is not yet accepted. | T074; `crates/opentrack-app/src/audio_export.rs`; `crates/opentrack-audio/src/offline_render.rs`, `wav_export.rs`. |
+| MIDI files | Initial format-0/1 PPQ note/CC import and format-1 export are implemented in source with transactional import and atomic export. Project tempo maps and event families absent from the project model are reported as unsupported. Independent fixtures and running-app behavior remain unverified. | T075; `crates/opentrack-core/src/midi_file.rs`; `crates/opentrack-app/src/midi_file.rs`; PREF-20 records reference-only expectations. |
 | CPR interoperability | `cpr-inspect` reads outer framing and selected ROOT labels; no track/media/mixer decoding, importer, exporter or round trip. | `crates/opentrack-core/src/cpr.rs`, `docs/compatibility-notes.md:63-64`; do not describe inspection as project interchange. |
 | Native project/media | OPR save/open is native project support, not cross-DAW interchange. Media is referenced by paths; imports are copied and relinking exists; media is not embedded. | `docs/native-project-format.md:22`; moving projects can require relinking. |
 

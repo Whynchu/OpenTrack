@@ -1,0 +1,45 @@
+# Custom selector and popup register
+
+Status: source-only audit, 2026-11-01. Snapshot `OpenTrack-` HEAD `6653c05154c4a16773ef1c643a15f5c826931517`. The audit covers `project_controls.rs`, `project_inspector.rs`, `mixer.rs`, `channel_settings.rs`, `sample_editor.rs`, `transport_panel.rs`, and selector controls in `app.rs`. Main/context-menu inventory is out of scope; the Project ruler context menu and channel/mixer context actions are therefore not catalogued. “Implemented” means a visible state consumer exists in source, not runtime validation.
+
+## Register
+
+| Source/control | Selection state and consumer | Status / limits |
+|---|---|---|
+| `project_controls.rs::color_strip` palette popup | Per-track `Track.color_index`; sets/clears track color, rendered by track strips and related track color displays. 16 palette entries plus default. | Implemented in source. Palette is a fixed family; persistence/runtime rendering not tested in this audit. |
+| `project_controls.rs` automation parameter popup | Popup currently contains only the “Volume” label; no selectable item or parameter state consumer. | Placeholder/partial. Unknown whether intended automation parameters/actions are planned elsewhere. |
+| `project_inspector.rs::routing_field` input/output popup | Writes selected track `input_routing` or `output_routing`; output selection also clears `group_output_auto`. Choices: fixed device endpoints and channel pairs. | Implemented in source. “No Bus” and endpoint routing consumers are visible; hardware behavior unknown. Group bus selection is handled in Channel Settings, not this popup. |
+| `mixer.rs` | No custom popup selector implementation found in this module. Strip selection writes shared `Project.selected_track`; mixer routing fields use shared Channel Settings routing UI/helper. Insert/send right-click menus are context actions and excluded. | No independent selector source found. |
+| `channel_settings.rs::strip` channel selector | Updates project selected-track index or bus target through `next`/`bus_target`; names are project tracks plus input/output buses. | Implemented. Dynamic family follows project tracks and bus names. |
+| `channel_settings.rs` routing menus | Writes selected track input/output route; group output choices reference eligible group tracks, excluding self and routes that would cycle. Input/output fixed endpoints also offered. Bus strips have distinct behavior. | Implemented in source; dynamic family and cycle filtering visible. Device routing/runtime result unknown. |
+| `channel_settings.rs` EQ filter menu | Writes selected EQ band's `filter`; family comes from `eq_filter_types(selected_index)`, with selected state from current filter. | Implemented. Exact choice set is band-dependent/dynamic; no runtime check. |
+| `channel_settings.rs` insert effect picker | `show_insert_effect_picker` result replaces/adds/removes `track.inserts`; VST selections can open editor and enable insert. Built-in/catalog items are grouped by category; catalog entries depend on discovered plug-ins. | Implemented in source, but available catalog is runtime-dependent. Disabled/unimplemented menu entries are not selectable consumers. Plug-in load behavior unknown. |
+| `channel_settings.rs` send destination menu | Updates `track.send_routing` for a send slot; options include No Bus and fixed Stereo Out/Left/Right. | Implemented in source. Dynamic send slots; endpoint availability/runtime audio routing unknown. |
+| `channel_settings.rs` Setup... visible/hidden lists | `setup_selected_visible` / `setup_selected_hidden` drive move/reorder controls and layout preferences. Families derive from `ChannelSettingsViewItem::ALL` and current visible list, filtered for bus context; some items are disabled as unimplemented. | Implemented, partial item families. Preference persistence/runtime layout outcome not verified. |
+| `channel_settings.rs` layout preset popup | Sets `selected_preset`, visible items and preset-name draft from `state.preferences.presets`. | Implemented. Dynamic user preset family; durable save/reopen behavior not checked here. |
+| `sample_editor.rs` timebase ComboBox | `state.musical` selects Bars + Beats or Seconds; drives editor ruler/time presentation. | Implemented in source. State lifetime/persistence not checked here. |
+| `sample_editor.rs` grid ComboBox | `state.snap.grid` selects grid type; consumed by editor snap/cut/selection calculations. | Implemented in source. Choice family comes from `SnapGrid` values; runtime gestures not tested here. |
+| `sample_editor.rs` quantize ComboBox | `state.snap.quantize` and associated quantize/snap values consumed by editor snap calculations. | Implemented in source. Choice family is enum/value-driven; runtime behavior not tested here. |
+| `transport_panel.rs` time-signature unit ComboBox | Writes `project.beat_unit`; project/transport beat and bar calculations consume it. | Implemented in source. Enumerated units; project persistence/audio transport behavior not tested here. |
+| `app.rs::project_grid_choices` grid and quantize popups | Mutate `ArrangeViewState.grid_type` and quantize settings; arranger note/event snapping uses these values. | Implemented; supported values are enumerated in the helper. Existing source test `grid_and_quantize_popups_change_the_actual_settings` covers state mutation, not runtime application behavior. |
+| `app.rs` Event Colors popup | Mutates event color selection/custom color draft and opens color editor; arranger event rendering consumes event color settings. | Implemented in source; family includes default plus dynamic configured event palette. Runtime/persistence not checked here. |
+| `app.rs` Key Commands category ComboBox | Local `selected_category` filters displayed key command rows. | Implemented. Categories derive from loaded keymap profile; missing profile produces empty/error state. Persistence is unrelated to this filter and not assessed. |
+| `app.rs` Workspace Organizer shortcut-ID ComboBox | Writes each workspace's optional `shortcut_id`; workspace activation/shortcut dispatch consumes it. | Implemented, gated by explicit-ID preference. IDs are dynamic available slots 1–9 plus None. Save/reopen dispatch not tested here. |
+| `app.rs` MIDI input device ComboBox | Writes selected device through `select_midi_input_device`; MIDI input routing consumes the device ID. | Implemented. Dynamic hardware/device family; no-device state is explicit. Hardware availability/runtime connection unknown. |
+| `app.rs` Add Track dialog audio configuration | `dialog.audio_channels` selects mono/stereo and is passed to track creation. “Speakers” ComboBox is disabled, displays `M`, and has no options/consumer. | Configuration selector implemented. Speakers selector is a placeholder; valid speaker choices/consumer unknown. |
+| `app.rs` Add Track dialog group configuration | `dialog.audio_channels` selects Mono/Stereo and is passed to group track creation. | Implemented in source. |
+| `app.rs` Add Track dialog instrument choice | Disabled ComboBox displays “No VST Instrument”; it has no selectable entries. | Placeholder/partial. Instrument choice family and connection to track creation are unknown; do not treat the displayed label as a functional selector. |
+| `app.rs` MIDI editor grid and note-length ComboBoxes | Local `position_quantize_beats` / `length_quantize_beats` feed MIDI note placement/move/resize snapping and default note length. | Implemented in source. Values are enumerated in `MIDI_QUANTIZE_VALUES`; runtime gesture coverage not audited. |
+| `app.rs` MIDI controller-lane ComboBox | `controller_number` selects the controller lane rendered/edited in the piano roll. | Implemented. Controller labels/IDs are an enumerated family; MIDI data behavior not runtime checked. |
+| `app.rs` `toolbar_choice("Touch")` | Hover-style toolbar label only; no popup/options/state consumer. | Not a selector yet; placeholder. |
+
+## Dynamic families and unknowns
+
+- Project tracks, input/output bus names, eligible group buses, send slots, insert slots, discovered VST3 plug-ins, MIDI devices, keymap categories, workspace rows/IDs, controller lanes, and saved Channel Settings presets are runtime or project-derived families.
+- Add Track speaker configuration is visibly disabled and has no selectable options in source. Its eventual behavior is unknown.
+- The Add Track instrument chooser is disabled with no options; its eventual catalog and track-creation consumer are unknown.
+- Popup/control presence does not prove the selected value survives save/reopen or produces expected audio/device behavior. No runtime application inspection was performed.
+
+## Coverage limits
+
+This audit is limited to the named UI source files and source-level traces. It excludes the main/context-menu audit, including context-menu-only selectable actions. It does not modify application source or claim user acceptance. The module-level selector inventories are based on `ComboBox`, `Popup::menu`, `selectable_*`, and associated custom `interact` controls; ordinary buttons and value fields are omitted unless they form part of a selector family.

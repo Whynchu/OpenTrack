@@ -4,6 +4,8 @@ mod analyzer_view;
 mod audio_configuration;
 #[path = "audio_events.rs"]
 pub(crate) mod audio_events;
+#[path = "audio_export.rs"]
+mod audio_export;
 #[path = "channel_gain.rs"]
 mod channel_gain;
 #[path = "channel_settings.rs"]
@@ -14,6 +16,10 @@ pub(crate) mod media_names;
 mod media_pool;
 #[path = "metering.rs"]
 mod metering;
+#[path = "midi_editor_settings.rs"]
+mod midi_editor_settings;
+#[path = "midi_file.rs"]
+mod midi_file;
 #[path = "mixer.rs"]
 mod mixer;
 #[path = "popup_behavior.rs"]
@@ -1062,6 +1068,7 @@ pub struct OpenTrackApp {
     key_capture_target: Option<KeyCaptureTarget>,
     pending_key_assignment: Option<PendingKeyAssignment>,
     audio_engine: Option<AudioEngine>,
+    offline_playback_settings: Option<opentrack_audio::PlaybackSettingsSnapshot>,
     audio_devices: Vec<AudioDevice>,
     audio_input_devices: Vec<AudioInputDevice>,
     audio_output_devices: Vec<AudioDevice>,
@@ -1109,10 +1116,7 @@ pub struct OpenTrackApp {
     track_add_dialog: Option<TrackAddDialog>,
     event_colors_dialog: Option<EventColorsDialog>,
     pending_track_delete_id: Option<u64>,
-    midi_position_quantize_beats: f64,
-    midi_length_quantize_beats: f64,
-    midi_insert_velocity: u8,
-    midi_controller_number: u8,
+    midi_editor_settings: midi_editor_settings::MidiEditorSettings,
     selected_midi_note_id: Option<u64>,
     selected_midi_note_ids: BTreeSet<u64>,
     midi_note_drag: Option<MidiNoteDrag>,
@@ -1123,6 +1127,9 @@ pub struct OpenTrackApp {
     project_history: ProjectHistory,
     recording_session: Option<RecordingSession>,
     audio_import_task: Option<AudioImportTask>,
+    audio_export_dialog: Option<audio_export::Dialog>,
+    audio_export_task: Option<audio_export::Task>,
+    midi_file_task: Option<midi_file::Task>,
     project_load_task: Option<ProjectLoadTask>,
     midi_recording_session: Option<MidiRecordingSession>,
     project_path: Option<std::path::PathBuf>,
@@ -2098,21 +2105,7 @@ impl OpenTrackApp {
             .storage
             .and_then(|storage| eframe::get_value::<bool>(storage, "midi-thru-enabled"))
             .unwrap_or(false);
-        let midi_position_quantize_beats = creation
-            .storage
-            .and_then(|storage| eframe::get_value::<f64>(storage, "midi-position-quantize"))
-            .filter(|value| is_midi_quantize_value(*value))
-            .unwrap_or(1.0);
-        let midi_length_quantize_beats = creation
-            .storage
-            .and_then(|storage| eframe::get_value::<f64>(storage, "midi-length-quantize"))
-            .filter(|value| is_midi_quantize_value(*value))
-            .unwrap_or(0.25);
-        let midi_insert_velocity = creation
-            .storage
-            .and_then(|storage| eframe::get_value::<u8>(storage, "midi-insert-velocity"))
-            .filter(|value| (1..=127).contains(value))
-            .unwrap_or(96);
+        let midi_editor_settings = midi_editor_settings::MidiEditorSettings::load(creation.storage);
         let native_key_capture = match NativeKeyCapture::install(creation) {
             Ok(capture) => Some(capture),
             Err(error) => {
@@ -2330,6 +2323,7 @@ impl OpenTrackApp {
             key_capture_target: None,
             pending_key_assignment: None,
             audio_engine,
+            offline_playback_settings: None,
             audio_devices,
             audio_input_devices,
             audio_output_devices,
@@ -2383,10 +2377,7 @@ impl OpenTrackApp {
             track_add_dialog: None,
             event_colors_dialog: None,
             pending_track_delete_id: None,
-            midi_position_quantize_beats,
-            midi_length_quantize_beats,
-            midi_insert_velocity,
-            midi_controller_number: 11,
+            midi_editor_settings,
             selected_midi_note_id: None,
             selected_midi_note_ids: BTreeSet::new(),
             midi_note_drag: None,
@@ -2397,6 +2388,9 @@ impl OpenTrackApp {
             project_history: ProjectHistory::default(),
             recording_session: None,
             audio_import_task: None,
+            audio_export_dialog: None,
+            audio_export_task: None,
+            midi_file_task: None,
             project_load_task: None,
             midi_recording_session: None,
             project_path: None,
@@ -3315,6 +3309,10 @@ impl OpenTrackApp {
         self.data
             .audio_sources
             .retain(|path, _| active_audio_paths.contains(path));
+        self.offline_playback_settings = Some(opentrack_audio::PlaybackSettingsSnapshot {
+            tempo_bpm,
+            tracks: playback_tracks.clone(),
+        });
         let output_hosted_inserts =
             vst3_runtime.hosted_inserts(&self.data.project.output_channel.strip);
         if let Some(engine) = self.audio_engine.as_mut() {
@@ -7721,23 +7719,41 @@ impl OpenTrackApp {
                             &[
                                 ("Audio CD...", ""),
                                 ("Video File...", ""),
-                                ("MIDI File...", ""),
                                 ("Track Archive...", ""),
                                 ("Tempo Track...", ""),
                                 ("MusicXML...", ""),
                                 ("OMF...", ""),
                             ],
                         );
+                        if menu_command(ui, "MIDI File...", "", self.midi_file_task.is_none())
+                            .clicked()
+                        {
+                            self.import_midi_file();
+                            ui.close();
+                        }
                     });
                     ui.menu_button("Export", |ui| {
+                        if menu_command(
+                            ui,
+                            "Audio Mixdown...",
+                            "",
+                            self.audio_export_task.is_none(),
+                        )
+                        .clicked()
+                        {
+                            self.open_audio_export_dialog();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
-                            &[
-                                ("Audio Mixdown...", ""),
-                                ("Selected Tracks...", ""),
-                                ("Tempo Track...", ""),
-                            ],
+                            &[("Selected Tracks...", ""), ("Tempo Track...", "")],
                         );
+                        if menu_command(ui, "MIDI File...", "", self.midi_file_task.is_none())
+                            .clicked()
+                        {
+                            self.export_midi_file();
+                            ui.close();
+                        }
                     });
                     menu_command(ui, "Replace Audio in Video File...", "", false);
                     menu_command(ui, "Cleanup...", "", false);
@@ -9818,10 +9834,11 @@ impl OpenTrackApp {
                 &mut self.data.project,
                 track_index,
                 part_id,
-                &mut self.midi_position_quantize_beats,
-                &mut self.midi_length_quantize_beats,
-                &mut self.midi_insert_velocity,
-                &mut self.midi_controller_number,
+                &mut self.midi_editor_settings.snap_enabled,
+                &mut self.midi_editor_settings.position_grid_beats,
+                &mut self.midi_editor_settings.length_grid_beats,
+                &mut self.midi_editor_settings.insert_velocity,
+                &mut self.midi_editor_settings.controller_number,
                 live_velocity_update,
                 &mut self.selected_midi_note_id,
                 &mut self.selected_midi_note_ids,
@@ -11235,6 +11252,11 @@ impl eframe::App for OpenTrackApp {
         if self.audio_import_task.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        self.poll_audio_export_task();
+        self.poll_midi_file_task();
+        if self.midi_file_task.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         self.poll_vst3_plugin_scan(&ctx);
         let (pointer_event, pointer_released, key_pressed, pointer_down) =
             viewport_interaction(&ctx);
@@ -11309,6 +11331,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_loading(&ctx);
         self.show_project_rate_change(&ctx);
         self.show_media_operation_error(&ctx);
+        self.show_audio_export(&ctx);
         self.show_project_folder_setup(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
@@ -11412,17 +11435,7 @@ impl eframe::App for OpenTrackApp {
                 &profile.keymap.bindings(),
             );
         }
-        eframe::set_value(
-            storage,
-            "midi-position-quantize",
-            &self.midi_position_quantize_beats,
-        );
-        eframe::set_value(
-            storage,
-            "midi-length-quantize",
-            &self.midi_length_quantize_beats,
-        );
-        eframe::set_value(storage, "midi-insert-velocity", &self.midi_insert_velocity);
+        self.midi_editor_settings.save(storage);
         eframe::set_value(storage, "vst3-plugin-folders-v1", &self.vst3_plugin_folders);
         eframe::set_value(storage, "vst3-plugin-catalog-v1", &self.vst3_plugin_catalog);
     }
@@ -15057,6 +15070,7 @@ fn show_midi_editor(
     project: &mut Project,
     track_index: usize,
     part_id: u64,
+    snap_enabled: &mut bool,
     position_quantize_beats: &mut f64,
     length_quantize_beats: &mut f64,
     insert_velocity: &mut u8,
@@ -15128,12 +15142,8 @@ fn show_midi_editor(
         *controller_drag = None;
     }
     let mut modified = false;
-    let position_quantize = if position_quantize_beats.is_finite() && *position_quantize_beats > 0.0
-    {
-        *position_quantize_beats
-    } else {
-        1.0
-    };
+    let position_quantize =
+        midi_editor_settings::position_quantize(*position_quantize_beats, *snap_enabled);
     let insert_length = if length_quantize_beats.is_finite() && *length_quantize_beats > 0.0 {
         *length_quantize_beats
     } else {
@@ -15216,13 +15226,12 @@ fn show_midi_editor(
                     project.tempo_bpm, project.beats_per_bar, project.beat_unit
                 ));
                 ui.add_space(8.0);
-                let mut snap_enabled = true;
-                ui.checkbox(&mut snap_enabled, "Snap");
+                ui.checkbox(snap_enabled, "Snap");
                 egui::ComboBox::from_id_salt(("midi-grid", track_id, part_id))
                     .width(88.0)
                     .selected_text(midi_quantize_label(*position_quantize_beats))
                     .show_ui(ui, |ui| {
-                        for (beats, label) in MIDI_QUANTIZE_VALUES {
+                        for (beats, label) in midi_editor_settings::MIDI_QUANTIZE_VALUES {
                             ui.selectable_value(position_quantize_beats, beats, label);
                         }
                     });
@@ -15230,7 +15239,7 @@ fn show_midi_editor(
                     .width(70.0)
                     .selected_text(midi_quantize_label(*length_quantize_beats))
                     .show_ui(ui, |ui| {
-                        for (beats, label) in MIDI_QUANTIZE_VALUES {
+                        for (beats, label) in midi_editor_settings::MIDI_QUANTIZE_VALUES {
                             ui.selectable_value(length_quantize_beats, beats, label);
                         }
                     });
@@ -16115,13 +16124,7 @@ fn show_midi_editor(
                                 .filter(|drag| drag.track_id == track_id && drag.part_id == part_id)
                                 .cloned()
                             {
-                                let quantize = if position_quantize_beats.is_finite()
-                                    && *position_quantize_beats > 0.0
-                                {
-                                    *position_quantize_beats
-                                } else {
-                                    1.0
-                                };
+                                let quantize = position_quantize;
                                 let notes =
                                     &mut project.tracks[track_index].midi_parts[part_index].notes;
                                 for member in drag.members {
@@ -16574,13 +16577,7 @@ fn show_midi_editor(
                                     .iter_mut()
                                     .find(|event| event.id == drag.event_id)
                             {
-                                let quantize = if position_quantize_beats.is_finite()
-                                    && *position_quantize_beats > 0.0
-                                {
-                                    *position_quantize_beats
-                                } else {
-                                    1.0
-                                };
+                                let quantize = position_quantize;
                                 let position = ((drag.start_position_beats + drag.delta_beats)
                                     / quantize)
                                     .round()
@@ -16619,13 +16616,7 @@ fn show_midi_editor(
                                 && hit.is_none()
                             {
                                 let beat = f64::from((pointer.x - plot.left()) / beat_width);
-                                let quantize = if position_quantize_beats.is_finite()
-                                    && *position_quantize_beats > 0.0
-                                {
-                                    *position_quantize_beats
-                                } else {
-                                    1.0
-                                };
+                                let quantize = position_quantize;
                                 let position = ((beat / quantize).floor() * quantize)
                                     .clamp(0.0, part_duration_beats);
                                 let value = ((plot.bottom() - pointer.y) / controller_plot_height
@@ -16880,7 +16871,8 @@ mod editor_recovery_tests {
         project.add_track(TrackKind::Midi);
         let part = project.add_midi_part(0, 0.0, 16.0).unwrap();
         let mut pitch = sample_editor::PitchViewport::default();
-        let (mut position, mut length, mut velocity, mut controller) = (0.25, 0.25, 100, 11);
+        let (mut snap_enabled, mut position, mut length, mut velocity, mut controller) =
+            (true, 0.25, 0.25, 100, 11);
         let mut live_velocity_update = None;
         let (mut selected, mut drag, mut draw, mut cc_drag) = (None, None, None, None);
         let mut selected_notes = BTreeSet::new();
@@ -16919,6 +16911,7 @@ mod editor_recovery_tests {
                         &mut project,
                         0,
                         part,
+                        &mut snap_enabled,
                         &mut position,
                         &mut length,
                         &mut velocity,
@@ -16982,16 +16975,6 @@ enum MidiEditAction {
     Split(u64, f64),
 }
 
-const MIDI_QUANTIZE_VALUES: [(f64, &str); 7] = [
-    (0.0625, "1/64 note"),
-    (0.125, "1/32 note"),
-    (0.25, "1/16 note"),
-    (0.5, "1/8 note"),
-    (1.0, "1/4 note"),
-    (2.0, "1/2 note"),
-    (4.0, "Whole note"),
-];
-
 const MIDI_CONTROLLER_VALUES: [(u8, &str); 4] = [
     (1, "Modulation (CC 1)"),
     (7, "Volume (CC 7)"),
@@ -16999,14 +16982,8 @@ const MIDI_CONTROLLER_VALUES: [(u8, &str); 4] = [
     (11, "Expression (CC 11)"),
 ];
 
-fn is_midi_quantize_value(value: f64) -> bool {
-    MIDI_QUANTIZE_VALUES
-        .iter()
-        .any(|(candidate, _)| value == *candidate)
-}
-
 fn midi_quantize_label(value: f64) -> &'static str {
-    MIDI_QUANTIZE_VALUES
+    midi_editor_settings::MIDI_QUANTIZE_VALUES
         .iter()
         .find(|(candidate, _)| value == *candidate)
         .map(|(_, label)| *label)

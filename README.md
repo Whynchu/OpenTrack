@@ -36,13 +36,16 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Mixing:** shared Mixer and Channel Settings controls, input gain and meters, a 32-band EQ with static and dynamic bands, spectrum and tonal-reference analysis, and an insert rack.
 - **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.
 - **Editors and workspace:** a MIDI editor with notes and controller lanes, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
+- **Audio and MIDI capture:** record audio and MIDI input into a project; real-device behavior still needs broad hardware validation.
 
 ### Highlights
 
 - **32-band EQ with dynamic processing:** shape a channel with multiple filter types and independent dynamic controls for each band.
 - **Built-in spectrum and tonal-reference analysis:** compare live audio with another channel or a captured or imported WAV reference.
-- **Up to 24 insert slots:** build a channel processing chain with available built-in processors and third-party VST3 effects, including native plug-in editor windows.
+- **Up to 24 insert and send slots per channel:** insert slots run available built-in processors and third-party VST3 effects, including native plug-in editor windows. Send slots can store destinations; audible send processing is still in development.
 - **Integrated Pitch & Time:** analyze and edit audio in the Sample Editor, alongside the Project and Mixer workspace.
+- **Windows audio choices:** use WASAPI, or enable the optional local ASIO adapter for a compatible installed driver.
+- **Platform:** Windows x64 is the primary build target. Kubuntu Linux was part of development and has been built and verified.
 
 ### Built-in EQ and analysis
 
@@ -58,16 +61,22 @@ These features are under active development; live listening, visual behavior and
 
 ### Still needed
 
-- **Finishing and interchange:** audio mixdown/export, MIDI file import/export, and project interchange with other DAWs. CPR is currently a research and inspection effort, not an importer or round-trip format.
-- **Mixing and recording:** automation playback and writing, audible send processing, general typed bus routing, cycle takes, and broader device channel mapping. The channel rack can display up to 24 send slots and store destinations, but send audio processing is not yet implemented.
+- **Finishing and interchange:** initial stereo WAV mixdown and Standard MIDI File note/controller exchange are implemented in source. Authored format-0/1 fixtures and independent export decoding pass; in-app review and comparison with DAW-produced MIDI files remain. Project interchange with other DAWs is still future work. CPR is currently a research and inspection effort, not an importer or round-trip format.
+- **Mixing and recording:** automation playback and writing, audible send processing, general typed bus routing, cycle takes, and broader device channel mapping. The channel rack exposes up to 24 send slots and stores destinations, but send audio processing is not yet implemented.
+- **Platform and feature breadth:** Windows x64 is the primary target. Kubuntu Linux was part of development and has been built and verified; other Linux distributions, macOS and browser releases are not claimed. Video, surround and score editing are not available.
+- **Command interfaces:** there is no supported command-line or MCP interface for controlling project edits.
 - **Interface completion:** many menus, preference pages, dialogs and controls are disabled or partial. The ongoing [UI inventory](docs/reviews/ui-implementation-inventory.md) tracks source findings and outstanding review.
 - **Reliability and validation:** recording, monitoring and low-latency behavior need further testing with real audio and MIDI hardware. Plug-in compatibility, project recovery, visual interaction and audible results need continued verification.
 
 OpenTrack aims to bring recording, editing, arrangement, mixing and finishing into one dependable Rust application. Future interoperability and first-party instruments and effects will be developed as separately scoped capabilities.
 
+### Near-term gaps
+
+Next work prioritizes in-app validation of audio mixdown and MIDI file exchange, usable send signal flow, automation, broader audio-device routing, and recording reliability. The 24-slot send rack is already present and can hold destinations, but it does not yet send audio. Windows x64 remains the primary target; Kubuntu Linux was part of development and has also been verified.
+
 ## Build and run
 
-The primary target is **64-bit Windows**. Install Rust with the MSVC toolchain and the Visual Studio C++ build tools, then run this from the repository root:
+The primary build target is **64-bit Windows**. Kubuntu Linux was part of development and has also been built and verified; other Linux distributions, macOS and browser builds are not current release claims. On Windows, install Rust with the MSVC toolchain and the Visual Studio C++ build tools, then run this from the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Architecture x64
@@ -82,3 +91,7 @@ Add `-LocalAsio` to include the optional local ASIO adapter alongside WASAPI. Su
 Contributions that make real musical workflows more reliable and useful are welcome. Useful work includes reproducing bugs, improving editing and audio behavior, reviewing accessibility and interaction, testing with audio and MIDI hardware, and refining the interface.
 
 Keep changes focused, describe the expected behavior, and include meaningful verification. Distinguish working features from planned functionality so users and contributors can follow progress accurately.
+
+## License
+
+OpenTrack's original application and workspace source are licensed under Apache-2.0. See [LICENSE](LICENSE). Third-party dependencies, bundled artwork and the optional ASIO component retain their own licenses; see [third-party notices](docs/third-party-notices.md) and the notices beside bundled assets.

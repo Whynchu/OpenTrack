@@ -3,7 +3,7 @@ name = "opentrack-plugin-scan"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license = "Apache-2.0"
+license.workspace = true
 description = "Bounded VST3 module discovery and precheck helper for OpenTrack"
 
 [lib]

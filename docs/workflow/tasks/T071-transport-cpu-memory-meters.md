@@ -1,6 +1,6 @@
 # T071 - Transport CPU and memory meters
 
-- Status: implemented; running-app review pending.
+- Status: accepted by user (2026-11-01).
 - Scope version: 1.
 - User request (2026-11-01): a CPU usage meter like the input meter on the transport panel, plus RAM usage.
 
@@ -20,4 +20,4 @@
 - `memory_readout_switches_between_megabytes_and_gigabytes`.
 - `a_fresh_sampler_reports_no_load`.
 - Full app suite and formatting checks.
-- Runtime visual review of the new section and CPU/RAM values remains pending.
+- User confirmed on 2026-11-01: “the cpu meter is done.” Treat the T071 gate as complete and proceed to the roadmap. No additional runtime evidence was recorded in this packet; the acceptance statement is user confirmation, not an independently observed desktop check.

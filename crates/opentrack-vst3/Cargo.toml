@@ -3,7 +3,7 @@ name = "opentrack-vst3"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license = "Apache-2.0"
+license.workspace = true
 description = "VST3 module loading and class enumeration for OpenTrack"
 
 [dependencies]

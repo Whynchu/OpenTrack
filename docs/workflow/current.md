@@ -1,4 +1,16 @@
-# Current assignment — T065
+# Current assignment — roadmap activation (2026-11-01)
+
+User confirmed T071 CPU/memory meters complete and authorized execution toward the 32-step feature and architecture roadmap in `docs/workflow/roadmap-32-steps.md`. T071 is recorded user-accepted; no independent runtime observation is claimed. Source audit registers now cover main/context menus, all 152 keyboard command IDs, windows/dialogs, 30 combo boxes and custom selector families; evidence and coverage limits are linked from `docs/reviews/window-selector-coverage.md`. T072 wires MIDI editor Snap to a persisted app preference and positional quantization. MIDI preferences and quantization policy now live in `midi_editor_settings.rs`; three unit tests and the existing editor recovery render test pass. Runtime gesture/persistence review remains pending because native desktop control is unavailable in this session. The user verified Kubuntu Linux support; Windows x64 remains the primary target. The README reflects these strengths, the known send limitation, and the highest-value feature gaps. OpenTrack's original workspace code is licensed Apache-2.0; third-party licenses remain separate. Preserve existing working-tree work and record automated/runtime results separately.
+
+Next roadmap workflows are tracked in `docs/workflow/roadmap-32-steps.md`. T074 audio mixdown/export has an end-to-end source implementation and awaits runtime acceptance; its contract and evidence are in `docs/workflow/tasks/T074-audio-mixdown-export.md`.
+
+T074 now has an end-to-end source implementation: the export menu opens a beat-range/rate/encoding dialog, and a worker renders through an isolated graph and VST3 runtime to an atomically replaced WAV. The full audio suite passes (121 passed, 3 manual checks ignored), and native plus Windows x64 local-ASIO compile checks pass. Runtime interaction, active-playback parity and listening remain pending.
+
+T075 adds bounded format-0/1 PPQ MIDI import and format-1 export in `opentrack-core`, with file actions and background I/O in `midi_file.rs`. Eight focused tests, including format-1 import and an independent export decoder, pass; the complete core suite passes (31/31). The Windows x64 local-ASIO release build succeeds. Independent DAW files, undo/redo and in-app validation remain open. Kubuntu support was part of development and was user-verified; Windows x64 remains primary.
+
+The compact two-column built-in EQ layout is pushed to `main` at `1f10fb1`. A Windows x64 local-ASIO release package built from the current worktree is available at `builds/x64/OpenTrack.exe` (SHA-256 `51B23CE5495A7496E599DFEDAF94F604149638FF80FB67ECBA4AC348D8A3F22E`). The build includes current in-progress T074/T075 source; their runtime acceptance is still open.
+
+# Historical assignment — T065
 
 ## T065 — dynamic shelf direction correction
 

@@ -11,6 +11,7 @@ mod devices;
 mod live_pitch;
 mod metronome;
 mod midi;
+mod offline_render;
 mod pitch_analysis;
 mod pitch_render;
 mod pitch_synthesis;
@@ -24,6 +25,7 @@ pub mod plugins;
 mod recording;
 mod spectrum;
 mod streaming;
+mod wav_export;
 pub use spectrum::{
     SpectrumFrame, SpectrumResolution, SpectrumStage, TONAL_FFT_SIZE, TONAL_PROFILE_BANDS,
     TonalProfile, analyze_tonal_reference_wav, normalized_log_band_difference_db,
@@ -38,6 +40,7 @@ pub use devices::{
     output_configurations, scan_audio_devices,
 };
 pub use midi::{MidiInputDevice, MidiInputEvent, MidiInputMessage, MidiInputStream};
+pub use offline_render::{OfflineRenderError, OfflineRenderer};
 pub use recording::{
     AudioInputDevice, AudioInputFormat, AudioInputProbe, AudioMonitorBuffer, AudioRecordRoute,
     AudioRecorder, RecordingSummary,
@@ -46,6 +49,7 @@ pub use streaming::{
     AudioFileMetadata, AudioSource, PlaybackSource, StreamedWav, StreamingPlayback,
     audio_file_metadata,
 };
+pub use wav_export::{WavExportError, WavExportReport, write_mixdown_wav};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioDeviceMode {
@@ -810,6 +814,15 @@ pub struct PlaybackTrackSettings {
     pub hosted_inserts: Vec<HostedInsert>,
     pub monitor_input: Option<PlaybackInputChannel>,
     pub output_route: PlaybackOutputRoute,
+}
+
+/// Track settings prepared for an isolated render graph. Beat positions are
+/// expressed on the project timeline; callers must replace live meters,
+/// hosted processors and streaming readers before rendering.
+#[derive(Clone)]
+pub struct PlaybackSettingsSnapshot {
+    pub tempo_bpm: f64,
+    pub tracks: Vec<PlaybackTrackSettings>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

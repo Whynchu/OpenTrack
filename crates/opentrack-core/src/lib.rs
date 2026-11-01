@@ -4,6 +4,7 @@
 //! so they can be developed independently of the eventual GUI framework.
 pub mod commands;
 pub mod cpr;
+pub mod midi_file;
 pub mod pitch_time;
 pub mod project;
 pub mod workspaces;

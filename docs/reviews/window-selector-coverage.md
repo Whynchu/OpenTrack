@@ -34,3 +34,20 @@ Snapshot: HEAD `1b61c7a` plus existing modified `app.rs`, `channel_settings.rs`,
 ## Remaining work
 
 The counts above are coverage families, not counts of all controls. Complete individual item registers, examine custom-painted selectors and dynamically generated menus, and trace their actions, persistent state and processing consumers. The earlier menu and keyboard-command passes are also still incomplete. All runtime, audio, plug-in, OS and hardware verification belongs to the later running-app audit. See [summary inventory](ui-implementation-inventory.md).
+
+## Step 3–4 detailed registers
+
+- [Windows and dialogs](audit-windows-app.md): entry points, conditions, actions and explicit unknowns; reconciled with T071 at HEAD `7b898c68`.
+- [ComboBox selectors](audit-comboboxes.md): 30 source declarations, options, consumers and persistence where traced. The inspected selector source predates T071; the only selector-free application changes since were transport meter additions.
+- [Custom selectors and popups](audit-custom-selectors.md): custom selection families and dynamic sources. The audited selector owners were unchanged through T071.
+- [Menus and context menus](audit-menus.md): current HEAD, open/empty shell routes, active/conditional/disabled items and dynamic families.
+- [Keyboard commands](audit-keyboard-commands.md): all 152 reference keymap rows, 158 binding expressions and 198 expanded shortcut bindings at current HEAD.
+
+## Reconciled source findings
+
+- Keyboard command registry: 44 implemented dispatch actions, 6 partial, 102 generic fallback. The menu register is separate because menu actions are largely direct UI callbacks, not registered IDs.
+- The menu register enumerates menu leaves by explicit path and generated family; runtime-discovered device/plug-in items are inventoried by generator, not by machine-specific contents.
+- Windows and selector findings remain source-only. Disabled placeholders, conditional state gates, and documented exclusions are distinguished in the detailed registers.
+- The source inventory does not claim running-app, audio, hardware or user acceptance. Native file pickers, dynamic catalogs, and some individual control behaviors are recorded as unknown where code tracing is insufficient.
+
+These reports classify source evidence only. A named window, selector or dispatch branch is not evidence of successful runtime execution, audible output, device compatibility or user acceptance.
