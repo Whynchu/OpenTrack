@@ -1249,7 +1249,7 @@ fn eq_knob(
     // Keep the parameter name below the dial; the editable number lives in
     // an interactive hover panel so the controls can nest diagonally.
     let label_rect = at(rect, 0.0, 48.0, 48.0, 11.0);
-    text(ui, label_rect, label, 8.0, Align2::CENTER_CENTER);
+    text(ui, label_rect, label, 8.5, Align2::CENTER_CENTER);
     let tooltip = if let Some(db) = live_input_dbfs {
         format!(
             "{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS on a -60..0 dBFS ring; pointer: threshold"
@@ -2038,7 +2038,7 @@ fn graph(
                             "Band audition is unavailable for the input bus"
                         });
                         let section_title = at(inner, 0.0, 55.0, inner.width(), 14.0);
-                        text(ui, section_title, "STATIC EQ", 8.0, Align2::LEFT_CENTER);
+                        text(ui, section_title, "STATIC EQ", 9.0, Align2::LEFT_CENTER);
                         let static_width = inner.width();
                         if band.filter == FilterType::Notch {
                             let gain_rect = eq_editor_knob_rect(inner, 0, 0);
@@ -2147,7 +2147,10 @@ fn graph(
                             ],
                             Stroke::new(2.0, color),
                         );
-                        let filter_text = filter_rect.shrink2(Vec2::new(8.0, 0.0));
+                        let filter_text = Rect::from_min_max(
+                            filter_rect.min + Vec2::new(8.0, 0.0),
+                            filter_rect.max - Vec2::new(22.0, 0.0),
+                        );
                         ui.painter().with_clip_rect(filter_text).text(
                             filter_text.left_center(),
                             Align2::LEFT_CENTER,
@@ -2184,17 +2187,23 @@ fn graph(
                             }
                         });
                         let dynamic_eligible = band.filter.supports_dynamic_eq();
+                        // A smooth shallow step separates sections without competing with the dials.
+                        let mut divider = vec![Pos2::new(inner.left(), inner.top() + 212.0)];
+                        for step in 0..=12 {
+                            let t = step as f32 / 12.0;
+                            let eased = t * t * (3.0 - 2.0 * t);
+                            divider.push(Pos2::new(
+                                inner.left() + inner.width() * (0.34 + 0.22 * t),
+                                inner.top() + 212.0 - 6.0 * eased,
+                            ));
+                        }
+                        divider.push(Pos2::new(inner.right(), inner.top() + 206.0));
                         ui.painter().add(egui::Shape::line(
-                            vec![
-                                Pos2::new(inner.left(), inner.top() + 212.0),
-                                Pos2::new(inner.left() + inner.width() * 0.36, inner.top() + 212.0),
-                                Pos2::new(inner.left() + inner.width() * 0.44, inner.top() + 206.0),
-                                Pos2::new(inner.right(), inner.top() + 206.0),
-                            ],
+                            divider,
                             Stroke::new(1.0, p.text.gamma_multiply(0.55)),
                         ));
                         let dynamic_title = at(inner, 0.0, 220.0, inner.width(), 14.0);
-                        text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
+                        text(ui, dynamic_title, "DYNAMIC EQ", 9.0, Align2::LEFT_CENTER);
                         // Use the open left column beside Threshold for the section switch.
                         let dynamic_power_rect = at(inner, 20.0, 258.0, 20.0, 16.0);
                         if dynamic_eligible {
