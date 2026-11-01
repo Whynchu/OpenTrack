@@ -1494,7 +1494,7 @@ fn eq_graph_rect(r: Rect, show_editor: bool) -> Rect {
     }
     // Keep enough graph width for direct band editing beside the compact
     // diagonal control cluster.
-    let sidebar_width = 150.0_f32.min((r.width() - 320.0).max(0.0));
+    let sidebar_width = 130.0_f32.min((r.width() - 320.0).max(0.0));
     Rect::from_min_max(
         r.min,
         Pos2::new(r.right() - sidebar_width - 8.0, r.bottom()),
@@ -1509,14 +1509,14 @@ fn eq_editor_knob_rect(inner: Rect, section: usize, slot: usize) -> Rect {
     let (x, y) = match section {
         0 => match slot {
             0 => (6.0, 70.0),
-            1 => (62.0, 100.0),
-            _ => (6.0, 130.0),
+            1 => (62.0, 106.0),
+            _ => (6.0, 142.0),
         },
         _ => match slot {
-            0 => (62.0, 224.0),
-            1 => (6.0, 254.0),
-            2 => (62.0, 284.0),
-            _ => (6.0, 314.0),
+            0 => (62.0, 242.0),
+            1 => (6.0, 278.0),
+            2 => (62.0, 314.0),
+            _ => (6.0, 350.0),
         },
     };
     at(inner, x, y, 48.0, 59.0)
@@ -1976,7 +1976,7 @@ fn graph(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let (inner, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 378.0),
+                            Vec2::new(ui.available_width(), 414.0),
                             Sense::hover(),
                         );
                         let header = at(inner, 0.0, 0.0, inner.width(), 16.0);
@@ -2186,17 +2186,17 @@ fn graph(
                         let dynamic_eligible = band.filter.supports_dynamic_eq();
                         ui.painter().add(egui::Shape::line(
                             vec![
-                                Pos2::new(inner.left(), inner.top() + 195.0),
-                                Pos2::new(inner.left() + inner.width() * 0.36, inner.top() + 195.0),
-                                Pos2::new(inner.left() + inner.width() * 0.44, inner.top() + 189.0),
-                                Pos2::new(inner.right(), inner.top() + 189.0),
+                                Pos2::new(inner.left(), inner.top() + 212.0),
+                                Pos2::new(inner.left() + inner.width() * 0.36, inner.top() + 212.0),
+                                Pos2::new(inner.left() + inner.width() * 0.44, inner.top() + 206.0),
+                                Pos2::new(inner.right(), inner.top() + 206.0),
                             ],
-                            Stroke::new(1.0, p.grid),
+                            Stroke::new(1.0, p.text.gamma_multiply(0.55)),
                         ));
-                        let dynamic_title = at(inner, 0.0, 202.0, inner.width(), 14.0);
+                        let dynamic_title = at(inner, 0.0, 220.0, inner.width(), 14.0);
                         text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
                         // Use the open left column beside Threshold for the section switch.
-                        let dynamic_power_rect = at(inner, 12.0, 240.0, 20.0, 16.0);
+                        let dynamic_power_rect = at(inner, 20.0, 258.0, 20.0, 16.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
@@ -3281,7 +3281,7 @@ mod bus_tests {
             .iter()
             .find_map(|shape| match &shape.shape {
                 egui::Shape::Text(text) if text.galley.text() == "DYNAMIC EQ" => Some(Pos2::new(
-                    text.pos.x + 22.0,
+                    text.pos.x + 30.0,
                     text.pos.y + text.galley.size().y * 0.5 + 39.0,
                 )),
                 _ => None,
@@ -3666,7 +3666,7 @@ mod bus_tests {
     #[test]
     fn editor_diagonal_cluster_keeps_dials_separate_and_inside_the_content() {
         for width in [120.0, 136.0, 150.0] {
-            let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 378.0));
+            let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 414.0));
             let controls = [(0, 0), (0, 1), (0, 2)]
                 .into_iter()
                 .map(|(section, slot)| eq_editor_knob_rect(inner, section, slot))
@@ -3687,8 +3687,8 @@ mod bus_tests {
                 Rect::from_min_size(Pos2::ZERO, Vec2::new(width + 500.0, 400.0)),
                 true,
             );
-            // 150 px editor column plus its 8 px gutter.
-            assert_eq!(graph.width(), width + 500.0 - 158.0);
+            // 130 px editor column plus its 8 px gutter.
+            assert_eq!(graph.width(), width + 500.0 - 138.0);
         }
     }
 
@@ -3986,7 +3986,7 @@ mod bus_tests {
     fn condensed_panels_leave_more_room_for_the_graph() {
         let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 500.0));
         let graph = eq_graph_rect(area, true);
-        assert_eq!(graph.right(), 1000.0 - 158.0);
+        assert_eq!(graph.right(), 1000.0 - 138.0);
         assert!(item_base_width(ChannelSettingsViewItem::Inserts) < 154.0);
         assert!(item_base_width(ChannelSettingsViewItem::Sends) < 154.0);
     }

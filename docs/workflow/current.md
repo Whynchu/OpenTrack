@@ -2,7 +2,7 @@
 
 ## EQ strip layout update
 
-Follow-up from the user build review: the dynamic section power switch now occupies the empty left column beside Threshold, and its heading aligns with STATIC EQ. The focused independent-power interaction check passes; rebuilt visual acceptance remains pending.
+Follow-up from the user build review: the dynamic section power switch occupies the empty left column beside Threshold, centered above Range. The editor is 130 px wide with equal outer knob margins, increased vertical stagger spacing, and a visible stepped divider. GPT-6.1 Sol inspected an offscreen raster from the actual egui shapes and textures; 25 focused Channel Settings checks and the temporary render harness passed. Temporary capture code was removed. The existing release executable predates these corrections; live gesture/visual acceptance remains pending.
 
 The selected-band editor uses a narrow staggered strip with the filter at the top, labels under the existing knob artwork, a stepped section divider, and a compact value editor anchored beside the hovered knob. Static and dynamic DSP and project data are unchanged. Implementer/reviewer: GPT-6.1 Terra. The 25 focused Channel Settings tests pass; interactive hover editing and visual review in the application remain pending. The user requested a standalone design preview and no application launch during this work.
 
