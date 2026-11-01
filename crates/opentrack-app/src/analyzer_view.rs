@@ -39,6 +39,7 @@ pub(super) struct State {
     pub peak_hold: bool,
     pub range_db: Option<i32>,
     pub tilt_db_per_octave: i8,
+    pub tonal_reference: TonalReference,
     pub resolution: SpectrumResolution,
     pub compare: Option<u64>,
     owner: Option<u64>,
@@ -620,6 +621,22 @@ impl State {
                             .on_hover_text(
                                 "Continuous tonal average time constant. Warm-up reaches its settled indicator after three time constants.",
                             );
+                        egui::ComboBox::from_id_salt("tonal-reference")
+                            .width(54.0)
+                            .selected_text(self.tonal_reference.label())
+                            .show_ui(ui, |ui| {
+                                for reference in TonalReference::ALL {
+                                    ui.selectable_value(
+                                        &mut self.tonal_reference,
+                                        reference,
+                                        reference.label(),
+                                    );
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "Display reference that 0 dB means: the whole-spectrum mean, the 200 Hz-2 kHz average, or the 500 Hz band.",
+                            );
                     }
                     if !self.tonal_view {
                         if ui.selectable_label(self.frozen, "Freeze").clicked() {
@@ -978,6 +995,7 @@ impl State {
                         Color32::from_rgb(245, 155, 55),
                         true,
                         self.tilt_db_per_octave,
+                        self.tonal_reference,
                     );
                 }
                 if self.tonal_average.len() == TONAL_BANDS {
@@ -988,6 +1006,7 @@ impl State {
                         own,
                         false,
                         self.tilt_db_per_octave,
+                        self.tonal_reference,
                     );
                 }
             }
@@ -1259,6 +1278,52 @@ fn tonal_band_index(frequency_hz: f32) -> usize {
         .clamp(0.0, (TONAL_BANDS - 1) as f32) as usize
 }
 
+fn tonal_band_center_hz(index: usize) -> f32 {
+    20.0 * 1_000.0_f32.powf((index as f32 + 0.5) / TONAL_BANDS as f32)
+}
+
+/// Reference used to centre the tonal curve, so 0 dB means this choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TonalReference {
+    #[default]
+    Mean,
+    MidBand,
+    Fixed500,
+}
+
+impl TonalReference {
+    const ALL: [Self; 3] = [Self::Mean, Self::MidBand, Self::Fixed500];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mean => "Mean",
+            Self::MidBand => "Mid",
+            Self::Fixed500 => "500 Hz",
+        }
+    }
+
+    fn reference_power(self, powers: &[f64]) -> f64 {
+        match self {
+            Self::Mean => powers.iter().sum::<f64>() / powers.len().max(1) as f64,
+            Self::MidBand => {
+                let (sum, count) =
+                    powers
+                        .iter()
+                        .enumerate()
+                        .fold((0.0, 0), |state, (index, power)| {
+                            if (200.0..=2_000.0).contains(&tonal_band_center_hz(index)) {
+                                (state.0 + power, state.1 + 1)
+                            } else {
+                                state
+                            }
+                        });
+                sum / count.max(1) as f64
+            }
+            Self::Fixed500 => powers.get(tonal_band_index(500.0)).copied().unwrap_or(0.0),
+        }
+    }
+}
+
 /// Display-only weighting: dB added to band `index` at the given tilt, zero at
 /// 1 kHz and positive below it, like the tonal-balance reference weighting.
 fn tonal_weighting_db(index: usize, tilt_db_per_octave: i8) -> f32 {
@@ -1327,19 +1392,21 @@ fn paint_tonal_profile(
     color: Color32,
     show_target_range: bool,
     tilt_db_per_octave: i8,
+    reference: TonalReference,
 ) {
     if powers.len() != TONAL_BANDS {
         return;
     }
-    let mean = powers.iter().sum::<f64>() / TONAL_BANDS as f64;
-    if mean <= 0.0 {
+    let reference_power = reference.reference_power(powers);
+    if !(reference_power > 0.0) {
         return;
     }
     let relative_db = powers
         .iter()
         .enumerate()
         .map(|(index, power)| {
-            let relative = (10.0 * (power.max(mean * 1.0e-6) / mean).log10()) as f32;
+            let relative =
+                (10.0 * (power.max(reference_power * 1.0e-6) / reference_power).log10()) as f32;
             relative + tonal_weighting_db(index, tilt_db_per_octave)
         })
         .collect::<Vec<_>>();
@@ -1880,6 +1947,28 @@ mod tests {
         assert_eq!(tilt_compensated_db(-24.0, 1_000.0, 6), -24.0);
         assert_eq!(tilt_compensated_db(-24.0, 500.0, 6), -18.0);
         assert_eq!(tilt_compensated_db(-24.0, 2_000.0, 6), -30.0);
+    }
+
+    #[test]
+    fn tonal_reference_centres_on_the_mean_mid_band_or_500_hz() {
+        let mut powers = vec![1.0_f64; TONAL_BANDS];
+        let five_hundred = tonal_band_index(500.0);
+        powers[five_hundred] = 4.0;
+        let mean = TonalReference::Mean.reference_power(&powers);
+        let mid = TonalReference::MidBand.reference_power(&powers);
+        let fixed = TonalReference::Fixed500.reference_power(&powers);
+        assert!(mean > 1.0 && mean < 2.0);
+        assert!((mid - 1.0).abs() < 0.2);
+        assert!((fixed - 4.0).abs() < 1.0e-9);
+        assert!(TonalReference::Fixed500.reference_power(&[]).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn tonal_band_centres_cover_the_log_range() {
+        assert!(tonal_band_center_hz(0) < 25.0);
+        assert!(tonal_band_center_hz(TONAL_BANDS - 1) > 18_000.0);
+        let khz = tonal_band_index(1_000.0);
+        assert!((tonal_band_center_hz(khz) - 1_000.0).abs() < 60.0);
     }
 
     #[test]

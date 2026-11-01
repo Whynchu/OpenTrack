@@ -23,7 +23,18 @@ Then decide which of those behaviours our tonal view should adopt, keeping OpenT
 - **Broad target bands**: the target now paints one smooth translucent envelope of +/-3 dB that follows the target curve, with the Low (20-200 Hz), Low-Mid (200 Hz-1 kHz), High-Mid (1-5 kHz) and High (5-20 kHz) separators drawn across it and the precise target line kept on top in the existing orange. This was refined after the user supplied a side-by-side TBC2 capture on the same source (audio 09, 1x-gateway-slo100-hotone): TBC2's band is a smooth graded envelope, not stepped per-region blocks.
 - **Smoothing**: tonal curves are now smoothed over roughly a third of an octave (Gaussian radius 5, sigma 1.9 at the 96-band resolution) instead of about a quarter octave. Persisted analysis and targets keep their full 96-band detail.
 - **Weighting/tilt**: the existing display tilt control (0/3/6 dB per octave, display-only) now also applies to the tonal curves, pivoted at 1 kHz, so a balanced mix can read flat. The measured-vs-target difference view is unchanged because the same weighting cancels on both sides.
+- **Reference selector**: a tonal `Ref` control chooses what 0 dB means in the profile view - the whole-spectrum mean (current default), the 200 Hz-2 kHz average, or the 500 Hz band. This is display-only and independent of tilt.
 - Frequency span, colours, line weights, graph size and layout are unchanged.
+
+## Built-in targets (next)
+
+TBC2's bands are genre curves ("Bass Heavy", etc.). We do not have loadable equivalents. Digitising and shipping iZotope's preset curves would copy their content, so the plan is one of:
+
+- define our own original broad targets informed by the general shapes (for example a bass-heavy slope, a balanced reference and a bright reference), or
+- let users capture real references through the existing Capture/Import WAV flow, which already produces persisted targets, or
+- add a user-side image import with axis calibration so a screenshot becomes a personal target without shipping another product's data.
+
+Screenshots of each TBC2 preset are useful as shape guidance for the first option. The open question is which preset names we want and whether the first option is acceptable.
 
 ## Constraints
 
@@ -33,6 +44,8 @@ Original implementation only: no copied TBC2 assets, code or preset data. Studyi
 
 - `tonal_weighting_is_zero_at_one_khz_and_tilts_symmetrically`: weighting is centred at 1 kHz, boosts lows and cuts highs, and scales with the tilt setting.
 - `tonal_band_index_covers_the_audio_range_and_one_khz_sits_above_mid`: band mapping covers 20 Hz - 20 kHz.
+- `tonal_reference_centres_on_the_mean_mid_band_or_500_hz`: each reference selects the expected power.
+- `tonal_band_centres_cover_the_log_range`: band centres span the log range and 1 kHz lands near its band.
 - Existing tonal smoothing, target aggregation and OPR round-trip checks remain green.
 - `cargo test -p opentrack --bin opentrack` passes 197 with the same 14 pre-existing ruler/sample-editor failures.
 
