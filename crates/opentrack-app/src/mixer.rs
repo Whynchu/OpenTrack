@@ -1235,7 +1235,7 @@ fn strip(
             at(8.0, 273.0, 21.0, 15.0),
             "sends",
             Icon::Send,
-            channel_settings::has_active_sends(track),
+            routing::has_active_sends(track),
             false,
             !is_bus,
             Some("Sends State (click to bypass sends / right-click to show destinations)"),

@@ -62,7 +62,7 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 12. **Specify and model sends.** Implemented: [T076](tasks/T076-send-routing-model.md) records destination, pre/post position, level/pan, bypass, cycle prevention, persistence and migration.
 13. **Implement and connect sends.** Source implementation and automated checks complete for track and group sends; live and hardware review remain open. See [T076](tasks/T076-send-routing-model.md).
 14. **Verify sends.** Check gain, routing, silence, bypass and edge cases offline, then listen and review real-time performance in the application.
-15. **Extract routing ownership.** Move route editing/validation coordination into a dedicated application module as the send path establishes a stable boundary.
+15. **Extract routing ownership.** Initial boundary established in `routing.rs`: send resolution, group-cycle decisions and active-send state are shared there. Broader route command ownership remains for later typed-bus work.
 16. **Build general typed buses.** Extend track/group/input/output routing only after send semantics and existing device routing are stable; preserve current simple track routing.
 
 ### Automation playback and editing

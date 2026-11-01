@@ -34,6 +34,8 @@ mod project_inspector;
 mod project_rate;
 #[path = "recording_undo.rs"]
 mod recording_undo;
+#[path = "routing.rs"]
+mod routing;
 #[path = "sample_editor.rs"]
 mod sample_editor;
 #[path = "system_stats.rs"]
@@ -81,6 +83,7 @@ use opentrack_core::workspaces::{
 };
 use opentrack_plugins::{PluginCategory, PluginDescriptor};
 use rfd::FileDialog;
+use routing::playback_sends;
 use serde::{Deserialize, Serialize};
 
 use crate::icons::ToolbarIcon;
@@ -439,52 +442,6 @@ impl ChannelSettingsSnapshot {
         track.send_routing = self.send_routing.clone();
         track.send_parameters = self.send_parameters.clone();
     }
-}
-
-/// Resolve persisted sends into the bounded immutable playback representation.
-fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<opentrack_audio::PlaybackSend> {
-    if track.sends_bypassed {
-        return Vec::new();
-    }
-    track
-        .send_routing
-        .iter()
-        .take(opentrack_core::project::MAX_SEND_SLOTS)
-        .enumerate()
-        .filter_map(|(slot, route)| {
-            let settings = track.send_parameters.get(slot).copied().unwrap_or_default();
-            if !settings.enabled || !settings.level_db.is_finite() || !settings.pan.is_finite() {
-                return None;
-            }
-            let destination = match route.as_deref()? {
-                "Stereo Out" => PlaybackOutputRoute::Stereo,
-                "Left" => PlaybackOutputRoute::Left,
-                "Right" => PlaybackOutputRoute::Right,
-                value if value.starts_with("Group:") => {
-                    let id = value.strip_prefix("Group:")?.parse::<u64>().ok()?;
-                    let index = tracks.iter().position(|candidate| {
-                        candidate.id == id
-                            && candidate.id != track.id
-                            && candidate.kind == TrackKind::Group
-                    })?;
-                    PlaybackOutputRoute::Group(index)
-                }
-                _ => return None,
-            };
-            let db = settings.level_db.clamp(-90.0, 12.0);
-            let gain = if db <= -90.0 {
-                0.0
-            } else {
-                10.0_f32.powf(db / 20.0)
-            };
-            Some(opentrack_audio::PlaybackSend {
-                destination,
-                tap: settings.tap,
-                gain,
-                pan: settings.pan.clamp(-1.0, 1.0),
-            })
-        })
-        .collect()
 }
 
 fn channel_snapshot_matches_track(snapshot: &ChannelSettingsSnapshot, track: &Track) -> bool {

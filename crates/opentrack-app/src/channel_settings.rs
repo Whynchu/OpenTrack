@@ -1,5 +1,6 @@
 //! Project-attached channel editor. Rectangles follow the recorded Cubase layout;
 //! colors follow OpenTrack's current Windows theme.
+use super::routing::{group_route_would_cycle, has_active_sends};
 use super::*;
 use opentrack_core::project::ChannelEqualizer;
 
@@ -131,51 +132,6 @@ fn menu(response: &egui::Response, width: f32, content: impl FnOnce(&mut egui::U
                 .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
         )
         .show(content);
-}
-
-fn group_route_would_cycle(tracks: &[Track], track_id: u64, target_group_id: u64) -> bool {
-    let mut pending = vec![target_group_id];
-    let mut visited = std::collections::HashSet::new();
-    while let Some(current) = pending.pop() {
-        if current == track_id {
-            return true;
-        }
-        if !visited.insert(current) {
-            continue;
-        }
-        let Some(track) = tracks.iter().find(|track| track.id == current) else {
-            continue;
-        };
-        let destinations = track
-            .output_routing
-            .iter()
-            .map(String::as_str)
-            .chain(track.send_routing.iter().flatten().map(String::as_str));
-        for destination in destinations {
-            if let Some(id) = destination
-                .strip_prefix("Group:")
-                .and_then(|id| id.parse::<u64>().ok())
-            {
-                pending.push(id);
-            }
-        }
-    }
-    false
-}
-
-pub(super) fn has_active_sends(track: &Track) -> bool {
-    !track.sends_bypassed
-        && track
-            .send_routing
-            .iter()
-            .enumerate()
-            .any(|(slot, destination)| {
-                destination.is_some()
-                    && track
-                        .send_parameters
-                        .get(slot)
-                        .is_some_and(|settings| settings.enabled)
-            })
 }
 
 pub(super) fn show(

@@ -1,5 +1,9 @@
 # Current assignment — roadmap activation (2026-11-01)
 
+## Routing boundary
+
+The application routing module now owns send-to-playback resolution, group-cycle checks used by routing menus, and the shared active-send predicate. Core project validation and the audio engine retain their existing responsibilities; routing UI and broader typed-bus commands remain for later work. Local-ASIO check and focused Channel Settings (28), mixer (11), and preset/history (4) checks passed. The running EQ review build remains untouched.
+
 ## T076 - Send model foundation
 
 Track and group sends now route in both engine paths and offline bounce, with pre/post tap, gain, pan, power, bypass, group selection, bounded compensation and cycle validation. Presets, mixer paste and slot removal preserve settings. Core, audio, focused UI and synthetic latency tests pass. A full app run has 14 timeline/pitch-editor failures that reproduce identically at baseline cae80fc. Device-bus sends, live gestures, hardware listening, VST compatibility and real-time performance remain open. See [T076](tasks/T076-send-routing-model.md).
