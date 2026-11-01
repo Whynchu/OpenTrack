@@ -1,6 +1,6 @@
 # T078 - Track volume automation contract
 
-Status: specified; no automation point model, playback, editing, or writing is implemented by this packet. This is the first slice for roadmap steps 17-20. Author: GPT-6.1 Terra.
+Status: persistent point model and curve evaluation implemented; playback, editing, and writing remain unimplemented. This is the first slice for roadmap steps 17-20. Author: GPT-6.1 Terra.
 
 ## Current state
 
@@ -9,8 +9,8 @@ Tracks persist `automation_read` and `automation_write`, both defaulting to fals
 ## First deliverable: read and play track volume
 
 - A lane belongs to a stable track ID and a typed target. The first supported target is track volume; do not silently treat an unknown target as volume. Reserve other targets for later versions. Device-bus and plug-in parameter automation remain unavailable until explicitly implemented.
-- Store finite, nonnegative positions in quarter-note beats and finite linear gains in the same 0.0 through 2.0 range as the fader. Points must be strictly ordered with no duplicate beat positions. Bound lane and point counts during validation before building a playback snapshot; set concrete limits with tests rather than accepting unbounded project data.
-- Persist empty/missing lanes as no automation. Existing OPR/OTP/RWP projects must open without changing channel gain or enabling read/write. Project format migration must preserve existing content and reject malformed data clearly. Unknown targets must either be preserved as opaque data or explicitly rejected on import; never discard them silently.
+- Store finite, nonnegative positions in quarter-note beats and finite linear gains in the same 0.0 through 2.0 range as the fader. Points must be strictly ordered with no duplicate beat positions. Validation caps each track at 16 lanes, each lane at 100,000 points, and the project at 1,000,000 points; duplicate target lanes are rejected.
+- Persist empty/missing lanes as no automation. Existing OPR/OTP/RWP projects must open without changing channel gain or enabling read/write. Native format version 27 adds the lanes and preserves existing content; earlier versions migrate on read. Builds through version 26 reject version 27 saves rather than silently discarding points. Unknown targets must either be preserved as opaque data or explicitly rejected on import; never discard them silently.
 - With Read off or no points, use the existing channel gain. With Read on and at least one point, hold the first value before the first point, interpolate linearly in **linear gain** between adjacent points, and hold the last value after the last point. A zero value is true silence. This gives deterministic behavior at zero; the fader UI may continue using its existing dB-based taper.
 - Evaluate against the same project beat and sample clock used by playback, including seeks, stop/start, loop/skip boundaries, and tempo changes. A seek or loop resets any cached search cursor. Clamp or validate before publishing; the audio callback must not allocate, lock, read UI state, or mutate the project. The selected automation value replaces the source channel fader gain before post-fader sends; pre-fader sends remain independent of it. Mute and solo still gate output.
 - Playback must not rewrite the stored base fader gain or mark the project dirty. The displayed fader may follow a read-only engine snapshot; a manual gesture must remain responsive and must not create automation unless Write is enabled. Offline bounce must use the same evaluation and timing as playback.
@@ -23,7 +23,7 @@ Tracks persist `automation_read` and `automation_write`, both defaulting to fals
 
 ## Required evidence
 
-1. Legacy and new-project serialization, malformed/oversized lanes, unknown targets, point ordering and limits.
+1. Completed for the model: legacy and version 27 round trips, malformed/oversized lanes, unknown targets, point ordering and limits. Core suite and all 17 project-file checks pass.
 2. Exact sample-boundary evaluation before, on, between and after points; mute, loop, skip, seek, tempo change, and plan replacement; identical results in live and offline render paths.
 3. Pre/post send interaction, grouped tracks, normal fader and mute behavior, undo/redo and save/reopen.
 4. Headless gesture tests for point editing, write start/stop, cancellation, queue overflow and loop crossing; actual in-app visual and audio review, including hardware and hosted plug-ins.

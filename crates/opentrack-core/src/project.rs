@@ -56,6 +56,66 @@ impl Default for SendParameters {
     }
 }
 
+/// Bounded project automation data; audio snapshots may copy these points.
+pub const MAX_AUTOMATION_LANES_PER_TRACK: usize = 16;
+pub const MAX_AUTOMATION_POINTS_PER_LANE: usize = 100_000;
+pub const MAX_AUTOMATION_POINTS_PER_PROJECT: usize = 1_000_000;
+pub const MAX_AUTOMATION_BEAT: f64 = 1_000_000.0;
+
+/// Unknown targets are rejected during decoding rather than treated as volume.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationTarget {
+    TrackVolume,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AutomationPoint {
+    /// Position in quarter-note beats on the project timeline.
+    pub beat: f64,
+    /// Linear channel gain, where 0 is silence and 1 is unity.
+    pub value: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AutomationLane {
+    pub target: AutomationTarget,
+    pub points: Vec<AutomationPoint>,
+}
+
+impl AutomationLane {
+    /// Hold the end points and interpolate in linear gain between them.
+    /// Points must be ordered and validated before publication to playback.
+    pub fn value_at(&self, beat: f64) -> Option<f32> {
+        if !beat.is_finite() || self.points.is_empty() {
+            return None;
+        }
+        let valid_gain = |value: f32| {
+            (value.is_finite() && (0.0..=MAX_CHANNEL_GAIN).contains(&value)).then_some(value)
+        };
+        let next = self.points.partition_point(|point| point.beat <= beat);
+        if next == 0 {
+            return valid_gain(self.points[0].value);
+        }
+        if next == self.points.len() {
+            return valid_gain(self.points[next - 1].value);
+        }
+        let left = self.points[next - 1];
+        let right = self.points[next];
+        let width = right.beat - left.beat;
+        if !width.is_finite() || width <= 0.0 {
+            return None;
+        }
+        let left_value = valid_gain(left.value)?;
+        let right_value = valid_gain(right.value)?;
+        let fraction = (beat - left.beat) / width;
+        Some(
+            (f64::from(left_value) + (f64::from(right_value) - f64::from(left_value)) * fraction)
+                as f32,
+        )
+    }
+}
+
 /// Reuses the existing channel-strip settings and editor without adding an arrange lane.
 /// Bus strips cannot contain media, arm recording, or monitor themselves.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,6 +147,7 @@ impl BusChannel {
             monitor: false,
             automation_read: false,
             automation_write: false,
+            automation_lanes: Vec::new(),
             input_gain_db: 0.0,
             input_phase_inverted: false,
             gain: 1.0,
@@ -148,6 +209,9 @@ pub struct Track {
     /// Automation Write control state; processing remains a separate feature.
     #[serde(default)]
     pub automation_write: bool,
+    /// Track-specific automation curves; missing in legacy projects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation_lanes: Vec<AutomationLane>,
     /// Input gain in dB, persisted for the channel input control.
     #[serde(default)]
     pub input_gain_db: f32,
@@ -988,6 +1052,7 @@ impl Project {
             monitor: false,
             automation_read: false,
             automation_write: false,
+            automation_lanes: Vec::new(),
             input_gain_db: 0.0,
             input_phase_inverted: false,
             gain: 1.0,
@@ -2109,6 +2174,7 @@ impl Project {
                 || !bus.strip.midi_parts.is_empty()
                 || bus.strip.armed
                 || bus.strip.monitor
+                || !bus.strip.automation_lanes.is_empty()
             {
                 return Err(
                     "device buses must be stereo channel strips without arrange media or recording controls",
@@ -2137,6 +2203,7 @@ impl Project {
             .iter()
             .map(|track| (track.id, (track.kind, track.parent_group_id)))
             .collect::<std::collections::BTreeMap<_, _>>();
+        let mut automation_points = 0usize;
         for track in &self.tracks {
             if track.id == 0 || track.id >= INPUT_BUS_ID || !track_ids.insert(track.id) {
                 return Err("track IDs must be nonzero and unique");
@@ -2174,6 +2241,38 @@ impl Project {
                     })
                 {
                     return Err("a nested group cannot contain another group");
+                }
+            }
+            if track.automation_lanes.len() > MAX_AUTOMATION_LANES_PER_TRACK {
+                return Err("a track has too many automation lanes");
+            }
+            let mut automation_targets = BTreeSet::new();
+            for lane in &track.automation_lanes {
+                if !automation_targets.insert(lane.target) {
+                    return Err("a track cannot contain duplicate automation targets");
+                }
+                if lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE {
+                    return Err("an automation lane has too many points");
+                }
+                automation_points = automation_points
+                    .checked_add(lane.points.len())
+                    .ok_or("project has too many automation points")?;
+                if automation_points > MAX_AUTOMATION_POINTS_PER_PROJECT {
+                    return Err("project has too many automation points");
+                }
+                if lane.points.iter().any(|point| {
+                    !point.beat.is_finite()
+                        || !(0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat)
+                        || !point.value.is_finite()
+                        || !(0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
+                }) || lane
+                    .points
+                    .windows(2)
+                    .any(|points| points[0].beat >= points[1].beat)
+                {
+                    return Err(
+                        "automation points must have ordered finite positions and valid gain",
+                    );
                 }
             }
             if track.send_routing.len() > MAX_SEND_SLOTS
@@ -2620,6 +2719,167 @@ fn first_midi_controller_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_automation_interpolates_and_holds_endpoints() {
+        let lane = AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![
+                AutomationPoint {
+                    beat: 2.0,
+                    value: 0.0,
+                },
+                AutomationPoint {
+                    beat: 6.0,
+                    value: 2.0,
+                },
+                AutomationPoint {
+                    beat: 8.0,
+                    value: 1.0,
+                },
+            ],
+        };
+        for (beat, expected) in [
+            (-1.0, 0.0),
+            (2.0, 0.0),
+            (4.0, 1.0),
+            (6.0, 2.0),
+            (7.0, 1.5),
+            (10.0, 1.0),
+        ] {
+            assert_eq!(lane.value_at(beat), Some(expected));
+        }
+        assert_eq!(lane.value_at(f64::NAN), None);
+        assert_eq!(
+            AutomationLane {
+                target: AutomationTarget::TrackVolume,
+                points: Vec::new()
+            }
+            .value_at(1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn automation_round_trips_and_legacy_tracks_have_no_lanes() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].automation_read = true;
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![AutomationPoint {
+                beat: 1.25,
+                value: 0.7,
+            }],
+        });
+        assert!(project.validate().is_ok());
+        let mut encoded = serde_json::to_value(&project).unwrap();
+        let decoded: Project = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(
+            decoded.tracks[0].automation_lanes,
+            project.tracks[0].automation_lanes
+        );
+        encoded["tracks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("automation_lanes");
+        let legacy: Project = serde_json::from_value(encoded).unwrap();
+        assert!(legacy.tracks[0].automation_lanes.is_empty());
+        assert!(legacy.validate().is_ok());
+        assert!(serde_json::from_str::<AutomationTarget>("\"unknown_parameter\"").is_err());
+    }
+
+    #[test]
+    fn automation_validation_rejects_invalid_points_duplicates_and_unsupported_bus_lanes() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let lane = AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![AutomationPoint {
+                beat: 1.0,
+                value: 1.0,
+            }],
+        };
+        project.tracks[0].automation_lanes = vec![lane.clone(), lane.clone()];
+        assert_eq!(
+            project.validate(),
+            Err("a track cannot contain duplicate automation targets")
+        );
+        project.tracks[0].automation_lanes = vec![lane.clone()];
+        for point in [
+            AutomationPoint {
+                beat: f64::NAN,
+                value: 1.0,
+            },
+            AutomationPoint {
+                beat: -1.0,
+                value: 1.0,
+            },
+            AutomationPoint {
+                beat: 1.0,
+                value: f32::INFINITY,
+            },
+            AutomationPoint {
+                beat: 1.0,
+                value: 2.1,
+            },
+        ] {
+            project.tracks[0].automation_lanes[0].points = vec![point];
+            assert!(project.validate().is_err());
+        }
+        project.tracks[0].automation_lanes[0].points = vec![lane.points[0], lane.points[0]];
+        assert!(project.validate().is_err());
+        project.tracks[0].automation_lanes[0].points =
+            vec![lane.points[0]; MAX_AUTOMATION_POINTS_PER_LANE + 1];
+        assert_eq!(
+            project.validate(),
+            Err("an automation lane has too many points")
+        );
+        project.tracks[0].automation_lanes.clear();
+        project.input_channel.strip.automation_lanes.push(lane);
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn project_automation_budget_is_enforced_across_tracks() {
+        let mut project = Project::default();
+        let points: Vec<_> = (0..MAX_AUTOMATION_POINTS_PER_LANE)
+            .map(|i| AutomationPoint {
+                beat: i as f64,
+                value: 1.0,
+            })
+            .collect();
+        for _ in 0..10 {
+            project.add_track(TrackKind::Audio);
+            project
+                .tracks
+                .last_mut()
+                .unwrap()
+                .automation_lanes
+                .push(AutomationLane {
+                    target: AutomationTarget::TrackVolume,
+                    points: points.clone(),
+                });
+        }
+        assert!(project.validate().is_ok());
+        project.add_track(TrackKind::Audio);
+        project
+            .tracks
+            .last_mut()
+            .unwrap()
+            .automation_lanes
+            .push(AutomationLane {
+                target: AutomationTarget::TrackVolume,
+                points: vec![AutomationPoint {
+                    beat: 0.0,
+                    value: 1.0,
+                }],
+            });
+        assert_eq!(
+            project.validate(),
+            Err("project has too many automation points")
+        );
+    }
 
     #[test]
     fn send_parameters_round_trip_and_legacy_projects_default_to_inactive() {

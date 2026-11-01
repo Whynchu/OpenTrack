@@ -2,7 +2,7 @@
 
 ## T078 - Automation contract
 
-The first automation slice is specified as track-volume playback with beat-based points and linear-gain interpolation, followed by explicit editing and bounded gesture recording. Existing R/W flags and empty lane remain nonfunctional for automation processing until the implementation lands. See [T078](tasks/T078-volume-automation.md).
+Track-volume automation points now have a bounded, validated persistent model and deterministic linear-gain evaluation. Native format v27 protects those points from older builds; v1-v26 still migrate. Playback, editing and writing are not yet connected. Existing R/W flags and the visible lane remain nonfunctional for automation processing until that work lands. See [T078](tasks/T078-volume-automation.md).
 
 ## Routing boundary
 

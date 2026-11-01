@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 26;
+const FORMAT_VERSION: u32 = 27;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -969,6 +969,48 @@ mod tests {
             ARRANGE_VIEW_STATE_KEY.to_owned(),
             serde_json::to_string(view).expect("view state should encode"),
         );
+    }
+
+    #[test]
+    fn automation_project_round_trips_and_version_26_migrates_without_points() {
+        use opentrack_core::project::{AutomationLane, AutomationPoint, AutomationTarget};
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].automation_read = true;
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![AutomationPoint {
+                beat: 2.0,
+                value: 0.5,
+            }],
+        });
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-automation-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        document.write(&path).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, 27);
+        assert_eq!(
+            loaded.project.tracks[0].automation_lanes,
+            document.project.tracks[0].automation_lanes
+        );
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 26.into();
+        legacy["project"]["tracks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("automation_lanes");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let migrated = ProjectFile::read(&path).unwrap();
+        assert_eq!(migrated.version, 27);
+        assert!(migrated.project.tracks[0].automation_read);
+        assert!(migrated.project.tracks[0].automation_lanes.is_empty());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
