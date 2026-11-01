@@ -392,7 +392,11 @@ fn sidebar(
             160.0,
         ),
         (Icon::Text("R"), "Read All Automation", 183.0),
-        (Icon::Text("W"), "Write All Automation", 200.0),
+        (
+            Icon::Text("W"),
+            "Write automation flags (recording not implemented)",
+            200.0,
+        ),
     ];
     for (i, (symbol, tip, y)) in buttons.into_iter().enumerate() {
         let active = project.tracks.iter().any(|t| match i {
@@ -1120,7 +1124,12 @@ fn strip(
             ),
             ("L", track.listen, "Listen", 160.0),
             ("R", track.automation_read, "Read Automation", 183.0),
-            ("W", track.automation_write, "Write Automation", 200.0),
+            (
+                "W",
+                track.automation_write,
+                "Write automation (recording not implemented)",
+                200.0,
+            ),
         ]
         .into_iter()
         .enumerate()

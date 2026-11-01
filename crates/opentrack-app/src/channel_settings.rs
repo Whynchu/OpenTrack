@@ -2631,7 +2631,12 @@ fn strip(
         ),
         ("L", track.listen, "Listen", 210.0),
         ("R", track.automation_read, "Read Automation", 233.0),
-        ("W", track.automation_write, "Write Automation", 250.0),
+        (
+            "W",
+            track.automation_write,
+            "Write automation (recording not implemented)",
+            250.0,
+        ),
     ]
     .into_iter()
     .enumerate()

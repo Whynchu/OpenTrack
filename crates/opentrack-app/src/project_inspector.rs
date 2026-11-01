@@ -440,7 +440,12 @@ pub(super) fn show(
                 true,
             ),
             ("R", "Read Enable", track.automation_read, true),
-            ("W", "Write Enable", track.automation_write, true),
+            (
+                "W",
+                "Write automation (recording not implemented)",
+                track.automation_write,
+                true,
+            ),
             ("▦", "Open Device Panels", false, false),
             ("×", "Auto Fades Settings...", false, false),
         ]

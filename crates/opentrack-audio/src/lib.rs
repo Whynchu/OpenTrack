@@ -382,6 +382,7 @@ struct PlaybackTrackRuntime {
     /// meters, the spectrum tap and the dynamic EQ see the gained signal.
     input_gain: GainControl,
     mix: MixControl,
+    automation_cursor: std::cell::UnsafeCell<usize>,
     equalizer_control: Arc<EqualizerControl>,
     meter_accumulator: std::cell::UnsafeCell<[f32; 2]>,
     input_meter_accumulator: std::cell::UnsafeCell<[f32; 2]>,
@@ -735,6 +736,13 @@ impl PlaybackTrackRuntime {
         hosted_processing: bool,
         route_delays: Option<TrackRouteDelays>,
     ) -> Self {
+        if settings.volume_automation.as_ref().is_some_and(|lane| {
+            lane.target != opentrack_core::project::AutomationTarget::TrackVolume
+                || lane.points.is_empty()
+                || !lane.is_valid()
+        }) {
+            settings.volume_automation = None;
+        }
         // Offset the playback schedule, leaving arrange positions untouched.
         let offset_beats = f64::from(settings.track_delay_ms) * tempo_bpm / 60_000.0;
         for clip in &mut settings.clips {
@@ -773,6 +781,7 @@ impl PlaybackTrackRuntime {
         );
         Self {
             mix: MixControl::new(settings.gain, settings.pan, sample_rate),
+            automation_cursor: std::cell::UnsafeCell::new(0),
             settings,
             midi_controls,
             equalizer_control,
@@ -953,6 +962,8 @@ pub struct PlaybackTrackSettings {
     pub hosted_inserts: Vec<HostedInsert>,
     pub monitor_input: Option<PlaybackInputChannel>,
     pub output_route: PlaybackOutputRoute,
+    /// Immutable track-volume curve, enabled only when automation Read is on.
+    pub volume_automation: Option<Arc<opentrack_core::project::AutomationLane>>,
     /// Prevalidated, active sends prepared on the control thread.
     pub sends: Vec<PlaybackSend>,
 }
@@ -3689,7 +3700,9 @@ fn render_hosted_blocks<T>(
                     continue;
                 }
                 let (track_left, track_right) = buffers.delay_frame(post.0, post.1);
-                let (gain, pan) = track.mix.next();
+                let (base_gain, pan) = track.mix.next();
+                let gain =
+                    automation_gain(track, plan.tempo_bpm, frames[index], sample_rate, base_gain);
                 let output_left = track_left * gain * (1.0 - pan.max(0.0));
                 let output_right = track_right * gain * (1.0 + pan.min(0.0));
                 // SAFETY: the same serialized callback owns this accumulator.
@@ -3722,7 +3735,7 @@ fn render_hosted_blocks<T>(
             render_hosted_group_block(
                 plan,
                 group_index,
-                count,
+                &frames[..count],
                 sample_rate,
                 &mut master_left,
                 &mut master_right,
@@ -3925,11 +3938,12 @@ fn render_hosted_track_block(
 fn render_hosted_group_block(
     plan: &PlaybackPlan,
     group_index: usize,
-    count: usize,
+    frames: &[u64],
     sample_rate: u32,
     master_left: &mut [f32; HOSTED_BLOCK_CAPACITY],
     master_right: &mut [f32; HOSTED_BLOCK_CAPACITY],
 ) {
+    let count = frames.len();
     let track = &plan.tracks[group_index];
     let inaudible = track.settings.muted
         || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
@@ -3990,7 +4004,8 @@ fn render_hosted_group_block(
             continue;
         }
         let (left, right) = buffers.delay_frame(post.0, post.1);
-        let (gain, pan) = track.mix.next();
+        let (base_gain, pan) = track.mix.next();
+        let gain = automation_gain(track, plan.tempo_bpm, frames[index], sample_rate, base_gain);
         let output_left = left * gain * (1.0 - pan.max(0.0));
         let output_right = right * gain * (1.0 + pan.min(0.0));
         // SAFETY: this renderer is the only writer of the meter accumulator.
@@ -4153,7 +4168,8 @@ fn mix_frame_with_policy(
         }
         // Linear stereo balance preserves unity at center, with the opposite
         // side attenuated toward either edge. Exact reference pan law is unmeasured.
-        let (gain, pan) = track.mix.next();
+        let (base_gain, pan) = track.mix.next();
+        let gain = automation_gain(track, plan.tempo_bpm, output_frame, output_rate, base_gain);
         let output_left = track_left * gain * (1.0 - pan.max(0.0));
         let output_right = track_right * gain * (1.0 + pan.min(0.0));
         // SAFETY: mix_frame only runs in the serialized audio callback.
@@ -4214,7 +4230,8 @@ fn mix_frame_with_policy(
         if inaudible {
             continue;
         }
-        let (gain, pan) = track.mix.next();
+        let (base_gain, pan) = track.mix.next();
+        let gain = automation_gain(track, plan.tempo_bpm, output_frame, output_rate, base_gain);
         let output_left = track_left * gain * (1.0 - pan.max(0.0));
         let output_right = track_right * gain * (1.0 + pan.min(0.0));
         // SAFETY: mix_frame only runs in the serialized audio callback.
@@ -4241,6 +4258,26 @@ fn mix_frame_with_policy(
         );
     }
     (left, right)
+}
+
+/// Evaluate the immutable, validated curve at the current sample's project beat.
+fn automation_gain(
+    track: &PlaybackTrackRuntime,
+    tempo_bpm: f64,
+    frame: u64,
+    sample_rate: u32,
+    base_gain: f32,
+) -> f32 {
+    let Some(lane) = &track.settings.volume_automation else {
+        return base_gain;
+    };
+    if sample_rate == 0 {
+        return base_gain;
+    }
+    let beat = frame as f64 * tempo_bpm / (f64::from(sample_rate) * 60.0);
+    // SAFETY: the callback gate permits only one writer to this cursor.
+    let cursor = unsafe { &mut *track.automation_cursor.get() };
+    lane.value_at_cached(beat, cursor).unwrap_or(base_gain)
 }
 
 /// Send values are prepared outside the callback; routing only accumulates
@@ -5762,6 +5799,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: None,
+                    volume_automation: None,
                     sends: Vec::new(),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
@@ -5859,6 +5897,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                volume_automation: None,
                 sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -5896,6 +5935,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: Some(PlaybackInputChannel::Stereo),
+                    volume_automation: None,
                     sends: Vec::new(),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
@@ -5978,6 +6018,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: None,
+                    volume_automation: None,
                     sends: Vec::new(),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
@@ -6066,6 +6107,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                volume_automation: None,
                 sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -7192,6 +7234,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: Some(PlaybackInputChannel::Stereo),
+                volume_automation: None,
                 sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -7302,6 +7345,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: Some(PlaybackInputChannel::Stereo),
+                    volume_automation: None,
                     sends: Vec::new(),
                     output_route: route,
                 }],
@@ -7390,6 +7434,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                volume_automation: None,
                 sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
@@ -7706,16 +7751,21 @@ mod hosted_processing_tests {
             inserts_bypassed: false,
             hosted_inserts,
             monitor_input: None,
+            volume_automation: None,
             sends: Vec::new(),
             output_route: PlaybackOutputRoute::Stereo,
         }
     }
 
     fn render(plan: Arc<PlaybackPlan>, frames: usize) -> Vec<f32> {
+        render_from(plan, 0, frames)
+    }
+
+    fn render_from(plan: Arc<PlaybackPlan>, start_frame: u64, frames: usize) -> Vec<f32> {
         let plan = ArcSwap::from(plan);
         let tone = AtomicBool::new(false);
         let playing = AtomicBool::new(true);
-        let playhead = AtomicU64::new(0);
+        let playhead = AtomicU64::new(start_frame);
         let generation = AtomicU64::new(0);
         let active = AtomicBool::new(false);
         let monitor = Arc::new(ArcSwapOption::empty());
@@ -8169,6 +8219,315 @@ mod hosted_processing_tests {
         assert_eq!(offline.render_next(&mut output).unwrap(), 128);
         for sample in output {
             assert!((sample - 0.0625).abs() < 1.0e-6, "got {sample}");
+        }
+    }
+
+    fn test_volume_curve() -> Arc<opentrack_core::project::AutomationLane> {
+        use opentrack_core::project::{AutomationLane, AutomationPoint, AutomationTarget};
+        Arc::new(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![
+                AutomationPoint {
+                    beat: 0.0,
+                    value: 0.0,
+                },
+                AutomationPoint {
+                    beat: 4.0 / 24_000.0,
+                    value: 1.0,
+                },
+                AutomationPoint {
+                    beat: 8.0 / 24_000.0,
+                    value: 0.5,
+                },
+            ],
+        })
+    }
+
+    fn expected_automation_gain(frame: usize) -> f32 {
+        if frame <= 4 {
+            frame as f32 / 4.0
+        } else if frame <= 8 {
+            1.0 - (frame - 4) as f32 / 8.0
+        } else {
+            0.5
+        }
+    }
+
+    #[test]
+    fn volume_automation_is_sample_accurate_in_both_render_paths() {
+        for hosted in [false, true] {
+            let inserts = if hosted {
+                vec![HostedInsert {
+                    processor: GainProcessor::new(1.0, 0.0, 0, false),
+                    enabled: true,
+                }]
+            } else {
+                Vec::new()
+            };
+            let mut settings = track(constant_source(0.125, 256), inserts);
+            settings.gain = 0.25;
+            settings.volume_automation = Some(test_volume_curve());
+            let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+            for (frame, samples) in render(plan, 16).chunks_exact(2).enumerate() {
+                let expected = 0.125 * expected_automation_gain(frame);
+                assert!(
+                    (samples[0] - expected).abs() < 1.0e-6
+                        && (samples[1] - expected).abs() < 1.0e-6,
+                    "hosted={hosted} frame={frame} samples={samples:?} expected={expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn group_volume_automation_is_sample_accurate_in_both_render_paths() {
+        for hosted in [false, true] {
+            let inserts = if hosted {
+                vec![HostedInsert {
+                    processor: GainProcessor::new(1.0, 0.0, 0, false),
+                    enabled: true,
+                }]
+            } else {
+                Vec::new()
+            };
+            let mut source = track(constant_source(0.125, 256), inserts);
+            source.output_route = PlaybackOutputRoute::Group(1);
+            let mut group = track(constant_source(0.0, 256), Vec::new());
+            group.is_group = true;
+            group.volume_automation = Some(test_volume_curve());
+            let plan = Arc::new(PlaybackPlan::new(
+                120.0,
+                vec![source, group],
+                1,
+                48_000,
+                None,
+            ));
+            for (frame, samples) in render(plan, 16).chunks_exact(2).enumerate() {
+                let expected = 0.125 * expected_automation_gain(frame);
+                assert!(
+                    (samples[0] - expected).abs() < 1.0e-6
+                        && (samples[1] - expected).abs() < 1.0e-6,
+                    "hosted={hosted} frame={frame} samples={samples:?} expected={expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volume_automation_affects_post_fader_sends_but_not_pre_fader_sends() {
+        use opentrack_core::project::SendTap;
+        for hosted in [false, true] {
+            let inserts = if hosted {
+                vec![HostedInsert {
+                    processor: GainProcessor::new(1.0, 0.0, 0, false),
+                    enabled: true,
+                }]
+            } else {
+                Vec::new()
+            };
+            let mut settings = track(constant_source(0.125, 256), inserts);
+            settings.output_route = PlaybackOutputRoute::Disconnected;
+            settings.volume_automation = Some(test_volume_curve());
+            settings.sends = vec![
+                PlaybackSend {
+                    destination: PlaybackOutputRoute::Left,
+                    tap: SendTap::PreFader,
+                    gain: 1.0,
+                    pan: 0.0,
+                },
+                PlaybackSend {
+                    destination: PlaybackOutputRoute::Right,
+                    tap: SendTap::PostFader,
+                    gain: 1.0,
+                    pan: 0.0,
+                },
+            ];
+            let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+            for (frame, samples) in render(plan, 16).chunks_exact(2).enumerate() {
+                assert!((samples[0] - 0.125).abs() < 1.0e-6);
+                assert!(
+                    (samples[1] - 0.125 * expected_automation_gain(frame)).abs() < 1.0e-6,
+                    "hosted={hosted} frame={frame} samples={samples:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volume_automation_follows_looped_sample_clock_in_both_render_paths() {
+        for hosted in [false, true] {
+            let inserts = if hosted {
+                vec![HostedInsert {
+                    processor: GainProcessor::new(1.0, 0.0, 0, false),
+                    enabled: true,
+                }]
+            } else {
+                Vec::new()
+            };
+            let mut settings = track(constant_source(0.125, 256), inserts);
+            settings.volume_automation = Some(test_volume_curve());
+            let plan = Arc::new(PlaybackPlan::new(
+                120.0,
+                vec![settings],
+                1,
+                48_000,
+                Some((0.0, 8.0 / 24_000.0)),
+            ));
+            for (frame, samples) in render(plan, 24).chunks_exact(2).enumerate() {
+                let expected = 0.125 * expected_automation_gain(frame % 8);
+                assert!(
+                    (samples[0] - expected).abs() < 1.0e-6,
+                    "hosted={hosted} frame={frame} samples={samples:?} expected={expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volume_automation_follows_seeks_skip_and_tempo_in_both_render_paths() {
+        for hosted in [false, true] {
+            let inserts = || {
+                if hosted {
+                    vec![HostedInsert {
+                        processor: GainProcessor::new(1.0, 0.0, 0, false),
+                        enabled: true,
+                    }]
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut settings = track(constant_source(0.125, 256), inserts());
+            settings.volume_automation = Some(test_volume_curve());
+            let plan = Arc::new(PlaybackPlan::new(
+                120.0,
+                vec![settings.clone()],
+                1,
+                48_000,
+                None,
+            ));
+            for (offset, samples) in render_from(plan, 5, 4).chunks_exact(2).enumerate() {
+                let expected = 0.125 * expected_automation_gain(offset + 5);
+                assert!(
+                    (samples[0] - expected).abs() < 1.0e-6,
+                    "seek hosted={hosted} offset={offset}: {samples:?}"
+                );
+            }
+            let mut skip = PlaybackPlan::new(
+                120.0,
+                vec![settings.clone()],
+                1,
+                48_000,
+                Some((2.0 / 24_000.0, 6.0 / 24_000.0)),
+            );
+            skip.cycle_mode = CycleMode::Skip;
+            let expected_frames = [0, 1, 6, 7, 8, 9];
+            for (samples, frame) in render(Arc::new(skip), expected_frames.len())
+                .chunks_exact(2)
+                .zip(expected_frames)
+            {
+                let expected = 0.125 * expected_automation_gain(frame);
+                assert!(
+                    (samples[0] - expected).abs() < 1.0e-6,
+                    "skip hosted={hosted} frame={frame}: {samples:?}"
+                );
+            }
+            let slower = Arc::new(PlaybackPlan::new(60.0, vec![settings], 1, 48_000, None));
+            for (frame, samples) in render(slower, 8).chunks_exact(2).enumerate() {
+                let expected = 0.125 * frame as f32 / 8.0;
+                assert!(
+                    (samples[0] - expected).abs() < 1.0e-6,
+                    "tempo hosted={hosted} frame={frame}: {samples:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volume_automation_matches_offline_render_and_keeps_base_gain() {
+        let mut settings = track(constant_source(0.125, 256), Vec::new());
+        settings.gain = 0.25;
+        settings.volume_automation = Some(test_volume_curve());
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![settings.clone()],
+            1,
+            48_000,
+            None,
+        ));
+        let live = render(Arc::clone(&plan), 16);
+        assert_eq!(plan.tracks[0].settings.gain, 0.25);
+        let mut offline = OfflineRenderer::new(
+            120.0,
+            vec![settings],
+            48_000,
+            0.0,
+            1.0,
+            &opentrack_core::project::BusChannel::output().strip,
+            Vec::new(),
+        )
+        .unwrap();
+        let mut output = vec![0.0; 32];
+        assert_eq!(offline.render_next(&mut output).unwrap(), 16);
+        assert_eq!(live, output);
+    }
+
+    #[test]
+    fn offline_range_starts_at_the_requested_automation_beat() {
+        let mut settings = track(constant_source(0.125, 256), Vec::new());
+        settings.volume_automation = Some(test_volume_curve());
+        let live = render_from(
+            Arc::new(PlaybackPlan::new(
+                120.0,
+                vec![settings.clone()],
+                1,
+                48_000,
+                None,
+            )),
+            5,
+            8,
+        );
+        let mut offline = OfflineRenderer::new(
+            120.0,
+            vec![settings],
+            48_000,
+            5.0 / 24_000.0,
+            13.0 / 24_000.0,
+            &opentrack_core::project::BusChannel::output().strip,
+            Vec::new(),
+        )
+        .unwrap();
+        let mut output = vec![0.0; 16];
+        assert_eq!(offline.render_next(&mut output).unwrap(), 8);
+        assert_eq!(live, output);
+    }
+
+    #[test]
+    fn malformed_or_empty_volume_automation_falls_back_to_base_gain() {
+        use opentrack_core::project::{AutomationLane, AutomationPoint, AutomationTarget};
+        for points in [
+            Vec::new(),
+            vec![
+                AutomationPoint {
+                    beat: 2.0,
+                    value: 1.0,
+                },
+                AutomationPoint {
+                    beat: 1.0,
+                    value: 0.0,
+                },
+            ],
+        ] {
+            let mut settings = track(constant_source(0.125, 256), Vec::new());
+            settings.gain = 0.25;
+            settings.volume_automation = Some(Arc::new(AutomationLane {
+                target: AutomationTarget::TrackVolume,
+                points,
+            }));
+            let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+            assert!(plan.tracks[0].settings.volume_automation.is_none());
+            for sample in render(plan, 8) {
+                assert!((sample - 0.03125).abs() < 1.0e-6);
+            }
         }
     }
 

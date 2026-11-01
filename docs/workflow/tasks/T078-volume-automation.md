@@ -1,6 +1,6 @@
 # T078 - Track volume automation contract
 
-Status: persistent point model and curve evaluation implemented; playback, editing, and writing remain unimplemented. This is the first slice for roadmap steps 17-20. Author: GPT-6.1 Terra.
+Status: persistent point model and read-only track-volume playback implemented in source; editing, writing, fader-follow display and live acceptance remain open. This is the first slice for roadmap steps 17-20. Author: GPT-6.1 Terra.
 
 ## Current state
 
@@ -28,3 +28,9 @@ Tracks persist `automation_read` and `automation_write`, both defaulting to fals
 3. Pre/post send interaction, grouped tracks, normal fader and mute behavior, undo/redo and save/reopen.
 4. Headless gesture tests for point editing, write start/stop, cancellation, queue overflow and loop crossing; actual in-app visual and audio review, including hardware and hosted plug-ins.
 5. Callback timing and allocation checks on representative projects. Do not claim write or live acceptance based only on source presence or compilation.
+
+## Current playback evidence and limitations
+
+Read-enabled, valid, nonempty track-volume lanes are published as immutable playback data. Both ordinary and hosted paths evaluate at each project sample, including grouped tracks; the per-track cursor avoids repeated searches during sequential playback and handles seeks and loops. Tests cover boundaries, tempo, seek, loop/skip, group routing, pre/post sends, invalid lanes, base-gain preservation, and live/offline sample parity including a nonzero bounce start. The full core suite passed 39 tests; the audio suite passed 142 with 3 ignored. The app automation snapshot check passed. The wider app suite passed 215 with 14 baseline failures and 9 ignored; the same 14 failures occur at baseline cae80fc. These are automated, device-free checks; live hardware and real plug-ins remain unreviewed.
+
+There is no in-app automation-point editor or recording path yet. A stored curve overrides the base fader while Read is enabled; the displayed fader does not yet follow the automated gain and manual movement does not temporarily override it. Write controls retain their legacy flags but their tooltips now state that recording is not implemented. Avoid presenting this source-level playback as a completed automation workflow until editing, writing, display and live acceptance are done.

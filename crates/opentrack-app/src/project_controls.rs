@@ -341,7 +341,7 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
             if index == 0 {
                 "Read Enable"
             } else {
-                "Write Enable"
+                "Write automation (recording not implemented)"
             },
             active,
             true,

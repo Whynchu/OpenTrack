@@ -276,6 +276,7 @@ mod tests {
             inserts_bypassed: false,
             hosted_inserts: Vec::new(),
             monitor_input: None,
+            volume_automation: None,
             sends: Vec::new(),
             output_route: PlaybackOutputRoute::Stereo,
         };

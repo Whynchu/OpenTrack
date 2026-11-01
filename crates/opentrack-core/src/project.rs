@@ -84,20 +84,55 @@ pub struct AutomationLane {
 }
 
 impl AutomationLane {
+    /// Validate a lane once on the control thread before publishing it.
+    pub fn is_valid(&self) -> bool {
+        self.points.len() <= MAX_AUTOMATION_POINTS_PER_LANE
+            && self.points.iter().all(|point| {
+                point.beat.is_finite()
+                    && (0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat)
+                    && point.value.is_finite()
+                    && (0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
+            })
+            && self
+                .points
+                .windows(2)
+                .all(|pair| pair[0].beat < pair[1].beat)
+    }
+
     /// Hold the end points and interpolate in linear gain between them.
     /// Points must be ordered and validated before publication to playback.
     pub fn value_at(&self, beat: f64) -> Option<f32> {
+        self.value_at_cached(beat, &mut 0)
+    }
+
+    /// Reuse the next-point index during sequential playback. Seeks, loops and
+    /// arbitrary backwards jumps fall back to a bounded binary search.
+    pub fn value_at_cached(&self, beat: f64, cursor: &mut usize) -> Option<f32> {
         if !beat.is_finite() || self.points.is_empty() {
             return None;
         }
+        let count = self.points.len();
+        let mut next = (*cursor).min(count);
+        let after_left = next == 0 || self.points[next - 1].beat <= beat;
+        let before_right = next == count || beat < self.points[next].beat;
+        if !(after_left && before_right) {
+            if next < count
+                && self.points[next].beat <= beat
+                && (next + 1 == count || beat < self.points[next + 1].beat)
+            {
+                next += 1;
+            } else {
+                next = self.points.partition_point(|point| point.beat <= beat);
+            }
+        }
+        *cursor = next;
         let valid_gain = |value: f32| {
             (value.is_finite() && (0.0..=MAX_CHANNEL_GAIN).contains(&value)).then_some(value)
         };
-        let next = self.points.partition_point(|point| point.beat <= beat);
         if next == 0 {
             return valid_gain(self.points[0].value);
         }
-        if next == self.points.len() {
+        if next == count {
             return valid_gain(self.points[next - 1].value);
         }
         let left = self.points[next - 1];
@@ -2260,16 +2295,7 @@ impl Project {
                 if automation_points > MAX_AUTOMATION_POINTS_PER_PROJECT {
                     return Err("project has too many automation points");
                 }
-                if lane.points.iter().any(|point| {
-                    !point.beat.is_finite()
-                        || !(0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat)
-                        || !point.value.is_finite()
-                        || !(0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
-                }) || lane
-                    .points
-                    .windows(2)
-                    .any(|points| points[0].beat >= points[1].beat)
-                {
+                if !lane.is_valid() {
                     return Err(
                         "automation points must have ordered finite positions and valid gain",
                     );
@@ -2758,6 +2784,35 @@ mod tests {
             .value_at(1.0),
             None
         );
+    }
+
+    #[test]
+    fn cached_automation_matches_random_access_after_seeks_and_loops() {
+        let lane = AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![
+                AutomationPoint {
+                    beat: 1.0,
+                    value: 0.0,
+                },
+                AutomationPoint {
+                    beat: 2.0,
+                    value: 2.0,
+                },
+                AutomationPoint {
+                    beat: 4.0,
+                    value: 0.5,
+                },
+            ],
+        };
+        let mut cursor = usize::MAX;
+        for beat in [0.0, 1.0, 1.5, 2.0, 3.0, 5.0, 1.5, 0.0, 4.0, 2.0, 100.0] {
+            assert_eq!(
+                lane.value_at_cached(beat, &mut cursor),
+                lane.value_at(beat),
+                "beat {beat}"
+            );
+        }
     }
 
     #[test]
