@@ -28,7 +28,7 @@ User confirmed T071 CPU/memory meters complete and authorized execution toward t
 
 Next roadmap workflows are tracked in `docs/workflow/roadmap-32-steps.md`. T074 audio mixdown/export has an end-to-end source implementation and awaits runtime acceptance; its contract and evidence are in `docs/workflow/tasks/T074-audio-mixdown-export.md`.
 
-T074 now has an end-to-end source implementation: the export menu opens a beat-range/rate/encoding dialog, and a worker renders through an isolated graph and VST3 runtime to an atomically replaced WAV. The full audio suite passes (121 passed, 3 manual checks ignored), and native plus Windows x64 local-ASIO compile checks pass. Runtime interaction, active-playback parity and listening remain pending.
+T074 now has an end-to-end source implementation: the export menu opens a beat-range/rate/encoding dialog, and a worker renders through an isolated graph and VST3 runtime to an atomically replaced WAV. Export uses the latest prepared immutable graph snapshot without rebuilding the live device plan. Targeted offline-render (3) and WAV (3) tests pass, and native plus Windows x64 local-ASIO compile checks pass. Runtime interaction, active-playback parity and listening remain pending.
 
 T075 adds bounded format-0/1 PPQ MIDI import and format-1 export in `opentrack-core`, with file actions and background I/O in `midi_file.rs`. Eight focused tests, including format-1 import and an independent export decoder, pass; the complete core suite passes (31/31). The Windows x64 local-ASIO release build succeeds. Independent DAW files, undo/redo and in-app validation remain open. Kubuntu support was part of development and was user-verified; Windows x64 remains primary.
 

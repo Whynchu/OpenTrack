@@ -240,11 +240,10 @@ impl super::OpenTrackApp {
         {
             return Err(format!("media source is unavailable: {}", path.display()));
         }
-        self.rebuild_audio_plan();
-        let snapshot = self
-            .offline_playback_settings
-            .clone()
-            .ok_or_else(|| "the project playback graph is not ready".to_owned())?;
+        let snapshot = self.offline_playback_settings.clone().ok_or_else(|| {
+            "the project playback graph is not ready yet; wait for playback setup to finish"
+                .to_owned()
+        })?;
         let mut project = self.data.project.clone();
         self.vst3_runtime.capture_states(&mut project);
         let progress = Arc::new(Mutex::new((0, 0)));

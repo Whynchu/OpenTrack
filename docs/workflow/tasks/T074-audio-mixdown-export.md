@@ -29,6 +29,7 @@
 - `cargo test -p opentrack-audio offline_render::tests` passes (3/3) for range validation, bounded/final chunks, and generated MIDI audio.
 - Added bounded-buffer stereo WAV output, PCM16/24 and float32 conversion, finite-sample checks, progress and cancellation, temporary sibling cleanup, and replace-on-success file commit on Windows and Unix.
 - Added File > Export > Audio Mixdown dialog for beat range, sample rate and encoding. A worker owns a separate VST3 runtime initialized from captured project state; export does not require an audio output device and checks unresolved media before starting.
+- Export startup now clones the latest prepared immutable playback snapshot and does not call `rebuild_audio_plan`; this prevents an export request from replacing or restarting the active device graph. If playback setup has not prepared a snapshot, export reports that it is not ready yet instead of mutating the live graph to force one.
 - The full audio suite passes (121 passed, 3 manual checks ignored), including renderer range/signal checks, WAV encoding, cancellation cleanup and destination replacement. Native and Windows x64 local-ASIO `cargo check` pass; `cargo fmt --all -- --check` and `git diff --check` pass. Native runtime listening and app interaction remain unreviewed.
 - Remaining acceptance includes full playback-plan equivalence, active-playback non-mutation under real-time load, installed VST3 behavior, save/reopen preservation, and review on WASAPI and Kubuntu Linux.
 
