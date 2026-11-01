@@ -1268,42 +1268,55 @@ fn tonal_weighting_db(index: usize, tilt_db_per_octave: i8) -> f32 {
     f32::from(tilt_db_per_octave) * octaves_below_khz
 }
 
-/// Broad target bands: average the target curve over each labelled region and
-/// paint one translucent band there, behind the precise curve. This follows the
-/// tonal-balance idea of judging broad ranges rather than a single line.
-fn paint_tonal_target_bands(ui: &egui::Ui, plot: Rect, relative_db: &[f32], color: Color32) {
+/// Broad target band: one translucent envelope that follows the target curve,
+/// with the region separators drawn behind it. This matches the tonal-balance
+/// idea of judging a broad range while keeping our single-curve style.
+fn paint_tonal_target_envelope(ui: &egui::Ui, plot: Rect, relative_db: &[f32], color: Color32) {
     const TOLERANCE_DB: f32 = 3.0;
     if relative_db.len() != TONAL_BANDS {
         return;
     }
+    let x_of = |index: f32| plot.left() + index / TONAL_BANDS as f32 * plot.width();
     let y_of = |db: f32| {
         plot.center().y
             - (db / 48.0 * plot.height()).clamp(-plot.height() / 2.0, plot.height() / 2.0)
     };
-    for window in TONAL_REGION_BOUNDARIES.windows(2) {
-        let (start_hz, _) = window[0];
-        let end_hz = window[1].0;
-        let first = tonal_band_index(start_hz);
-        let last = tonal_band_index(end_hz)
-            .max(first + 1)
-            .min(relative_db.len());
-        let slice = &relative_db[first..last];
-        if slice.is_empty() {
-            continue;
+    let mut mesh = egui::Mesh::default();
+    for index in 0..TONAL_BANDS - 1 {
+        let left = x_of(index as f32 + 0.5);
+        let right = x_of(index as f32 + 1.5);
+        let base = mesh.vertices.len() as u32;
+        let fill = color.gamma_multiply(0.14);
+        for (x, db) in [
+            (left, relative_db[index] - TOLERANCE_DB),
+            (left, relative_db[index] + TOLERANCE_DB),
+            (right, relative_db[index + 1] - TOLERANCE_DB),
+            (right, relative_db[index + 1] + TOLERANCE_DB),
+        ] {
+            mesh.colored_vertex(Pos2::new(x, y_of(db)), fill);
         }
-        let mean = slice.iter().sum::<f32>() / slice.len() as f32;
-        let band = Rect::from_min_max(
-            Pos2::new(
-                tonal_frequency_x(plot, start_hz) + 1.0,
-                y_of(mean + TOLERANCE_DB),
-            ),
-            Pos2::new(
-                tonal_frequency_x(plot, end_hz) - 1.0,
-                y_of(mean - TOLERANCE_DB),
-            ),
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base + 1, base + 3, base + 2);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    for offset in [-TOLERANCE_DB, TOLERANCE_DB] {
+        let boundary = relative_db
+            .iter()
+            .enumerate()
+            .map(|(index, db)| Pos2::new(x_of(index as f32 + 0.5), y_of(db + offset)))
+            .collect();
+        ui.painter().add(egui::Shape::line(
+            boundary,
+            Stroke::new(0.7, color.gamma_multiply(0.32)),
+        ));
+    }
+    let palette = theme::palette(ui);
+    for (start_hz, _) in TONAL_REGION_BOUNDARIES.iter().skip(1) {
+        let x = x_of(tonal_band_index(*start_hz) as f32);
+        ui.painter().line_segment(
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+            Stroke::new(0.6, palette.grid.gamma_multiply(0.5)),
         );
-        ui.painter()
-            .rect_filled(band, 2.0, color.gamma_multiply(0.11));
     }
 }
 
@@ -1338,7 +1351,7 @@ fn paint_tonal_profile(
         Pos2::new(x, y)
     };
     if show_target_range {
-        paint_tonal_target_bands(ui, plot, &relative_db, color);
+        paint_tonal_target_envelope(ui, plot, &relative_db, color);
     }
     let points = relative_db
         .iter()

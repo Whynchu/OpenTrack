@@ -20,7 +20,7 @@ Then decide which of those behaviours our tonal view should adopt, keeping OpenT
 
 ## Delivered (first pass)
 
-- **Broad target bands**: the target curve now paints four labelled regions - Low (20-200 Hz), Low-Mid (200 Hz-1 kHz), High-Mid (1-5 kHz) and High (5-20 kHz) - each as a translucent band spanning +/-3 dB around that region's average target level. The precise target curve still draws on top, in the existing orange.
+- **Broad target bands**: the target now paints one smooth translucent envelope of +/-3 dB that follows the target curve, with the Low (20-200 Hz), Low-Mid (200 Hz-1 kHz), High-Mid (1-5 kHz) and High (5-20 kHz) separators drawn across it and the precise target line kept on top in the existing orange. This was refined after the user supplied a side-by-side TBC2 capture on the same source (audio 09, 1x-gateway-slo100-hotone): TBC2's band is a smooth graded envelope, not stepped per-region blocks.
 - **Smoothing**: tonal curves are now smoothed over roughly a third of an octave (Gaussian radius 5, sigma 1.9 at the 96-band resolution) instead of about a quarter octave. Persisted analysis and targets keep their full 96-band detail.
 - **Weighting/tilt**: the existing display tilt control (0/3/6 dB per octave, display-only) now also applies to the tonal curves, pivoted at 1 kHz, so a balanced mix can read flat. The measured-vs-target difference view is unchanged because the same weighting cancels on both sides.
 - Frequency span, colours, line weights, graph size and layout are unchanged.
