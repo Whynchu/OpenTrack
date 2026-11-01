@@ -66,6 +66,27 @@ Fix:
 
 The session log and heartbeat tracing stay in place, so a recurrence is still diagnosable.
 
+## Second hang (12:37)
+
+The controller deadlock fix was not enough. A second session shows:
+
+```
+[..629] editor thread: opening "Tonal Balance Control 2"
+[..629] editor thread: opened
+[..630] app: opened editor / command set-owner
+[..632] editor thread: alive
+[..634] ui stalled (heartbeat 1186)   <- frozen from here on
+```
+
+The UI froze about four seconds after the editor opened, and the editor thread's next `alive` tick never arrived. So both threads stop, but the main thread is no longer in `setParamNormalized` (that call now runs on the editor thread).
+
+To locate the remaining block, the watchdog now records the **UI stage** at the moment frames stop: `ui stalled at <stage>` where stage is `workspace`, `dialogs`, `vst-windows`, `vst-timers`, `vst-bounds` or `vst-sync`. That names the blocking section on the next reproduction:
+
+- `vst-bounds` -> the editor-host bounds mutex.
+- `vst-timers` -> dispatching thread timers into the plug-in on the UI thread.
+- `vst-sync` -> plan rebuild's `Runtime::sync` (instance load/state restore).
+- `workspace`/`dialogs` -> rendering or a dialog, not an obvious plug-in call.
+
 ## Checks
 
 - `cargo test -p opentrack-vst3`: existing module/effect tests.

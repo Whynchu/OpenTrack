@@ -119,6 +119,35 @@ struct TransportState {
     last_clock: Option<f64>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum UiStage {
+    FrameStart = 0,
+    Workspace,
+    Dialogs,
+    VstWindows,
+    VstTimers,
+    VstBounds,
+    VstSync,
+}
+
+const UI_STAGE_NAMES: [&str; 7] = [
+    "frame-start",
+    "workspace",
+    "dialogs",
+    "vst-windows",
+    "vst-timers",
+    "vst-bounds",
+    "vst-sync",
+];
+
+fn ui_stage_name(stage: u32) -> &'static str {
+    UI_STAGE_NAMES
+        .get(stage as usize)
+        .copied()
+        .unwrap_or("unknown")
+}
+
 #[derive(Default)]
 struct NativeWindowState {
     channel_bus: Option<bool>,
@@ -997,6 +1026,8 @@ pub struct OpenTrackApp {
     vst3_plugin_folders: Vec<PathBuf>,
     /// UI-thread frame counter, sampled by the hang logger.
     ui_heartbeat: Arc<std::sync::atomic::AtomicU64>,
+    /// Current UI section, sampled by the hang logger when frames stop.
+    ui_stage: Arc<std::sync::atomic::AtomicU32>,
     vst3_plugin_catalog: Vec<PluginDescriptor>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
@@ -2235,35 +2266,8 @@ impl OpenTrackApp {
             note_audition_stop_at: None,
             vst3_runtime: vst3_host::Runtime::default(),
             vst3_plugin_folders,
-            ui_heartbeat: {
-                let heartbeat = Arc::new(std::sync::atomic::AtomicU64::new(0));
-                if !cfg!(test) {
-                    let sampled = Arc::clone(&heartbeat);
-                    std::thread::Builder::new()
-                        .name("opentrack-hang-log".to_owned())
-                        .spawn(move || {
-                            let mut last = 0;
-                            let mut tick = 0_u32;
-                            loop {
-                                std::thread::sleep(std::time::Duration::from_secs(1));
-                                let current = sampled.load(std::sync::atomic::Ordering::Relaxed);
-                                tick += 1;
-                                if current == last {
-                                    crate::crash_log::session(&format!(
-                                        "ui stalled (heartbeat {current})"
-                                    ));
-                                } else if tick % 5 == 0 {
-                                    crate::crash_log::session(&format!(
-                                        "ui alive (heartbeat {current})"
-                                    ));
-                                }
-                                last = current;
-                            }
-                        })
-                        .ok();
-                }
-                heartbeat
-            },
+            ui_heartbeat: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ui_stage: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             vst3_plugin_catalog,
             plugin_information_open: false,
             plugin_scan_task: None,
@@ -2419,6 +2423,30 @@ impl OpenTrackApp {
         app.refresh_audio_output_configurations();
         app.mark_saved();
         if !cfg!(test) {
+            let sampled = Arc::clone(&app.ui_heartbeat);
+            let sampled_stage = Arc::clone(&app.ui_stage);
+            std::thread::Builder::new()
+                .name("opentrack-hang-log".to_owned())
+                .spawn(move || {
+                    let mut last = 0;
+                    let mut tick = 0_u32;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        let current = sampled.load(std::sync::atomic::Ordering::Relaxed);
+                        tick += 1;
+                        if current == last {
+                            let stage = sampled_stage.load(std::sync::atomic::Ordering::Relaxed);
+                            crate::crash_log::session(&format!(
+                                "ui stalled at {} (heartbeat {current})",
+                                ui_stage_name(stage)
+                            ));
+                        } else if tick % 5 == 0 {
+                            crate::crash_log::session(&format!("ui alive (heartbeat {current})"));
+                        }
+                        last = current;
+                    }
+                })
+                .ok();
             crate::crash_log::session(&format!(
                 "app started (pid {}, {} samples)",
                 std::process::id(),
@@ -2926,8 +2954,12 @@ impl OpenTrackApp {
         }) {
             self.close_vst3_editor();
         }
+        let previous_stage = self.ui_stage.load(std::sync::atomic::Ordering::Relaxed);
+        self.set_ui_stage(UiStage::VstSync);
         self.vst3_runtime.set_format(host_rate, host_block);
         self.vst3_runtime.sync(&self.data.project);
+        self.ui_stage
+            .store(previous_stage, std::sync::atomic::Ordering::Relaxed);
         let loop_range_beats = self.data.transport.cycle.then_some((
             self.data.project.loop_start_beats,
             self.data.project.loop_end_beats,
@@ -3380,6 +3412,11 @@ impl OpenTrackApp {
                 delta_seconds,
                 settings,
             );
+    }
+
+    fn set_ui_stage(&self, stage: UiStage) {
+        self.ui_stage
+            .store(stage as u32, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn set_transport_playing(&mut self, playing: bool) {
@@ -4470,6 +4507,7 @@ impl OpenTrackApp {
     }
 
     fn show_vst3_windows(&mut self, ctx: &egui::Context) {
+        self.set_ui_stage(UiStage::VstBounds);
         if let Some(bounds) = self
             .vst3_editor_host
             .as_ref()
@@ -4477,11 +4515,14 @@ impl OpenTrackApp {
         {
             self.vst3_editor_bounds = Some(bounds);
         }
+        self.set_ui_stage(UiStage::VstWindows);
         if self.vst3_editor_window.is_some() {
             // iPlug2 routes processor-to-editor meter messages through its
             // component thread's idle timer. Components are instantiated on
             // this UI thread, separate from the native editor window thread.
+            self.set_ui_stage(UiStage::VstTimers);
             vst3_host::pump_ui_thread_timers();
+            self.set_ui_stage(UiStage::VstWindows);
         }
         if self.vst3_runtime.take_dirty() {
             self.mark_modified();
@@ -11118,6 +11159,7 @@ impl eframe::App for OpenTrackApp {
         egui::Rgba::from(visuals.panel_fill).to_array()
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.set_ui_stage(UiStage::FrameStart);
         self.ui_heartbeat
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ctx = ui.ctx().clone();
@@ -11238,7 +11280,9 @@ impl eframe::App for OpenTrackApp {
                 let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                 blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
                     if self.project_open {
+                        self.set_ui_stage(UiStage::Workspace);
                         self.show_docked_workspace(ui);
+                        self.set_ui_stage(UiStage::Dialogs);
                     }
                 });
             });
@@ -11271,6 +11315,7 @@ impl eframe::App for OpenTrackApp {
         self.show_vst_connections(&ctx);
         self.show_plugin_information(&ctx);
         if self.project_open {
+            self.set_ui_stage(UiStage::VstWindows);
             self.show_vst3_windows(&ctx);
         }
         if self.project_open {
