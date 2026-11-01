@@ -25,25 +25,26 @@ OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide 
 
 </details>
 
-## What we are building
-
-- **A complete creative workflow:** audio and MIDI recording, timeline editing, arrangement, mixing, and export in one application.
-- **Responsive, predictable editing:** accurate transport controls, grid snapping, loop ranges, smooth navigation, and dependable undo and redo.
-- **A capable mixing environment:** track routing, monitoring, automation, channel processing, and support for third-party instruments and effects.
-- **Projects you can trust:** reliable saving, media management, recovery, and consistent recall of your work and workspace.
-- **A flexible desktop workspace:** clear controls, useful shortcuts, configurable layouts, and a polished interface that keeps everyday actions close at hand.
-- **Interoperable projects:** import and export supported DAW project formats while retaining unsupported metadata where the format allows.
-- **An extensible foundation:** a Rust application and audio engine that can grow through community contributions and independently designed instruments and effects.
-
-Development prioritizes complete, usable musical workflows. Functionality, reliability, and interface polish are reviewed together as the application grows.
-
 ## Development status
 
-OpenTrack is an early prototype under active development. The current application includes a Project timeline with audio and MIDI editing, a Mixer with shared channel strips, Channel Settings with a 32-band EQ (static and dynamic bands), live spectrum and tonal-reference analysis, an insert rack with built-in processors and third-party VST3 hosting, native plug-in editor windows, a MIDI editor with part and controller lanes, a Sample Editor with on-demand Pitch & Time analysis, a MediaBay, a floating transport, bounded project undo/redo, editable key commands and workspace presets, and native project saving.
+OpenTrack is an early prototype under active development. Its features are still being integrated and reviewed, and some visible controls are incomplete. The following describes the current development version; availability does not imply that every workflow has completed runtime or hardware validation.
 
-These pieces are still being integrated and reviewed. Third-party VST3 hosting has documented compatibility limits and is not universal support. Automation, typed buses and routing, Send DSP, cycle takes and CPR project interchange remain development goals. Visible controls may still be incomplete. Recording, monitoring and low-latency behavior still require validation with real audio hardware.
+### Available today
 
-New projects use the `.opr` format. Earlier `.otp` and `.rwp` project files remain readable.
+- **Projects and arrangement:** a timeline for audio and MIDI tracks, transport and cycle playback, grid snapping, editing, and bounded undo/redo. New projects use the `.opr` format; earlier `.otp` and `.rwp` projects remain readable.
+- **Recording and media:** WAV import and playback, audio and MIDI recording, basic track input/output selection and software monitoring, managed project folders, media relinking, and a MediaBay.
+- **Mixing:** shared Mixer and Channel Settings controls, input gain and meters, a 32-band EQ with static and dynamic bands, spectrum and tonal-reference analysis, and an insert rack.
+- **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.
+- **Editors and workspace:** a MIDI editor with notes and controller lanes, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
+
+### Still needed
+
+- **Finishing and interchange:** audio mixdown/export, MIDI file import/export, and project interchange with other DAWs. CPR is currently a research and inspection effort, not an importer or round-trip format.
+- **Mixing and recording:** automation playback and writing, audible send processing, general typed bus routing, cycle takes, and broader device channel mapping. Some related controls or layout elements are visible before their processing is complete.
+- **Interface completion:** many menus, preference pages, dialogs and controls are disabled or partial. The ongoing [UI inventory](docs/reviews/ui-implementation-inventory.md) tracks source findings and outstanding review.
+- **Reliability and validation:** recording, monitoring and low-latency behavior need further testing with real audio and MIDI hardware. Plug-in compatibility, project recovery, visual interaction and audible results need continued verification.
+
+OpenTrack aims to bring recording, editing, arrangement, mixing and finishing into one dependable Rust application. Future interoperability and first-party instruments and effects will be developed as separately scoped capabilities.
 
 ## Build and run
 
