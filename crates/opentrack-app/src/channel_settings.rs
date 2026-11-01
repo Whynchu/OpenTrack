@@ -157,6 +157,7 @@ pub(super) fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
     meters: &HashMap<u64, [f32; 2]>,
+    input_meters: &HashMap<u64, [f32; 2]>,
     peak_holds: &mut HashMap<u64, metering::Hold>,
     state: &mut ChannelSettingsUiState,
     bus_target: &mut Option<bool>,
@@ -218,6 +219,17 @@ pub(super) fn show(
             .copied()
             .unwrap_or([0.0; 2])
     };
+    // Device buses meter their own processed output; tracks report the peak of
+    // the input stage (after the trim, before the EQ) so the input-gain ring
+    // describes the level the trim actually sees.
+    let input_peak = if index >= count {
+        peak
+    } else {
+        input_meters
+            .get(&project.tracks[index].id)
+            .copied()
+            .unwrap_or([0.0; 2])
+    };
     let track = if index == count {
         &mut project.input_channel.strip
     } else if index == count + 1 {
@@ -250,13 +262,7 @@ pub(super) fn show(
                     .contains(&ChannelSettingsViewItem::Sends))
         })
         .collect::<Vec<_>>();
-    let base_width = |item: ChannelSettingsViewItem| match item {
-        ChannelSettingsViewItem::Inserts
-        | ChannelSettingsViewItem::Sends
-        | ChannelSettingsViewItem::SendRouting => 154.0,
-        ChannelSettingsViewItem::Fader | ChannelSettingsViewItem::ControlStrip => 92.0,
-        _ => 474.0,
-    };
+    let base_width = item_base_width;
     let gaps = 4.0 * items.len().saturating_sub(1) as f32;
     let total: f32 = items.iter().map(|item| base_width(*item)).sum();
     let scale = ((area.width() - gaps) / total.max(1.0)).min(1.0);
@@ -303,6 +309,7 @@ pub(super) fn show(
                     index,
                     &mut next,
                     peak,
+                    input_peak,
                     peak_holds.entry(track.id).or_default(),
                     has_fader,
                     state,
@@ -335,26 +342,188 @@ pub(super) fn show(
     changed
 }
 
-fn slot_frame(ui: &egui::Ui, r: Rect, label: &str) {
+/// Base column width for a Channel Settings view item.
+fn item_base_width(item: ChannelSettingsViewItem) -> f32 {
+    match item {
+        ChannelSettingsViewItem::Inserts | ChannelSettingsViewItem::Sends => 146.0,
+        ChannelSettingsViewItem::SendRouting => 154.0,
+        ChannelSettingsViewItem::Fader | ChannelSettingsViewItem::ControlStrip => 92.0,
+        _ => 474.0,
+    }
+}
+
+/// Inline rack measurements. The row content is one text line tall, so the
+/// slots no longer stretch to fill the panel.
+const SLOT_HEIGHT: f32 = 23.0;
+const SLOT_PITCH: f32 = 25.0;
+const SLOT_FIRST_TOP: f32 = 24.0;
+const SLOT_BUTTON: f32 = 13.0;
+const SLOT_CHEVRON: f32 = 12.0;
+/// Insert and send racks cap at this many rows.
+const MAX_SLOTS: usize = 24;
+
+/// Rows shown for one rack: at least one, never fewer than the used slots.
+fn visible_slots(configured: Option<usize>, used: usize) -> usize {
+    configured.unwrap_or(0).max(used).clamp(1, MAX_SLOTS)
+}
+
+/// Clickable regions of one insert/send row. Every region shares the row's
+/// centre line so the text, the arrows and the buttons line up.
+#[derive(Clone, Copy)]
+struct SlotRects {
+    power: Rect,
+    view: Rect,
+    chevron: Rect,
+    label: Rect,
+    index: Rect,
+    /// One hit region for the chevron and the name: they are the same button.
+    list: Rect,
+}
+
+impl SlotRects {
+    fn new(cell: Rect, has_view: bool) -> Self {
+        let button_top = cell.center().y - SLOT_BUTTON * 0.5;
+        let power = Rect::from_min_size(
+            Pos2::new(cell.left() + 1.0, button_top),
+            Vec2::splat(SLOT_BUTTON),
+        );
+        let view = Rect::from_min_size(
+            Pos2::new(power.right() + 1.0, button_top),
+            Vec2::splat(SLOT_BUTTON),
+        );
+        let chevron_left = if has_view {
+            view.right() + 2.0
+        } else {
+            power.right() + 2.0
+        };
+        let chevron = Rect::from_center_size(
+            Pos2::new(chevron_left + SLOT_CHEVRON * 0.5, cell.center().y),
+            Vec2::splat(SLOT_CHEVRON),
+        );
+        let index = Rect::from_min_max(
+            Pos2::new(cell.right() - 14.0, cell.top()),
+            Pos2::new(cell.right() - 2.0, cell.bottom()),
+        );
+        let label = Rect::from_min_max(
+            Pos2::new(chevron.right() + 4.0, cell.top()),
+            Pos2::new(
+                (index.left() - 6.0).max(chevron.right() + 4.0),
+                cell.bottom(),
+            ),
+        );
+        Self {
+            power,
+            view,
+            chevron,
+            label,
+            index,
+            list: Rect::from_min_max(
+                Pos2::new(chevron.left(), label.top()),
+                Pos2::new(label.right(), label.bottom()),
+            ),
+        }
+    }
+}
+
+fn slot_cell(r: Rect, index: usize) -> Rect {
+    at(
+        r,
+        0.0,
+        SLOT_FIRST_TOP + index as f32 * SLOT_PITCH,
+        r.width(),
+        SLOT_HEIGHT,
+    )
+}
+
+/// Row chrome: background and border. The slot number sits at the right edge.
+fn slot_row(ui: &egui::Ui, cell: Rect) {
     let p = theme::palette(ui);
-    ui.painter().rect_filled(r, 1.0, p.canvas);
-    ui.painter()
-        .rect_stroke(r, 1.0, Stroke::new(1.0, p.grid), egui::StrokeKind::Inside);
-    let bar = at(r, 0.0, 0.0, r.width(), 15.0);
-    ui.painter().rect_filled(bar, 0.0, p.surface_raised);
+    ui.painter().rect_filled(cell, 1.0, p.canvas);
+    ui.painter().rect_stroke(
+        cell,
+        1.0,
+        Stroke::new(1.0, p.grid),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn slot_number(ui: &egui::Ui, rect: Rect, number: usize) {
+    text(ui, rect, &number.to_string(), 8.0, Align2::RIGHT_CENTER);
+}
+
+/// The "+" row under a rack: one click opens another empty slot.
+fn paint_add_slot(ui: &egui::Ui, cell: Rect, label: &str) {
+    let p = theme::palette(ui);
+    let center = Pos2::new(cell.left() + 18.0, cell.center().y);
+    let arm = 4.0;
+    let stroke = Stroke::new(1.2, p.muted);
+    ui.painter().line_segment(
+        [center - Vec2::new(arm, 0.0), center + Vec2::new(arm, 0.0)],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [center - Vec2::new(0.0, arm), center + Vec2::new(0.0, arm)],
+        stroke,
+    );
     text(
         ui,
-        bar.shrink2(Vec2::new(4.0, 0.0)),
+        Rect::from_min_max(Pos2::new(center.x + arm + 6.0, cell.top()), cell.max),
         label,
         9.0,
-        Align2::RIGHT_CENTER,
+        Align2::LEFT_CENTER,
     );
-    crate::icon_system::paint_app_icon(
-        ui,
-        Rect::from_center_size(r.min + Vec2::new(7.0, 25.0), Vec2::splat(12.0)),
-        crate::icon_system::IconId::ChevronRight,
-        p.muted,
-    );
+}
+
+/// Hover feedback for the text and chevron that open a slot's list.
+fn slot_hover(ui: &egui::Ui, rect: Rect, response: &egui::Response) {
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect.shrink2(Vec2::new(1.0, 2.0)),
+            2.0,
+            theme::hover_button_fill(theme::palette(ui).canvas, ui.visuals()),
+        );
+    }
+}
+
+/// Plug-in editor toggle. The eye is lit while that insert's editor is open.
+fn view_button(
+    ui: &mut egui::Ui,
+    r: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    open: bool,
+) -> egui::Response {
+    let response = ui.interact(r, ui.id().with(id), Sense::click());
+    let p = theme::palette(ui);
+    let base = if open { p.accent } else { p.surface_raised };
+    let ink = theme::paint_control(ui, r, &response, base, true, false);
+    let ink = if open {
+        project_controls::label_ink(base)
+    } else {
+        ink
+    };
+    paint_eye(ui, r.shrink(2.0), ink, open);
+    response
+}
+
+fn paint_eye(ui: &egui::Ui, r: Rect, ink: Color32, open: bool) {
+    let center = r.center();
+    let radius = Vec2::new(r.width() * 0.46, r.height() * 0.30);
+    ui.painter().add(egui::Shape::ellipse_stroke(
+        center,
+        radius,
+        Stroke::new(1.0, ink),
+    ));
+    ui.painter()
+        .circle_filled(center, (r.height() * 0.13).max(1.0), ink);
+    if !open {
+        ui.painter().line_segment(
+            [
+                center + Vec2::new(-radius.x * 0.8, radius.y * 0.9),
+                center + Vec2::new(radius.x * 0.8, -radius.y * 0.9),
+            ],
+            Stroke::new(1.0, ink),
+        );
+    }
 }
 
 const EQ_FILTER_TYPES: &[(FilterType, &str)] = &[
@@ -439,10 +608,13 @@ fn inserts(
         track.inserts_bypassed = !track.inserts_bypassed;
         changed = true;
     }
-    let row = (r.height() - 24.0) / 8.0;
-    for i in 0..8 {
-        let cell = at(r, 0.0, 24.0 + i as f32 * row, r.width(), row - 3.0);
-        slot_frame(ui, cell, &format!("i {}", i + 1));
+    let rows = visible_slots(
+        state.insert_rows.get(&track.id).copied(),
+        track.inserts.len(),
+    );
+    for i in 0..rows {
+        let cell = slot_cell(r, i);
+        slot_row(ui, cell);
         let enabled = track.inserts.get(i).is_some_and(|effect| effect.enabled);
         let is_legacy_compressor = track.inserts.get(i).is_some_and(|effect| {
             matches!(
@@ -450,9 +622,17 @@ fn inserts(
                 InsertEffectKind::LegacyUnavailableCompressor { .. }
             )
         });
-        let p = power(
+        let is_vst3 = track
+            .inserts
+            .get(i)
+            .is_some_and(|effect| matches!(&effect.kind, InsertEffectKind::Vst3 { .. }));
+        let has_view = is_vst3 && state.vst3_editor_available.contains(&i);
+        let rects = SlotRects::new(cell, has_view);
+        slot_number(ui, rects.index, i + 1);
+        let p = theme::palette(ui);
+        let power = power(
             ui,
-            at(cell, 1.0, 1.0, 14.0, 13.0),
+            rects.power,
             ("insert-power", i),
             enabled && !is_legacy_compressor,
         )
@@ -465,86 +645,71 @@ fn inserts(
                 i + 1
             )
         });
-        context(&p, state);
-        if p.clicked() && !is_legacy_compressor {
+        context(&power, state);
+        if power.clicked() && !is_legacy_compressor {
             if let Some(effect) = track.inserts.get_mut(i) {
                 effect.enabled = !effect.enabled;
                 changed = true;
             }
         }
-        let type_selector_rect = at(cell, 0.0, 15.0, 14.0, cell.height() - 15.0);
-        let has_effect = track.inserts.get(i).is_some();
-        let type_selector = ui.interact(
-            type_selector_rect,
-            ui.id().with(("insert-type", i)),
-            Sense::click(),
-        );
-        let type_selector = if has_effect {
-            type_selector.on_hover_text(format!("Select Insert Type {}", i + 1))
-        } else {
-            type_selector.on_hover_text(format!("Activate Insert {}", i + 1))
-        };
-        context(&type_selector, state);
-        let body = Rect::from_min_max(cell.min + Vec2::new(14.0, 15.0), cell.max);
-        let response = ui.interact(body, ui.id().with(("insert", i)), Sense::click());
-        context(&response, state);
-        if has_effect {
-            let is_vst3 = track
-                .inserts
-                .get(i)
-                .is_some_and(|effect| matches!(&effect.kind, InsertEffectKind::Vst3 { .. }));
-            if let Some(effect) = track.inserts.get(i) {
-                text(
-                    ui,
-                    body.shrink2(Vec2::new(0.0, 0.0)),
-                    &insert_effect_name(&effect.kind),
-                    10.0,
-                    Align2::LEFT_CENTER,
-                );
+        if has_view {
+            let editor_open = state.vst3_editor == Some((track.id, i));
+            let view = view_button(ui, rects.view, ("insert-view", i), editor_open).on_hover_text(
+                if editor_open {
+                    "Hide Plug-in Editor"
+                } else {
+                    "Show Plug-in Editor"
+                },
+            );
+            if view.clicked() {
+                if editor_open {
+                    state.vst3_editor_close = Some((track.id, i));
+                } else {
+                    state.vst3_parameter_slot = Some((track.id, i));
+                }
             }
-            let response = if is_legacy_compressor {
-                response.on_hover_text(
-                    "This removed built-in effect is inactive. Replace it with a VST3 plug-in.",
-                )
+        }
+        // The chevron and the name are one button: both always open the list.
+        // The editor moved to its own button so the two actions are not confused.
+        let list = ui
+            .interact(rects.list, ui.id().with(("insert-list", i)), Sense::click())
+            .on_hover_text(if track.inserts.get(i).is_some() {
+                "Choose or Replace Plug-in"
             } else {
-                response
-            };
-            if response.clicked() && is_vst3 {
-                state.vst3_parameter_slot = Some((track.id, i));
-            }
-            let mut selected = None;
-            menu(&type_selector, 200.0, |ui| {
-                show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
+                "Add Plug-in"
             });
-            match selected {
-                Some(InsertSelection::Add(kind)) => {
-                    if let Some(effect) = track.inserts.get_mut(i) {
-                        let enable = matches!(kind, InsertEffectKind::Vst3 { .. });
-                        effect.kind = kind;
-                        if enable {
-                            state.vst3_parameter_slot = Some((track.id, i));
-                            effect.enabled = true;
-                        }
-                        changed = true;
+        slot_hover(ui, rects.list, &list);
+        context(&list, state);
+        crate::icon_system::paint_app_icon(
+            ui,
+            rects.chevron.shrink(1.0),
+            crate::icon_system::IconId::ChevronRight,
+            p.muted,
+        );
+        if let Some(effect) = track.inserts.get(i) {
+            text(
+                ui,
+                rects.label,
+                &insert_effect_name(&effect.kind),
+                10.0,
+                Align2::RIGHT_CENTER,
+            );
+        }
+        let mut selected = None;
+        menu(&list, 200.0, |ui| {
+            show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
+        });
+        match selected {
+            Some(InsertSelection::Add(kind)) => {
+                let wants_editor = matches!(kind, InsertEffectKind::Vst3 { .. });
+                if let Some(effect) = track.inserts.get_mut(i) {
+                    effect.kind = kind;
+                    if wants_editor {
+                        state.vst3_parameter_slot = Some((track.id, i));
+                        effect.enabled = true;
                     }
-                }
-                Some(InsertSelection::Remove) => {
-                    track.inserts.remove(i);
-                    changed = true;
-                }
-                None => {}
-            }
-        } else {
-            let mut selected = None;
-            menu(&type_selector, 200.0, |ui| {
-                show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
-            });
-            menu(&response, 200.0, |ui| {
-                show_insert_effect_picker(ui, &mut selected, vst3_plugin_catalog)
-            });
-            match selected {
-                Some(InsertSelection::Add(kind)) => {
-                    if matches!(kind, InsertEffectKind::Vst3 { .. }) {
+                } else {
+                    if wants_editor {
                         state.vst3_parameter_slot = Some((track.id, i));
                     }
                     track.inserts.insert(
@@ -554,13 +719,46 @@ fn inserts(
                             kind,
                         },
                     );
+                }
+                changed = true;
+            }
+            Some(InsertSelection::Remove) => {
+                if i < track.inserts.len() {
+                    track.inserts.remove(i);
                     changed = true;
                 }
-                Some(InsertSelection::Remove) | None => {}
             }
+            None => {}
+        }
+    }
+    if rows < MAX_SLOTS {
+        let cell = slot_cell(r, rows);
+        slot_row(ui, cell);
+        let response = ui
+            .interact(cell, ui.id().with("insert-add-slot"), Sense::click())
+            .on_hover_text("Add Insert Slot");
+        slot_hover(ui, cell, &response);
+        paint_add_slot(ui, cell, "Add Insert");
+        if response.clicked() {
+            state.insert_rows.insert(track.id, rows + 1);
         }
     }
     changed
+}
+
+fn send_destination_menu(ui: &mut egui::Ui, selected: &mut Option<Option<String>>) {
+    if ui.button("No Bus").clicked() {
+        *selected = Some(None);
+        ui.close();
+    }
+    ui.menu_button("Outputs", |ui| {
+        for destination in ["Stereo Out", "Left", "Right"] {
+            if ui.button(destination).clicked() {
+                *selected = Some(Some(destination.to_owned()));
+                ui.close();
+            }
+        }
+    });
 }
 
 fn sends(
@@ -585,19 +783,18 @@ fn sends(
         track.sends_bypassed = !track.sends_bypassed;
         changed = true;
     }
-    let row = (r.height() - 24.0) / 8.0;
-    for i in 0..8 {
-        let cell = at(r, 0.0, 24.0 + i as f32 * row, r.width(), row - 3.0);
-        slot_frame(ui, cell, &format!("s {}", i + 1));
+    let rows = visible_slots(
+        state.send_rows.get(&track.id).copied(),
+        track.send_routing.len(),
+    );
+    for i in 0..rows {
+        let cell = slot_cell(r, i);
+        slot_row(ui, cell);
+        let rects = SlotRects::new(cell, false);
+        slot_number(ui, rects.index, i + 1);
         let key = (track.id, i);
         let enabled = state.enabled_sends.contains(&key);
-        let power = power(
-            ui,
-            at(cell, 1.0, 1.0, 14.0, 13.0),
-            ("send-power", i),
-            enabled,
-        )
-        .on_hover_text(format!(
+        let power = power(ui, rects.power, ("send-power", i), enabled).on_hover_text(format!(
             "{} Send {}",
             if enabled { "Deactivate" } else { "Activate" },
             i + 1
@@ -606,39 +803,40 @@ fn sends(
         if power.clicked() && !state.enabled_sends.remove(&key) {
             state.enabled_sends.insert(key);
         }
-        let body = Rect::from_min_max(cell.min + Vec2::new(0.0, 15.0), cell.max);
-        let response = ui.interact(body, ui.id().with(("send", i)), Sense::click());
-        context(&response, state);
-        if let Some(label) = track.send_routing.get(i).and_then(Option::as_deref) {
-            text(
-                ui,
-                cell.shrink2(Vec2::new(13.0, 0.0)),
-                label,
-                10.0,
-                Align2::CENTER_CENTER,
-            );
+        // Chevron and destination name are one button.
+        let list = ui
+            .interact(rects.list, ui.id().with(("send-list", i)), Sense::click())
+            .on_hover_text("Choose Send Destination");
+        slot_hover(ui, rects.list, &list);
+        crate::icon_system::paint_app_icon(
+            ui,
+            rects.chevron.shrink(1.0),
+            crate::icon_system::IconId::ChevronRight,
+            theme::palette(ui).muted,
+        );
+        if let Some(destination) = track.send_routing.get(i).and_then(Option::as_deref) {
+            text(ui, rects.label, destination, 10.0, Align2::RIGHT_CENTER);
         }
         let mut selected = None;
-        menu(&response, 140.0, |ui| {
-            if ui.button("No Bus").clicked() {
-                selected = Some(None);
-                ui.close();
-            }
-            ui.menu_button("Outputs", |ui| {
-                for destination in ["Stereo Out", "Left", "Right"] {
-                    if ui.button(destination).clicked() {
-                        selected = Some(Some(destination.to_owned()));
-                        ui.close();
-                    }
-                }
-            });
-        });
+        menu(&list, 140.0, |ui| send_destination_menu(ui, &mut selected));
         if let Some(destination) = selected {
             track
                 .send_routing
                 .resize(track.send_routing.len().max(i + 1), None);
             track.send_routing[i] = destination;
             changed = true;
+        }
+    }
+    if rows < MAX_SLOTS {
+        let cell = slot_cell(r, rows);
+        slot_row(ui, cell);
+        let response = ui
+            .interact(cell, ui.id().with("send-add-slot"), Sense::click())
+            .on_hover_text("Add Send Slot");
+        slot_hover(ui, cell, &response);
+        paint_add_slot(ui, cell, "Add Send");
+        if response.clicked() {
+            state.send_rows.insert(track.id, rows + 1);
         }
     }
     changed
@@ -938,6 +1136,11 @@ fn equalizer(
     changed
 }
 
+/// Bottom of the level window used by live-level knob rings (the threshold
+/// ring). Matches the channel meters' 60 dB span so the ring reads like a meter
+/// instead of saturating over the knob's much wider -90..0 dB value range.
+const INPUT_LIGHT_FLOOR_DBFS: f32 = -60.0;
+
 fn eq_knob(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -987,7 +1190,14 @@ fn eq_knob(
     .clamp(0.0, 1.0);
     let knob_rect = Rect::from_center_size(dial.center(), Vec2::splat(48.0));
     let light_fraction = live_input_dbfs
-        .map(|db| ((db - minimum) / (maximum - minimum)).clamp(0.0, 1.0))
+        .map(|db| {
+            // The threshold ring is a level meter, not a value indicator. The
+            // knob's own -90..0 dB range is far wider than the useful span of
+            // program material, so lighting it over that range left the ring
+            // pinned near full. Use the channel meters' 60 dB window instead:
+            // -60 dBFS is dark, 0 dBFS is full.
+            ((db - INPUT_LIGHT_FLOOR_DBFS) / -INPUT_LIGHT_FLOOR_DBFS).clamp(0.0, 1.0)
+        })
         .unwrap_or(normalized);
     mixer::knob_graphic_with_value(
         ui,
@@ -997,7 +1207,9 @@ fn eq_knob(
         light_color,
     );
     let tooltip = if let Some(db) = live_input_dbfs {
-        format!("{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS; pointer: threshold")
+        format!(
+            "{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS on a -60..0 dBFS ring; pointer: threshold"
+        )
     } else {
         tooltip
     };
@@ -1188,7 +1400,7 @@ fn eq_graph_rect(r: Rect, show_editor: bool) -> Rect {
     if !show_editor {
         return r;
     }
-    let sidebar_width = 168.0_f32.min((r.width() - 80.0).max(0.0));
+    let sidebar_width = 150.0_f32.min((r.width() - 80.0).max(0.0));
     Rect::from_min_max(
         r.min,
         Pos2::new(r.right() - sidebar_width - 8.0, r.bottom()),
@@ -1967,12 +2179,9 @@ fn graph(
                                     suffix,
                                     log,
                                     help.to_owned(),
-                                    (label == "THRESH").then(|| {
-                                        state
-                                            .analyzer
-                                            .input_level_dbfs(channel_id)
-                                            .unwrap_or(-120.0)
-                                    }),
+                                    (label == "THRESH")
+                                        .then(|| state.analyzer.input_level_dbfs(channel_id))
+                                        .flatten(),
                                     color,
                                 );
                             }
@@ -2001,6 +2210,7 @@ fn strip(
     index: usize,
     next: &mut Option<usize>,
     peak: [f32; 2],
+    input_peak: [f32; 2],
     held_peak: &mut metering::Hold,
     fader: bool,
     state: &mut ChannelSettingsUiState,
@@ -2204,7 +2414,7 @@ fn strip(
         r,
         79.0,
         track,
-        peak,
+        input_peak,
         project_controls::track_color(track),
     );
     changed |= input_changed;
@@ -3297,13 +3507,15 @@ mod bus_tests {
     }
 
     #[test]
-    fn threshold_lights_follow_input_db_on_its_scale_and_use_the_track_color() {
+    fn threshold_lights_use_the_channel_meter_scale_and_ignore_the_threshold_value() {
         let color = Color32::from_rgb(181, 87, 143);
         for (input, threshold, expected) in [
             (-90.0, -24.0, 0),
-            (-45.0, -24.0, 6),
+            (-60.0, -24.0, 0),
+            (-45.0, -24.0, 3),
+            (-30.0, -24.0, 6),
             (0.0, -24.0, 11),
-            (-45.0, -80.0, 6),
+            (-45.0, -80.0, 3),
         ] {
             let ctx = egui::Context::default();
             let mut value = threshold;
@@ -3341,7 +3553,7 @@ mod bus_tests {
 
     #[test]
     fn editor_stack_keeps_all_controls_separate_and_inside_the_content() {
-        for width in [140.0, 154.0, 166.0] {
+        for width in [136.0, 140.0, 154.0, 166.0] {
             let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 514.0));
             let controls = (0..3)
                 .map(|row| eq_editor_knob_rect(inner, 0, row))
@@ -3361,8 +3573,140 @@ mod bus_tests {
                 Rect::from_min_size(Pos2::ZERO, Vec2::new(width + 500.0, 400.0)),
                 true,
             );
-            assert!(graph.right() < width + 500.0 - 160.0);
+            // 150 px editor column plus its 8 px gutter.
+            assert_eq!(graph.width(), width + 500.0 - 158.0);
         }
+    }
+
+    #[test]
+    fn insert_and_send_rows_keep_one_text_line_and_share_the_chevron_centre() {
+        for has_view in [false, true] {
+            let cell = Rect::from_min_size(Pos2::new(12.0, 40.0), Vec2::new(146.0, SLOT_HEIGHT));
+            let rects = SlotRects::new(cell, has_view);
+            assert_eq!(rects.label.center().y, cell.center().y);
+            assert_eq!(rects.chevron.center().y, cell.center().y);
+            assert_eq!(rects.power.center().y, cell.center().y);
+            assert!(rects.power.top() >= cell.top());
+            assert!(rects.power.bottom() <= cell.bottom());
+            if has_view {
+                assert!(rects.view.right() <= rects.chevron.left());
+            } else {
+                assert!(rects.power.right() <= rects.chevron.left());
+            }
+            assert!(rects.chevron.right() < rects.label.left());
+            assert!(rects.label.right() < rects.index.left());
+            assert!(rects.chevron.center().y == rects.label.center().y);
+            assert!(
+                rects.list.contains_rect(rects.chevron) && rects.list.contains_rect(rects.label),
+                "the chevron and the name must be one hit region"
+            );
+            assert!(
+                rects.label.width() >= 40.0,
+                "the name keeps a usable width at 146 px"
+            );
+            assert!(cell.contains_rect(rects.chevron));
+        }
+        // Eight compact rows plus the header stay well inside a normal panel.
+        assert!(SLOT_FIRST_TOP + 8.0 * SLOT_PITCH < 240.0);
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
+        assert_eq!(
+            slot_cell(area, 1).top() - slot_cell(area, 0).top(),
+            SLOT_PITCH
+        );
+    }
+
+    #[test]
+    fn racks_start_with_one_row_and_grow_to_the_cap() {
+        assert_eq!(visible_slots(None, 0), 1, "a rack starts with one slot");
+        assert_eq!(visible_slots(None, 3), 3, "used slots are always shown");
+        assert_eq!(visible_slots(Some(5), 0), 5);
+        assert_eq!(visible_slots(Some(1), 7), 7);
+        assert_eq!(visible_slots(Some(99), 0), MAX_SLOTS);
+        assert_eq!(visible_slots(None, 99), MAX_SLOTS);
+    }
+
+    #[test]
+    fn a_vst3_insert_eye_opens_and_closes_the_editor() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
+        let mut track = opentrack_core::project::BusChannel::output().strip;
+        track.inserts = vec![InsertEffect {
+            enabled: true,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                module_path: std::path::PathBuf::from("test.vst3"),
+                name: "Test Plug-in".to_owned(),
+                vendor: String::new(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        }];
+        let mut state = ChannelSettingsUiState::default();
+        state.vst3_editor_available = vec![0];
+        let track_id = track.id;
+        let eye = SlotRects::new(slot_cell(rect, 0), true).view.center();
+        let mut frame =
+            |time: f64, events: Vec<egui::Event>, state: &mut ChannelSettingsUiState| {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(rect),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        inserts(ui, rect, &mut track, state, &[]);
+                    },
+                );
+                output.textures_delta.clear();
+            };
+        frame(-0.1, Vec::new(), &mut state);
+        frame(
+            0.0,
+            vec![
+                egui::Event::PointerMoved(eye),
+                pointer_button(eye, egui::PointerButton::Primary, true),
+            ],
+            &mut state,
+        );
+        frame(
+            0.1,
+            vec![pointer_button(eye, egui::PointerButton::Primary, false)],
+            &mut state,
+        );
+        assert_eq!(
+            state.vst3_parameter_slot,
+            Some((track_id, 0)),
+            "the eye must request the plug-in editor"
+        );
+        state.vst3_editor = Some((track_id, 0));
+        frame(
+            0.2,
+            vec![
+                egui::Event::PointerMoved(eye),
+                pointer_button(eye, egui::PointerButton::Primary, true),
+            ],
+            &mut state,
+        );
+        frame(
+            0.3,
+            vec![pointer_button(eye, egui::PointerButton::Primary, false)],
+            &mut state,
+        );
+        assert_eq!(
+            state.vst3_editor_close,
+            Some((track_id, 0)),
+            "a lit eye must close the editor it opened"
+        );
+    }
+
+    #[test]
+    fn condensed_panels_leave_more_room_for_the_graph() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 500.0));
+        let graph = eq_graph_rect(area, true);
+        assert_eq!(graph.right(), 1000.0 - 158.0);
+        assert!(item_base_width(ChannelSettingsViewItem::Inserts) < 154.0);
+        assert!(item_base_width(ChannelSettingsViewItem::Sends) < 154.0);
     }
 
     #[test]
@@ -3426,6 +3770,7 @@ mod bus_tests {
                             ui,
                             &mut project,
                             &meters,
+                            &HashMap::new(),
                             &mut HashMap::new(),
                             &mut state,
                             &mut target,
@@ -3465,6 +3810,7 @@ mod bus_tests {
                     ui,
                     &mut project,
                     &meters,
+                    &HashMap::new(),
                     &mut HashMap::new(),
                     &mut state,
                     &mut target,

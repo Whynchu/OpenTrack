@@ -150,7 +150,9 @@ struct TransportWindowState {
 
 impl NativeWindowState {
     fn request_channel_settings(&mut self, bus: Option<bool>) {
-        if !self.open || !self.viewport_live {
+        // An already-open window is retargeted in place: switching channels must
+        // reuse this viewport instead of tearing one window down to make another.
+        if !self.open {
             self.epoch = self.epoch.wrapping_add(1);
             self.viewport_live = false;
             self.window_level = None;
@@ -294,6 +296,15 @@ struct ChannelSettingsUiState {
     enabled_sends: HashSet<(u64, usize)>,
     /// Insert slot whose VST3 parameters/editor should be shown.
     vst3_parameter_slot: Option<(u64, usize)>,
+    /// Insert whose open editor should be closed (the eye was switched off).
+    vst3_editor_close: Option<(u64, usize)>,
+    /// Insert slots of the shown channel whose plug-in exposes an editor.
+    vst3_editor_available: Vec<usize>,
+    /// Plug-in editor currently shown, mirrored from the host window state.
+    vst3_editor: Option<(u64, usize)>,
+    /// Rack rows the user has opened with the "+" box, per channel.
+    insert_rows: HashMap<u64, usize>,
+    send_rows: HashMap<u64, usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -953,6 +964,9 @@ struct AppData {
     streaming_readers: HashMap<u64, (PathBuf, Arc<StreamingPlayback>)>,
     track_meter_peaks: HashMap<u64, Arc<opentrack_audio::StereoMeter>>,
     track_meter_levels: HashMap<u64, [f32; 2]>,
+    /// Input-stage peak per channel (post-trim, pre-EQ, pre-fader) for the
+    /// input-gain knob rings.
+    track_input_meter_levels: HashMap<u64, [f32; 2]>,
     peak_holds: HashMap<u64, metering::Hold>,
     input_channel_meter_levels: [f32; 2],
     output_channel_meter_levels: [f32; 2],
@@ -1050,7 +1064,7 @@ pub struct OpenTrackApp {
     applied_eq_solo: Option<(u64, usize)>,
     channel_window_owner: crate::native_windows::ChannelOwner,
     mixer_window: NativeWindowState,
-    mixer_track_control_cache: Vec<(f32, f32)>,
+    mixer_track_control_cache: Vec<(f32, f32, f32, bool)>,
     media_window: NativeWindowState,
     track_rename_dialog: Option<TrackRenameDialog>,
     track_add_dialog: Option<TrackAddDialog>,
@@ -2891,6 +2905,9 @@ impl OpenTrackApp {
         self.data
             .track_meter_levels
             .retain(|track_id, _| active_track_ids.contains(track_id));
+        self.data
+            .track_input_meter_levels
+            .retain(|track_id, _| active_track_ids.contains(track_id));
         let project_tracks = &self.data.project.tracks;
         let track_meter_peaks = &mut self.data.track_meter_peaks;
         let vst3_runtime = &self.vst3_runtime;
@@ -2928,6 +2945,8 @@ impl OpenTrackApp {
                     track.audio_channels,
                     track.gain,
                     track.pan,
+                    track.input_gain_db,
+                    track.input_phase_inverted,
                     track.track_delay_ms,
                     effective_muted,
                     effective_solo,
@@ -3029,6 +3048,8 @@ impl OpenTrackApp {
             audio_channels,
             gain,
             pan,
+            input_gain_db,
+            input_phase_inverted,
             track_delay_ms,
             muted,
             solo,
@@ -3169,6 +3190,8 @@ impl OpenTrackApp {
                 meter_peak,
                 gain,
                 pan,
+                input_gain_db,
+                input_phase_inverted,
                 track_delay_ms,
                 muted,
                 solo,
@@ -3281,6 +3304,9 @@ impl OpenTrackApp {
                 delta_seconds,
                 settings,
             );
+            self.data
+                .track_input_meter_levels
+                .insert(*track_id, meter_peak.take_input());
         }
         let output_peaks = self
             .audio_engine
@@ -3932,6 +3958,7 @@ impl OpenTrackApp {
             streaming_readers: HashMap::new(),
             track_meter_peaks: HashMap::new(),
             track_meter_levels: HashMap::new(),
+            track_input_meter_levels: HashMap::new(),
             peak_holds: HashMap::new(),
             input_channel_meter_levels: [0.0; 2],
             output_channel_meter_levels: [0.0; 2],
@@ -4456,6 +4483,11 @@ impl OpenTrackApp {
                 self.mark_modified();
             }
             self.vst3_editor_host = None;
+        }
+        if let Some(target) = self.channel_settings_ui.vst3_editor_close.take() {
+            if self.vst3_editor_window == Some(target) {
+                self.close_vst3_editor();
+            }
         }
         if let Some(target) = self.channel_settings_ui.vst3_parameter_slot.take() {
             self.vst3_parameter_window = None;
@@ -8551,13 +8583,14 @@ impl OpenTrackApp {
         let mut mixer_track_controls_before = std::mem::take(&mut self.mixer_track_control_cache);
         mixer_track_controls_before.clear();
         if !self.sample_editor_active && !midi_editor_visible {
-            mixer_track_controls_before.extend(
-                self.data
-                    .project
-                    .tracks
-                    .iter()
-                    .map(|track| (track.gain, track.pan)),
-            );
+            mixer_track_controls_before.extend(self.data.project.tracks.iter().map(|track| {
+                (
+                    track.gain,
+                    track.pan,
+                    track.input_gain_db,
+                    track.input_phase_inverted,
+                )
+            }));
         }
         let mixer_output_controls_before = (
             self.data.project.output_channel.strip.gain,
@@ -8605,6 +8638,7 @@ impl OpenTrackApp {
                             ui,
                             &mut self.data.project,
                             &self.data.track_meter_levels,
+                            &self.data.track_input_meter_levels,
                             &mut self.data.peak_holds,
                             self.data.input_channel_meter_levels,
                             self.data.output_channel_meter_levels,
@@ -8681,7 +8715,7 @@ impl OpenTrackApp {
                     );
                 }
                 let mut mix_updated = true;
-                for (index, (track, (gain, pan))) in self
+                for (index, (track, (gain, pan, input_gain_db, input_phase))) in self
                     .data
                     .project
                     .tracks
@@ -8689,6 +8723,16 @@ impl OpenTrackApp {
                     .zip(mixer_track_controls_before.iter().copied())
                     .enumerate()
                 {
+                    if track.input_gain_db != input_gain_db
+                        || track.input_phase_inverted != input_phase
+                    {
+                        has_live_mix_changes = true;
+                        mix_updated &= engine.update_track_input_gain(
+                            index,
+                            track.input_gain_db,
+                            track.input_phase_inverted,
+                        );
+                    }
                     if track.gain != gain || track.pan != pan {
                         has_live_mix_changes = true;
                         mix_updated &= engine.update_track_mix(index, track.gain, track.pan);
@@ -8703,7 +8747,12 @@ impl OpenTrackApp {
                     .tracks
                     .iter()
                     .zip(mixer_track_controls_before.iter().copied())
-                    .any(|(track, (gain, pan))| track.gain != gain || track.pan != pan);
+                    .any(|(track, (gain, pan, input_gain_db, input_phase))| {
+                        track.gain != gain
+                            || track.pan != pan
+                            || track.input_gain_db != input_gain_db
+                            || track.input_phase_inverted != input_phase
+                    });
             }
             if midi_edit_drag_active && modified {
                 self.midi_pending_audio_rebuild = true;
@@ -9044,12 +9093,33 @@ impl OpenTrackApp {
                 .and_then(|index| self.data.project.tracks.get(index as usize))
                 .map(|track| track.id),
         };
+        // Mirror the host editor state into the panel so the eye button can show
+        // whether this slot's editor is up, and offer the toggle for slots whose
+        // plug-in actually exposes one.
+        let editor_slots = live_channel_id
+            .map(|id| {
+                (0..8)
+                    .filter(|slot| self.vst3_runtime.has_editor(id, *slot))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.channel_settings_ui.vst3_editor_available = editor_slots;
+        self.channel_settings_ui.vst3_editor = self.vst3_editor_window;
         let live_controls_before = live_channel_id.and_then(|id| {
             self.data
                 .project
                 .channels()
                 .find(|track| track.id == id)
-                .map(|track| (id, track.gain, track.pan, track.equalizer.clone()))
+                .map(|track| {
+                    (
+                        id,
+                        track.gain,
+                        track.pan,
+                        track.input_gain_db,
+                        track.input_phase_inverted,
+                        track.equalizer.clone(),
+                    )
+                })
         });
         let track_name = match self.channel_settings_window.channel_bus {
             Some(true) => self.data.project.input_channel.strip.name.clone(),
@@ -9141,6 +9211,7 @@ impl OpenTrackApp {
                             ui,
                             &mut self.data.project,
                             &self.data.track_meter_levels,
+                            &self.data.track_input_meter_levels,
                             &mut self.data.peak_holds,
                             self.data.input_channel_meter_levels,
                             self.data.output_channel_meter_levels,
@@ -9227,12 +9298,29 @@ impl OpenTrackApp {
         }
         if modified {
             let live_controls_changed = live_controls_before
-                .and_then(|(id, gain, pan, equalizer)| {
+                .and_then(|(id, gain, pan, input_gain_db, input_phase, equalizer)| {
                     let track = self.data.project.channels().find(|track| track.id == id)?;
-                    ((track.gain != gain) || (track.pan != pan) || (track.equalizer != equalizer))
-                        .then_some((id, track.gain, track.pan, track.equalizer.clone()))
+                    let trim_changed = (track.input_gain_db != input_gain_db)
+                        || (track.input_phase_inverted != input_phase);
+                    // Device buses build their input trim when the bus runtime is
+                    // created, so a trim edit there still needs a plan rebuild.
+                    if trim_changed && id >= opentrack_core::project::INPUT_BUS_ID {
+                        return None;
+                    }
+                    ((track.gain != gain)
+                        || (track.pan != pan)
+                        || trim_changed
+                        || (track.equalizer != equalizer))
+                        .then_some((
+                            id,
+                            track.gain,
+                            track.pan,
+                            track.input_gain_db,
+                            track.input_phase_inverted,
+                            track.equalizer.clone(),
+                        ))
                 })
-                .is_some_and(|(id, gain, pan, equalizer)| {
+                .is_some_and(|(id, gain, pan, input_gain_db, input_phase, equalizer)| {
                     self.audio_engine.as_ref().is_some_and(|engine| {
                         if id == opentrack_core::project::OUTPUT_BUS_ID {
                             engine.update_output_channel_parameters(gain, pan, &equalizer);
@@ -9244,7 +9332,11 @@ impl OpenTrackApp {
                                 .iter()
                                 .position(|track| track.id == id)
                                 .is_some_and(|index| {
-                                    engine.update_track_channel_parameters(
+                                    engine.update_track_input_gain(
+                                        index,
+                                        input_gain_db,
+                                        input_phase,
+                                    ) && engine.update_track_channel_parameters(
                                         index, gain, pan, &equalizer,
                                     )
                                 })
@@ -10915,12 +11007,26 @@ impl OpenTrackApp {
     }
 }
 
+const TRANSPORT_TOGGLE_REQUEST: &str = "opentrack-transport-toggle-request";
+
+/// Rulers ask for play/stop with a double click; the app applies it once per
+/// frame, after the UI that requested it.
+pub(super) fn request_transport_toggle(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(Id::new(TRANSPORT_TOGGLE_REQUEST), true));
+}
+
 impl eframe::App for OpenTrackApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         egui::Rgba::from(visuals.panel_fill).to_array()
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ctx.data_mut(|data| {
+            data.remove_temp::<bool>(Id::new(TRANSPORT_TOGGLE_REQUEST))
+                .unwrap_or(false)
+        }) {
+            self.set_transport_playing(!self.data.transport.playing);
+        }
         if self.startup_visibility_pending {
             self.startup_visibility_pending = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
@@ -12122,6 +12228,9 @@ fn show_project(
                 Id::new("project-time-ruler"),
                 Sense::click_and_drag(),
             );
+            if ruler_response.double_clicked_by(egui::PointerButton::Primary) {
+                request_transport_toggle(ui.ctx());
+            }
             let ruler_gesture_id = Id::new("project-ruler-gesture");
             let (primary_down, primary_released, press_origin, pointer) = ui.input(|input| {
                 (
@@ -15290,6 +15399,9 @@ fn show_midi_editor(
                             ui.id().with(("midi-time-ruler", track_id, part_id)),
                             Sense::click_and_drag(),
                         );
+                        if ruler_response.double_clicked_by(egui::PointerButton::Primary) {
+                            request_transport_toggle(ui.ctx());
+                        }
 
                         let pitch_area = Rect::from_min_max(
                             Pos2::new(canvas.left() + KEYBOARD_WIDTH, canvas.top() + RULER_HEIGHT),
@@ -16774,6 +16886,7 @@ fn show_mixer(
     ui: &mut egui::Ui,
     project: &mut Project,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    input_levels: &HashMap<u64, [f32; 2]>,
     peak_holds: &mut HashMap<u64, metering::Hold>,
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
@@ -16788,6 +16901,7 @@ fn show_mixer(
             ui,
             project,
             meter_levels,
+            input_levels,
             peak_holds,
             input_meter_peaks,
             output_meter_peaks,
@@ -16799,6 +16913,7 @@ fn show_mixer(
                 ui,
                 project,
                 meter_levels,
+                input_levels,
                 peak_holds,
                 channel_settings_ui,
                 &mut channel_settings_window.channel_bus,
@@ -16817,6 +16932,7 @@ fn show_mixer_channels(
     ui: &mut egui::Ui,
     project: &mut Project,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    input_levels: &HashMap<u64, [f32; 2]>,
     peak_holds: &mut HashMap<u64, metering::Hold>,
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
@@ -16826,6 +16942,7 @@ fn show_mixer_channels(
         ui,
         project,
         meter_levels,
+        input_levels,
         peak_holds,
         input_meter_peaks,
         output_meter_peaks,
@@ -19846,6 +19963,39 @@ mod project_open_error_tests {
 #[cfg(test)]
 mod channel_window_lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn a_ruler_double_click_requests_one_transport_toggle() {
+        let ctx = egui::Context::default();
+        request_transport_toggle(&ctx);
+        let take = |ctx: &egui::Context| {
+            ctx.data_mut(|data| {
+                data.remove_temp::<bool>(Id::new(TRANSPORT_TOGGLE_REQUEST))
+                    .unwrap_or(false)
+            })
+        };
+        assert!(take(&ctx), "the double click must request play/stop");
+        assert!(!take(&ctx), "the request is consumed once per double click");
+    }
+
+    #[test]
+    fn an_open_channel_settings_window_retargets_in_place() {
+        let mut window = NativeWindowState::default();
+        window.request_channel_settings(None);
+        let epoch = window.epoch;
+        window.open = true;
+        window.viewport_live = true;
+        window.request_channel_settings(Some(true));
+        assert_eq!(window.epoch, epoch, "an open window must be reused");
+        assert_eq!(window.channel_bus, Some(true));
+        assert!(window.focus_requested);
+        window.request_channel_settings(None);
+        assert_eq!(window.epoch, epoch, "switching channels keeps one window");
+        assert_eq!(window.channel_bus, None);
+        window.open = false;
+        window.request_channel_settings(None);
+        assert_ne!(window.epoch, epoch, "a closed window is recreated");
+    }
 
     #[test]
     fn mixer_track_selection_updates_the_shared_project_selection() {

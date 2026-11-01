@@ -2613,6 +2613,8 @@ mod tests {
                 meter_peak: Arc::new(crate::StereoMeter::default()),
                 gain: 1.0,
                 pan: 0.0,
+                input_gain_db: 0.0,
+                input_phase_inverted: false,
                 track_delay_ms: 0.0,
                 muted: false,
                 solo: false,

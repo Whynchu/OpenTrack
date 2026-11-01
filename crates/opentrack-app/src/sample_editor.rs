@@ -858,6 +858,9 @@ pub(super) fn show(
         }
     }
     let ruler_response = ui.interact(ruler, ui.id().with("sample-ruler"), Sense::click_and_drag());
+    if ruler_response.double_clicked_by(egui::PointerButton::Primary) {
+        request_transport_toggle(ui.ctx());
+    }
     if state.ruler_drag.is_none()
         && (ruler_response.drag_started_by(egui::PointerButton::Primary)
             || (ruler_response.is_pointer_button_down_on()

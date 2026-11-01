@@ -374,9 +374,13 @@ struct PlaybackTrackRuntime {
     settings: PlaybackTrackSettings,
     midi_controls: Arc<MidiEventControls>,
     processor: std::cell::UnsafeCell<ChannelProcessor>,
+    /// Input-stage gain including polarity, applied ahead of the built-in EQ so
+    /// meters, the spectrum tap and the dynamic EQ see the gained signal.
+    input_gain: GainControl,
     mix: MixControl,
     equalizer_control: Arc<EqualizerControl>,
     meter_accumulator: std::cell::UnsafeCell<[f32; 2]>,
+    input_meter_accumulator: std::cell::UnsafeCell<[f32; 2]>,
     hosted_latency_samples: u32,
     hosted_delay_samples: u32,
     hosted_buffers: std::cell::UnsafeCell<HostedTrackBuffers>,
@@ -388,6 +392,40 @@ struct MixControl {
     target_pan: AtomicU32,
     current: std::cell::UnsafeCell<(f32, f32)>,
     smoothing: f32,
+}
+
+/// One-pole smoothed scalar gain for controls edited while audio runs.
+struct GainControl {
+    target: AtomicU32,
+    current: std::cell::UnsafeCell<f32>,
+    smoothing: f32,
+}
+
+impl GainControl {
+    fn new(gain: f32, sample_rate: u32) -> Self {
+        Self {
+            target: AtomicU32::new(gain.to_bits()),
+            current: std::cell::UnsafeCell::new(gain),
+            smoothing: 1.0 - (-1.0 / (sample_rate.max(1) as f32 * 0.005)).exp(),
+        }
+    }
+
+    fn set(&self, gain: f32) {
+        self.target.store(gain.to_bits(), Ordering::Relaxed);
+    }
+
+    fn next(&self) -> f32 {
+        // The audio callback is the only writer; the UI updates the atomic target.
+        let current = unsafe { &mut *self.current.get() };
+        let target = f32::from_bits(self.target.load(Ordering::Relaxed));
+        *current += (target - *current) * self.smoothing;
+        *current
+    }
+}
+
+/// Linear input-stage factor for a trim in dB and a polarity choice.
+fn input_gain_factor(gain_db: f32, phase_inverted: bool) -> f32 {
+    10.0_f32.powf(gain_db / 20.0) * if phase_inverted { -1.0 } else { 1.0 }
 }
 
 impl MixControl {
@@ -587,13 +625,19 @@ impl PlaybackTrackRuntime {
             sample_rate,
         );
         let hosted_buffers = HostedTrackBuffers::new(hosted_processing, hosted_delay_frames);
+        let input_gain = GainControl::new(
+            input_gain_factor(settings.input_gain_db, settings.input_phase_inverted),
+            sample_rate,
+        );
         Self {
             mix: MixControl::new(settings.gain, settings.pan, sample_rate),
             settings,
             midi_controls,
             equalizer_control,
             processor: std::cell::UnsafeCell::new(processor),
+            input_gain,
             meter_accumulator: std::cell::UnsafeCell::new([0.0; 2]),
+            input_meter_accumulator: std::cell::UnsafeCell::new([0.0; 2]),
             hosted_latency_samples,
             hosted_delay_samples,
             hosted_buffers: std::cell::UnsafeCell::new(hosted_buffers),
@@ -606,6 +650,10 @@ impl PlaybackTrackRuntime {
 #[derive(Default)]
 pub struct StereoMeter {
     peaks: [AtomicU32; 2],
+    /// Peak of the channel's input stage: after the input trim and polarity,
+    /// before the built-in EQ and inserts. Pre-fader, so the input-gain knob can
+    /// report the level it actually sees.
+    input_peaks: [AtomicU32; 2],
     dynamic_eq_gain_db: [AtomicU32; opentrack_core::project::MAX_EQ_BANDS],
     spectrum: std::sync::OnceLock<spectrum::SpectrumTap>,
 }
@@ -665,6 +713,22 @@ impl StereoMeter {
                 peak.fetch_max(level.to_bits(), Ordering::Relaxed);
             }
         }
+    }
+
+    /// Accumulates the input-stage peak for the knob's level ring. Published
+    /// before muting/fader decisions so it reports the signal at the trim.
+    pub fn publish_input(&self, levels: [f32; 2]) {
+        for (peak, level) in self.input_peaks.iter().zip(levels) {
+            if level.is_finite() && level > 0.0 {
+                peak.fetch_max(level.to_bits(), Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn take_input(&self) -> [f32; 2] {
+        self.input_peaks
+            .each_ref()
+            .map(|peak| f32::from_bits(peak.swap(0, Ordering::Relaxed)))
     }
 
     pub fn take(&self) -> [f32; 2] {
@@ -731,6 +795,10 @@ pub struct PlaybackTrackSettings {
     pub meter_peak: Arc<StereoMeter>,
     pub gain: f32,
     pub pan: f32,
+    /// Input-stage trim in dB, applied before the built-in EQ and inserts.
+    pub input_gain_db: f32,
+    /// Input-stage polarity inversion, applied with `input_gain_db`.
+    pub input_phase_inverted: bool,
     pub track_delay_ms: f32,
     pub muted: bool,
     pub solo: bool,
@@ -2151,6 +2219,24 @@ impl AudioEngine {
         true
     }
 
+    /// Updates the input-stage trim and polarity while audio runs, without
+    /// rebuilding the plan. The callback smooths the trim like the fader.
+    pub fn update_track_input_gain(
+        &self,
+        track_index: usize,
+        gain_db: f32,
+        phase_inverted: bool,
+    ) -> bool {
+        let plan = self.plan.load();
+        let Some(track) = plan.tracks.get(track_index) else {
+            return false;
+        };
+        track
+            .input_gain
+            .set(input_gain_factor(gain_db, phase_inverted));
+        true
+    }
+
     /// Updates one scheduled note's velocity without rebuilding its track's
     /// instrument or playback plan. The new value also affects an active voice.
     pub fn update_midi_note_velocity(
@@ -3486,8 +3572,15 @@ fn render_hosted_track_block(
         };
         track_left += instrument_left;
         track_right += instrument_right;
-        buffers.pre_left[index] = track_left;
-        buffers.pre_right[index] = track_right;
+        let input_gain = track.input_gain.next();
+        let input_left = track_left * input_gain;
+        let input_right = track_right * input_gain;
+        // SAFETY: the same serialized callback owns this accumulator.
+        let input_accumulator = unsafe { &mut *track.input_meter_accumulator.get() };
+        input_accumulator[0] = input_accumulator[0].max(input_left.abs());
+        input_accumulator[1] = input_accumulator[1].max(input_right.abs());
+        buffers.pre_left[index] = input_left;
+        buffers.pre_right[index] = input_right;
     }
 
     for index in 0..frames.len() {
@@ -3546,8 +3639,15 @@ fn render_hosted_group_block(
             left = mono;
             right = mono;
         }
-        buffers.pre_left[index] = left;
-        buffers.pre_right[index] = right;
+        let input_gain = track.input_gain.next();
+        let input_left = left * input_gain;
+        let input_right = right * input_gain;
+        // SAFETY: the same serialized callback owns this accumulator.
+        let input_accumulator = unsafe { &mut *track.input_meter_accumulator.get() };
+        input_accumulator[0] = input_accumulator[0].max(input_left.abs());
+        input_accumulator[1] = input_accumulator[1].max(input_right.abs());
+        buffers.pre_left[index] = input_left;
+        buffers.pre_right[index] = input_right;
         processor.process(&mut left, &mut right);
         processor.publish_dynamic_updates(&track.settings.meter_peak);
         buffers.block_left[index] = left;
@@ -3609,7 +3709,15 @@ fn publish_track_meters(plan: &PlaybackPlan) {
             *accumulator = [0.0; 2];
             peak
         };
+        // SAFETY: same serialized callback ownership as the output accumulator.
+        let input_peak = unsafe {
+            let accumulator = &mut *track.input_meter_accumulator.get();
+            let peak = *accumulator;
+            *accumulator = [0.0; 2];
+            peak
+        };
         track.settings.meter_peak.publish(peak);
+        track.settings.meter_peak.publish_input(input_peak);
     }
 }
 
@@ -3705,6 +3813,13 @@ fn mix_frame_with_policy(
         };
         track_left += instrument_left;
         track_right += instrument_right;
+        let input_gain = track.input_gain.next();
+        track_left *= input_gain;
+        track_right *= input_gain;
+        // SAFETY: mix_frame only runs in the serialized audio callback.
+        let input_accumulator = unsafe { &mut *track.input_meter_accumulator.get() };
+        input_accumulator[0] = input_accumulator[0].max(track_left.abs());
+        input_accumulator[1] = input_accumulator[1].max(track_right.abs());
         let pre = (track_left, track_right);
         processor.process(&mut track_left, &mut track_right);
         processor.publish_dynamic_updates(&track.settings.meter_peak);
@@ -3752,6 +3867,13 @@ fn mix_frame_with_policy(
         }
         // SAFETY: callback_active permits exactly one writer of this processor.
         let processor = unsafe { &mut *track.processor.get() };
+        let input_gain = track.input_gain.next();
+        track_left *= input_gain;
+        track_right *= input_gain;
+        // SAFETY: mix_frame only runs in the serialized audio callback.
+        let input_accumulator = unsafe { &mut *track.input_meter_accumulator.get() };
+        input_accumulator[0] = input_accumulator[0].max(track_left.abs());
+        input_accumulator[1] = input_accumulator[1].max(track_right.abs());
         let pre = (track_left, track_right);
         processor.process(&mut track_left, &mut track_right);
         processor.publish_dynamic_updates(&track.settings.meter_peak);
@@ -5223,6 +5345,8 @@ mod processing_tests {
                     gain: 1.0,
                     pan: 0.0,
                     track_delay_ms: 0.0,
+                    input_gain_db: 0.0,
+                    input_phase_inverted: false,
                     muted: false,
                     solo: false,
                     solo_defeat: false,
@@ -5317,6 +5441,8 @@ mod processing_tests {
                 gain: 1.0,
                 pan: 0.0,
                 track_delay_ms: 0.0,
+                input_gain_db: 0.0,
+                input_phase_inverted: false,
                 muted: false,
                 solo: false,
                 solo_defeat: false,
@@ -5351,6 +5477,8 @@ mod processing_tests {
                     gain,
                     pan: 0.0,
                     track_delay_ms: 0.0,
+                    input_gain_db: 0.0,
+                    input_phase_inverted: false,
                     muted: false,
                     solo: false,
                     solo_defeat: false,
@@ -5430,6 +5558,8 @@ mod processing_tests {
                     gain: 1.0,
                     pan: 0.0,
                     track_delay_ms: 0.0,
+                    input_gain_db: 0.0,
+                    input_phase_inverted: false,
                     muted: false,
                     solo: false,
                     solo_defeat: false,
@@ -5515,6 +5645,8 @@ mod processing_tests {
                 gain: 1.0,
                 pan: 0.0,
                 track_delay_ms: 0.0,
+                input_gain_db: 0.0,
+                input_phase_inverted: false,
                 muted: false,
                 solo: false,
                 solo_defeat: false,
@@ -6615,6 +6747,8 @@ mod processing_tests {
                 gain: 1.0,
                 pan: 0.0,
                 track_delay_ms: 0.0,
+                input_gain_db: 0.0,
+                input_phase_inverted: false,
                 muted: false,
                 solo: false,
                 solo_defeat: false,
@@ -6722,6 +6856,8 @@ mod processing_tests {
                     gain: 0.5,
                     pan,
                     track_delay_ms: 0.0,
+                    input_gain_db: 0.0,
+                    input_phase_inverted: false,
                     muted: false,
                     solo: false,
                     solo_defeat: false,
@@ -6807,6 +6943,8 @@ mod processing_tests {
                 gain: 1.0,
                 pan: 0.0,
                 track_delay_ms: 0.0,
+                input_gain_db: 0.0,
+                input_phase_inverted: false,
                 muted: false,
                 solo: false,
                 solo_defeat: false,
@@ -7120,6 +7258,8 @@ mod hosted_processing_tests {
             gain: 1.0,
             pan: 0.0,
             track_delay_ms: 0.0,
+            input_gain_db: 0.0,
+            input_phase_inverted: false,
             muted: false,
             solo: false,
             solo_defeat: false,
@@ -7182,6 +7322,64 @@ mod hosted_processing_tests {
         assert!(plan.hosted_processing_enabled());
         for sample in output {
             assert!((sample - 0.25).abs() < 1.0e-6, "sample was {sample}");
+        }
+    }
+
+    #[test]
+    fn track_input_gain_and_phase_reach_the_rendered_audio() {
+        for (gain_db, inverted, expected) in [
+            (0.0_f32, false, 0.125_f32),
+            (6.0206, false, 0.25),
+            (6.0206, true, -0.25),
+            (0.0, true, -0.125),
+            (-6.0206, false, 0.0625),
+        ] {
+            let mut settings = track(constant_source(0.125, 256), Vec::new());
+            settings.input_gain_db = gain_db;
+            settings.input_phase_inverted = inverted;
+            let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+            for sample in render(plan, 128) {
+                assert!(
+                    (sample - expected).abs() < 1.0e-5,
+                    "input {gain_db} dB inverted {inverted} must render {expected}, sample was {sample}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn track_eq_input_level_includes_input_gain_and_ignores_the_output_fader() {
+        let mut settings = track(constant_source(0.1, 4096), Vec::new());
+        settings.input_gain_db = 6.0206;
+        settings.gain = 0.0;
+        let meter = Arc::clone(&settings.meter_peak);
+        meter.enable_spectrum(true);
+        let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+        let _ = render(plan, 2048);
+        // 0.1 full-scale steady signal is -20 dBFS; +6 dB input gain is -14 dBFS.
+        let measured = meter.eq_input_rms_dbfs().unwrap().1;
+        assert!((measured + 14.0).abs() < 0.05, "measured {measured} dBFS");
+    }
+
+    #[test]
+    fn input_stage_peak_follows_the_trim_and_ignores_the_fader() {
+        for (gain_db, expected) in [(6.0206_f32, 0.25_f32), (0.0, 0.125)] {
+            let mut settings = track(constant_source(0.125, 1024), Vec::new());
+            settings.input_gain_db = gain_db;
+            settings.gain = 0.0;
+            let meter = Arc::clone(&settings.meter_peak);
+            let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+            let _ = render(plan, 512);
+            let input_peak = meter.take_input().into_iter().fold(0.0_f32, f32::max);
+            assert!(
+                (input_peak - expected).abs() < 1.0e-4,
+                "input peak for {gain_db} dB was {input_peak}"
+            );
+            let fader_peak = meter.take().into_iter().fold(0.0_f32, f32::max);
+            assert_eq!(
+                fader_peak, 0.0,
+                "the output fader must not feed the input ring"
+            );
         }
     }
 

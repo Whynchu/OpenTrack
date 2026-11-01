@@ -145,6 +145,7 @@ pub(super) fn show_channels(
     ui: &mut egui::Ui,
     project: &mut Project,
     meter_levels: &HashMap<u64, [f32; 2]>,
+    input_levels: &HashMap<u64, [f32; 2]>,
     peak_holds: &mut HashMap<u64, metering::Hold>,
     input_meter_peaks: [f32; 2],
     output_meter_peaks: [f32; 2],
@@ -212,6 +213,7 @@ pub(super) fn show_channels(
             0,
             settings.channel_bus == Some(true),
             input_meter_peaks,
+            input_meter_peaks,
             peak_holds
                 .entry(opentrack_core::project::INPUT_BUS_ID)
                 .or_default(),
@@ -253,6 +255,9 @@ pub(super) fn show_channels(
                             index,
                             selected == Some(index as u32) && settings.channel_bus.is_none(),
                             meter_levels.get(&track.id).copied().unwrap_or([0.0; 2]),
+                            input_levels.get(&track.id).copied().unwrap_or_else(|| {
+                                meter_levels.get(&track.id).copied().unwrap_or([0.0; 2])
+                            }),
                             peak_holds.entry(track.id).or_default(),
                             settings,
                             view.hide_routing,
@@ -283,6 +288,7 @@ pub(super) fn show_channels(
             &mut project.output_channel.strip,
             0,
             settings.channel_bus == Some(false),
+            output_meter_peaks,
             output_meter_peaks,
             peak_holds
                 .entry(opentrack_core::project::OUTPUT_BUS_ID)
@@ -707,7 +713,7 @@ pub(super) fn input_gain_row(
     strip: Rect,
     format_top: f32,
     track: &mut Track,
-    peak: [f32; 2],
+    input_peak: [f32; 2],
     track_color: Color32,
 ) -> (bool, [egui::Response; 3]) {
     let layout = input_gain_layout(strip, format_top);
@@ -781,7 +787,7 @@ pub(super) fn input_gain_row(
         ui,
         layout.knob,
         track.input_gain_db,
-        Some((peak, track_color)),
+        Some((input_peak, track_color)),
     );
     (modified, [phase, value, knob])
 }
@@ -790,10 +796,10 @@ fn input_row(
     ui: &mut egui::Ui,
     r: Rect,
     track: &mut Track,
-    peak: [f32; 2],
+    input_peak: [f32; 2],
     color: Color32,
 ) -> bool {
-    input_gain_row(ui, r, 33.0, track, peak, color).0
+    input_gain_row(ui, r, 33.0, track, input_peak, color).0
 }
 
 pub(super) fn knob_graphic(ui: &egui::Ui, rect: Rect, gain: f32) {
@@ -929,6 +935,7 @@ fn strip(
     index: usize,
     selected: bool,
     peak: [f32; 2],
+    input_peak: [f32; 2],
     held_peak: &mut metering::Hold,
     settings: &mut NativeWindowState,
     hide_routing: bool,
@@ -982,9 +989,12 @@ fn strip(
             requires_plan_rebuild |= modified != was_modified;
         }
         let track_color = project_controls::track_color(track);
-        let input_row_changed = input_row(ui, r, track, peak, track_color);
+        let input_row_changed = input_row(ui, r, track, input_peak, track_color);
         modified |= input_row_changed;
-        requires_plan_rebuild |= input_row_changed;
+        // Track input trim rides the live control path; device-bus trim is baked
+        // into BusRuntime at construction, so only buses need a plan rebuild.
+        requires_plan_rebuild |=
+            input_row_changed && track.id >= opentrack_core::project::INPUT_BUS_ID;
         for right in [false, true] {
             let x = if right {
                 r.right() - 7.0
@@ -1740,6 +1750,44 @@ mod bus_tests {
     }
 
     #[test]
+    fn input_gain_ring_lights_follow_the_input_stage_peak() {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(84.0, 160.0));
+        let color = Color32::from_rgb(45, 140, 175);
+        let lit = |peak: [f32; 2]| {
+            let mut track = opentrack_core::project::BusChannel::output().strip;
+            track.audio_channels = 2;
+            track.input_gain_db = 6.0;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ui| {
+                    input_gain_row(ui, rect, 33.0, &mut track, peak, color);
+                },
+            );
+            let lit = output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Circle(circle) if circle.fill == knob_led_color(color))
+                })
+                .count();
+            output.textures_delta.clear();
+            lit
+        };
+        assert_eq!(lit([0.0; 2]), 0, "silence must not light the ring");
+        let quiet = lit([0.004; 2]);
+        let loud = lit([0.5; 2]);
+        assert!(
+            loud > quiet,
+            "the ring must track the input peak, got {quiet} quiet and {loud} loud dots"
+        );
+        assert!(lit([0.99; 2]) >= loud);
+    }
+
+    #[test]
     fn enlarged_input_gain_control_keeps_mono_stereo_and_numeric_fields_clear() {
         for (width, top) in [(82.0, 33.0), (84.0, 33.0), (86.0, 33.0), (92.0, 79.0)] {
             for gain in [-24.0, 0.0, 24.0] {
@@ -2061,6 +2109,7 @@ mod bus_tests {
                         ui,
                         &mut project,
                         &meters,
+                        &HashMap::new(),
                         &mut HashMap::new(),
                         [0.1, 0.2],
                         [0.3, 0.4],
