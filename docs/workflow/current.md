@@ -2,7 +2,7 @@
 
 ## T078 - Automation contract
 
-Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce, using an immutable lane and callback-owned cached cursor. Native format v27 protects points from older builds; v1-v26 still migrate. Editing, writing, manual override and fader-follow display remain open; no in-app curve creation exists yet. Core (39), audio (142, 3 ignored), automation snapshot and project-file checks pass; the same 14 unrelated app interaction tests fail at baseline cae80fc. Live playback and hardware remain unverified. See [T078](tasks/T078-volume-automation.md).
+Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce, using an immutable lane and callback-owned cached cursor. Native format v27 protects points from older builds; v1-v26 still migrate. Bounded, validated point-edit commands now live in a dedicated core automation module; lane gestures, writing, manual override and fader-follow display remain open, and there is no in-app curve creation yet. Core (39), audio (142, 3 ignored), automation snapshot and project-file checks pass; the same 14 unrelated app interaction tests fail at baseline cae80fc. Live playback and hardware remain unverified. See [T078](tasks/T078-volume-automation.md).
 
 ## Routing boundary
 

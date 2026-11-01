@@ -2,6 +2,7 @@
 //!
 //! The project model, command registry, and saved window layouts will live here
 //! so they can be developed independently of the eventual GUI framework.
+pub mod automation;
 pub mod commands;
 pub mod cpr;
 pub mod midi_file;

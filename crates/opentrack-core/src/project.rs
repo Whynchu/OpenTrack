@@ -56,100 +56,11 @@ impl Default for SendParameters {
     }
 }
 
-/// Bounded project automation data; audio snapshots may copy these points.
-pub const MAX_AUTOMATION_LANES_PER_TRACK: usize = 16;
-pub const MAX_AUTOMATION_POINTS_PER_LANE: usize = 100_000;
-pub const MAX_AUTOMATION_POINTS_PER_PROJECT: usize = 1_000_000;
-pub const MAX_AUTOMATION_BEAT: f64 = 1_000_000.0;
-
-/// Unknown targets are rejected during decoding rather than treated as volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AutomationTarget {
-    TrackVolume,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AutomationPoint {
-    /// Position in quarter-note beats on the project timeline.
-    pub beat: f64,
-    /// Linear channel gain, where 0 is silence and 1 is unity.
-    pub value: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AutomationLane {
-    pub target: AutomationTarget,
-    pub points: Vec<AutomationPoint>,
-}
-
-impl AutomationLane {
-    /// Validate a lane once on the control thread before publishing it.
-    pub fn is_valid(&self) -> bool {
-        self.points.len() <= MAX_AUTOMATION_POINTS_PER_LANE
-            && self.points.iter().all(|point| {
-                point.beat.is_finite()
-                    && (0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat)
-                    && point.value.is_finite()
-                    && (0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
-            })
-            && self
-                .points
-                .windows(2)
-                .all(|pair| pair[0].beat < pair[1].beat)
-    }
-
-    /// Hold the end points and interpolate in linear gain between them.
-    /// Points must be ordered and validated before publication to playback.
-    pub fn value_at(&self, beat: f64) -> Option<f32> {
-        self.value_at_cached(beat, &mut 0)
-    }
-
-    /// Reuse the next-point index during sequential playback. Seeks, loops and
-    /// arbitrary backwards jumps fall back to a bounded binary search.
-    pub fn value_at_cached(&self, beat: f64, cursor: &mut usize) -> Option<f32> {
-        if !beat.is_finite() || self.points.is_empty() {
-            return None;
-        }
-        let count = self.points.len();
-        let mut next = (*cursor).min(count);
-        let after_left = next == 0 || self.points[next - 1].beat <= beat;
-        let before_right = next == count || beat < self.points[next].beat;
-        if !(after_left && before_right) {
-            if next < count
-                && self.points[next].beat <= beat
-                && (next + 1 == count || beat < self.points[next + 1].beat)
-            {
-                next += 1;
-            } else {
-                next = self.points.partition_point(|point| point.beat <= beat);
-            }
-        }
-        *cursor = next;
-        let valid_gain = |value: f32| {
-            (value.is_finite() && (0.0..=MAX_CHANNEL_GAIN).contains(&value)).then_some(value)
-        };
-        if next == 0 {
-            return valid_gain(self.points[0].value);
-        }
-        if next == count {
-            return valid_gain(self.points[next - 1].value);
-        }
-        let left = self.points[next - 1];
-        let right = self.points[next];
-        let width = right.beat - left.beat;
-        if !width.is_finite() || width <= 0.0 {
-            return None;
-        }
-        let left_value = valid_gain(left.value)?;
-        let right_value = valid_gain(right.value)?;
-        let fraction = (beat - left.beat) / width;
-        Some(
-            (f64::from(left_value) + (f64::from(right_value) - f64::from(left_value)) * fraction)
-                as f32,
-        )
-    }
-}
+pub use crate::automation::{
+    AutomationLane, AutomationPoint, AutomationTarget, MAX_AUTOMATION_BEAT,
+    MAX_AUTOMATION_LANES_PER_TRACK, MAX_AUTOMATION_POINTS_PER_LANE,
+    MAX_AUTOMATION_POINTS_PER_PROJECT,
+};
 
 /// Reuses the existing channel-strip settings and editor without adding an arrange lane.
 /// Bus strips cannot contain media, arm recording, or monitor themselves.
