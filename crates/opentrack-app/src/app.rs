@@ -9348,7 +9348,7 @@ impl OpenTrackApp {
         }
         let mut builder = viewport_builder(
             format!("VST Audio Channel Settings - {track_name}"),
-            Vec2::new(1120.0, 650.0),
+            Vec2::new(1058.0, 497.0),
             Vec2::new(1010.0, 420.0),
             restore_bounds.as_ref(),
         );
