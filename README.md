@@ -37,6 +37,18 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.
 - **Editors and workspace:** a MIDI editor with notes and controller lanes, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
 
+### Built-in EQ and analysis
+
+Channel Settings includes an EQ and analyzer for shaping and inspecting a channel:
+
+- **Up to 32 EQ bands:** add and adjust bands on the graph, with frequency, gain and Q controls, individual band enable and solo, and an overall EQ bypass.
+- **Filter choices:** constant-Q and proportional-Q bell filters, low- and high-pass filters, and several low- and high-shelf shapes.
+- **Dynamic EQ:** independently enable dynamic processing on a band and adjust threshold, range, attack and release. The graph shows the allowed range and live gain movement.
+- **Live spectrum:** view pre- or post-processing signal, compare another channel, and adjust the display range, tilt and FFT resolution. Peak hold and freeze help inspect the display.
+- **Tonal reference:** capture a target from playback or import a WAV reference, then compare a longer-term tonal profile against the saved target. Targets are stored with the project.
+
+These features are under active development; live listening, visual behavior and performance across audio devices still need further review.
+
 ### Still needed
 
 - **Finishing and interchange:** audio mixdown/export, MIDI file import/export, and project interchange with other DAWs. CPR is currently a research and inspection effort, not an importer or round-trip format.
