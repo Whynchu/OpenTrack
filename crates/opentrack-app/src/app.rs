@@ -4488,7 +4488,11 @@ impl OpenTrackApp {
         }
 
         if let Some((track_id, slot)) = self.vst3_editor_window {
-            self.vst3_runtime.sync_editor_parameters(track_id, slot);
+            // Controller access happens on the editor thread while the editor is
+            // open. Touching the edit controller from this thread too can block
+            // forever inside a plug-in modal dialog (Tonal Balance Control 2's
+            // Options did exactly that), so only repaint here.
+            let _ = (track_id, slot);
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 

@@ -45,9 +45,30 @@ After a hang, the log tail shows which side stopped: `ui stalled` but `editor th
 
 `EditorHost::close` no longer waits on the editor thread indefinitely. It sends the close command, waits up to two seconds, then detaches a thread that does not exit, so a plug-in stuck in its own modal loop cannot freeze the application. The log records `editor thread did not exit within 2 s; detached`.
 
+## Root cause (confirmed from session.log)
+
+The user's 2026-11-01 11:40 session shows:
+
+```
+[..205] app: opened editor "Tonal Balance Control 2"
+[..208] editor thread: alive
+[..210] ui alive (heartbeat 352) / editor thread: alive
+[..213] ui stalled (heartbeat 377)   <- frozen from here on
+```
+
+The main UI thread froze while the editor thread stopped its two-second `alive` ticks at the same moment. That is the plug-in's modal Options loop holding its controller/UI state while the **main thread** was inside the edit controller: `show_vst3_windows` called `sync_output_parameters` every ~16 ms, which calls `IEditController::setParamNormalized`. VST3 edit controllers are not thread-safe and iZotope holds a lock during the modal loop, so the main thread blocked permanently.
+
+Fix:
+
+- Processor-produced parameter changes are now applied on the **editor thread**, in its message loop, where the view lives. The main thread no longer calls the controller while an editor is open.
+- `capture_states` skips any insert with an attached editor, so saving while an editor is open cannot query state across that same lock; the state is captured when the editor closes.
+- `EditorHost::close` waits at most two seconds and then detaches a stuck editor thread, so a plug-in modal loop can no longer freeze the application.
+
+The session log and heartbeat tracing stay in place, so a recurrence is still diagnosable.
+
 ## Checks
 
 - `cargo test -p opentrack-vst3`: existing module/effect tests.
 - `cargo test -p opentrack --bin opentrack`: app suite.
-- Runtime reproduction on the user's machine is required; TBC2 options cannot be exercised in this environment.
+- Runtime confirmation of TBC2 Options on the user's machine is pending; the deadlock explanation matches the captured heartbeat pattern.
 

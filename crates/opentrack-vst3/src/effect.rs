@@ -745,6 +745,11 @@ impl Vst3Effect {
         self.has_editor.load(Ordering::Relaxed)
     }
 
+    /// True while an editor view is attached (possibly on another thread).
+    pub fn has_attached_editor(&self) -> bool {
+        self.shared.editor_hwnd.load(Ordering::Acquire) != 0
+    }
+
     /// Creates and releases one editor view to test support. Control thread only.
     pub fn probe_editor(&self) -> bool {
         let has_editor = probe_editor(&self.controller);

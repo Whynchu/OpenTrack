@@ -659,6 +659,10 @@ fn editor_thread(
                 break;
             }
             window.pump_messages();
+            // Processor-produced parameter changes must reach the controller on
+            // the same thread that owns the editor view; calling this from the
+            // main thread can deadlock inside a plug-in modal dialog.
+            effect.sync_output_parameters();
             beats = beats.wrapping_add(1);
             if beats % 500 == 0 {
                 crate::crash_log::session("editor thread: alive");
@@ -997,11 +1001,9 @@ impl Runtime {
             .map(|effect| effect.parameters())
     }
 
-    pub fn sync_editor_parameters(&self, track_id: u64, slot: usize) {
-        if let Some(effect) = self.instance(track_id, slot) {
-            effect.sync_output_parameters();
-        }
-    }
+    /// Abandons a queued editor retry; editor parameter sync now runs on the
+    /// editor thread that owns the view.
+    pub fn sync_editor_parameters(&self, _track_id: u64, _slot: usize) {}
 
     pub fn set_parameter(&self, track_id: u64, slot: usize, id: u32, value: f64) {
         if let Some(effect) = self.instance(track_id, slot) {
@@ -1058,6 +1060,11 @@ impl Runtime {
                     continue;
                 };
                 if instance.class_id != *class_id {
+                    continue;
+                }
+                // Never query state while another thread owns this editor; the
+                // live state is captured when the editor closes instead.
+                if instance.effect.has_attached_editor() {
                     continue;
                 }
                 if let Ok(state) = instance.effect.save_state() {
