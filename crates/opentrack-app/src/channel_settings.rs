@@ -1990,7 +1990,7 @@ fn graph(
                             8.0,
                             Align2::LEFT_CENTER,
                         );
-                        let enabled_rect = at(inner, inner.width() - 20.0, 73.0, 20.0, 20.0);
+                        let enabled_rect = at(inner, 76.0, 73.0, 20.0, 20.0);
                         if power(
                             ui,
                             enabled_rect,
@@ -2037,8 +2037,8 @@ fn graph(
                         } else {
                             "Band audition is unavailable for the input bus"
                         });
-                        let section_title = at(inner, 0.0, 55.0, inner.width(), 14.0);
-                        text(ui, section_title, "STATIC EQ", 9.0, Align2::RIGHT_CENTER);
+                        let section_title = at(inner, 56.0, 55.0, 60.0, 14.0);
+                        text(ui, section_title, "STATIC EQ", 9.0, Align2::CENTER_CENTER);
                         let static_width = inner.width();
                         if band.filter == FilterType::Notch {
                             let gain_rect = eq_editor_knob_rect(inner, 0, 0);
@@ -2202,10 +2202,10 @@ fn graph(
                             divider,
                             Stroke::new(1.0, p.text.gamma_multiply(0.55)),
                         ));
-                        let dynamic_title = at(inner, 0.0, 215.0, inner.width(), 14.0);
-                        text(ui, dynamic_title, "DYNAMIC EQ", 9.0, Align2::LEFT_CENTER);
+                        let dynamic_title = at(inner, 0.0, 215.0, 60.0, 14.0);
+                        text(ui, dynamic_title, "DYNAMIC EQ", 9.0, Align2::CENTER_CENTER);
                         // Use the open left column beside Threshold for the section switch.
-                        let dynamic_power_rect = at(inner, 20.0, 235.0, 20.0, 16.0);
+                        let dynamic_power_rect = at(inner, 20.0, 233.0, 20.0, 20.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
