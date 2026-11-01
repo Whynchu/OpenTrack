@@ -17,9 +17,44 @@ pub enum TrackKind {
 
 /// Maximum persisted channel gain, approximately +6 dB.
 pub const MAX_CHANNEL_GAIN: f32 = 2.0;
+/// Maximum number of user-visible send slots on one channel.
+pub const MAX_SEND_SLOTS: usize = 24;
 /// Stable identities for device buses, separate from arrange tracks.
 pub const INPUT_BUS_ID: u64 = u64::MAX - 1;
 pub const OUTPUT_BUS_ID: u64 = u64::MAX;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendTap {
+    PreFader,
+    #[default]
+    PostFader,
+}
+
+/// Persisted parameters for one optional send slot.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SendParameters {
+    /// Send level in dB, from silence (-90 dB) to +12 dB.
+    pub level_db: f32,
+    /// Stereo balance from full left (-1) to full right (+1).
+    pub pan: f32,
+    /// Tap position relative to the source channel fader.
+    pub tap: SendTap,
+    /// A new send is inactive until the user enables it.
+    pub enabled: bool,
+}
+
+impl Default for SendParameters {
+    fn default() -> Self {
+        Self {
+            level_db: 0.0,
+            pan: 0.0,
+            tap: SendTap::PostFader,
+            enabled: false,
+        }
+    }
+}
 
 /// Reuses the existing channel-strip settings and editor without adding an arrange lane.
 /// Bus strips cannot contain media, arm recording, or monitor themselves.
@@ -66,6 +101,7 @@ impl BusChannel {
             output_routing: None,
             group_output_auto: false,
             send_routing: Vec::new(),
+            send_parameters: Vec::new(),
             instrument_waveform: InstrumentWaveform::default(),
             midi_parts: Vec::new(),
         };
@@ -151,9 +187,13 @@ pub struct Track {
     /// Explicit routing edits clear this so later group moves preserve them.
     #[serde(default)]
     pub group_output_auto: bool,
-    /// Eight optional send destinations. Empty entries represent No Bus.
+    /// Up to 24 optional send destinations. Empty entries represent No Bus.
     #[serde(default)]
     pub send_routing: Vec<Option<String>>,
+    /// Slot-aligned settings. An empty vector means legacy defaults for all
+    /// destinations; shorter vectors use defaults for the remaining slots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub send_parameters: Vec<SendParameters>,
     /// Selected built-in voice for an Instrument track.
     #[serde(default)]
     pub instrument_waveform: InstrumentWaveform,
@@ -970,6 +1010,7 @@ impl Project {
             output_routing: Some("Stereo Out".to_owned()),
             group_output_auto: false,
             send_routing: Vec::new(),
+            send_parameters: Vec::new(),
             instrument_waveform: InstrumentWaveform::default(),
             midi_parts: Vec::new(),
         });
@@ -2135,6 +2176,19 @@ impl Project {
                     return Err("a nested group cannot contain another group");
                 }
             }
+            if track.send_routing.len() > MAX_SEND_SLOTS
+                || track.send_parameters.len() > MAX_SEND_SLOTS
+            {
+                return Err("a channel cannot have more than 24 send slots");
+            }
+            if track.send_parameters.iter().any(|send| {
+                !send.level_db.is_finite()
+                    || !(-90.0..=12.0).contains(&send.level_db)
+                    || !send.pan.is_finite()
+                    || !(-1.0..=1.0).contains(&send.pan)
+            }) {
+                return Err("send level or pan is outside its supported range");
+            }
             if !track.input_gain_db.is_finite() || !(-24.0..=24.0).contains(&track.input_gain_db) {
                 return Err("channel input gain must be between -24 and 24 dB");
             }
@@ -2422,6 +2476,61 @@ impl Project {
                 current = next;
             }
         }
+        // Validate the complete route graph before sends are connected to DSP.
+        // Disabled sends also participate so enabling one cannot create feedback.
+        let mut route_edges: std::collections::BTreeMap<u64, Vec<u64>> =
+            std::collections::BTreeMap::new();
+        for (&source, &destination) in &group_routes {
+            route_edges.entry(source).or_default().push(destination);
+        }
+        for track in &self.tracks {
+            for route in track.send_routing.iter().flatten() {
+                let Some(id) = route.strip_prefix("Group:") else {
+                    continue;
+                };
+                let destination = id
+                    .parse::<u64>()
+                    .map_err(|_| "group send route has an invalid ID")?;
+                if track.id == destination
+                    || !self.tracks.iter().any(|candidate| {
+                        candidate.id == destination && candidate.kind == TrackKind::Group
+                    })
+                {
+                    return Err("group send must target another existing group channel");
+                }
+                route_edges.entry(track.id).or_default().push(destination);
+            }
+        }
+        fn visit_route(
+            id: u64,
+            edges: &std::collections::BTreeMap<u64, Vec<u64>>,
+            visiting: &mut BTreeSet<u64>,
+            done: &mut BTreeSet<u64>,
+        ) -> bool {
+            if done.contains(&id) {
+                return true;
+            }
+            if !visiting.insert(id) {
+                return false;
+            }
+            if let Some(destinations) = edges.get(&id) {
+                for &destination in destinations {
+                    if !visit_route(destination, edges, visiting, done) {
+                        return false;
+                    }
+                }
+            }
+            visiting.remove(&id);
+            done.insert(id);
+            true
+        }
+        let mut visiting = BTreeSet::new();
+        let mut done = BTreeSet::new();
+        for &id in route_edges.keys() {
+            if !visit_route(id, &route_edges, &mut visiting, &mut done) {
+                return Err("send and output routing cannot contain cycles");
+            }
+        }
         if track_ids
             .last()
             .is_some_and(|maximum_id| self.next_track_id <= *maximum_id)
@@ -2511,6 +2620,92 @@ fn first_midi_controller_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_parameters_round_trip_and_legacy_projects_default_to_inactive() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].send_routing = vec![Some("Stereo Out".to_owned())];
+        project.tracks[0].send_parameters = vec![SendParameters {
+            level_db: -6.0,
+            pan: 0.5,
+            tap: SendTap::PreFader,
+            enabled: true,
+        }];
+        assert!(project.validate().is_ok());
+        let encoded = serde_json::to_value(&project).unwrap();
+        let decoded: Project = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(
+            decoded.tracks[0].send_parameters,
+            project.tracks[0].send_parameters
+        );
+        let mut legacy = encoded;
+        legacy["tracks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("send_parameters");
+        let decoded: Project = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.tracks[0].send_parameters.is_empty());
+        assert!(!SendParameters::default().enabled);
+        assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn send_parameter_validation_rejects_invalid_values_and_excess_slots() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].send_parameters = vec![SendParameters::default()];
+        for value in [f32::NAN, f32::INFINITY, -90.1, 12.1] {
+            project.tracks[0].send_parameters[0].level_db = value;
+            assert!(project.validate().is_err());
+        }
+        project.tracks[0].send_parameters[0].level_db = 0.0;
+        for value in [f32::NAN, -1.01, 1.01] {
+            project.tracks[0].send_parameters[0].pan = value;
+            assert!(project.validate().is_err());
+        }
+        project.tracks[0].send_parameters = vec![SendParameters::default(); MAX_SEND_SLOTS];
+        assert!(project.validate().is_ok());
+        project.tracks[0]
+            .send_parameters
+            .push(SendParameters::default());
+        assert!(project.validate().is_err());
+        project.tracks[0].send_parameters.clear();
+        project.tracks[0].send_routing = vec![None; MAX_SEND_SLOTS + 1];
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn send_routes_reject_feedback_across_sends_and_group_outputs() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Group);
+        let first = project.tracks[0].id;
+        let second = project.tracks[1].id;
+        project.tracks[0].send_routing = vec![Some(format!("Group:{second}"))];
+        assert!(project.validate().is_ok());
+        project.tracks[1].output_routing = Some(format!("Group:{first}"));
+        assert_eq!(
+            project.validate(),
+            Err("send and output routing cannot contain cycles")
+        );
+        project.tracks[1].output_routing = Some("Stereo Out".to_owned());
+        project.tracks[1].send_routing = vec![Some(format!("Group:{first}"))];
+        assert_eq!(
+            project.validate(),
+            Err("send and output routing cannot contain cycles")
+        );
+        project.tracks[1].send_routing = vec![Some(format!("Group:{second}"))];
+        assert_eq!(
+            project.validate(),
+            Err("group send must target another existing group channel")
+        );
+        project.tracks[1].send_routing = vec![Some("Group:9999".to_owned())];
+        assert_eq!(
+            project.validate(),
+            Err("group send must target another existing group channel")
+        );
+    }
 
     #[test]
     fn new_audio_track_has_valid_channel_defaults() {

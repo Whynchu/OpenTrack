@@ -453,6 +453,7 @@ fn sidebar(
             target.equalizer = source.equalizer.clone();
             target.inserts = source.inserts.clone();
             target.send_routing = source.send_routing.clone();
+            target.send_parameters = source.send_parameters.clone();
             *modified = true;
         }
     }

@@ -1,5 +1,9 @@
 # Current assignment — roadmap activation (2026-11-01)
 
+## T076 - Send model foundation
+
+Persisted send level, pan, pre/post tap and enable fields are bounded and legacy-compatible. Combined group-output/send graph validation prevents feedback, including disabled paths; channel presets, mixer paste and slot removal retain slot parameters. The sends still do not route audio or offer these new controls. Targeted core and app checks pass; DSP, topology ordering, undo gestures, offline rendering and live acceptance remain open. See [T076](tasks/T076-send-routing-model.md).
+
 ## EQ strip layout update
 
 Follow-up from the user build review: the dynamic section power switch occupies the empty left column beside Threshold, centered above Range. The editor is 130 px wide with equal outer knob margins, increased vertical stagger spacing, and a visible stepped divider. GPT-6.1 Sol inspected an offscreen raster from the actual egui shapes and textures; 25 focused Channel Settings checks and the temporary render harness passed. Temporary capture code was removed. The existing release executable predates these corrections; live gesture/visual acceptance remains pending.

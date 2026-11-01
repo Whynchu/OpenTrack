@@ -379,6 +379,8 @@ struct ChannelSettingsSnapshot {
     input_routing: Option<String>,
     output_routing: Option<String>,
     send_routing: Vec<Option<String>>,
+    #[serde(default)]
+    send_parameters: Vec<opentrack_core::project::SendParameters>,
 }
 
 impl From<&Track> for ChannelSettingsSnapshot {
@@ -408,6 +410,7 @@ impl From<&Track> for ChannelSettingsSnapshot {
             input_routing: track.input_routing.clone(),
             output_routing: track.output_routing.clone(),
             send_routing: track.send_routing.clone(),
+            send_parameters: track.send_parameters.clone(),
         }
     }
 }
@@ -436,6 +439,7 @@ impl ChannelSettingsSnapshot {
         track.output_routing = self.output_routing.clone();
         track.group_output_auto = false;
         track.send_routing = self.send_routing.clone();
+        track.send_parameters = self.send_parameters.clone();
     }
 }
 
@@ -19679,6 +19683,31 @@ mod project_history_tests {
 #[cfg(test)]
 mod bus_persistence_tests {
     use super::*;
+    #[test]
+    fn channel_snapshot_preserves_send_settings_and_reads_older_snapshots() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].send_routing = vec![Some("Stereo Out".into())];
+        project.tracks[0].send_parameters = vec![opentrack_core::project::SendParameters {
+            enabled: true,
+            level_db: -9.0,
+            pan: -0.5,
+            tap: opentrack_core::project::SendTap::PreFader,
+        }];
+        let snapshot = ChannelSettingsSnapshot::from(&project.tracks[0]);
+        snapshot.apply_to(&mut project.tracks[1]);
+        assert_eq!(
+            project.tracks[1].send_parameters,
+            project.tracks[0].send_parameters
+        );
+        let mut old = serde_json::to_value(snapshot).unwrap();
+        old.as_object_mut().unwrap().remove("send_parameters");
+        let legacy: ChannelSettingsSnapshot = serde_json::from_value(old).unwrap();
+        legacy.apply_to(&mut project.tracks[1]);
+        assert!(project.tracks[1].send_parameters.is_empty());
+    }
+
     #[test]
     fn mixer_presets_distinguish_buses_from_same_named_tracks_and_bus_edits_undo() {
         let mut project = Project::default();

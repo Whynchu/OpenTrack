@@ -903,6 +903,9 @@ fn sends(
         if list.secondary_clicked() {
             if i < track.send_routing.len() {
                 track.send_routing.remove(i);
+                if i < track.send_parameters.len() {
+                    track.send_parameters.remove(i);
+                }
                 changed = true;
             }
             state.enabled_sends = state
