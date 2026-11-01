@@ -99,7 +99,7 @@ fn installed_plugin_processes_audio_and_round_trips_state() {
         "prepared: latency {} samples, tail {} samples, editor {}",
         effect.latency_samples(),
         effect.tail_samples(),
-        effect.has_editor()
+        effect.probe_editor()
     );
 
     let parameters = effect.parameters();
@@ -207,7 +207,7 @@ fn installed_plugin_processes_audio_and_round_trips_state() {
 
     if let Some(hwnd) = editor_hwnd() {
         assert!(
-            effect.has_editor(),
+            effect.probe_editor(),
             "editor HWND supplied but the plug-in reports no editor"
         );
         effect
@@ -242,7 +242,7 @@ fn installed_waves_cla76_single_component_smoke() {
         "CLA-76: latency {} tail {} editor {}",
         effect.latency_samples(),
         effect.tail_samples(),
-        effect.has_editor()
+        effect.probe_editor()
     );
 
     let parameters = effect.parameters();

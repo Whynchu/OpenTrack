@@ -739,6 +739,8 @@ impl Runtime {
         if self.sample_rate == 0 || self.max_block == 0 {
             return false;
         }
+        let trace = std::env::var_os("OPENTRACK_VST3_TRACE").is_some();
+        let sync_started = std::time::Instant::now();
         let mut wanted = HashSet::new();
         let mut changed = false;
         for track in project
@@ -786,16 +788,33 @@ impl Runtime {
                     changed = true;
                     continue;
                 };
+                let load_started = std::time::Instant::now();
                 match Vst3Effect::load(module_path, class_id, self.sample_rate, self.max_block) {
                     Ok(effect) => {
+                        if trace {
+                            eprintln!(
+                                "VST3 trace: {} instantiated in {} ms",
+                                module_path.display(),
+                                load_started.elapsed().as_millis()
+                            );
+                        }
                         if !component_state.is_empty() || !controller_state.is_empty() {
                             let state = Vst3State {
                                 component: component_state.clone(),
                                 controller: controller_state.clone(),
                             };
+                            let state_started = std::time::Instant::now();
                             if let Err(error) = effect.load_state(&state) {
                                 self.failures
                                     .insert(key, format!("VST3 state restore failed: {error}"));
+                            }
+                            if trace {
+                                eprintln!(
+                                    "VST3 trace: {} state restore in {} ms ({} bytes)",
+                                    module_path.display(),
+                                    state_started.elapsed().as_millis(),
+                                    state.component.len() + state.controller.len()
+                                );
                             }
                         }
                         self.instances.insert(
@@ -825,6 +844,12 @@ impl Runtime {
             self.failures.remove(&key);
             self.failed_class.remove(&key);
             changed = true;
+        }
+        if trace && changed {
+            eprintln!(
+                "VST3 trace: sync finished in {} ms",
+                sync_started.elapsed().as_millis()
+            );
         }
         changed
     }
@@ -878,6 +903,12 @@ impl Runtime {
             self.max_block,
         ) {
             Ok(effect) => {
+                if std::env::var_os("OPENTRACK_VST3_TRACE").is_some() {
+                    eprintln!(
+                        "VST3 trace: {} instantiated while loading a project",
+                        module_path.display()
+                    );
+                }
                 if !component_state.is_empty() || !controller_state.is_empty() {
                     let state = Vst3State {
                         component: component_state.clone(),

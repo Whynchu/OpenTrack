@@ -11,7 +11,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use opentrack_plugins::{HostedProcessor, PluginClassId};
@@ -165,7 +165,7 @@ pub struct Vst3Effect {
 
     latency: AtomicU32,
     tail: AtomicU32,
-    has_editor: bool,
+    has_editor: AtomicBool,
     class_id: PluginClassId,
 
     // Borrowed by `component.initialize`; keep it alive for the whole instance.
@@ -321,7 +321,7 @@ impl Vst3Effect {
             sample_rate: 0.0,
             latency: AtomicU32::new(0),
             tail: AtomicU32::new(0),
-            has_editor: false,
+            has_editor: AtomicBool::new(false),
             class_id,
             host_context,
             _module: module,
@@ -335,7 +335,6 @@ impl Vst3Effect {
             effect.shutdown();
             return Err(error);
         }
-        effect.has_editor = probe_editor(&effect.controller);
         Ok(effect)
     }
 
@@ -737,9 +736,19 @@ impl Vst3Effect {
         Ok(())
     }
 
-    /// True when the controller created an `"editor"` view after preparation.
+    /// True once the controller has produced an `"editor"` view. Loading an
+    /// instance no longer probes the editor: building a plug-in view is expensive
+    /// and some plug-ins block while constructing it, so probing happens only
+    /// when the user asks for the editor.
     pub fn has_editor(&self) -> bool {
-        self.has_editor
+        self.has_editor.load(Ordering::Relaxed)
+    }
+
+    /// Creates and releases one editor view to test support. Control thread only.
+    pub fn probe_editor(&self) -> bool {
+        let has_editor = probe_editor(&self.controller);
+        self.has_editor.store(has_editor, Ordering::Relaxed);
+        has_editor
     }
 
     /// Attaches the plug-in's native editor to an application-owned HWND.
@@ -763,6 +772,7 @@ impl Vst3Effect {
         match editor::open_session(&self.controller, &self.plug_frame, parent_window) {
             Ok(session) => {
                 *slot = Some(session);
+                self.has_editor.store(true, Ordering::Relaxed);
                 Ok(())
             }
             Err(error) => {
