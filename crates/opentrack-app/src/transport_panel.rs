@@ -1,7 +1,7 @@
 //! Transport geometry follows workflow-L1/02-mixer-transport-1.png (837 x 69).
 use super::*;
 
-const SIZE: Vec2 = Vec2::new(837.0, 69.0);
+const SIZE: Vec2 = Vec2::new(1000.0, 69.0);
 
 fn rect(origin: Pos2, b: [f32; 4]) -> Rect {
     Rect::from_min_size(origin + Vec2::new(b[0], b[1]), Vec2::new(b[2], b[3]))
@@ -107,16 +107,25 @@ fn button(
     }
 }
 fn meter(ui: &egui::Ui, origin: Pos2, x: f32, peak: f32, width: f32) {
-    let p = theme::palette(ui);
-    let r = rect(origin, [x, 5.0, width, 58.0]);
-    ui.painter().rect_filled(r, 0.0, p.canvas);
-    ui.painter()
-        .rect_stroke(r, 0.0, Stroke::new(1.0, p.grid), egui::StrokeKind::Inside);
     let level = if peak > 0.0 {
         ((20.0 * peak.log10() + 60.0) / 66.0).clamp(0.0, 1.0)
     } else {
         0.0
     };
+    segmented_meter(ui, origin, x, level, width);
+}
+
+/// Direct 0..1 gauge used by the CPU and memory readouts.
+fn gauge(ui: &egui::Ui, origin: Pos2, x: f32, level: f32, width: f32) {
+    segmented_meter(ui, origin, x, level.clamp(0.0, 1.0), width);
+}
+
+fn segmented_meter(ui: &egui::Ui, origin: Pos2, x: f32, level: f32, width: f32) {
+    let p = theme::palette(ui);
+    let r = rect(origin, [x, 5.0, width, 58.0]);
+    ui.painter().rect_filled(r, 0.0, p.canvas);
+    ui.painter()
+        .rect_stroke(r, 0.0, Stroke::new(1.0, p.grid), egui::StrokeKind::Inside);
     for row in 0..14 {
         let cell = Rect::from_min_size(
             Pos2::new(r.left() + 1.0, r.bottom() - 3.0 - row as f32 * 4.0),
@@ -201,7 +210,7 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
     drag_handle
         .clone()
         .on_hover_text("Drag here to move the Transport panel");
-    for x in [17.0, 127.0, 247.0, 524.0, 644.0, 741.0, 821.0] {
+    for x in [17.0, 127.0, 247.0, 524.0, 644.0, 741.0, 837.0] {
         ui.painter().line_segment(
             [o + Vec2::new(x, 3.0), o + Vec2::new(x, 65.0)],
             Stroke::new(1.0, p.grid),
@@ -568,6 +577,53 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
     ] {
         meter(ui, o, x, peak, 6.0);
     }
+    // System load: OpenTrack's process CPU and system memory.
+    let cpu = app.system_stats.cpu_percent();
+    let ram = app.system_stats.ram_load_percent();
+    gauge(ui, o, 845.0, cpu / 100.0, 7.0);
+    gauge(ui, o, 925.0, ram / 100.0, 7.0);
+    let stat = |r: Rect, value: &str, size: f32, color: Color32| {
+        ui.painter().text(
+            Pos2::new(r.left(), r.center().y),
+            Align2::LEFT_CENTER,
+            value,
+            FontId::proportional(size),
+            color,
+        );
+    };
+    stat(rect(o, [856.0, 10.0, 60.0, 12.0]), "CPU", 9.0, p.muted);
+    stat(
+        rect(o, [856.0, 26.0, 60.0, 18.0]),
+        &format!("{cpu:.0}%"),
+        12.0,
+        p.text,
+    );
+    stat(rect(o, [936.0, 10.0, 60.0, 12.0]), "RAM", 9.0, p.muted);
+    stat(
+        rect(o, [936.0, 26.0, 60.0, 18.0]),
+        &super::system_stats::format_memory(app.system_stats.ram_used_bytes()),
+        12.0,
+        p.text,
+    );
+    ui.interact(
+        rect(o, [838.0, 3.0, 80.0, 64.0]),
+        ui.id().with("cpu-meter"),
+        Sense::hover(),
+    )
+    .on_hover_text(format!(
+        "OpenTrack CPU {cpu:.0}% (all logical cores busy = 100%)"
+    ));
+    ui.interact(
+        rect(o, [918.0, 3.0, 80.0, 64.0]),
+        ui.id().with("memory-meter"),
+        Sense::hover(),
+    )
+    .on_hover_text(format!(
+        "System memory {ram:.0}% used ({} of {})\nOpenTrack working set: {}",
+        super::system_stats::format_memory(app.system_stats.ram_used_bytes()),
+        super::system_stats::format_memory(app.system_stats.ram_total_bytes()),
+        super::system_stats::format_memory(app.system_stats.process_bytes()),
+    ));
     for col in 0..2 {
         for row in 0..4 {
             let r = rect(

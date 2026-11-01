@@ -30,6 +30,8 @@ mod project_rate;
 mod recording_undo;
 #[path = "sample_editor.rs"]
 mod sample_editor;
+#[path = "system_stats.rs"]
+mod system_stats;
 #[path = "transport_panel.rs"]
 mod transport_panel;
 #[path = "vst3_host.rs"]
@@ -1028,6 +1030,8 @@ pub struct OpenTrackApp {
     ui_heartbeat: Arc<std::sync::atomic::AtomicU64>,
     /// Current UI section, sampled by the hang logger when frames stop.
     ui_stage: Arc<std::sync::atomic::AtomicU32>,
+    /// Process CPU and memory for the transport meters.
+    system_stats: system_stats::SystemStats,
     vst3_plugin_catalog: Vec<PluginDescriptor>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
@@ -2268,6 +2272,7 @@ impl OpenTrackApp {
             vst3_plugin_folders,
             ui_heartbeat: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ui_stage: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            system_stats: system_stats::SystemStats::default(),
             vst3_plugin_catalog,
             plugin_information_open: false,
             plugin_scan_task: None,
@@ -11196,6 +11201,7 @@ impl eframe::App for OpenTrackApp {
             .map(|previous| now.saturating_duration_since(previous).as_secs_f32())
             .unwrap_or(1.0 / 60.0);
         self.update_track_meter_levels(meter_delta);
+        self.system_stats.refresh();
         let meter_source_active = self.recording_session.is_some()
             || self.audio_input_probe.is_some()
             || self.data.transport.playing
