@@ -37,6 +37,13 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.
 - **Editors and workspace:** a MIDI editor with notes and controller lanes, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
 
+### Highlights
+
+- **32-band EQ with dynamic processing:** shape a channel with multiple filter types and independent dynamic controls for each band.
+- **Built-in spectrum and tonal-reference analysis:** compare live audio with another channel or a captured or imported WAV reference.
+- **Up to 24 insert slots:** build a channel processing chain with available built-in processors and third-party VST3 effects, including native plug-in editor windows.
+- **Integrated Pitch & Time:** analyze and edit audio in the Sample Editor, alongside the Project and Mixer workspace.
+
 ### Built-in EQ and analysis
 
 Channel Settings includes an EQ and analyzer for shaping and inspecting a channel:
@@ -52,7 +59,7 @@ These features are under active development; live listening, visual behavior and
 ### Still needed
 
 - **Finishing and interchange:** audio mixdown/export, MIDI file import/export, and project interchange with other DAWs. CPR is currently a research and inspection effort, not an importer or round-trip format.
-- **Mixing and recording:** automation playback and writing, audible send processing, general typed bus routing, cycle takes, and broader device channel mapping. Some related controls or layout elements are visible before their processing is complete.
+- **Mixing and recording:** automation playback and writing, audible send processing, general typed bus routing, cycle takes, and broader device channel mapping. The channel rack can display up to 24 send slots and store destinations, but send audio processing is not yet implemented.
 - **Interface completion:** many menus, preference pages, dialogs and controls are disabled or partial. The ongoing [UI inventory](docs/reviews/ui-implementation-inventory.md) tracks source findings and outstanding review.
 - **Reliability and validation:** recording, monitoring and low-latency behavior need further testing with real audio and MIDI hardware. Plug-in compatibility, project recovery, visual interaction and audible results need continued verification.
 
