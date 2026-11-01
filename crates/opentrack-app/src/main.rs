@@ -15,6 +15,7 @@ mod view_controls;
 
 fn main() -> eframe::Result {
     crash_log::install();
+    crash_log::reset_session_log();
     if let Some(result) = startup_splash::run_if_helper() {
         return result;
     }

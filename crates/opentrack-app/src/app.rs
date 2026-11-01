@@ -995,6 +995,8 @@ pub struct OpenTrackApp {
     note_audition_stop_at: Option<Instant>,
     vst3_runtime: vst3_host::Runtime,
     vst3_plugin_folders: Vec<PathBuf>,
+    /// UI-thread frame counter, sampled by the hang logger.
+    ui_heartbeat: Arc<std::sync::atomic::AtomicU64>,
     vst3_plugin_catalog: Vec<PluginDescriptor>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
@@ -2233,6 +2235,35 @@ impl OpenTrackApp {
             note_audition_stop_at: None,
             vst3_runtime: vst3_host::Runtime::default(),
             vst3_plugin_folders,
+            ui_heartbeat: {
+                let heartbeat = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                if !cfg!(test) {
+                    let sampled = Arc::clone(&heartbeat);
+                    std::thread::Builder::new()
+                        .name("opentrack-hang-log".to_owned())
+                        .spawn(move || {
+                            let mut last = 0;
+                            let mut tick = 0_u32;
+                            loop {
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                let current = sampled.load(std::sync::atomic::Ordering::Relaxed);
+                                tick += 1;
+                                if current == last {
+                                    crate::crash_log::session(&format!(
+                                        "ui stalled (heartbeat {current})"
+                                    ));
+                                } else if tick % 5 == 0 {
+                                    crate::crash_log::session(&format!(
+                                        "ui alive (heartbeat {current})"
+                                    ));
+                                }
+                                last = current;
+                            }
+                        })
+                        .ok();
+                }
+                heartbeat
+            },
             vst3_plugin_catalog,
             plugin_information_open: false,
             plugin_scan_task: None,
@@ -2387,6 +2418,13 @@ impl OpenTrackApp {
         app.refresh_audio_input_format();
         app.refresh_audio_output_configurations();
         app.mark_saved();
+        if !cfg!(test) {
+            crate::crash_log::session(&format!(
+                "app started (pid {}, {} samples)",
+                std::process::id(),
+                app.data.project.sample_rate_hz
+            ));
+        }
         app
     }
 
@@ -4382,6 +4420,9 @@ impl OpenTrackApp {
     }
 
     fn close_vst3_editor(&mut self) {
+        if self.vst3_editor_host.is_some() {
+            crate::crash_log::session("app: closing editor");
+        }
         if let Some(host) = self.vst3_editor_host.take() {
             if let Some(bounds) = host.bounds() {
                 self.vst3_editor_bounds = Some(bounds);
@@ -4424,6 +4465,7 @@ impl OpenTrackApp {
         }
         self.vst3_editor_host = Some(window);
         self.vst3_editor_window = Some((track_id, slot));
+        crate::crash_log::session(&format!("app: opened editor \"{title}\""));
         Ok(())
     }
 
@@ -11072,6 +11114,8 @@ impl eframe::App for OpenTrackApp {
         egui::Rgba::from(visuals.panel_fill).to_array()
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.ui_heartbeat
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ctx = ui.ctx().clone();
         if ctx.data_mut(|data| {
             data.remove_temp::<bool>(Id::new(TRANSPORT_TOGGLE_REQUEST))

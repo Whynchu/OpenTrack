@@ -44,6 +44,19 @@ pub(crate) fn append_log(file_name: &str, text: &str) {
     }
 }
 
+/// Session tracing for hang diagnosis. Truncated once per launch, then appended
+/// with timestamps by the UI, the editor thread and hang events.
+pub(crate) fn reset_session_log() {
+    let root = log_root();
+    if std::fs::create_dir_all(&root).is_ok() {
+        let _ = std::fs::remove_file(root.join("session.log"));
+    }
+}
+
+pub(crate) fn session(text: &str) {
+    append_log("session.log", &format!("[{:>10}] {text}\n", timestamp()));
+}
+
 /// Records native faults (access violations and similar) that never reach the
 /// Rust panic hook, so a plug-in crash leaves a local trace.
 #[cfg(windows)]

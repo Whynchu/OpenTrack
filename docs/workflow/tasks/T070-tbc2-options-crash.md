@@ -29,8 +29,25 @@ The exception log names the faulting module (for example the plug-in DLL) and th
 
 If the crash disappears with the `resizeView` guard, that confirms suspect 1 and the guard is the fix. If it still crashes, the log identifies whether the fault is in the plug-in DLL or in OpenTrack.
 
+## What the evidence shows
+
+The crash is a **hang**, not an access violation. Windows recorded `Application Hang` (event 1002) for `OpenTrack.exe` at the time of the report, and neither `exception.log` nor a new `panic.log` was produced. So the process stops responding rather than faulting.
+
+## Additional diagnostics
+
+- A UI heartbeat is sampled by a background logger thread. It writes `ui alive (heartbeat N)` every five seconds and `ui stalled` every second once frames stop.
+- The VST3 editor thread logs its start, each command, the open/close events, and `editor thread: alive` about every two seconds. The app logs editor open/close requests.
+- All of that goes to `%LOCALAPPDATA%\OpenTrack-\logs\session.log`, truncated at each launch.
+
+After a hang, the log tail shows which side stopped: `ui stalled` but `editor thread: alive` means the main thread is blocked; a missing editor heartbeat means the editor thread is stuck (for example inside the plug-in's own modal options loop).
+
+## Hardening
+
+`EditorHost::close` no longer waits on the editor thread indefinitely. It sends the close command, waits up to two seconds, then detaches a thread that does not exit, so a plug-in stuck in its own modal loop cannot freeze the application. The log records `editor thread did not exit within 2 s; detached`.
+
 ## Checks
 
 - `cargo test -p opentrack-vst3`: existing module/effect tests.
 - `cargo test -p opentrack --bin opentrack`: app suite.
 - Runtime reproduction on the user's machine is required; TBC2 options cannot be exercised in this environment.
+

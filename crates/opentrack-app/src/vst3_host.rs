@@ -565,10 +565,27 @@ impl EditorHost {
     pub fn close(mut self) {
         let _ = self.commands.send(EditorCommand::Close);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            join_bounded(thread);
         }
         self.alive
             .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Waits briefly for the editor thread. A plug-in stuck in its own modal loop
+/// must not freeze the application, so a thread that does not exit is detached.
+#[cfg(windows)]
+fn join_bounded(thread: std::thread::JoinHandle<()>) {
+    use std::time::Duration;
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("opentrack-vst3-editor-join".to_owned())
+        .spawn(move || {
+            let _ = thread.join();
+            let _ = done_tx.send(());
+        });
+    if done_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+        crate::crash_log::session("editor thread did not exit within 2 s; detached");
     }
 }
 
@@ -577,7 +594,7 @@ impl Drop for EditorHost {
     fn drop(&mut self) {
         let _ = self.commands.send(EditorCommand::Close);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            join_bounded(thread);
         }
         self.alive
             .store(false, std::sync::atomic::Ordering::Release);
@@ -599,7 +616,9 @@ fn editor_thread(
 
     let result = (|| -> Result<(), String> {
         let window = EditorWindow::create_hidden(&title, restore_bounds.as_ref())?;
+        crate::crash_log::session(&format!("editor thread: opening \"{title}\""));
         let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
+        crate::crash_log::session(&format!("editor thread: opened \"{title}\""));
         window.restore_position(restore_bounds.as_ref());
         window.show();
         if let Ok(mut current) = bounds.lock() {
@@ -610,9 +629,17 @@ fn editor_thread(
         let _ = ready.send(Ok(()));
 
         let mut visible = true;
+        let mut beats = 0_u32;
         loop {
             let mut close = false;
             while let Ok(command) = commands.try_recv() {
+                let label = match &command {
+                    EditorCommand::Focus => "focus",
+                    EditorCommand::SetVisible(_) => "set-visible",
+                    EditorCommand::SetOwner(_) => "set-owner",
+                    EditorCommand::Close => "close",
+                };
+                crate::crash_log::session(&format!("editor thread: command {label}"));
                 match command {
                     EditorCommand::Focus => {
                         if visible {
@@ -628,9 +655,14 @@ fn editor_thread(
                 }
             }
             if close || !window.is_alive() {
+                crate::crash_log::session("editor thread: loop ended");
                 break;
             }
             window.pump_messages();
+            beats = beats.wrapping_add(1);
+            if beats % 500 == 0 {
+                crate::crash_log::session("editor thread: alive");
+            }
             if let Ok(mut current) = bounds.lock() {
                 *current = window.bounds();
             }
