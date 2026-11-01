@@ -30,6 +30,9 @@ pub(crate) struct HostShared {
     pub(crate) dirty: AtomicBool,
     pub(crate) restart_flags: AtomicI32,
     pub(crate) editor_hwnd: AtomicIsize,
+    /// The main editor view attached to `editor_hwnd`; sub-views and popup
+    /// windows must not resize the host window.
+    pub(crate) editor_view: AtomicIsize,
 }
 
 /// `IComponentHandler`, `IComponentHandler2` and `IPlugFrame` implementation.
@@ -112,7 +115,12 @@ impl IPlugFrameTrait for HostServices {
             return kInvalidArgument;
         }
         let hwnd = self.shared.editor_hwnd.load(Ordering::Acquire);
-        if hwnd != 0
+        let main_view = self.shared.editor_view.load(Ordering::Acquire);
+        // Popup/sub-views inside the editor may request a size for themselves;
+        // only the main view that owns the host window may resize it.
+        let owns_window = main_view == 0 || main_view == view.as_ptr() as isize;
+        if owns_window
+            && hwnd != 0
             && crate::editor::resize_native_window(hwnd, width as u32, height as u32).is_err()
         {
             return kResultFalse;

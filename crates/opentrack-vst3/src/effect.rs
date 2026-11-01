@@ -196,6 +196,7 @@ pub struct DetachedEditor {
 impl Drop for DetachedEditor {
     fn drop(&mut self) {
         self.shared.editor_hwnd.store(0, Ordering::Release);
+        self.shared.editor_view.store(0, Ordering::Release);
         if let Some(session) = self.session.take() {
             editor::close_session(session);
         }
@@ -771,6 +772,9 @@ impl Vst3Effect {
             .store(parent_window as isize, Ordering::Release);
         match editor::open_session(&self.controller, &self.plug_frame, parent_window) {
             Ok(session) => {
+                self.shared
+                    .editor_view
+                    .store(session.view.as_ptr() as isize, Ordering::Release);
                 *slot = Some(session);
                 self.has_editor.store(true, Ordering::Relaxed);
                 Ok(())
@@ -807,6 +811,9 @@ impl Vst3Effect {
                 return Err(error);
             }
         };
+        shared
+            .editor_view
+            .store(session.view.as_ptr() as isize, Ordering::Release);
         Ok(DetachedEditor {
             session: Some(session),
             _plug_frame: plug_frame,
@@ -824,6 +831,7 @@ impl Vst3Effect {
             return;
         };
         self.shared.editor_hwnd.store(0, Ordering::Release);
+        self.shared.editor_view.store(0, Ordering::Release);
         editor::close_session(session);
     }
 
