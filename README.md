@@ -72,7 +72,7 @@ OpenTrack aims to bring recording, editing, arrangement, mixing and finishing in
 
 ### Near-term gaps
 
-Next work prioritizes in-app validation of audio mixdown and MIDI file exchange, usable send signal flow, automation, broader audio-device routing, and recording reliability. The 24-slot send rack is already present and can hold destinations, but it does not yet send audio. Windows x64 remains the primary target; Kubuntu Linux was part of development and has also been verified.
+Next work prioritizes in-app validation of audio mixdown, MIDI file exchange, and track/group sends, followed by automation, broader audio-device routing, and recording reliability. Send processing passes offline checks; live listening and device-bus sends remain open. Windows x64 remains the primary target; Kubuntu Linux was part of development and has also been verified.
 
 ## Build and run
 
