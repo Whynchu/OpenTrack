@@ -10097,10 +10097,11 @@ impl OpenTrackApp {
         let mut modified = project_changes.modified;
         let mut live_mix_update = project_changes.live_mix;
         let defer_audio_plan = project_changes.defer_audio_plan;
-        if let Some(action) = project_changes.automation_action
-            && let Ok(changed) = automation::apply_lane_action(&mut self.data.project, action)
-        {
-            modified |= changed;
+        if let Some(action) = project_changes.automation_action {
+            match automation::apply_lane_action(&mut self.data.project, action) {
+                Ok(changed) => modified |= changed,
+                Err(error) => self.status_message = format!("Automation edit rejected: {error}"),
+            }
         }
         let settings_response = ui.interact(
             readout,

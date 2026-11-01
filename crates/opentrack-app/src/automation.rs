@@ -204,4 +204,22 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn rejected_lane_edit_does_not_mutate_project() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        let before = project.clone();
+        let result = apply_lane_action(
+            &mut project,
+            LaneAction::Set {
+                track_id,
+                beat: f64::NAN,
+                value: 0.5,
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(project, before);
+    }
 }
