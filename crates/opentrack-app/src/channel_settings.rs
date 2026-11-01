@@ -1246,10 +1246,10 @@ fn eq_knob(
         _ => 0.0_f32,
     })
     .clamp(minimum, maximum);
-    // Keep the parameter name beside the dial; the editable number lives in
+    // Keep the parameter name below the dial; the editable number lives in
     // an interactive hover panel so the controls can nest diagonally.
-    let label_rect = at(rect, 56.0, 16.0, (rect.width() - 56.0).max(1.0), 16.0);
-    text(ui, label_rect, label, 8.0, Align2::LEFT_CENTER);
+    let label_rect = at(rect, 0.0, 48.0, 48.0, 11.0);
+    text(ui, label_rect, label, 8.0, Align2::CENTER_CENTER);
     let tooltip = if let Some(db) = live_input_dbfs {
         format!(
             "{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS on a -60..0 dBFS ring; pointer: threshold"
@@ -1264,19 +1264,24 @@ fn eq_knob(
             show_eq_dial(ui, value, minimum, maximum, logarithmic, &mut changed)
         })
         .inner;
-    dial_response.on_hover_ui(|ui| {
+    let mut value_popup = egui::Tooltip::for_enabled(&dial_response)
+        .gap(0.0)
+        .width(86.0);
+    value_popup.popup = value_popup.popup.align(egui::RectAlign::RIGHT);
+    value_popup.show(|ui| {
         ui.style_mut().explanation_tooltips = false;
-        ui.label(&tooltip);
         let response = ui
             .add_sized(
-                Vec2::new(112.0, 20.0),
+                Vec2::new(86.0, 20.0),
                 egui::DragValue::new(value)
                     .range(minimum..=maximum)
                     .speed(speed)
                     .fixed_decimals(1)
                     .suffix(suffix),
             )
-            .on_hover_text("Drag to adjust; double-click the value to type");
+            .on_hover_text(format!(
+                "{tooltip}\nDrag to adjust; double-click the value to type"
+            ));
         if response.double_clicked() {
             response.request_focus();
         }
@@ -1489,7 +1494,7 @@ fn eq_graph_rect(r: Rect, show_editor: bool) -> Rect {
     }
     // Keep enough graph width for direct band editing beside the compact
     // diagonal control cluster.
-    let sidebar_width = 300.0_f32.min((r.width() - 320.0).max(0.0));
+    let sidebar_width = 150.0_f32.min((r.width() - 320.0).max(0.0));
     Rect::from_min_max(
         r.min,
         Pos2::new(r.right() - sidebar_width - 8.0, r.bottom()),
@@ -1497,27 +1502,24 @@ fn eq_graph_rect(r: Rect, show_editor: bool) -> Rect {
 }
 
 fn eq_knob_dial_rect(row: Rect) -> Rect {
-    Rect::from_center_size(
-        Pos2::new(row.left() + 24.0, row.center().y),
-        Vec2::splat(48.0),
-    )
+    Rect::from_min_size(row.min, Vec2::splat(48.0))
 }
 
 fn eq_editor_knob_rect(inner: Rect, section: usize, slot: usize) -> Rect {
     let (x, y) = match section {
         0 => match slot {
-            0 => (0.0, 40.0),
-            1 => (110.0, 58.0),
-            _ => (55.0, 76.0),
+            0 => (6.0, 70.0),
+            1 => (62.0, 100.0),
+            _ => (6.0, 130.0),
         },
         _ => match slot {
-            0 => (0.0, 198.0),
-            1 => (110.0, 216.0),
-            2 => (55.0, 234.0),
-            _ => (165.0, 252.0),
+            0 => (62.0, 224.0),
+            1 => (6.0, 254.0),
+            2 => (62.0, 284.0),
+            _ => (6.0, 314.0),
         },
     };
-    at(inner, x, y, 100.0, 48.0)
+    at(inner, x, y, 48.0, 59.0)
 }
 
 fn graph(
@@ -1974,7 +1976,7 @@ fn graph(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let (inner, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 312.0),
+                            Vec2::new(ui.available_width(), 378.0),
                             Sense::hover(),
                         );
                         let header = at(inner, 0.0, 0.0, inner.width(), 16.0);
@@ -2035,19 +2037,13 @@ fn graph(
                         } else {
                             "Band audition is unavailable for the input bus"
                         });
-                        let section_title = at(inner, 0.0, 22.0, inner.width(), 14.0);
-                        text(ui, section_title, "STATIC EQ", 8.0, Align2::CENTER_CENTER);
+                        let section_title = at(inner, 0.0, 55.0, inner.width(), 14.0);
+                        text(ui, section_title, "STATIC EQ", 8.0, Align2::LEFT_CENTER);
                         let static_width = inner.width();
                         if band.filter == FilterType::Notch {
                             let gain_rect = eq_editor_knob_rect(inner, 0, 0);
-                            let gain_label = at(
-                                gain_rect,
-                                56.0,
-                                16.0,
-                                (gain_rect.width() - 56.0).max(1.0),
-                                16.0,
-                            );
-                            text(ui, gain_label, "GAIN", 8.0, Align2::LEFT_CENTER);
+                            let gain_label = at(gain_rect, 0.0, 48.0, 48.0, 11.0);
+                            text(ui, gain_label, "GAIN", 8.0, Align2::CENTER_CENTER);
                             ui.interact(
                                 gain_label,
                                 ui.id().with(("eq-knob-not-available", selected_index)),
@@ -2121,9 +2117,9 @@ fn graph(
                             None,
                             color,
                         );
-                        let filter_label = at(inner, 0.0, 126.0, static_width, 16.0);
+                        let filter_label = at(inner, 0.0, 18.0, static_width, 12.0);
                         text(ui, filter_label, "FILTER", 7.0, Align2::LEFT_CENTER);
-                        let filter_rect = at(inner, 0.0, 144.0, static_width, 20.0);
+                        let filter_rect = at(inner, 0.0, 31.0, static_width, 20.0);
                         let filter_response = ui.interact(
                             filter_rect,
                             ui.id().with(("eq-popup-filter", selected_index)),
@@ -2188,16 +2184,18 @@ fn graph(
                             }
                         });
                         let dynamic_eligible = band.filter.supports_dynamic_eq();
-                        ui.painter().line_segment(
-                            [
-                                Pos2::new(inner.left(), inner.top() + 172.0),
-                                Pos2::new(inner.right(), inner.top() + 172.0),
+                        ui.painter().add(egui::Shape::line(
+                            vec![
+                                Pos2::new(inner.left(), inner.top() + 195.0),
+                                Pos2::new(inner.left() + inner.width() * 0.36, inner.top() + 195.0),
+                                Pos2::new(inner.left() + inner.width() * 0.44, inner.top() + 189.0),
+                                Pos2::new(inner.right(), inner.top() + 189.0),
                             ],
                             Stroke::new(1.0, p.grid),
-                        );
-                        let dynamic_title = at(inner, 24.0, 178.0, inner.width() - 24.0, 14.0);
+                        ));
+                        let dynamic_title = at(inner, 24.0, 202.0, inner.width() - 24.0, 14.0);
                         text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
-                        let dynamic_power_rect = at(inner, 0.0, 177.0, 20.0, 16.0);
+                        let dynamic_power_rect = at(inner, 0.0, 201.0, 20.0, 16.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
@@ -3666,8 +3664,8 @@ mod bus_tests {
 
     #[test]
     fn editor_diagonal_cluster_keeps_dials_separate_and_inside_the_content() {
-        for width in [266.0, 286.0, 300.0] {
-            let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 312.0));
+        for width in [120.0, 136.0, 150.0] {
+            let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 378.0));
             let controls = [(0, 0), (0, 1), (0, 2)]
                 .into_iter()
                 .map(|(section, slot)| eq_editor_knob_rect(inner, section, slot))
@@ -3688,8 +3686,8 @@ mod bus_tests {
                 Rect::from_min_size(Pos2::ZERO, Vec2::new(width + 500.0, 400.0)),
                 true,
             );
-            // 300 px editor column plus its 8 px gutter.
-            assert_eq!(graph.width(), width + 500.0 - 308.0);
+            // 150 px editor column plus its 8 px gutter.
+            assert_eq!(graph.width(), width + 500.0 - 158.0);
         }
     }
 
@@ -3987,7 +3985,7 @@ mod bus_tests {
     fn condensed_panels_leave_more_room_for_the_graph() {
         let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 500.0));
         let graph = eq_graph_rect(area, true);
-        assert_eq!(graph.right(), 1000.0 - 308.0);
+        assert_eq!(graph.right(), 1000.0 - 158.0);
         assert!(item_base_width(ChannelSettingsViewItem::Inserts) < 154.0);
         assert!(item_base_width(ChannelSettingsViewItem::Sends) < 154.0);
     }
