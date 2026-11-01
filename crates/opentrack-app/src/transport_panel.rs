@@ -1,7 +1,10 @@
 //! Transport geometry follows workflow-L1/02-mixer-transport-1.png (837 x 69).
 use super::*;
 
-const SIZE: Vec2 = Vec2::new(1000.0, 69.0);
+pub(super) const SIZE: Vec2 = Vec2::new(969.0, 69.0);
+/// Left inset that reserves space for the CPU and memory readouts ahead of the
+/// existing transport content.
+const CONTENT_INSET: f32 = 132.0;
 
 fn rect(origin: Pos2, b: [f32; 4]) -> Rect {
     Rect::from_min_size(origin + Vec2::new(b[0], b[1]), Vec2::new(b[2], b[3]))
@@ -193,7 +196,7 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
             ui.close();
         }
     });
-    let o = panel.min;
+    let o = panel.min + Vec2::new(CONTENT_INSET, 0.0);
     let p = theme::palette(ui);
     ui.painter().rect_filled(panel, 1.0, p.surface_raised);
     ui.painter().rect_stroke(
@@ -216,6 +219,65 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
             Stroke::new(1.0, p.grid),
         );
     }
+    // System load, left of the input meters: CPU and memory gauges with labels.
+    let cpu = app.system_stats.cpu_percent();
+    let ram = app.system_stats.ram_load_percent();
+    let left = panel.min;
+    gauge(ui, left, 52.0, cpu / 100.0, 7.0);
+    gauge(ui, left, 112.0, ram / 100.0, 7.0);
+    let stat = |r: Rect, value: &str, size: f32, color: Color32| {
+        ui.painter().text(
+            Pos2::new(r.left(), r.center().y),
+            Align2::LEFT_CENTER,
+            value,
+            FontId::proportional(size),
+            color,
+        );
+    };
+    stat(
+        Rect::from_min_size(left + Vec2::new(6.0, 6.0), Vec2::new(40.0, 12.0)),
+        "CPU",
+        9.0,
+        p.muted,
+    );
+    stat(
+        Rect::from_min_size(left + Vec2::new(6.0, 22.0), Vec2::new(40.0, 20.0)),
+        &format!("{cpu:.0}%"),
+        12.0,
+        p.text,
+    );
+    stat(
+        Rect::from_min_size(left + Vec2::new(66.0, 6.0), Vec2::new(40.0, 12.0)),
+        "RAM",
+        9.0,
+        p.muted,
+    );
+    stat(
+        Rect::from_min_size(left + Vec2::new(66.0, 22.0), Vec2::new(40.0, 20.0)),
+        &super::system_stats::format_memory(app.system_stats.ram_used_bytes()),
+        12.0,
+        p.text,
+    );
+    ui.interact(
+        Rect::from_min_size(left, Vec2::new(60.0, 66.0)),
+        ui.id().with("cpu-meter"),
+        Sense::hover(),
+    )
+    .on_hover_text(format!(
+        "System CPU {cpu:.0}%\nOpenTrack {:.0}% of all logical cores",
+        app.system_stats.process_cpu_percent()
+    ));
+    ui.interact(
+        Rect::from_min_size(left + Vec2::new(60.0, 0.0), Vec2::new(64.0, 66.0)),
+        ui.id().with("memory-meter"),
+        Sense::hover(),
+    )
+    .on_hover_text(format!(
+        "System memory {ram:.0}% used ({} of {})\nOpenTrack working set: {}",
+        super::system_stats::format_memory(app.system_stats.ram_used_bytes()),
+        super::system_stats::format_memory(app.system_stats.ram_total_bytes()),
+        super::system_stats::format_memory(app.system_stats.process_bytes()),
+    ));
     for (x, peak) in [
         (22.0, app.data.input_channel_meter_levels[0]),
         (28.0, app.data.input_channel_meter_levels[1]),
@@ -577,53 +639,6 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
     ] {
         meter(ui, o, x, peak, 6.0);
     }
-    // System load: OpenTrack's process CPU and system memory.
-    let cpu = app.system_stats.cpu_percent();
-    let ram = app.system_stats.ram_load_percent();
-    gauge(ui, o, 845.0, cpu / 100.0, 7.0);
-    gauge(ui, o, 925.0, ram / 100.0, 7.0);
-    let stat = |r: Rect, value: &str, size: f32, color: Color32| {
-        ui.painter().text(
-            Pos2::new(r.left(), r.center().y),
-            Align2::LEFT_CENTER,
-            value,
-            FontId::proportional(size),
-            color,
-        );
-    };
-    stat(rect(o, [856.0, 10.0, 60.0, 12.0]), "CPU", 9.0, p.muted);
-    stat(
-        rect(o, [856.0, 26.0, 60.0, 18.0]),
-        &format!("{cpu:.0}%"),
-        12.0,
-        p.text,
-    );
-    stat(rect(o, [936.0, 10.0, 60.0, 12.0]), "RAM", 9.0, p.muted);
-    stat(
-        rect(o, [936.0, 26.0, 60.0, 18.0]),
-        &super::system_stats::format_memory(app.system_stats.ram_used_bytes()),
-        12.0,
-        p.text,
-    );
-    ui.interact(
-        rect(o, [838.0, 3.0, 80.0, 64.0]),
-        ui.id().with("cpu-meter"),
-        Sense::hover(),
-    )
-    .on_hover_text(format!(
-        "OpenTrack CPU {cpu:.0}% (all logical cores busy = 100%)"
-    ));
-    ui.interact(
-        rect(o, [918.0, 3.0, 80.0, 64.0]),
-        ui.id().with("memory-meter"),
-        Sense::hover(),
-    )
-    .on_hover_text(format!(
-        "System memory {ram:.0}% used ({} of {})\nOpenTrack working set: {}",
-        super::system_stats::format_memory(app.system_stats.ram_used_bytes()),
-        super::system_stats::format_memory(app.system_stats.ram_total_bytes()),
-        super::system_stats::format_memory(app.system_stats.process_bytes()),
-    ));
     for col in 0..2 {
         for row in 0..4 {
             let r = rect(

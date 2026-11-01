@@ -9050,18 +9050,27 @@ impl OpenTrackApp {
             return;
         }
 
-        const SIZE: Vec2 = Vec2::new(837.0, 69.0);
+        let size = transport_panel::SIZE;
         let root_popup_open = egui::Popup::is_any_open(ctx);
         let channel_popup_open = self.channel_settings_window.popup_active;
         let media_popup_open = self.media_window.popup_active;
         let higher_popup_open =
             root_popup_open || channel_popup_open || media_popup_open || self.modal_dialog_open();
         let app_focused = app_has_focused_viewport(ctx);
-        let restore_bounds = if self.transport_window.viewport_live {
+        let mut restore_snapshot = if self.transport_window.viewport_live {
             None
         } else {
-            self.transport_window.bounds.as_ref()
+            self.transport_window.bounds.clone()
         };
+        // Older workspaces saved the pre-meter width; widen them so the new
+        // system gauges are visible instead of sitting outside the window.
+        if let Some(bounds) = restore_snapshot.as_mut() {
+            bounds.width = bounds.width.max(f64::from(size.x));
+            if let Some(inner) = bounds.inner_width.as_mut() {
+                *inner = inner.max(f64::from(size.x));
+            }
+        }
+        let restore_bounds = restore_snapshot.as_ref();
         let reopening = !self.transport_window.viewport_live;
         let transport_level = app_scoped_window_level(
             self.transport_window.always_on_top,
@@ -9081,7 +9090,7 @@ impl OpenTrackApp {
         // stays unmapped, and a window manager ignores a level request for an
         // unmapped window. The builder already carries the restored position and
         // size, so nothing is shown at a stale place.
-        let mut builder = viewport_builder("Transport Panel", SIZE, SIZE, restore_bounds)
+        let mut builder = viewport_builder("Transport Panel", size, size, restore_bounds)
             .with_visible(true)
             .with_decorations(false)
             .with_resizable(false)

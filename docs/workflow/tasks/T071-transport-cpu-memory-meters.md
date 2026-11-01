@@ -6,18 +6,19 @@
 
 ## Scope
 
-- Widen the transport panel from 837 to 1000 px and add a right-hand section with two segmented gauges in the input-meter style.
-- **CPU**: OpenTrack's own process CPU usage, normalised so all logical cores busy reads 100%. Sampled every 500 ms from process kernel+user times.
+- Widen the transport panel by a 132 px left inset and place the two meters to the **left of the input meters**, with visible "CPU" and "RAM" labels: a segmented gauge plus a numeric value for each.
+- **CPU**: system CPU load (all cores, from `GetSystemTimes` idle/total deltas). The tooltip adds OpenTrack's own process CPU share.
 - **RAM**: system memory load percentage on the gauge, with the used amount beside it (MB/GB). The tooltip adds total system memory and OpenTrack's own working set.
+- Workspaces saved with the old 837 px transport width are widened on restore so the new meters cannot sit outside the window.
 - No audio, project-format or persistence changes; the meters are read-only control-thread state.
 
 ## Architecture
 
-`system_stats.rs` in the app crate samples `GetProcessTimes`, `GlobalMemoryStatusEx` and `GetProcessMemoryInfo` on Windows through the existing pinned `windows-sys` dependency (three feature flags added: Threading, ProcessStatus, SystemInformation). Non-Windows builds return no samples so the meters read zero and the app still compiles. Sampling is throttled to 500 ms and never runs from the audio callback.
+`system_stats.rs` in the app crate samples `GetSystemTimes`, `GetProcessTimes`, `GlobalMemoryStatusEx` and `GetProcessMemoryInfo` on Windows through the existing pinned `windows-sys` dependency (three feature flags added: Threading, ProcessStatus, SystemInformation). Non-Windows builds return no samples so the meters read zero and the app still compiles. Sampling is throttled to 500 ms and never runs from the audio callback.
 
 ## Checks
 
 - `memory_readout_switches_between_megabytes_and_gigabytes`.
 - `a_fresh_sampler_reports_no_load`.
-- Full app suite and formatting checks.
-- User confirmed on 2026-11-01: “the cpu meter is done.” Treat the T071 gate as complete and proceed to the roadmap. No additional runtime evidence was recorded in this packet; the acceptance statement is user confirmation, not an independently observed desktop check.
+- Full app suite passes 205 with the same 14 known ruler/sample-editor failures; formatting checks pass.
+- User report on 2026-11-01: the first version placed the meters off the visible transport width, so they were not seen. This revision moves them to a labelled left block and widens restored workspaces. Runtime review of that placement remains pending.

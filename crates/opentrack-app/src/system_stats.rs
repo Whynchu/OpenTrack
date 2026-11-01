@@ -13,8 +13,10 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 pub(crate) struct SystemStats {
     last_sample: Option<Instant>,
     last_cpu_ticks: Option<u64>,
+    last_system_ticks: Option<(u64, u64, u64)>,
     cores: f32,
     cpu_percent: f32,
+    process_cpu_percent: f32,
     ram_load_percent: f32,
     ram_used_bytes: u64,
     ram_total_bytes: u64,
@@ -48,10 +50,23 @@ impl SystemStats {
                 let delta = ticks.saturating_sub(previous) as f64;
                 // FILETIME ticks are 100 ns; one CPU-second per 1e7 ticks.
                 let cpu_seconds = delta / 1.0e7;
-                self.cpu_percent =
+                self.process_cpu_percent =
                     (cpu_seconds / elapsed / f64::from(self.cores.max(1.0)) * 100.0) as f32;
             }
             self.last_cpu_ticks = Some(ticks);
+        }
+
+        if let Some((idle, kernel, user)) = sample_system_cpu_ticks() {
+            if let Some((previous_idle, previous_kernel, previous_user)) = self.last_system_ticks {
+                let idle_delta = idle.wrapping_sub(previous_idle) as f64;
+                let total_delta = kernel.wrapping_sub(previous_kernel) as f64
+                    + user.wrapping_sub(previous_user) as f64;
+                if total_delta > 0.0 {
+                    self.cpu_percent =
+                        ((1.0 - idle_delta / total_delta) * 100.0).clamp(0.0, 100.0) as f32;
+                }
+            }
+            self.last_system_ticks = Some((idle, kernel, user));
         }
 
         if let Some((load, total, used, process)) = sample_memory() {
@@ -64,6 +79,10 @@ impl SystemStats {
 
     pub(crate) fn cpu_percent(&self) -> f32 {
         self.cpu_percent.clamp(0.0, 100.0)
+    }
+
+    pub(crate) fn process_cpu_percent(&self) -> f32 {
+        self.process_cpu_percent.clamp(0.0, 100.0)
     }
 
     pub(crate) fn ram_load_percent(&self) -> f32 {
@@ -127,6 +146,33 @@ fn sample_process_cpu_ticks() -> Option<u64> {
 
 #[cfg(not(windows))]
 fn sample_process_cpu_ticks() -> Option<u64> {
+    None
+}
+
+#[cfg(windows)]
+fn sample_system_cpu_ticks() -> Option<(u64, u64, u64)> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut idle = zero;
+    let mut kernel = zero;
+    let mut user = zero;
+    // SAFETY: all pointers reference valid locals for the duration of the call.
+    let ok = unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) };
+    if ok == 0 {
+        return None;
+    }
+    let ticks =
+        |value: FILETIME| (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime);
+    Some((ticks(idle), ticks(kernel), ticks(user)))
+}
+
+#[cfg(not(windows))]
+fn sample_system_cpu_ticks() -> Option<(u64, u64, u64)> {
     None
 }
 
