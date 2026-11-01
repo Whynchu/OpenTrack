@@ -13,45 +13,6 @@ use opentrack_core::project::{InsertEffectKind, Project, Track};
 use opentrack_plugins::{HostedProcessor, PluginClassId};
 use opentrack_vst3::{Vst3Effect, Vst3ParameterInfo, Vst3State};
 
-/// Dispatch thread-level Windows timers while a plug-in editor is open.
-///
-/// Some iPlug2 processors (including NeuralAmpModeler/Gateway) queue meter
-/// data from `process()` and transfer it to their editor from `OnIdle()`,
-/// which iPlug2 schedules with a thread timer. The VST3 component is created
-/// on OpenTrack's UI thread, so pumping timers only on the detached editor
-/// thread leaves the processor's idle callback stranded.
-#[cfg(windows)]
-pub fn pump_ui_thread_timers() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_TIMER,
-    };
-
-    let mut message = MSG::default();
-    loop {
-        // Restrict dispatch to thread-level WM_TIMER messages. Window-bound
-        // timers and the app's regular message queue remain under winit.
-        let available = unsafe {
-            PeekMessageW(
-                &mut message,
-                std::ptr::null_mut(),
-                WM_TIMER,
-                WM_TIMER,
-                PM_REMOVE,
-            )
-        };
-        if available == 0 {
-            break;
-        }
-        unsafe {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-pub fn pump_ui_thread_timers() {}
-
 struct Instance {
     class_id: String,
     effect: Arc<Vst3Effect>,

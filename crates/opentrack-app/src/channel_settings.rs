@@ -48,11 +48,14 @@ fn power(
     active: bool,
 ) -> egui::Response {
     let response = button(ui, r, id, "", active);
-    let ink = project_controls::label_ink(if active {
-        theme::palette(ui).accent
+    let p = theme::palette(ui);
+    let ink = if active {
+        project_controls::label_ink(p.accent)
     } else {
-        theme::toolbar_button_fill(ui.visuals())
-    });
+        // Off controls stay visible: a muted grey reads as disabled without
+        // disappearing into the button fill.
+        p.muted
+    };
     crate::icon_system::paint_app_icon(ui, r.shrink(1.0), crate::icon_system::IconId::Power, ink);
     response
 }
@@ -352,24 +355,30 @@ fn item_base_width(item: ChannelSettingsViewItem) -> f32 {
     }
 }
 
-/// Inline rack measurements. The row content is one text line tall, so the
-/// slots no longer stretch to fill the panel.
-const SLOT_HEIGHT: f32 = 23.0;
-const SLOT_PITCH: f32 = 25.0;
+/// Inline rack measurements. Each slot has a control row and a name row, so long
+/// plug-in names have the full panel width.
+const SLOT_HEIGHT: f32 = 46.0;
+const SLOT_PITCH: f32 = 48.0;
 const SLOT_FIRST_TOP: f32 = 24.0;
+const SLOT_TOP_ROW: f32 = 22.0;
 const SLOT_BUTTON: f32 = 13.0;
 const SLOT_CHEVRON: f32 = 12.0;
 /// Insert and send racks cap at this many rows.
 const MAX_SLOTS: usize = 24;
 
-/// Rows shown for one rack: at least one, never fewer than the used slots.
-fn visible_slots(configured: Option<usize>, used: usize) -> usize {
-    configured.unwrap_or(0).max(used).clamp(1, MAX_SLOTS)
+/// Rows shown for one rack: at least one, never fewer than the used slots, and
+/// never more than fit the panel.
+fn visible_slots(configured: Option<usize>, used: usize, capacity: usize) -> usize {
+    configured
+        .unwrap_or(0)
+        .max(used)
+        .clamp(1, MAX_SLOTS)
+        .min(capacity.max(1))
 }
 
-/// Clickable regions of one insert/send row. Every region shares the row's
-/// centre line. The number leads the row; power, bypass and the editor eye
-/// only exist for slots that hold a plug-in.
+/// Clickable regions of one insert/send slot: a top control row holding the
+/// number, power, bypass and eye, and a bottom row where the chevron and the
+/// name form one button.
 #[derive(Clone, Copy)]
 struct SlotRects {
     index: Rect,
@@ -384,14 +393,15 @@ struct SlotRects {
 
 impl SlotRects {
     fn new(cell: Rect, has_plugin: bool, has_eye: bool) -> Self {
+        let top_height = SLOT_TOP_ROW.min(cell.height());
+        let button_top = cell.top() + (top_height - SLOT_BUTTON) * 0.5;
         let index = Rect::from_min_size(
-            Pos2::new(cell.left() + 1.0, cell.top()),
-            Vec2::new(10.0, cell.height()),
+            Pos2::new(cell.left() + 2.0, cell.top()),
+            Vec2::new(12.0, top_height),
         );
-        let top = cell.center().y - SLOT_BUTTON * 0.5;
         let mut x = index.right() + 1.0;
         let mut button = |x: &mut f32| {
-            let rect = Rect::from_min_size(Pos2::new(*x, top), Vec2::splat(SLOT_BUTTON));
+            let rect = Rect::from_min_size(Pos2::new(*x, button_top), Vec2::splat(SLOT_BUTTON));
             *x += SLOT_BUTTON + 1.0;
             rect
         };
@@ -407,12 +417,14 @@ impl SlotRects {
         } else {
             (Rect::NOTHING, Rect::NOTHING, Rect::NOTHING)
         };
+        let name_top = cell.top() + top_height;
+        let name_height = (cell.bottom() - name_top).max(1.0);
         let chevron = Rect::from_center_size(
-            Pos2::new(x + SLOT_CHEVRON * 0.5, cell.center().y),
+            Pos2::new(cell.left() + 8.0, name_top + name_height * 0.5),
             Vec2::splat(SLOT_CHEVRON),
         );
         let label = Rect::from_min_max(
-            Pos2::new(chevron.right() + 4.0, cell.top()),
+            Pos2::new(chevron.right() + 4.0, name_top),
             Pos2::new(
                 (cell.right() - 3.0).max(chevron.right() + 4.0),
                 cell.bottom(),
@@ -456,7 +468,7 @@ fn slot_row(ui: &egui::Ui, cell: Rect) {
 }
 
 fn slot_number(ui: &egui::Ui, rect: Rect, number: usize) {
-    text(ui, rect, &number.to_string(), 8.0, Align2::RIGHT_CENTER);
+    text(ui, rect, &number.to_string(), 8.0, Align2::CENTER_CENTER);
 }
 
 /// The "+" row under a rack: one click opens another empty slot.
@@ -644,9 +656,13 @@ fn inserts(
         track.inserts_bypassed = !track.inserts_bypassed;
         changed = true;
     }
+    let capacity = ((r.height() - SLOT_FIRST_TOP) / SLOT_PITCH)
+        .floor()
+        .max(1.0) as usize;
     let rows = visible_slots(
         state.insert_rows.get(&track.id).copied(),
         track.inserts.len(),
+        capacity,
     );
     for i in 0..rows {
         let cell = slot_cell(r, i);
@@ -849,9 +865,13 @@ fn sends(
         track.sends_bypassed = !track.sends_bypassed;
         changed = true;
     }
+    let capacity = ((r.height() - SLOT_FIRST_TOP) / SLOT_PITCH)
+        .floor()
+        .max(1.0) as usize;
     let rows = visible_slots(
         state.send_rows.get(&track.id).copied(),
         track.send_routing.len(),
+        capacity,
     );
     for i in 0..rows {
         let cell = slot_cell(r, i);
@@ -3695,29 +3715,36 @@ mod bus_tests {
     }
 
     #[test]
-    fn insert_and_send_rows_lead_with_the_number_and_share_one_centre() {
+    fn insert_and_send_slots_put_controls_on_top_and_the_name_below() {
         for has_eye in [false, true] {
             let cell = Rect::from_min_size(Pos2::new(12.0, 40.0), Vec2::new(146.0, SLOT_HEIGHT));
             let rects = SlotRects::new(cell, true, has_eye);
-            assert_eq!(rects.label.center().y, cell.center().y);
-            assert_eq!(rects.chevron.center().y, cell.center().y);
+            let control_bottom = cell.top() + SLOT_TOP_ROW;
             assert!(
                 rects.index.right() <= rects.power.left(),
-                "number leads the row"
+                "number leads the control row"
             );
+            assert!(rects.power.bottom() <= control_bottom);
             assert!(rects.power.right() <= rects.bypass.left());
             if has_eye {
                 assert!(rects.bypass.right() <= rects.view.left());
             }
+            // The name row starts below the controls and uses the full width.
+            assert!(rects.label.top() >= control_bottom);
             assert!(rects.chevron.right() < rects.label.left());
             assert!(rects.label.right() <= cell.right());
             assert!(
-                rects.list.contains_rect(rects.chevron) && rects.list.contains_rect(rects.label),
-                "the chevron and the name must be one hit region"
+                rects.label.width() >= 100.0,
+                "the name row keeps the full panel width"
+            );
+            assert_eq!(
+                rects.chevron.center().y,
+                rects.label.center().y,
+                "the chevron shares the name row"
             );
             assert!(
-                rects.label.width() >= 40.0,
-                "the name keeps a usable width at 146 px"
+                rects.list.contains_rect(rects.chevron) && rects.list.contains_rect(rects.label),
+                "the chevron and the name must be one hit region"
             );
             assert!(cell.contains_rect(rects.chevron));
         }
@@ -3730,8 +3757,10 @@ mod bus_tests {
         );
         assert_eq!(empty.bypass, Rect::NOTHING);
         assert_eq!(empty.view, Rect::NOTHING);
-        // Eight compact rows plus the header stay well inside a normal panel.
-        assert!(SLOT_FIRST_TOP + 8.0 * SLOT_PITCH < 240.0);
+        assert!(
+            SLOT_HEIGHT >= 45.0,
+            "slots are about twice the original one-line height"
+        );
         let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
         assert_eq!(
             slot_cell(area, 1).top() - slot_cell(area, 0).top(),
@@ -3740,13 +3769,14 @@ mod bus_tests {
     }
 
     #[test]
-    fn racks_start_with_one_row_and_grow_to_the_cap() {
-        assert_eq!(visible_slots(None, 0), 1, "a rack starts with one slot");
-        assert_eq!(visible_slots(None, 3), 3, "used slots are always shown");
-        assert_eq!(visible_slots(Some(5), 0), 5);
-        assert_eq!(visible_slots(Some(1), 7), 7);
-        assert_eq!(visible_slots(Some(99), 0), MAX_SLOTS);
-        assert_eq!(visible_slots(None, 99), MAX_SLOTS);
+    fn racks_start_with_one_row_and_grow_to_the_capacity() {
+        assert_eq!(visible_slots(None, 0, 10), 1, "a rack starts with one slot");
+        assert_eq!(visible_slots(None, 3, 10), 3, "used slots are always shown");
+        assert_eq!(visible_slots(Some(5), 0, 10), 5);
+        assert_eq!(visible_slots(Some(1), 7, 10), 7);
+        assert_eq!(visible_slots(Some(99), 0, 10), 10);
+        assert_eq!(visible_slots(None, 99, 10), 10);
+        assert_eq!(visible_slots(Some(4), 0, 0), 1, "capacity shows one row");
     }
 
     #[test]

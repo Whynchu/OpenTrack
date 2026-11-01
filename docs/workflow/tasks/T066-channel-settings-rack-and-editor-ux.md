@@ -8,7 +8,7 @@
 ## Scope
 
 - R1 Retarget in place. `NativeWindowState::request_channel_settings` only starts a new window epoch when no window is open, so choosing another channel (mixer FX button, track header, inspector) reuses the existing viewport and updates its contents. Focus is still requested so the window comes forward.
-- R2 Compact racks. Insert and send slots use a fixed one-line pitch (23 px row, 25 px pitch) instead of stretching to fill the panel. Each rack starts with one row, and a "+ Add Insert"/"+ Add Send" row below the used rows opens another, up to 24 rows each. The slot number leads the row, followed by the power, bypass and (for VST3) eye buttons, then the list chevron and the name. Plug-in names and send destinations are right-anchored.
+- R2 Compact racks. Insert and send slots use a fixed two-row layout (46 px per slot, 48 px pitch): the top row holds the slot number plus the power, bypass and (for VST3) eye buttons; the bottom row holds the list chevron and the plug-in name at full panel width, so long names such as Tonal Balance Control 2 fit. Each rack starts with one row, and a "+ Add Insert"/"+ Add Send" row below the used rows opens another, up to 24 rows or as many as fit the panel. Rows beyond the panel height are capped by the available space.
 - R3 Clear click targets. The chevron and the name are one button: clicking anywhere between them always opens the plug-in list for inserts (or the destination list for sends) and shows a hover highlight. Empty rows open the add list from the same place. Right-clicking a row removes it (for inserts the plug-in state is captured and the following slots shift down; device-bus and track channels behave the same).
 - R4 One editor control. The plug-in editor is opened from the eye button beside the insert power button. The eye is shown for every loaded VST3 insert - lit while its editor is open, slashed while closed - and reopens the editor after the plugin's own X. Empty slots show neither the eye nor the power button.
 - R5 Power and bypass are distinct. Power turns an insert on or off; a powered-off VST3 insert is unloaded so it costs no CPU. Bypass removes the insert from the audio chain while leaving the plug-in loaded and its state intact. Bypassed and powered-off inserts no longer contribute host latency.
@@ -21,8 +21,8 @@ Rust UI/state work in `channel_settings.rs`, `app.rs` (window state and panel st
 ## Checks
 
 - `an_open_channel_settings_window_retargets_in_place`: an open window keeps its epoch and follows the bus/channel change; a closed window still gets a new epoch.
-- `insert_and_send_rows_keep_one_text_line_and_share_the_chevron_centre`: label, power, chevron and (when present) eye share the row centre; the chevron and name form one hit region; the label keeps usable width at 146 px; eight rows plus the header stay compact.
-- `racks_start_with_one_row_and_grow_to_the_cap`: one visible row by default, used slots always shown, and both racks cap at 24 rows.
+- `insert_and_send_slots_put_controls_on_top_and_the_name_below`: number and buttons stay on the control row; the chevron and name share the full-width name row and remain one hit region.
+- `racks_start_with_one_row_and_grow_to_the_cap`: one visible row by default, used slots always shown, and both racks cap at 24 rows or the panel capacity.
 - `insert_row_power_bypass_and_right_click_actions`: bypass leaves the insert loaded but flagged, power-off requests the unload, and a right-click requests row removal.
 - `bypassed_inserts_stay_loaded_but_leave_the_chain`: built-in insert processors ignore bypassed or powered-off slots.
 - `a_vst3_insert_eye_opens_and_closes_the_editor`: clicking the eye requests the editor, and a lit eye requests the close.

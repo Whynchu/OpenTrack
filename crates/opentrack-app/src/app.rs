@@ -4517,11 +4517,11 @@ impl OpenTrackApp {
         }
         self.set_ui_stage(UiStage::VstWindows);
         if self.vst3_editor_window.is_some() {
-            // iPlug2 routes processor-to-editor meter messages through its
-            // component thread's idle timer. Components are instantiated on
-            // this UI thread, separate from the native editor window thread.
-            self.set_ui_stage(UiStage::VstTimers);
-            vst3_host::pump_ui_thread_timers();
+            // Do not dispatch thread timers into the plug-in from this thread.
+            // A plug-in timer created during component initialization belongs to
+            // the UI thread and can block there (Tonal Balance Control 2's modal
+            // Options dialog did exactly this). The editor thread pumps its own
+            // messages, which is where view work belongs.
             self.set_ui_stage(UiStage::VstWindows);
         }
         if self.vst3_runtime.take_dirty() {

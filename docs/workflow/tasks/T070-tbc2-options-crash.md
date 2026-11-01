@@ -87,9 +87,21 @@ To locate the remaining block, the watchdog now records the **UI stage** at the 
 - `vst-sync` -> plan rebuild's `Runtime::sync` (instance load/state restore).
 - `workspace`/`dialogs` -> rendering or a dialog, not an obvious plug-in call.
 
+## Third reproduction: `vst-timers`
+
+The stage log then named the culprit directly:
+
+```
+ui stalled at vst-timers (heartbeat 411)
+```
+
+The main thread was inside `pump_ui_thread_timers`, dispatching WM_TIMER messages on the UI thread while an editor was open. The plug-in creates that timer during component initialization, which happens on OpenTrack's UI thread; dispatching it re-enters the plug-in on the UI thread while its editor thread is inside the modal Options loop, so the two block each other.
+
+Fix: OpenTrack no longer dispatches plug-in thread timers from the UI thread. The editor thread pumps its own messages, which is where view work belongs. `pump_ui_thread_timers` was removed. The trade-off is that iPlug2-style processors that push meter data through an idle timer may no longer update their editor from the host thread; that is preferable to a host freeze and can be revisited with a timer mechanism that cannot re-enter the plug-in.
+
 ## Checks
 
 - `cargo test -p opentrack-vst3`: existing module/effect tests.
 - `cargo test -p opentrack --bin opentrack`: app suite.
-- Runtime confirmation of TBC2 Options on the user's machine is pending; the deadlock explanation matches the captured heartbeat pattern.
+- Runtime confirmation of TBC2 Options on the user's machine is pending.
 
