@@ -1982,7 +1982,7 @@ fn graph(
                         let header = at(inner, 0.0, 0.0, inner.width(), 16.0);
                         ui.painter().rect_filled(header, 3.0, p.canvas);
                         let title_rect =
-                            at(inner, 24.0, 0.0, (inner.width() - 78.0).max(40.0), 16.0);
+                            at(inner, 5.0, 0.0, (inner.width() - 30.0).max(40.0), 16.0);
                         text(
                             ui,
                             title_rect,
@@ -1990,7 +1990,7 @@ fn graph(
                             8.0,
                             Align2::LEFT_CENTER,
                         );
-                        let enabled_rect = at(inner, 0.0, 0.0, 20.0, 16.0);
+                        let enabled_rect = at(inner, inner.width() - 20.0, 73.0, 20.0, 20.0);
                         if power(
                             ui,
                             enabled_rect,
@@ -2038,7 +2038,7 @@ fn graph(
                             "Band audition is unavailable for the input bus"
                         });
                         let section_title = at(inner, 0.0, 55.0, inner.width(), 14.0);
-                        text(ui, section_title, "STATIC EQ", 9.0, Align2::LEFT_CENTER);
+                        text(ui, section_title, "STATIC EQ", 9.0, Align2::RIGHT_CENTER);
                         let static_width = inner.width();
                         if band.filter == FilterType::Notch {
                             let gain_rect = eq_editor_knob_rect(inner, 0, 0);
