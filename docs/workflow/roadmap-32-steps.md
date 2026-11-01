@@ -69,7 +69,7 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 
 17. **Specify automation data and gestures.** Initial track-volume contract recorded in [T078](tasks/T078-volume-automation.md); playback, editing and writing remain unimplemented.
 18. **Implement automation playback first.** Read-only track-volume curves are evaluated per sample in both engine paths and offline bounce using a bounded cached cursor. Source checks pass; lane editing, writing and live validation remain open.
-19. **Add automation editing and recording.** Connect lanes and controls through shared commands, with bounded event publication and deterministic cancellation/recovery.
+19. **Add automation editing and recording.** In progress: arrange curves render and snapped click-to-insert is connected to bounded core commands, with isolated egui coverage. Point movement/deletion, undo integration, write capture and desktop review remain open.
 20. **Verify automation.** Test persistence, undo, playback boundaries and recorded control movement; listen in the running app and document CPU behavior.
 
 ### Recording, stability and completion

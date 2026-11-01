@@ -76,8 +76,8 @@ use opentrack_core::commands::{
     KeyModifiers, KeymapProfile,
 };
 use opentrack_core::project::{
-    CycleMode, FilterType, GeneratorWaveform, InsertEffect, InsertEffectKind, InstrumentWaveform,
-    Project, RecordingFormat, Track, TrackKind,
+    AutomationTarget, CycleMode, FilterType, GeneratorWaveform, InsertEffect, InsertEffectKind,
+    InstrumentWaveform, Project, RecordingFormat, Track, TrackKind,
 };
 use opentrack_core::workspaces::{
     ProjectWorkspaceState, WindowBounds, WindowClass, Workspace, WorkspaceId, WorkspacePreferences,
@@ -10097,6 +10097,11 @@ impl OpenTrackApp {
         let mut modified = project_changes.modified;
         let mut live_mix_update = project_changes.live_mix;
         let defer_audio_plan = project_changes.defer_audio_plan;
+        if let Some(action) = project_changes.automation_action
+            && let Ok(changed) = automation::apply_lane_action(&mut self.data.project, action)
+        {
+            modified |= changed;
+        }
         let settings_response = ui.interact(
             readout,
             ui.id().with("project-recording-setup"),
@@ -11809,6 +11814,7 @@ struct ProjectViewChanges {
     modified: bool,
     live_mix: Option<(u64, f32, f32)>,
     defer_audio_plan: bool,
+    automation_action: Option<automation::LaneAction>,
 }
 
 const PANEL_HEADER_HEIGHT: f32 = 29.0;
@@ -12195,6 +12201,7 @@ fn show_project(
     let mut pending_midi_part_edit = None;
     let mut pending_midi_part_remove = None;
     let mut pending_midi_part_split = None;
+    let mut pending_automation_action = None;
     if *edit_tool != EditTool::Draw {
         *midi_part_draw = None;
     }
@@ -13744,6 +13751,26 @@ fn show_project(
                             [automation_rect.left_top(), automation_rect.right_top()],
                             Stroke::new(1.0, theme::palette(ui).grid),
                         );
+                        let points = track
+                            .automation_lanes
+                            .iter()
+                            .find(|lane| lane.target == AutomationTarget::TrackVolume)
+                            .map(|lane| {
+                                lane.points
+                                    .iter()
+                                    .map(|point| (point.beat, point.value))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        pending_automation_action = automation::draw_lane(
+                            ui,
+                            automation_rect.shrink2(Vec2::new(4.0, 5.0)),
+                            track.id,
+                            &points,
+                            grid_left,
+                            bar_width / beats_per_bar_f64 as f32,
+                            snap_grid_beats,
+                        );
                         let y = top + lane_height - 42.0;
                         let ar = Rect::from_min_size(
                             Pos2::new(row_rect.left() + 32.0, y),
@@ -14969,6 +14996,7 @@ fn show_project(
             .then_some(inspector_changes.live_mix)
             .flatten(),
         defer_audio_plan: arrange_view_state.audio_events.edit_drag_active(),
+        automation_action: pending_automation_action,
     }
 }
 

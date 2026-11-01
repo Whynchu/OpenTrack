@@ -1,4 +1,6 @@
 //! Application preparation of immutable playback automation.
+use super::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke};
+use opentrack_core::automation::{move_volume_point, remove_volume_point, set_volume_point};
 use opentrack_core::project::{AutomationLane, AutomationTarget, Track};
 use std::sync::Arc;
 
@@ -15,6 +17,107 @@ pub(super) fn playback_volume_automation(track: &Track) -> Option<Arc<Automation
                 && lane.is_valid()
         })
         .map(|lane| Arc::new(lane.clone()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum LaneAction {
+    Set {
+        track_id: u64,
+        beat: f64,
+        value: f32,
+    },
+    Move {
+        track_id: u64,
+        index: usize,
+        beat: f64,
+        value: f32,
+    },
+    Remove {
+        track_id: u64,
+        index: usize,
+    },
+}
+
+pub(super) fn apply_lane_action(
+    project: &mut opentrack_core::project::Project,
+    action: LaneAction,
+) -> Result<bool, String> {
+    use opentrack_core::project::AutomationPoint;
+    let result = match action {
+        LaneAction::Set {
+            track_id,
+            beat,
+            value,
+        } => set_volume_point(project, track_id, AutomationPoint { beat, value }),
+        LaneAction::Move {
+            track_id,
+            index,
+            beat,
+            value,
+        } => move_volume_point(project, track_id, index, AutomationPoint { beat, value }),
+        LaneAction::Remove { track_id, index } => remove_volume_point(project, track_id, index),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+pub(super) fn draw_lane(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    track_id: u64,
+    points: &[(f64, f32)],
+    grid_left: f32,
+    pixels_per_beat: f32,
+    snap: Option<f64>,
+) -> Option<LaneAction> {
+    let id = Id::new(("volume-automation-lane", track_id));
+    let response = ui.interact(rect, id, Sense::click_and_drag());
+    let position = |pos: Pos2| {
+        let beat = f64::from((pos.x - grid_left) / pixels_per_beat.max(1.0)).max(0.0);
+        let beat = snap.map_or(beat, |step| crate::timeline::snap_beats_to_grid(beat, step));
+        let position = ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0);
+        (beat, super::channel_gain::position_to_gain(position))
+    };
+    let painter = ui.painter().with_clip_rect(rect);
+    for index in 1..points.len() {
+        let (beat_a, value_a) = points[index - 1];
+        let (beat_b, value_b) = points[index];
+        let point_pos = |beat: f64, value: f32| {
+            Pos2::new(
+                grid_left + beat as f32 * pixels_per_beat,
+                rect.top() + super::channel_gain::gain_to_position(value) * rect.height(),
+            )
+        };
+        painter.line_segment(
+            [point_pos(beat_a, value_a), point_pos(beat_b, value_b)],
+            Stroke::new(2.0, Color32::from_rgb(100, 200, 140)),
+        );
+    }
+    for (beat, value) in points {
+        painter.circle_filled(
+            Pos2::new(
+                grid_left + *beat as f32 * pixels_per_beat,
+                rect.top() + super::channel_gain::gain_to_position(*value) * rect.height(),
+            ),
+            4.0,
+            Color32::from_rgb(120, 225, 160),
+        );
+    }
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let (beat, value) = position(pos);
+            if !points
+                .iter()
+                .any(|(existing, _)| (*existing - beat).abs() < 1e-9)
+            {
+                return Some(LaneAction::Set {
+                    track_id,
+                    beat,
+                    value,
+                });
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -44,5 +147,61 @@ mod tests {
         assert_eq!(track.gain, 0.3);
         track.automation_lanes[0].points[0].value = f32::NAN;
         assert!(playback_volume_automation(track).is_none());
+    }
+
+    #[test]
+    fn isolated_lane_click_requests_snapped_point_insert() {
+        let ctx = egui::Context::default();
+        let track_id = 7;
+        let mut action = None;
+        let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), egui::vec2(300.0, 80.0));
+        let mut run = |ctx: &egui::Context,
+                       events: Vec<egui::Event>,
+                       action: &mut Option<LaneAction>| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    *action = draw_lane(ui, rect, track_id, &[], 20.0, 10.0, Some(1.0));
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let pos = Pos2::new(75.0, 55.0);
+        run(&ctx, vec![egui::Event::PointerMoved(pos)], &mut action);
+        run(
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut action,
+        );
+        run(
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut action,
+        );
+        assert!(matches!(
+            action,
+            Some(LaneAction::Set {
+                track_id: 7,
+                beat: 6.0,
+                ..
+            })
+        ));
     }
 }
