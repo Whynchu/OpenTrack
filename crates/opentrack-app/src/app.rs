@@ -17574,7 +17574,7 @@ fn show_eq_dial(
     maximum: f32,
     logarithmic: bool,
     modified: &mut bool,
-) -> bool {
+) -> (bool, egui::Response) {
     let (_rect, response) = ui.allocate_exact_size(Vec2::new(48.0, 48.0), Sense::click_and_drag());
     if response.dragged() {
         let delta = -ui.input(|input| input.pointer.delta().y);
@@ -17589,7 +17589,7 @@ fn show_eq_dial(
         }
         *modified |= old != *value;
     }
-    response.double_clicked()
+    (response.double_clicked(), response)
 }
 
 fn linear_gain_db(gain: f32) -> f32 {

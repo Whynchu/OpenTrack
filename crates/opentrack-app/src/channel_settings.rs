@@ -956,41 +956,6 @@ fn sends(
     changed
 }
 
-fn number(
-    ui: &mut egui::Ui,
-    r: Rect,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    speed: f64,
-    suffix: &str,
-    tooltip: impl Into<egui::WidgetText>,
-) -> bool {
-    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(r));
-    child.spacing_mut().button_padding = Vec2::new(3.0, 0.0);
-    child.spacing_mut().interact_size.y = r.height();
-    child.style_mut().explanation_tooltips = false;
-    child.style_mut().drag_value_text_style = egui::TextStyle::Small;
-    let p = theme::palette(&child);
-    child.visuals_mut().widgets.inactive.bg_fill = p.canvas;
-    child.visuals_mut().widgets.inactive.weak_bg_fill = p.canvas;
-    child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-    let response = child
-        .add_sized(
-            r.size(),
-            egui::DragValue::new(value)
-                .range(range)
-                .speed(speed)
-                .fixed_decimals(1)
-                .suffix(suffix),
-        )
-        .on_hover_text(tooltip);
-    if response.secondary_clicked() {
-        response.request_focus();
-    }
-    response.changed()
-}
-
 fn parameter_bar(
     ui: &mut egui::Ui,
     r: Rect,
@@ -1258,7 +1223,7 @@ const INPUT_LIGHT_FLOOR_DBFS: f32 = -60.0;
 fn eq_knob(
     ui: &mut egui::Ui,
     rect: Rect,
-    selected_index: usize,
+    _selected_index: usize,
     label: &str,
     value: &mut f32,
     minimum: f32,
@@ -1281,16 +1246,41 @@ fn eq_knob(
         _ => 0.0_f32,
     })
     .clamp(minimum, maximum);
-    // The artwork keeps its full size; its label and compact editable value
-    // share the space to the right rather than adding height above/below it.
-    let label_rect = at(rect, 56.0, 6.0, (rect.width() - 56.0).max(1.0), 16.0);
-    let value_rect = at(rect, 56.0, 28.0, (rect.width() - 56.0).max(1.0), 20.0);
-    text(ui, label_rect, label, 9.0, Align2::LEFT_CENTER);
+    // Keep the parameter name beside the dial; the editable number lives in
+    // an interactive hover panel so the controls can nest diagonally.
+    let label_rect = at(rect, 56.0, 16.0, (rect.width() - 56.0).max(1.0), 16.0);
+    text(ui, label_rect, label, 8.0, Align2::LEFT_CENTER);
+    let tooltip = if let Some(db) = live_input_dbfs {
+        format!(
+            "{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS on a -60..0 dBFS ring; pointer: threshold"
+        )
+    } else {
+        tooltip
+    };
     let dial = eq_knob_dial_rect(rect);
     let mut changed = false;
-    let mut reset_requested = false;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(dial), |ui| {
-        reset_requested = show_eq_dial(ui, value, minimum, maximum, logarithmic, &mut changed);
+    let (reset_requested, dial_response) = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(dial), |ui| {
+            show_eq_dial(ui, value, minimum, maximum, logarithmic, &mut changed)
+        })
+        .inner;
+    dial_response.on_hover_ui(|ui| {
+        ui.style_mut().explanation_tooltips = false;
+        ui.label(&tooltip);
+        let response = ui
+            .add_sized(
+                Vec2::new(112.0, 20.0),
+                egui::DragValue::new(value)
+                    .range(minimum..=maximum)
+                    .speed(speed)
+                    .fixed_decimals(1)
+                    .suffix(suffix),
+            )
+            .on_hover_text("Drag to adjust; double-click the value to type");
+        if response.double_clicked() {
+            response.request_focus();
+        }
+        changed |= response.changed();
     });
     if reset_requested && (*value - reset).abs() > f32::EPSILON {
         *value = reset;
@@ -1319,23 +1309,6 @@ fn eq_knob(
         normalized * 48.0 - 24.0,
         light_fraction,
         light_color,
-    );
-    let tooltip = if let Some(db) = live_input_dbfs {
-        format!(
-            "{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS on a -60..0 dBFS ring; pointer: threshold"
-        )
-    } else {
-        tooltip
-    };
-    changed |= number(
-        ui,
-        value_rect,
-        ("eq-knob-value", selected_index, label),
-        value,
-        minimum..=maximum,
-        speed,
-        suffix,
-        tooltip,
     );
     changed
 }
@@ -1514,9 +1487,9 @@ fn eq_graph_rect(r: Rect, show_editor: bool) -> Rect {
     if !show_editor {
         return r;
     }
-    // Keep enough graph width for direct band editing, while giving each EQ
-    // control a full knob plus label/value column in the compact two-column UI.
-    let sidebar_width = 400.0_f32.min((r.width() - 320.0).max(0.0));
+    // Keep enough graph width for direct band editing beside the compact
+    // diagonal control cluster.
+    let sidebar_width = 300.0_f32.min((r.width() - 320.0).max(0.0));
     Rect::from_min_max(
         r.min,
         Pos2::new(r.right() - sidebar_width - 8.0, r.bottom()),
@@ -1530,17 +1503,21 @@ fn eq_knob_dial_rect(row: Rect) -> Rect {
     )
 }
 
-fn eq_editor_knob_rect(inner: Rect, section: usize, row: usize, column: usize) -> Rect {
-    let top = if section == 0 { 40.0 } else { 230.0 };
-    let column_gap = 8.0;
-    let column_width = ((inner.width() - column_gap) * 0.5).max(0.0);
-    at(
-        inner,
-        (column_width + column_gap) * column as f32,
-        top + row as f32 * 58.0,
-        column_width,
-        56.0,
-    )
+fn eq_editor_knob_rect(inner: Rect, section: usize, slot: usize) -> Rect {
+    let (x, y) = match section {
+        0 => match slot {
+            0 => (0.0, 40.0),
+            1 => (110.0, 58.0),
+            _ => (55.0, 76.0),
+        },
+        _ => match slot {
+            0 => (0.0, 198.0),
+            1 => (110.0, 216.0),
+            2 => (55.0, 234.0),
+            _ => (165.0, 252.0),
+        },
+    };
+    at(inner, x, y, 100.0, 48.0)
 }
 
 fn graph(
@@ -1997,7 +1974,7 @@ fn graph(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let (inner, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 354.0),
+                            Vec2::new(ui.available_width(), 312.0),
                             Sense::hover(),
                         );
                         let header = at(inner, 0.0, 0.0, inner.width(), 16.0);
@@ -2062,37 +2039,27 @@ fn graph(
                         text(ui, section_title, "STATIC EQ", 8.0, Align2::CENTER_CENTER);
                         let static_width = inner.width();
                         if band.filter == FilterType::Notch {
-                            let gain_rect = eq_editor_knob_rect(inner, 0, 0, 0);
-                            text(
-                                ui,
-                                at(
-                                    gain_rect,
-                                    56.0,
-                                    6.0,
-                                    (gain_rect.width() - 56.0).max(1.0),
-                                    16.0,
-                                ),
-                                "GAIN",
-                                7.0,
-                                Align2::LEFT_CENTER,
+                            let gain_rect = eq_editor_knob_rect(inner, 0, 0);
+                            let gain_label = at(
+                                gain_rect,
+                                56.0,
+                                16.0,
+                                (gain_rect.width() - 56.0).max(1.0),
+                                16.0,
                             );
-                            text(
-                                ui,
-                                at(
-                                    gain_rect,
-                                    56.0,
-                                    28.0,
-                                    (gain_rect.width() - 56.0).max(1.0),
-                                    20.0,
-                                ),
-                                "N/A",
-                                8.0,
-                                Align2::LEFT_CENTER,
-                            );
+                            text(ui, gain_label, "GAIN", 8.0, Align2::LEFT_CENTER);
+                            ui.interact(
+                                gain_label,
+                                ui.id().with(("eq-knob-not-available", selected_index)),
+                                Sense::hover(),
+                            )
+                            .on_hover_ui(|ui| {
+                                ui.label("Gain is unavailable for a notch filter");
+                            });
                         } else {
                             changed |= eq_knob(
                                 ui,
-                                eq_editor_knob_rect(inner, 0, 0, 0),
+                                eq_editor_knob_rect(inner, 0, 0),
                                 selected_index,
                                 "GAIN",
                                 &mut band.gain_db,
@@ -2108,7 +2075,7 @@ fn graph(
                         }
                         changed |= eq_knob(
                             ui,
-                            eq_editor_knob_rect(inner, 0, 0, 1),
+                            eq_editor_knob_rect(inner, 0, 1),
                             selected_index,
                             "FREQ",
                             &mut band.frequency_hz,
@@ -2123,7 +2090,7 @@ fn graph(
                         );
                         changed |= eq_knob(
                             ui,
-                            eq_editor_knob_rect(inner, 0, 1, 0),
+                            eq_editor_knob_rect(inner, 0, 2),
                             selected_index,
                             "Q",
                             &mut band.q,
@@ -2154,9 +2121,9 @@ fn graph(
                             None,
                             color,
                         );
-                        let filter_label = at(inner, 0.0, 160.0, static_width, 16.0);
+                        let filter_label = at(inner, 0.0, 126.0, static_width, 16.0);
                         text(ui, filter_label, "FILTER", 7.0, Align2::LEFT_CENTER);
-                        let filter_rect = at(inner, 0.0, 178.0, static_width, 20.0);
+                        let filter_rect = at(inner, 0.0, 144.0, static_width, 20.0);
                         let filter_response = ui.interact(
                             filter_rect,
                             ui.id().with(("eq-popup-filter", selected_index)),
@@ -2205,7 +2172,7 @@ fn graph(
                             "{} — choose this band's filter type",
                             channel_filter_type_name(band.filter)
                         ));
-                        menu(&filter_response, 162.0, |ui| {
+                        menu(&filter_response, 132.0, |ui| {
                             for (kind, label) in eq_filter_types(selected_index).iter().copied() {
                                 if channel_menu_item(
                                     ui,
@@ -2223,14 +2190,14 @@ fn graph(
                         let dynamic_eligible = band.filter.supports_dynamic_eq();
                         ui.painter().line_segment(
                             [
-                                Pos2::new(inner.left(), inner.top() + 204.0),
-                                Pos2::new(inner.right(), inner.top() + 204.0),
+                                Pos2::new(inner.left(), inner.top() + 172.0),
+                                Pos2::new(inner.right(), inner.top() + 172.0),
                             ],
                             Stroke::new(1.0, p.grid),
                         );
-                        let dynamic_title = at(inner, 24.0, 208.0, inner.width() - 24.0, 14.0);
+                        let dynamic_title = at(inner, 24.0, 178.0, inner.width() - 24.0, 14.0);
                         text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
-                        let dynamic_power_rect = at(inner, 0.0, 207.0, 20.0, 16.0);
+                        let dynamic_power_rect = at(inner, 0.0, 177.0, 20.0, 16.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
@@ -2293,7 +2260,7 @@ fn graph(
                             {
                                 changed |= eq_knob(
                                     ui,
-                                    eq_editor_knob_rect(inner, 1, slot / 2, slot % 2),
+                                    eq_editor_knob_rect(inner, 1, slot),
                                     selected_index,
                                     label,
                                     value,
@@ -3698,37 +3665,90 @@ mod bus_tests {
     }
 
     #[test]
-    fn editor_columns_keep_all_controls_separate_and_inside_the_content() {
-        for width in [360.0, 386.0, 400.0] {
-            let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 354.0));
-            let controls = [(0, 0, 0), (0, 0, 1), (0, 1, 0)]
+    fn editor_diagonal_cluster_keeps_dials_separate_and_inside_the_content() {
+        for width in [266.0, 286.0, 300.0] {
+            let inner = Rect::from_min_size(Pos2::new(13.0, 17.0), Vec2::new(width, 312.0));
+            let controls = [(0, 0), (0, 1), (0, 2)]
                 .into_iter()
-                .map(|(section, row, column)| eq_editor_knob_rect(inner, section, row, column))
-                .chain(
-                    [(1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]
-                        .into_iter()
-                        .map(|(section, row, column)| {
-                            eq_editor_knob_rect(inner, section, row, column)
-                        }),
-                )
+                .map(|(section, slot)| eq_editor_knob_rect(inner, section, slot))
+                .chain((0..4).map(|slot| eq_editor_knob_rect(inner, 1, slot)))
                 .collect::<Vec<_>>();
-            for (i, control) in controls.iter().enumerate() {
-                assert!(
-                    inner.contains_rect(*control),
-                    "control {i} is outside the editor"
-                );
-                assert!(control.width() >= 48.0, "knob artwork must fit its column");
-                for other in controls.iter().skip(i + 1) {
-                    assert!(!control.intersects(*other), "parameter controls overlap");
+            let dials = controls
+                .iter()
+                .map(|control| eq_knob_dial_rect(*control))
+                .collect::<Vec<_>>();
+            for (i, dial) in dials.iter().enumerate() {
+                assert!(inner.contains_rect(*dial), "dial {i} is outside the editor");
+                assert_eq!(dial.width(), 48.0, "knob artwork keeps its intended size");
+                for other in dials.iter().skip(i + 1) {
+                    assert!(!dial.intersects(*other), "diagonal knobs overlap");
                 }
             }
             let graph = eq_graph_rect(
                 Rect::from_min_size(Pos2::ZERO, Vec2::new(width + 500.0, 400.0)),
                 true,
             );
-            // 400 px editor column plus its 8 px gutter.
-            assert_eq!(graph.width(), width + 500.0 - 408.0);
+            // 300 px editor column plus its 8 px gutter.
+            assert_eq!(graph.width(), width + 500.0 - 308.0);
         }
+    }
+
+    #[test]
+    fn eq_knob_shows_its_label_without_an_always_visible_value() {
+        fn render(
+            context: &egui::Context,
+            time: f64,
+            events: Vec<egui::Event>,
+            value: &mut f32,
+        ) -> egui::FullOutput {
+            let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 200.0));
+            let knob = Rect::from_min_size(Pos2::new(30.0, 30.0), Vec2::new(100.0, 48.0));
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    eq_knob(
+                        ui,
+                        knob,
+                        0,
+                        "GAIN",
+                        value,
+                        -24.0,
+                        24.0,
+                        0.1,
+                        " dB",
+                        false,
+                        "EQ band gain".to_owned(),
+                        None,
+                        Color32::from_rgb(60, 170, 220),
+                    );
+                },
+            )
+        }
+
+        let context = egui::Context::default();
+        let mut value = 6.0;
+        let mut output = render(&context, 0.0, Vec::new(), &mut value);
+        let visible_text = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(visible_text(&output).iter().all(|text| text != "6.0 dB"));
+        output.textures_delta.clear();
+
+        let visible_text = visible_text(&output);
+        assert!(visible_text.iter().any(|text| text == "GAIN"));
+        assert!(visible_text.iter().all(|text| !text.contains("6.0")));
     }
 
     #[test]
@@ -3967,7 +3987,7 @@ mod bus_tests {
     fn condensed_panels_leave_more_room_for_the_graph() {
         let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 500.0));
         let graph = eq_graph_rect(area, true);
-        assert_eq!(graph.right(), 1000.0 - 408.0);
+        assert_eq!(graph.right(), 1000.0 - 308.0);
         assert!(item_base_width(ChannelSettingsViewItem::Inserts) < 154.0);
         assert!(item_base_width(ChannelSettingsViewItem::Sends) < 154.0);
     }
@@ -3984,7 +4004,7 @@ mod bus_tests {
             rect.max,
         )
         .shrink2(Vec2::new(7.0, 4.0));
-        let gain = eq_editor_knob_rect(editor, 0, 0, 0);
+        let gain = eq_editor_knob_rect(editor, 0, 0);
         let point = eq_knob_dial_rect(gain).center();
         render_graph_frame(&context, rect, 0.0, Vec::new(), &mut equalizer, &mut state);
         for click in 0..2 {
