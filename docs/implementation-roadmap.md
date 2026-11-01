@@ -1,4 +1,4 @@
-# OpenTrack- implementation roadmap
+# OpenTrack implementation roadmap
 
 This roadmap tracks the development of OpenTrack as a dependable open-source DAW. Feature priorities come from the user's workflows and the capabilities needed for recording, editing, arranging, mixing, and finishing music. Project-format interoperability is a product goal, with support established separately for each format and version.
 
@@ -40,22 +40,27 @@ Earlier reference research remains background context. It is not an active deliv
 
 ### 2. Channel EQ
 
-- [x] Add four persisted EQ bands to each audio channel, including enable and bypass controls.
-- [x] Implement stereo filters with coefficients and per-channel state prepared outside the real-time callback.
-- [x] Provide Mixer controls for band type, frequency, gain, and Q.
+- [x] Add persisted EQ bands (up to 32) to each audio channel and device bus, including enable and bypass controls.
+- [x] Implement stereo filters with coefficients and per-channel state prepared outside the real-time callback, including 12 and 24 dB/octave pass filters and several shelf flavors.
+- [x] Show an EQ graph and band strip with add/remove/selection, direct node dragging, per-band solo audition and a selected-band editor for gain, frequency, Q, filter type and dynamic controls.
+- [x] Add dynamic EQ bands with threshold, range, attack, release and live gain movement; the graph and audio share one response model for shelves and bells.
+- [x] Add live spectrum analysis with selectable resolution, tilt and peak hold, plus a separate tonal-reference capture/import mode with persisted targets.
 - [x] Verify parameter bounds, neutral response, frequency response, stereo behavior, queue overflow handling, and backward-compatible track loading.
 - [ ] Review the EQ controls, parameter persistence, and audio behavior in OpenTrack against the current feature specification.
 
-### 3. Insert effects and first-party plug-in rewrites
+### 3. Insert effects, VST3 hosting and first-party plug-ins
 
 - [x] Add a persisted per-channel insert chain, enable/bypass, ordering, and parameter state.
 - [x] Expose insert ordering controls in the Mixer so users can move processors within the chain.
 - [x] Add the first effect processor and UI; run effects after clip summing and EQ and before the channel fader.
 - [x] Original stereo-linked Compressor prototype completed, then removed from the built-in insert path on 2026-10-26 by user direction. Its old project record is retained as an inactive legacy slot; new first-party effect work targets VST3 plug-ins.
 - [x] Add the TestGenerator control set to the insert chain using the original Rust DSP prototype.
+- [x] Host third-party VST3 effects in a stereo insert slot: enumerate factories in a separate scanner process, negotiate a stereo main bus, process prepared blocks with delay compensation, save and restore component/controller state, expose normalized parameters, and attach native editor windows. Compatibility limits are recorded in the VST3 task notes; this is not universal support.
+- [x] Replace the fixed insert rack with a compact single-line list: one slot by default, a `+` row that opens more slots (up to 24), a whole-row plug-in list button, right-anchored names, and one eye button per plug-in that shows, hides and reopens its editor.
 - [x] Keep processor construction and memory allocation off the audio callback; define the initial effect's time, feedback, wet-mix, and stereo limits.
 - [ ] Define expected controls, audio behavior, and state persistence for each selected plug-in as its own feature task.
 - [ ] Verify plug-in behavior against its feature specification and document supported capabilities and limitations.
+- [ ] Build first-party effects and instruments as separately loadable VST3 plug-ins, designed with the user, rather than adding new built-in DSP processors.
 
 ### 4. Project and edit reliability
 
@@ -69,6 +74,8 @@ Earlier reference research remains background context. It is not an active deliv
 - [x] Add arrange-track Mute, Solo, Solo Defeat, Record Enable, and Channel Settings controls; Ctrl-click Solo is exclusive and Alt-click toggles Solo Defeat through playback.
 - [x] Add track rename, reorder, and confirmed removal through the Track menu; preserve selection and keep removal unavailable during recording.
 - [x] Add independent per-track height resizing, Ctrl-drag resizing for all tracks, compact row controls, workspace persistence, and three track-zoom key commands.
+- [x] Reuse the open Channel Settings window when another channel's FX button is used; a new window is created only when none is open, and its insert/send racks stay compact.
+- [x] Toggle playback by double-clicking the timeline block at the top of the Project, MIDI editor or Sample Editor.
 - [ ] Manually accept track creation, rename, reorder, removal, undo, and MIDI/audio content preservation on the target PC.
 - [ ] Verify window restoration across workspaces, display scaling changes, and monitor arrangements; save and validate monitor identity before claiming multi-monitor support.
 - [ ] Review track heights, compact-row controls, zoom increments, and exclusive zoom in OpenTrack with the user; refine them against the intended workflow.
@@ -101,10 +108,22 @@ Earlier reference research remains background context. It is not an active deliv
 - [ ] Establish a valid distribution path before evaluating a legacy VST 2 host; then prototype and measure a bounded 32/64-bit IPC path.
 - [ ] Maintain a feature matrix with implementation, verification, user-review, and format/version support status.
 
+### 7. Sample Editor, pitch and time
+
+- [x] Open the Sample Editor from audio-event double-click and the Mixer lower-zone tabs; track-label double-click remains rename.
+- [x] Persist editable pitch/time intent in the project and retain valid analysis by source identity/range and algorithm/model version. Analysis starts only when Pitch & Time is activated; save/reopen restores the analyzed state without repeating analysis, and source changes invalidate affected results.
+- [x] Provide the Sample Editor's own persisted finer snap settings, a combined ruler with seek/zoom, middle-pan and edge scrolling, and ordinary cuts plus Pitch & Time instead of AudioWarp.
+- [x] Keep waveform rendering, the live Channel Settings spectrum and pitch analysis as separate features; re-analysis is explicit, cancellable and never overwrites newer edits.
+- [ ] Review editing, analysis and audible correction in OpenTrack, including source changes and cancellation.
+
 ## Current milestone
 
-The arrange view now supports independent row resizing, Ctrl-drag scaling of all rows, compact header controls, track zoom commands, and per-workspace restoration of row heights. The exact interaction remains subject to user review in OpenTrack.
+The arrange view supports independent row resizing, Ctrl-drag scaling of all rows, compact header controls, track zoom commands, and per-workspace restoration of row heights. The exact interaction remains subject to user review in OpenTrack.
 
 The CPR inspector reports observed big-endian ROOT/ARCH block framing and reads exact length-prefixed ASCII label strings from each ROOT payload. Of the 37 available templates, 22 contain four ROOT/ARCH pairs and 15 contain six; the root labels form seven unique pairs across the set. The paired ARCH records remain opaque. No track payload decoder or CPR importer exists yet.
 
-The current prototype provides selectable audio input capture, WAV takes, live recording-input and channel playback meters, optional audio input monitoring, Windows MIDI input capture and MIDI Thru through a starter oscillator, multi-track MIDI recording alongside multiple armed audio tracks, four-band EQ, Stereo Delay and TestGenerator inserts (the built-in Compressor was removed on 2026-10-26 and remains only as an inactive legacy slot for older projects), persisted MIDI parts with piano-roll and four controller lanes, per-note and per-controller MIDI channels, a reusable Rust instrument interface with four oscillator choices, persisted cycle locators with playback looping, bounded project undo/redo, unavailable-WAV relinking, and large-file streaming with background waveforms and editable, persisted Windows key commands and global workspace presets. The arrange view now has selectable tracks with direct mute, solo, record-enable, and Channel Settings controls. Mixer, Channel Settings, MediaBay, and MIDI Editor can open as separate windows with per-workspace visibility and geometry. Existing checks cover audio recording-to-playback, callback and input meters, monitor resampling and mixing, streamed seeking, the instrument factory, oscillator shapes, controller scheduling, and older project migrations. MIDI hardware timing, MIDI Thru, and physical-device recording and key command UI persistence and workspace preset behavior have not been manually checked. Cycle-loop behavior and the new track/window interactions need hands-on acceptance. MIDI output, typed buses and routing, richer instruments, cycle takes, long-file hardware acceptance, monitor latency/dropout acceptance, and manual recording/device-latency acceptance remain open. Project-format interoperability remains planned, with CPR as an initial format. Edit-history behavior is in [edit-history.md](edit-history.md); piano-roll facts are in [midi-editor.md](midi-editor.md); window/track requirements are in [window-and-track-fidelity.md](window-and-track-fidelity.md); audio boundaries remain in [audio-engine.md](audio-engine.md).
+The current prototype provides selectable audio input capture, WAV takes, live recording-input and channel playback meters, optional audio input monitoring, Windows MIDI input capture and MIDI Thru through a starter oscillator, multi-track MIDI recording alongside armed audio tracks, a 32-band static and dynamic equalizer with live spectrum and tonal-reference analysis, an insert rack with built-in processors and third-party VST3 hosting including native plug-in editors, persisted MIDI parts with a piano-roll and four controller lanes, per-note and per-controller MIDI channels, a reusable Rust instrument interface with four oscillator choices, persisted cycle locators with playback looping, bounded project undo/redo, unavailable-WAV relinking, a Sample Editor with on-demand Pitch & Time analysis, and large-file streaming with background waveforms, editable Windows key commands and global workspace presets. Device buses and track/group channels apply persisted input trim and polarity ahead of the equalizer.
+
+The arrange view has selectable tracks with direct mute, solo, record-enable, and Channel Settings controls. Mixer, Channel Settings, MediaBay, and MIDI Editor open as separate windows with per-workspace visibility and geometry; the Channel Settings window retargets in place when another channel's FX button is used, and its insert/send racks are compact one-line rows that start with one slot and grow from a `+` row. Project, MIDI editor and Sample Editor rulers toggle playback on double-click.
+
+Existing checks cover audio recording-to-playback, callback and input meters, monitor resampling and mixing, streamed seeking, the instrument factory, oscillator shapes, controller scheduling, EQ response and dynamic behavior, spectrum/tonal analysis, VST3 module loading and parameter handling, and older project migrations. MIDI hardware timing, MIDI Thru, physical-device recording, VST3 behavior in real hosts, key-command UI persistence, and workspace preset behavior have not been manually checked. Cycle-loop behavior, long-file streaming under real-time load, monitor latency/dropout, and the EQ, Sample Editor and Channel Settings surfaces need hands-on acceptance. Automation, typed buses and routing, Send DSP, cycle takes, MIDI output, richer instruments, and manual recording/device-latency acceptance remain open. Project-format interoperability remains planned, with CPR as an initial format. Edit-history behavior is in [edit-history.md](edit-history.md); piano-roll facts are in [midi-editor.md](midi-editor.md); window/track requirements are in [window-and-track-fidelity.md](window-and-track-fidelity.md); audio boundaries remain in [audio-engine.md](audio-engine.md).

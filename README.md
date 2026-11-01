@@ -39,9 +39,9 @@ Development prioritizes complete, usable musical workflows. Functionality, relia
 
 ## Development status
 
-OpenTrack is an early prototype under active development. The current application includes a Project timeline, track controls and Inspector, Mixer, Channel Settings with four-band EQ, floating transport, WAV import and playback, basic audio recording, MIDI editing, and native project saving.
+OpenTrack is an early prototype under active development. The current application includes a Project timeline with audio and MIDI editing, a Mixer with shared channel strips, Channel Settings with a 32-band EQ (static and dynamic bands), live spectrum and tonal-reference analysis, an insert rack with built-in processors and third-party VST3 hosting, native plug-in editor windows, a MIDI editor with part and controller lanes, a Sample Editor with on-demand Pitch & Time analysis, a MediaBay, a floating transport, bounded project undo/redo, editable key commands and workspace presets, and native project saving.
 
-These pieces are still being integrated and tested. Advanced routing, automation, general third-party plug-in hosting, and a complete production workflow remain development goals. Visible controls may still be incomplete. Recording and monitoring still require validation with real audio hardware.
+These pieces are still being integrated and reviewed. Third-party VST3 hosting has documented compatibility limits and is not universal support. Automation, typed buses and routing, Send DSP, cycle takes and CPR project interchange remain development goals. Visible controls may still be incomplete. Recording, monitoring and low-latency behavior still require validation with real audio hardware.
 
 New projects use the `.opr` format. Earlier `.otp` and `.rwp` project files remain readable.
 
