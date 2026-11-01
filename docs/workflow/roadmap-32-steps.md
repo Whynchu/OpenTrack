@@ -67,7 +67,7 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 
 ### Automation playback and editing
 
-17. **Specify automation data and gestures.** Define lane identity, parameter targets, time units, draw/edit gestures, playback/read/write modes, touch/latch semantics if needed, undo and migration.
+17. **Specify automation data and gestures.** Initial track-volume contract recorded in [T078](tasks/T078-volume-automation.md); playback, editing and writing remain unimplemented.
 18. **Implement automation playback first.** Add persistent events and sample-accurate or documented block-boundary evaluation with no callback allocation, blocking or UI access.
 19. **Add automation editing and recording.** Connect lanes and controls through shared commands, with bounded event publication and deterministic cancellation/recovery.
 20. **Verify automation.** Test persistence, undo, playback boundaries and recorded control movement; listen in the running app and document CPU behavior.

@@ -1,5 +1,9 @@
 # Current assignment — roadmap activation (2026-11-01)
 
+## T078 - Automation contract
+
+The first automation slice is specified as track-volume playback with beat-based points and linear-gain interpolation, followed by explicit editing and bounded gesture recording. Existing R/W flags and empty lane remain nonfunctional for automation processing until the implementation lands. See [T078](tasks/T078-volume-automation.md).
+
 ## Routing boundary
 
 The application routing module now owns send-to-playback resolution, group-cycle checks used by routing menus, and the shared active-send predicate. Core project validation and the audio engine retain their existing responsibilities; routing UI and broader typed-bus commands remain for later work. Local-ASIO check and focused Channel Settings (28), mixer (11), and preset/history (4) checks passed. The running EQ review build remains untouched.
