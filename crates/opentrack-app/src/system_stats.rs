@@ -144,7 +144,28 @@ fn sample_process_cpu_ticks() -> Option<u64> {
     Some(ticks(kernel) + ticks(user))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn sample_process_cpu_ticks() -> Option<u64> {
+    parse_process_cpu_ticks(&std::fs::read_to_string("/proc/self/stat").ok()?)
+}
+
+/// `/proc` reports CPU time in `USER_HZ` (100 ticks per second); the sampler
+/// works in the 100 ns units the Windows path produces.
+#[cfg(target_os = "linux")]
+const USER_HZ_TO_100NS: u64 = 100_000;
+
+#[cfg(target_os = "linux")]
+fn parse_process_cpu_ticks(stat: &str) -> Option<u64> {
+    // The command name is parenthesised and may contain spaces and parentheses.
+    let (_, fields) = stat.rsplit_once(')')?;
+    let fields = fields.split_whitespace().collect::<Vec<_>>();
+    // The remainder starts at field 3 (state); utime is 14 and stime 15.
+    let utime = fields.get(11)?.parse::<u64>().ok()?;
+    let stime = fields.get(12)?.parse::<u64>().ok()?;
+    Some((utime + stime) * USER_HZ_TO_100NS)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn sample_process_cpu_ticks() -> Option<u64> {
     None
 }
@@ -171,7 +192,39 @@ fn sample_system_cpu_ticks() -> Option<(u64, u64, u64)> {
     Some((ticks(idle), ticks(kernel), ticks(user)))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn sample_system_cpu_ticks() -> Option<(u64, u64, u64)> {
+    parse_system_cpu_ticks(&std::fs::read_to_string("/proc/stat").ok()?)
+}
+
+/// Returns `(idle, kernel, user)` in 100 ns units, matching the Windows
+/// `GetSystemTimes` shape where kernel time includes idle time.
+#[cfg(target_os = "linux")]
+fn parse_system_cpu_ticks(stat: &str) -> Option<(u64, u64, u64)> {
+    let line = stat.lines().find(|line| line.starts_with("cpu "))?;
+    let values = line
+        .split_whitespace()
+        .skip(1)
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let field = |index: usize| values.get(index).copied().unwrap_or(0);
+    let user = field(0);
+    let nice = field(1);
+    let system = field(2);
+    let idle = field(3) + field(4);
+    let irq = field(5);
+    let softirq = field(6);
+    let steal = field(7);
+    let kernel = nice + system + irq + softirq + steal + idle;
+    Some((
+        idle * USER_HZ_TO_100NS,
+        kernel * USER_HZ_TO_100NS,
+        user * USER_HZ_TO_100NS,
+    ))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn sample_system_cpu_ticks() -> Option<(u64, u64, u64)> {
     None
 }
@@ -210,7 +263,46 @@ fn sample_memory() -> Option<(u32, u64, u64, u64)> {
     Some((status.dwMemoryLoad, total, used, process))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn sample_memory() -> Option<(u32, u64, u64, u64)> {
+    parse_memory(
+        &std::fs::read_to_string("/proc/meminfo").ok()?,
+        &std::fs::read_to_string("/proc/self/status").ok()?,
+    )
+}
+
+/// Returns `(load percent, total, used, process resident bytes)`.
+#[cfg(target_os = "linux")]
+fn parse_memory(meminfo: &str, status: &str) -> Option<(u32, u64, u64, u64)> {
+    let meminfo_kib = |key: &str| -> Option<u64> {
+        meminfo.lines().find_map(|line| {
+            let rest = line.strip_prefix(key)?;
+            rest.split_whitespace().next()?.parse::<u64>().ok()
+        })
+    };
+    let total = meminfo_kib("MemTotal:")?.saturating_mul(1024);
+    // MemAvailable is what the kernel considers reclaimable, which is the same
+    // notion the Windows gauge uses (total minus available physical memory).
+    let available = meminfo_kib("MemAvailable:")
+        .or_else(|| meminfo_kib("MemFree:"))?
+        .saturating_mul(1024);
+    if total == 0 {
+        return None;
+    }
+    let used = total.saturating_sub(available);
+    let load = (used.saturating_mul(100) / total) as u32;
+    let process = status
+        .lines()
+        .find_map(|line| {
+            let rest = line.strip_prefix("VmRSS:")?;
+            rest.split_whitespace().next()?.parse::<u64>().ok()
+        })
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    Some((load, total, used, process))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn sample_memory() -> Option<(u32, u64, u64, u64)> {
     None
 }
@@ -232,5 +324,49 @@ mod tests {
         let stats = SystemStats::default();
         assert_eq!(stats.cpu_percent(), 0.0);
         assert_eq!(stats.ram_load_percent(), 0.0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_ticks_are_read_past_a_command_name_with_spaces() {
+        // Field 14/15 are utime/stime: 120 + 30 ticks at 100 Hz.
+        let stat = "1234 (Open Track (dev)) S 1 1234 1234 0 -1 4194304 100 0 0 0 120 30 0 0 20 0 12 0 0 0 0 0\n";
+        assert_eq!(parse_process_cpu_ticks(stat), Some(150 * USER_HZ_TO_100NS));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn system_ticks_put_idle_inside_kernel_like_windows() {
+        // user nice system idle iowait irq softirq steal
+        let stat = "cpu  100 10 40 800 50 5 5 0 0 0\n";
+        let (idle, kernel, user) = parse_system_cpu_ticks(stat).unwrap();
+        assert_eq!(user, 100 * USER_HZ_TO_100NS);
+        assert_eq!(idle, 850 * USER_HZ_TO_100NS);
+        // Kernel time includes idle, as GetSystemTimes reports it.
+        assert_eq!(kernel, 910 * USER_HZ_TO_100NS);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_samplers_read_the_running_system() {
+        assert!(sample_process_cpu_ticks().is_some());
+        assert!(sample_system_cpu_ticks().is_some());
+        let (load, total, used, process) = sample_memory().expect("/proc is readable");
+        assert!(total > 0);
+        assert!(used <= total);
+        assert!(load <= 100);
+        assert!(process > 0, "the test process has a resident set");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn memory_uses_available_and_the_process_resident_set() {
+        let meminfo = "MemTotal:       16000000 kB\nMemFree:         1000000 kB\nMemAvailable:    4000000 kB\n";
+        let status = "Name:\tOpenTrack\nVmRSS:\t  204800 kB\n";
+        let (load, total, used, process) = parse_memory(meminfo, status).unwrap();
+        assert_eq!(total, 16_000_000 * 1024);
+        assert_eq!(used, 12_000_000 * 1024);
+        assert_eq!(load, 75);
+        assert_eq!(process, 204_800 * 1024);
     }
 }
