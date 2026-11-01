@@ -4998,6 +4998,7 @@ impl OpenTrackApp {
         if let Some(action) = self.pending_project_action.take() {
             if matches!(action, PendingProjectAction::Close) {
                 self.confirmed_close_request = true;
+                crate::crash_log::begin_shutdown();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 self.apply_project_action(action);
@@ -5021,6 +5022,10 @@ impl OpenTrackApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending_project_action = Some(PendingProjectAction::Close);
             self.status_message = "Save changes before closing".to_owned();
+            return;
+        }
+        if close_requested {
+            crate::crash_log::begin_shutdown();
         }
     }
 
@@ -5587,6 +5592,7 @@ impl OpenTrackApp {
                     self.pending_project_action = Some(PendingProjectAction::Close);
                     self.status_message = "Save changes before closing".to_owned();
                 } else {
+                    crate::crash_log::begin_shutdown();
                     ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                 }
             }
@@ -7793,6 +7799,7 @@ impl OpenTrackApp {
                     });
                     ui.separator();
                     if menu_command(ui, "Quit", "Ctrl+Q", true).clicked() {
+                        crate::crash_log::begin_shutdown();
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         ui.close();
                     }
@@ -8594,6 +8601,7 @@ impl OpenTrackApp {
                     menu_command(ui, "Save As...", "Ctrl+Shift+S", false);
                     ui.separator();
                     if menu_command(ui, "Quit", "Alt+F4", true).clicked() {
+                        crate::crash_log::begin_shutdown();
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });

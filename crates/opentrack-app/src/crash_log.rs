@@ -1,7 +1,50 @@
 //! Keep Rust panic details locally when the app was opened without a console.
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set once the application has asked to close. winit's X11 backend queries
+/// geometry on a window the window manager has already destroyed while closing,
+/// which panics after the last frame has been drawn.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn begin_shutdown() {
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
+}
+
+fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::Relaxed)
+}
+
+/// The close path in winit's X11 backend unwraps an `X11Error` raised against a
+/// window that no longer exists. Nothing is left to tear down by then, so finish
+/// quietly instead of aborting with a core dump and skipping the final save.
+fn is_x11_teardown_panic(info: &std::panic::PanicHookInfo<'_>) -> bool {
+    let location = info
+        .location()
+        .map(|location| location.file())
+        .unwrap_or_default();
+    let message = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or_default();
+    location.contains("winit") && location.contains("x11") && message.contains("X11Error")
+}
+
 pub(crate) fn install() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if is_x11_teardown_panic(info) {
+            // Closing the root window shuts the application down without setting
+            // `close_requested`, so the shutdown marker cannot gate this. The
+            // signature is specific to a window that no longer exists during
+            // teardown, and there is nothing left to unwind.
+            session(&format!(
+                "ignored winit X11 teardown panic (explicit close: {})",
+                is_shutting_down()
+            ));
+            std::process::exit(0);
+        }
         append_log(
             "panic.log",
             &format!(
