@@ -2193,9 +2193,10 @@ fn graph(
                             ],
                             Stroke::new(1.0, p.grid),
                         ));
-                        let dynamic_title = at(inner, 24.0, 202.0, inner.width() - 24.0, 14.0);
+                        let dynamic_title = at(inner, 0.0, 202.0, inner.width(), 14.0);
                         text(ui, dynamic_title, "DYNAMIC EQ", 8.0, Align2::LEFT_CENTER);
-                        let dynamic_power_rect = at(inner, 0.0, 201.0, 20.0, 16.0);
+                        // Use the open left column beside Threshold for the section switch.
+                        let dynamic_power_rect = at(inner, 12.0, 240.0, 20.0, 16.0);
                         if dynamic_eligible {
                             if power(
                                 ui,
@@ -3280,8 +3281,8 @@ mod bus_tests {
             .iter()
             .find_map(|shape| match &shape.shape {
                 egui::Shape::Text(text) if text.galley.text() == "DYNAMIC EQ" => Some(Pos2::new(
-                    text.pos.x - 14.0,
-                    text.pos.y + text.galley.size().y * 0.5,
+                    text.pos.x + 22.0,
+                    text.pos.y + text.galley.size().y * 0.5 + 39.0,
                 )),
                 _ => None,
             })
