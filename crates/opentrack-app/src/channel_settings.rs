@@ -2194,10 +2194,10 @@ fn graph(
                             let eased = t * t * (3.0 - 2.0 * t);
                             divider.push(Pos2::new(
                                 inner.left() + inner.width() * (0.34 + 0.22 * t),
-                                inner.top() + 212.0 - 6.0 * eased,
+                                inner.top() + 212.0 - 14.0 * eased,
                             ));
                         }
-                        divider.push(Pos2::new(inner.right(), inner.top() + 206.0));
+                        divider.push(Pos2::new(inner.right(), inner.top() + 198.0));
                         ui.painter().add(egui::Shape::line(
                             divider,
                             Stroke::new(1.0, p.text.gamma_multiply(0.55)),

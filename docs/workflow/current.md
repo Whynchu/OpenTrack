@@ -4,7 +4,7 @@
 
 Follow-up from the user build review: the dynamic section power switch occupies the empty left column beside Threshold, centered above Range. The editor is 130 px wide with equal outer knob margins, increased vertical stagger spacing, and a visible stepped divider. GPT-6.1 Sol inspected an offscreen raster from the actual egui shapes and textures; 25 focused Channel Settings checks and the temporary render harness passed. Temporary capture code was removed. The existing release executable predates these corrections; live gesture/visual acceptance remains pending.
 
-Further polish: gently curved section step, clearer 9 px section headings and 8.5 px knob labels, and a filter text region that reserves space for its arrow. The actual UI was rasterized and inspected again; all 25 focused checks pass. Release build remains pending.
+Further polish: steepened the curved section step to follow the SSL reference more closely, clarified 9 px section headings and 8.5 px knob labels, and reserved filter text clearance before its arrow. Actual egui render inspected; 25 focused checks pass. The actual UI was rasterized and inspected again; all 25 focused checks pass. Release build remains pending.
 
 The selected-band editor uses a narrow staggered strip with the filter at the top, labels under the existing knob artwork, a stepped section divider, and a compact value editor anchored beside the hovered knob. Static and dynamic DSP and project data are unchanged. Implementer/reviewer: GPT-6.1 Terra. The 25 focused Channel Settings tests pass; interactive hover editing and visual review in the application remain pending. The user requested a standalone design preview and no application launch during this work.
 
