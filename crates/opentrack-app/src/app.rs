@@ -329,8 +329,6 @@ struct ChannelSettingsUiState {
     rename_focus_requested: bool,
     setup_selected_visible: Option<usize>,
     setup_selected_hidden: Option<ChannelSettingsViewItem>,
-    // Per-slot Send activation is currently UI state only; the track/audio model has no Send DSP.
-    enabled_sends: HashSet<(u64, usize)>,
     /// Insert slot whose VST3 parameters/editor should be shown.
     vst3_parameter_slot: Option<(u64, usize)>,
     /// Insert whose open editor should be closed (the eye was switched off).
@@ -441,6 +439,52 @@ impl ChannelSettingsSnapshot {
         track.send_routing = self.send_routing.clone();
         track.send_parameters = self.send_parameters.clone();
     }
+}
+
+/// Resolve persisted sends into the bounded immutable playback representation.
+fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<opentrack_audio::PlaybackSend> {
+    if track.sends_bypassed {
+        return Vec::new();
+    }
+    track
+        .send_routing
+        .iter()
+        .take(opentrack_core::project::MAX_SEND_SLOTS)
+        .enumerate()
+        .filter_map(|(slot, route)| {
+            let settings = track.send_parameters.get(slot).copied().unwrap_or_default();
+            if !settings.enabled || !settings.level_db.is_finite() || !settings.pan.is_finite() {
+                return None;
+            }
+            let destination = match route.as_deref()? {
+                "Stereo Out" => PlaybackOutputRoute::Stereo,
+                "Left" => PlaybackOutputRoute::Left,
+                "Right" => PlaybackOutputRoute::Right,
+                value if value.starts_with("Group:") => {
+                    let id = value.strip_prefix("Group:")?.parse::<u64>().ok()?;
+                    let index = tracks.iter().position(|candidate| {
+                        candidate.id == id
+                            && candidate.id != track.id
+                            && candidate.kind == TrackKind::Group
+                    })?;
+                    PlaybackOutputRoute::Group(index)
+                }
+                _ => return None,
+            };
+            let db = settings.level_db.clamp(-90.0, 12.0);
+            let gain = if db <= -90.0 {
+                0.0
+            } else {
+                10.0_f32.powf(db / 20.0)
+            };
+            Some(opentrack_audio::PlaybackSend {
+                destination,
+                tap: settings.tap,
+                gain,
+                pan: settings.pan.clamp(-1.0, 1.0),
+            })
+        })
+        .collect()
 }
 
 fn channel_snapshot_matches_track(snapshot: &ChannelSettingsSnapshot, track: &Track) -> bool {
@@ -3034,6 +3078,7 @@ impl OpenTrackApp {
                     track.monitor || (self.input_monitoring && track.armed),
                     track.input_routing.clone(),
                     track.output_routing.clone(),
+                    playback_sends(track, project_tracks),
                     track
                         .clips
                         .iter()
@@ -3137,6 +3182,7 @@ impl OpenTrackApp {
             monitor_enabled,
             input_routing,
             output_routing,
+            sends,
             clips,
             midi_notes,
             midi_controllers,
@@ -3285,6 +3331,7 @@ impl OpenTrackApp {
                 } else {
                     None
                 },
+                sends,
                 output_route: if let Some(group_id) = output_routing
                     .as_deref()
                     .and_then(|route| route.strip_prefix("Group:"))
@@ -3319,6 +3366,7 @@ impl OpenTrackApp {
         });
         let output_hosted_inserts =
             vst3_runtime.hosted_inserts(&self.data.project.output_channel.strip);
+        let mut send_routing_warning = None;
         if let Some(engine) = self.audio_engine.as_mut() {
             engine.set_playback_plan_with_hosted_output(
                 tempo_bpm,
@@ -3335,16 +3383,24 @@ impl OpenTrackApp {
                 },
                 output_hosted_inserts,
             );
+            send_routing_warning = engine.send_routing_warning();
         }
         // A rebuilt plan constructs new channel processors; reapply transient
         // band audition during the frame's live-control synchronization.
         self.applied_eq_solo = None;
         self.update_input_capture_state();
+        let mut warnings = Vec::new();
         if !source_errors.is_empty() {
-            self.status_message = format!(
+            warnings.push(format!(
                 "Some audio sources could not be loaded: {}",
                 source_errors.join("; ")
-            );
+            ));
+        }
+        if let Some(warning) = send_routing_warning {
+            warnings.push(warning.to_owned());
+        }
+        if !warnings.is_empty() {
+            self.status_message = warnings.join("; ");
         }
     }
 
@@ -9263,6 +9319,20 @@ impl OpenTrackApp {
         // Mirror the host editor state into the panel so the eye button can show
         // whether this slot's editor is up.
         self.channel_settings_ui.vst3_editor = self.vst3_editor_window;
+        let send_controls_before = live_channel_id.and_then(|id| {
+            self.data
+                .project
+                .channels()
+                .find(|track| track.id == id)
+                .map(|track| {
+                    (
+                        id,
+                        track.send_routing.clone(),
+                        track.send_parameters.clone(),
+                        track.sends_bypassed,
+                    )
+                })
+        });
         let live_controls_before = live_channel_id.and_then(|id| {
             self.data
                 .project
@@ -9518,7 +9588,21 @@ impl OpenTrackApp {
                         }
                     })
                 });
-            if !live_controls_changed {
+            let sends_changed =
+                send_controls_before
+                    .as_ref()
+                    .is_some_and(|(id, routes, parameters, bypassed)| {
+                        self.data
+                            .project
+                            .channels()
+                            .find(|track| track.id == *id)
+                            .is_some_and(|track| {
+                                track.send_routing != *routes
+                                    || track.send_parameters != *parameters
+                                    || track.sends_bypassed != *bypassed
+                            })
+                    });
+            if !live_controls_changed || sends_changed {
                 self.rebuild_audio_plan();
             }
             self.mark_modified();
@@ -10935,6 +11019,10 @@ impl OpenTrackApp {
         } else {
             ("NEW", theme::palette(ui).accent)
         };
+        let send_warning = self
+            .audio_engine
+            .as_ref()
+            .and_then(|engine| engine.send_routing_warning());
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(state).small().color(color));
             ui.separator();
@@ -10943,10 +11031,11 @@ impl OpenTrackApp {
                     .small()
                     .color(theme::palette(ui).muted),
             );
-            if !self.status_message.is_empty() {
+            let status = send_warning.unwrap_or(self.status_message.as_str());
+            if !status.is_empty() {
                 ui.separator();
-                ui.label(egui::RichText::new(&self.status_message).small().color(
-                    if self.status_message.starts_with("Could not") {
+                ui.label(egui::RichText::new(status).small().color(
+                    if send_warning.is_some() || status.starts_with("Could not") {
                         theme::RECORD
                     } else {
                         theme::palette(ui).muted
@@ -19683,6 +19772,77 @@ mod project_history_tests {
 #[cfg(test)]
 mod bus_persistence_tests {
     use super::*;
+    #[test]
+    fn send_parameter_changes_are_undoable_and_redoable() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let mut history = ProjectHistory::default();
+        assert!(history.begin(&project));
+        project.tracks[0].send_routing = vec![Some("Stereo Out".into())];
+        project.tracks[0].send_parameters = vec![opentrack_core::project::SendParameters {
+            enabled: true,
+            level_db: -6.0,
+            ..Default::default()
+        }];
+        assert!(history.finish_frame(&project, true));
+        let undone = history.undo(&project).unwrap();
+        assert!(undone.tracks[0].send_routing.is_empty());
+        assert!(undone.tracks[0].send_parameters.is_empty());
+        let redone = history.redo(&undone).unwrap();
+        assert_eq!(
+            redone.tracks[0].send_parameters,
+            project.tracks[0].send_parameters
+        );
+        assert_eq!(
+            redone.tracks[0].send_routing,
+            project.tracks[0].send_routing
+        );
+    }
+
+    #[test]
+    fn playback_sends_resolve_destinations_and_skip_disabled_or_unknown_slots() {
+        use opentrack_core::project::{SendParameters, SendTap};
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Group);
+        let group_id = project.tracks[1].id;
+        let source = &mut project.tracks[0];
+        source.send_routing = vec![
+            Some("Stereo Out".into()),
+            Some(format!("Group:{group_id}")),
+            Some("unknown legacy route".into()),
+        ];
+        source.send_parameters = vec![
+            SendParameters {
+                enabled: true,
+                level_db: -6.0206,
+                pan: 0.25,
+                tap: SendTap::PreFader,
+            },
+            SendParameters {
+                enabled: true,
+                level_db: -90.0,
+                ..SendParameters::default()
+            },
+            SendParameters {
+                enabled: true,
+                ..SendParameters::default()
+            },
+        ];
+        let sends = playback_sends(&project.tracks[0], &project.tracks);
+        assert_eq!(sends.len(), 2);
+        assert_eq!(sends[0].destination, PlaybackOutputRoute::Stereo);
+        assert!((sends[0].gain - 0.5).abs() < 0.0001);
+        assert_eq!(sends[0].tap, SendTap::PreFader);
+        assert_eq!(sends[1].destination, PlaybackOutputRoute::Group(1));
+        assert_eq!(sends[1].gain, 0.0);
+        project.tracks[0].sends_bypassed = true;
+        assert!(playback_sends(&project.tracks[0], &project.tracks).is_empty());
+        project.tracks[0].sends_bypassed = false;
+        project.tracks[0].send_parameters.clear();
+        assert!(playback_sends(&project.tracks[0], &project.tracks).is_empty());
+    }
+
     #[test]
     fn channel_snapshot_preserves_send_settings_and_reads_older_snapshots() {
         let mut project = Project::default();

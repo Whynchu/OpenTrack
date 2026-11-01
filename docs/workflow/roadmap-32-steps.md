@@ -12,7 +12,7 @@ Keep `app.rs` as the composition point for the eframe application: startup, top-
 
 The user's preferred editing and mixing workflow is the product constraint. Do not copy SoundCraft's Pro Tools-style Edit/Mix window model or its visual design. Compare claims against OpenTrack's source and README; close useful workflow gaps with working behavior and evidence, not by matching a competitor's checklist.
 
-Lead with verified OpenTrack strengths: 32-band static/dynamic EQ, spectrum and tonal-reference analysis, up to 24 insert and send rack slots per channel, third-party VST3 effect hosting, the Sample Editor's Pitch & Time workflow, WASAPI with optional local ASIO, and audio/MIDI capture. Keep the send caveat visible: destinations are stored, but the send signal path is not implemented. Do not count UI capacity as functioning DSP.
+Lead with verified OpenTrack strengths: 32-band static/dynamic EQ, spectrum and tonal-reference analysis, up to 24 insert and send rack slots per channel, third-party VST3 effect hosting, the Sample Editor's Pitch & Time workflow, WASAPI with optional local ASIO, and audio/MIDI capture. Keep the send caveat visible: track and group send processing is implemented and exercised offline, while live hardware review and device-bus sends remain open.
 
 Near-term gap priority after the first architecture seam:
 
@@ -59,8 +59,8 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 9. **Review the MIDI Snap workflow.** T072 source behavior and automated checks are complete; runtime gestures and restart persistence remain pending until native desktop interaction is available.
 10. **Deliver audio mixdown/export.** T074 source implementation includes an isolated `OfflineRenderer`, no-device plan snapshots, independent VST3 worker instances, range/rate/encoding dialog, progress/cancellation and atomic WAV replacement. Six focused renderer/writer checks and local-ASIO compilation pass; runtime review and playback parity remain open.
 11. **Deliver Standard MIDI File exchange.** T075 source implementation imports format-0/1 PPQ notes and CC into new tracks and exports project notes/CC with tempo and meter. Eight focused core tests, the full 31-test core suite and Windows x64 local-ASIO release build pass; independent DAW fixtures and undo/menu runtime review remain.
-12. **Specify and model sends.** Define destination, pre/post position, level/pan, bypass, cycle prevention, persistence and migration before DSP changes.
-13. **Implement and connect sends.** Build bounded real-time-safe signal flow, connect the existing rack controls and destination choice, and support save/undo behavior.
+12. **Specify and model sends.** Implemented: [T076](tasks/T076-send-routing-model.md) records destination, pre/post position, level/pan, bypass, cycle prevention, persistence and migration.
+13. **Implement and connect sends.** Source implementation and automated checks complete for track and group sends; live and hardware review remain open. See [T076](tasks/T076-send-routing-model.md).
 14. **Verify sends.** Check gain, routing, silence, bypass and edge cases offline, then listen and review real-time performance in the application.
 15. **Extract routing ownership.** Move route editing/validation coordination into a dedicated application module as the send path establishes a stable boundary.
 16. **Build general typed buses.** Extend track/group/input/output routing only after send semantics and existing device routing are stable; preserve current simple track routing.

@@ -134,26 +134,48 @@ fn menu(response: &egui::Response, width: f32, content: impl FnOnce(&mut egui::U
 }
 
 fn group_route_would_cycle(tracks: &[Track], track_id: u64, target_group_id: u64) -> bool {
-    let mut current = target_group_id;
+    let mut pending = vec![target_group_id];
     let mut visited = std::collections::HashSet::new();
-    loop {
+    while let Some(current) = pending.pop() {
         if current == track_id {
             return true;
         }
         if !visited.insert(current) {
-            return true;
+            continue;
         }
-        let Some(next) = tracks
-            .iter()
-            .find(|track| track.id == current)
-            .and_then(|track| track.output_routing.as_deref())
-            .and_then(|route| route.strip_prefix("Group:"))
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return false;
+        let Some(track) = tracks.iter().find(|track| track.id == current) else {
+            continue;
         };
-        current = next;
+        let destinations = track
+            .output_routing
+            .iter()
+            .map(String::as_str)
+            .chain(track.send_routing.iter().flatten().map(String::as_str));
+        for destination in destinations {
+            if let Some(id) = destination
+                .strip_prefix("Group:")
+                .and_then(|id| id.parse::<u64>().ok())
+            {
+                pending.push(id);
+            }
+        }
     }
+    false
+}
+
+pub(super) fn has_active_sends(track: &Track) -> bool {
+    !track.sends_bypassed
+        && track
+            .send_routing
+            .iter()
+            .enumerate()
+            .any(|(slot, destination)| {
+                destination.is_some()
+                    && track
+                        .send_parameters
+                        .get(slot)
+                        .is_some_and(|settings| settings.enabled)
+            })
 }
 
 pub(super) fn show(
@@ -296,10 +318,10 @@ pub(super) fn show(
             ChannelSettingsViewItem::Sends | ChannelSettingsViewItem::SendRouting => {
                 if track.id >= opentrack_core::project::INPUT_BUS_ID {
                     child.add_enabled_ui(false, |ui| {
-                        sends(ui, r, track, state);
+                        sends(ui, r, track, state, &group_options);
                     });
                 } else {
-                    changed |= sends(&mut child, r, track, state);
+                    changed |= sends(&mut child, r, track, state, &group_options);
                 }
             }
             ChannelSettingsViewItem::Fader | ChannelSettingsViewItem::ControlStrip => {
@@ -828,7 +850,11 @@ fn inserts(
     changed
 }
 
-fn send_destination_menu(ui: &mut egui::Ui, selected: &mut Option<Option<String>>) {
+fn send_destination_menu(
+    ui: &mut egui::Ui,
+    selected: &mut Option<Option<String>>,
+    groups: &[(u64, String)],
+) {
     if ui.button("No Bus").clicked() {
         *selected = Some(None);
         ui.close();
@@ -841,6 +867,17 @@ fn send_destination_menu(ui: &mut egui::Ui, selected: &mut Option<Option<String>
             }
         }
     });
+    ui.menu_button("Groups", |ui| {
+        if groups.is_empty() {
+            ui.add_enabled(false, egui::Button::new("No available groups"));
+        }
+        for (id, name) in groups {
+            if ui.button(name).clicked() {
+                *selected = Some(Some(format!("Group:{id}")));
+                ui.close();
+            }
+        }
+    });
 }
 
 fn sends(
@@ -848,20 +885,10 @@ fn sends(
     r: Rect,
     track: &mut Track,
     state: &mut ChannelSettingsUiState,
+    groups: &[(u64, String)],
 ) -> bool {
     let mut changed = false;
-    if header(
-        ui,
-        r,
-        "Sends",
-        !track.sends_bypassed
-            && (track.send_routing.iter().any(Option::is_some)
-                || state
-                    .enabled_sends
-                    .iter()
-                    .any(|(track_id, _)| *track_id == track.id)),
-        state,
-    ) {
+    if header(ui, r, "Sends", has_active_sends(track), state) {
         track.sends_bypassed = !track.sends_bypassed;
         changed = true;
     }
@@ -882,8 +909,10 @@ fn sends(
             .is_some_and(|destination| destination.is_some());
         let rects = SlotRects::new(cell, has_target, false);
         slot_number(ui, rects.index, i + 1);
-        let key = (track.id, i);
-        let enabled = state.enabled_sends.contains(&key);
+        let enabled = track
+            .send_parameters
+            .get(i)
+            .is_some_and(|settings| settings.enabled);
         if has_target {
             let power = power(ui, rects.power, ("send-power", i), enabled).on_hover_text(format!(
                 "{} Send {}",
@@ -891,14 +920,18 @@ fn sends(
                 i + 1
             ));
             context(&power, state);
-            if power.clicked() && !state.enabled_sends.remove(&key) {
-                state.enabled_sends.insert(key);
+            if power.clicked() {
+                track
+                    .send_parameters
+                    .resize(track.send_parameters.len().max(i + 1), Default::default());
+                track.send_parameters[i].enabled = !enabled;
+                changed = true;
             }
         }
         // Chevron and destination name are one button.
         let list = ui
             .interact(rects.list, ui.id().with(("send-list", i)), Sense::click())
-            .on_hover_text("Choose Send Destination (right-click removes the row)");
+            .on_hover_text("Choose destination, level, pan and tap (right-click removes the row)");
         slot_hover(ui, rects.list, &list);
         if list.secondary_clicked() {
             if i < track.send_routing.len() {
@@ -908,19 +941,6 @@ fn sends(
                 }
                 changed = true;
             }
-            state.enabled_sends = state
-                .enabled_sends
-                .iter()
-                .filter_map(|(track_id, slot)| {
-                    if *track_id != track.id || *slot < i {
-                        Some((*track_id, *slot))
-                    } else if *slot > i {
-                        Some((*track_id, *slot - 1))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
             if i + 1 == rows && rows > 1 {
                 state.send_rows.insert(track.id, rows - 1);
             }
@@ -932,14 +952,63 @@ fn sends(
             theme::palette(ui).muted,
         );
         if let Some(destination) = track.send_routing.get(i).and_then(Option::as_deref) {
-            text(ui, rects.label, destination, 10.0, Align2::RIGHT_CENTER);
+            let name = destination
+                .strip_prefix("Group:")
+                .and_then(|id| id.parse::<u64>().ok())
+                .and_then(|id| groups.iter().find(|(group_id, _)| *group_id == id))
+                .map_or(destination, |(_, name)| name.as_str());
+            text(ui, rects.label, name, 10.0, Align2::RIGHT_CENTER);
         }
         let mut selected = None;
-        menu(&list, 140.0, |ui| send_destination_menu(ui, &mut selected));
+        let mut settings = track.send_parameters.get(i).copied().unwrap_or_default();
+        let old_settings = settings;
+        menu(&list, 180.0, |ui| {
+            send_destination_menu(ui, &mut selected, groups);
+            if has_target {
+                ui.separator();
+                ui.label("Send level");
+                ui.add(
+                    egui::DragValue::new(&mut settings.level_db)
+                        .range(-90.0..=12.0)
+                        .speed(0.2)
+                        .suffix(" dB"),
+                );
+                ui.label("Send pan");
+                ui.add(
+                    egui::DragValue::new(&mut settings.pan)
+                        .range(-1.0..=1.0)
+                        .speed(0.01),
+                );
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut settings.tap,
+                        opentrack_core::project::SendTap::PreFader,
+                        "Pre",
+                    );
+                    ui.selectable_value(
+                        &mut settings.tap,
+                        opentrack_core::project::SendTap::PostFader,
+                        "Post",
+                    );
+                });
+            }
+        });
+        if settings != old_settings {
+            track
+                .send_parameters
+                .resize(track.send_parameters.len().max(i + 1), Default::default());
+            track.send_parameters[i] = settings;
+            changed = true;
+        }
         if let Some(destination) = selected {
             track
                 .send_routing
                 .resize(track.send_routing.len().max(i + 1), None);
+            if destination.is_none() {
+                if let Some(settings) = track.send_parameters.get_mut(i) {
+                    settings.enabled = false;
+                }
+            }
             track.send_routing[i] = destination;
             changed = true;
         }
@@ -2657,14 +2726,7 @@ fn strip(
                     !track.equalizer.bypassed
                         && track.equalizer.all_bands().any(|band| band.enabled)
                 }
-                _ => {
-                    !track.sends_bypassed
-                        && (track.send_routing.iter().any(Option::is_some)
-                            || state
-                                .enabled_sends
-                                .iter()
-                                .any(|(track_id, _)| *track_id == track.id))
-                }
+                _ => has_active_sends(track),
             },
             false,
             !is_bus || i < 2,
@@ -3897,6 +3959,153 @@ mod bus_tests {
             Some((track_id, 0)),
             "a lit eye must close the editor it opened"
         );
+    }
+
+    #[test]
+    fn group_menu_cycle_check_includes_send_edges() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Group);
+        let first = project.tracks[0].id;
+        let second = project.tracks[1].id;
+        project.tracks[0].send_routing = vec![Some(format!("Group:{second}"))];
+        assert!(group_route_would_cycle(&project.tracks, second, first));
+        assert!(!group_route_would_cycle(&project.tracks, first, second));
+    }
+
+    #[test]
+    fn send_menu_exposes_controls_and_pre_fader_choice() {
+        let context = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 500.0));
+        let rack = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track = &mut project.tracks[0];
+        track.send_routing = vec![Some("Stereo Out".into())];
+        let mut state = ChannelSettingsUiState::default();
+        let mut render = |time, events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    sends(ui, rack, track, &mut state, &[]);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        render(0.0, Vec::new());
+        let point = SlotRects::new(slot_cell(rack, 0), true, false)
+            .list
+            .center();
+        render(
+            0.1,
+            vec![
+                egui::Event::PointerMoved(point),
+                pointer_button(point, egui::PointerButton::Primary, true),
+            ],
+        );
+        render(
+            0.2,
+            vec![pointer_button(point, egui::PointerButton::Primary, false)],
+        );
+        let output = render(0.3, Vec::new());
+        let text_position = |label: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+        };
+        assert!(text_position("Send level").is_some());
+        assert!(text_position("Send pan").is_some());
+        assert!(text_position("Post").is_some());
+        let pre = text_position("Pre").expect("pre-fader selection is visible");
+        render(
+            0.4,
+            vec![
+                egui::Event::PointerMoved(pre),
+                pointer_button(pre, egui::PointerButton::Primary, true),
+            ],
+        );
+        render(
+            0.5,
+            vec![pointer_button(pre, egui::PointerButton::Primary, false)],
+        );
+        assert_eq!(
+            track.send_parameters[0].tap,
+            opentrack_core::project::SendTap::PreFader
+        );
+    }
+
+    #[test]
+    fn send_power_persists_and_removing_a_slot_keeps_later_settings_aligned() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track = &mut project.tracks[0];
+        track.send_routing = vec![Some("Stereo Out".into()), Some("Left".into())];
+        track.send_parameters = vec![
+            Default::default(),
+            opentrack_core::project::SendParameters {
+                enabled: true,
+                level_db: -9.0,
+                ..Default::default()
+            },
+        ];
+        let mut state = ChannelSettingsUiState::default();
+        let mut render = |time, events| {
+            let mut changed = false;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    changed = sends(ui, rect, track, &mut state, &[]);
+                },
+            );
+            output.textures_delta.clear();
+            changed
+        };
+        render(0.0, Vec::new());
+        let slot = SlotRects::new(slot_cell(rect, 0), true, false);
+        let point = slot.power.center();
+        render(
+            0.1,
+            vec![
+                egui::Event::PointerMoved(point),
+                pointer_button(point, egui::PointerButton::Primary, true),
+            ],
+        );
+        assert!(render(
+            0.2,
+            vec![pointer_button(point, egui::PointerButton::Primary, false)]
+        ));
+        let point = slot.list.center();
+        render(
+            0.3,
+            vec![
+                egui::Event::PointerMoved(point),
+                pointer_button(point, egui::PointerButton::Secondary, true),
+            ],
+        );
+        assert!(render(
+            0.4,
+            vec![pointer_button(point, egui::PointerButton::Secondary, false)]
+        ));
+        assert_eq!(track.send_routing, vec![Some("Left".into())]);
+        assert_eq!(track.send_parameters.len(), 1);
+        assert!(track.send_parameters[0].enabled);
+        assert_eq!(track.send_parameters[0].level_db, -9.0);
     }
 
     #[test]

@@ -879,6 +879,7 @@ mod tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                sends: Vec::new(),
                 output_route: super::super::PlaybackOutputRoute::Stereo,
             }],
             1,

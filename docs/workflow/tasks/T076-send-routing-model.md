@@ -1,6 +1,6 @@
 # T076 - Send routing model and signal-flow contract
 
-Status: model implemented; audible sends, runtime acceptance, and full UI remain open. Implementer: GPT-6.1 Terra. This is roadmap step 12 and the foundation for steps 13-15.
+Status: track/group send processing and controls implemented in source; runtime acceptance and device-bus sends remain open. Implementer: GPT-6.1 Terra. This is roadmap step 12 and the foundation for steps 13-15.
 
 ## User outcome
 
@@ -16,4 +16,4 @@ Each channel can use up to 24 independent send slots, choose a destination, enab
 
 ## Evidence and remaining work
 
-The project schema stores slot-aligned parameters and validates ranges and a combined send/output graph. Project and preset legacy reads use inactive defaults. Channel snapshot, mixer paste, and row removal preserve settings. Automated checks cover legacy reads, round trips, bounds, 24-slot capacity, feedback and channel snapshot behavior. No audio processing or send editing UI has been connected yet; therefore these fields do not make sends audible. Real-time, offline bounce, undo/redo gestures, and hardware listening remain unverified.
+The project schema stores slot-aligned parameters and validates ranges and a combined send/output graph. Project and preset legacy reads use inactive defaults. Channel snapshot, mixer paste, and row removal preserve settings. The send rack controls destination, enable, level, pan and tap; mixer paste rejects invalid routes. Both audio render paths and offline rendering process sends, with topological group order and per-route latency compensation prepared outside the callback. Unsafe plans disable sends with a visible warning; offline rendering rejects those plans. Automated checks cover legacy reads, round trips, bounds, 24-slot capacity, feedback, send controls, routing, mute/pan, synthetic hosted latency, project history, and offline rendering. The audio suite passes 134 tests with 3 ignored; the core suite passes 34; focused Channel Settings tests pass 28. A full app run had 212 passes, 14 failures and 9 ignored; the identical 14 failures occur at baseline cae80fc and concern timeline and pitch-editor interactions. Real-device playback, VST compatibility, live gestures, performance and listening remain unverified. Send parameter changes currently rebuild the playback plan, so continuity while dragging needs live review.

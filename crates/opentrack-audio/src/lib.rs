@@ -388,6 +388,7 @@ struct PlaybackTrackRuntime {
     hosted_latency_samples: u32,
     hosted_delay_samples: u32,
     hosted_buffers: std::cell::UnsafeCell<HostedTrackBuffers>,
+    route_delays: std::cell::UnsafeCell<Option<TrackRouteDelays>>,
     hosted_timing: Option<StageTimingTrace>,
 }
 
@@ -518,6 +519,142 @@ impl EqualizerControl {
 /// rebuild creates a fresh ring and restarts the compensation delay. That is
 /// deliberate because carrying delay state between snapshots would require
 /// mutation or allocation on the audio thread when the plan changes.
+/// Delay lines for individual outgoing edges. Allocated when a plan is built;
+/// the callback only advances fixed-size buffers.
+struct StereoRouteDelay {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    cursor: usize,
+}
+
+impl StereoRouteDelay {
+    fn new(frames: u32) -> Self {
+        Self {
+            left: vec![0.0; frames as usize],
+            right: vec![0.0; frames as usize],
+            cursor: 0,
+        }
+    }
+    fn next(&mut self, left: f32, right: f32) -> (f32, f32) {
+        if self.left.is_empty() {
+            return (left, right);
+        }
+        let output = (self.left[self.cursor], self.right[self.cursor]);
+        self.left[self.cursor] = left;
+        self.right[self.cursor] = right;
+        self.cursor = (self.cursor + 1) % self.left.len();
+        output
+    }
+}
+
+struct TrackRouteDelays {
+    main: StereoRouteDelay,
+    sends: Vec<StereoRouteDelay>,
+}
+
+struct RoutingLatencyPlan {
+    main: Vec<u32>,
+    sends: Vec<Vec<u32>>,
+    maximum: u32,
+}
+
+// Limit callback-owned routing compensation buffers to 64 MiB of stereo f32.
+const MAX_ROUTE_DELAY_FRAMES: u64 = 8_000_000;
+
+/// Calculate path latency at each group and destination without touching the callback.
+fn routing_latency_plan(
+    tracks: &[PlaybackTrackSettings],
+    latencies: &[u32],
+    groups: &[usize],
+    limit: u32,
+) -> Option<RoutingLatencyPlan> {
+    if tracks.len() != latencies.len() {
+        return None;
+    }
+    let mut inputs = vec![0_u32; tracks.len()];
+    let mut outputs = vec![0_u32; tracks.len()];
+    fn propagate(
+        tracks: &[PlaybackTrackSettings],
+        source: usize,
+        arrival: u32,
+        inputs: &mut [u32],
+    ) {
+        for route in std::iter::once(tracks[source].output_route)
+            .chain(tracks[source].sends.iter().map(|send| send.destination))
+        {
+            if let PlaybackOutputRoute::Group(target) = route {
+                if target < inputs.len() {
+                    inputs[target] = inputs[target].max(arrival);
+                }
+            }
+        }
+    }
+    for (index, track) in tracks.iter().enumerate() {
+        if !track.is_group {
+            outputs[index] = latencies[index];
+            propagate(tracks, index, outputs[index], &mut inputs);
+        }
+    }
+    for &index in groups {
+        outputs[index] = inputs[index].checked_add(latencies[index])?;
+        if outputs[index] > limit {
+            return None;
+        }
+        propagate(tracks, index, outputs[index], &mut inputs);
+    }
+    let mut master = 0_u32;
+    for (index, track) in tracks.iter().enumerate() {
+        for route in std::iter::once(track.output_route)
+            .chain(track.sends.iter().map(|send| send.destination))
+        {
+            if matches!(
+                route,
+                PlaybackOutputRoute::Stereo
+                    | PlaybackOutputRoute::Left
+                    | PlaybackOutputRoute::Right
+            ) {
+                master = master.max(outputs[index]);
+            }
+        }
+    }
+    if master > limit {
+        return None;
+    }
+    let delay = |source: usize, route: PlaybackOutputRoute| -> Option<u32> {
+        let target = match route {
+            PlaybackOutputRoute::Group(index) => *inputs.get(index)?,
+            PlaybackOutputRoute::Stereo
+            | PlaybackOutputRoute::Left
+            | PlaybackOutputRoute::Right => master,
+            PlaybackOutputRoute::Disconnected => return Some(0),
+        };
+        target.checked_sub(outputs[source])
+    };
+    let mut total = 0_u64;
+    let mut main = Vec::with_capacity(tracks.len());
+    let mut sends = Vec::with_capacity(tracks.len());
+    for (index, track) in tracks.iter().enumerate() {
+        let d = delay(index, track.output_route)?;
+        total = total.checked_add(u64::from(d))?;
+        main.push(d);
+        let mut slot_delays = Vec::with_capacity(track.sends.len());
+        for send in &track.sends {
+            let d = delay(index, send.destination)?;
+            total = total.checked_add(u64::from(d))?;
+            slot_delays.push(d);
+        }
+        sends.push(slot_delays);
+    }
+    if total > MAX_ROUTE_DELAY_FRAMES {
+        return None;
+    }
+    Some(RoutingLatencyPlan {
+        main,
+        sends,
+        maximum: master,
+    })
+}
+
 struct HostedTrackBuffers {
     block_left: Vec<f32>,
     block_right: Vec<f32>,
@@ -596,6 +733,7 @@ impl PlaybackTrackRuntime {
         hosted_latency_samples: u32,
         hosted_max_latency_samples: u32,
         hosted_processing: bool,
+        route_delays: Option<TrackRouteDelays>,
     ) -> Self {
         // Offset the playback schedule, leaving arrange positions untouched.
         let offset_beats = f64::from(settings.track_delay_ms) * tempo_bpm / 60_000.0;
@@ -645,6 +783,7 @@ impl PlaybackTrackRuntime {
             hosted_latency_samples,
             hosted_delay_samples,
             hosted_buffers: std::cell::UnsafeCell::new(hosted_buffers),
+            route_delays: std::cell::UnsafeCell::new(route_delays),
             hosted_timing: hosted_processing.then(StageTimingTrace::new).flatten(),
         }
     }
@@ -814,6 +953,8 @@ pub struct PlaybackTrackSettings {
     pub hosted_inserts: Vec<HostedInsert>,
     pub monitor_input: Option<PlaybackInputChannel>,
     pub output_route: PlaybackOutputRoute,
+    /// Prevalidated, active sends prepared on the control thread.
+    pub sends: Vec<PlaybackSend>,
 }
 
 /// Track settings prepared for an isolated render graph. Beat positions are
@@ -839,6 +980,74 @@ pub enum PlaybackOutputRoute {
     Right,
     Disconnected,
     Group(usize),
+}
+
+/// Immutable send routing prepared outside the audio callback.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaybackSend {
+    pub destination: PlaybackOutputRoute,
+    pub tap: opentrack_core::project::SendTap,
+    /// Linear gain, already converted from dB and clamped on the control thread.
+    pub gain: f32,
+    pub pan: f32,
+}
+
+/// Prepare a stable group order that respects both main outputs and sends.
+/// Non-group channels are mixed before these groups. A cycle or invalid
+/// group destination is rejected before the callback sees the plan.
+fn group_playback_order(tracks: &[PlaybackTrackSettings]) -> Option<Vec<usize>> {
+    let mut indegree = vec![0usize; tracks.len()];
+    let mut edges = vec![Vec::<usize>::new(); tracks.len()];
+    let mut groups = 0usize;
+    for (source, track) in tracks.iter().enumerate() {
+        for route in std::iter::once(track.output_route)
+            .chain(track.sends.iter().map(|send| send.destination))
+        {
+            if let PlaybackOutputRoute::Group(destination) = route {
+                if destination == source
+                    || !tracks
+                        .get(destination)
+                        .is_some_and(|candidate| candidate.is_group)
+                {
+                    return None;
+                }
+            }
+        }
+    }
+    for (source, track) in tracks.iter().enumerate() {
+        if !track.is_group {
+            continue;
+        }
+        groups += 1;
+        let routes = std::iter::once(track.output_route)
+            .chain(track.sends.iter().map(|send| send.destination));
+        for route in routes {
+            let PlaybackOutputRoute::Group(destination) = route else {
+                continue;
+            };
+            if destination == source || !tracks.get(destination).is_some_and(|track| track.is_group)
+            {
+                return None;
+            }
+            if !edges[source].contains(&destination) {
+                edges[source].push(destination);
+                indegree[destination] += 1;
+            }
+        }
+    }
+    let mut order = Vec::with_capacity(groups);
+    let mut processed = vec![false; tracks.len()];
+    while order.len() < groups {
+        let next = (0..tracks.len())
+            .rev()
+            .find(|&index| tracks[index].is_group && !processed[index] && indegree[index] == 0)?;
+        processed[next] = true;
+        order.push(next);
+        for &destination in &edges[next] {
+            indegree[destination] -= 1;
+        }
+    }
+    Some(order)
 }
 
 // SAFETY: the only mutable access to the processor and peak accumulator is
@@ -873,6 +1082,7 @@ pub struct PlaybackPlan {
     monitor_mute_mask: Vec<bool>,
     hosted_processing: bool,
     hosted_max_latency_samples: u32,
+    send_routing_warning: Option<&'static str>,
     hosted_error_count: AtomicU64,
     hosted_error_track: AtomicU32,
     hosted_error_insert: AtomicU32,
@@ -1311,6 +1521,7 @@ impl PlaybackPlan {
             monitor_mute_mask: Vec::new(),
             hosted_processing: false,
             hosted_max_latency_samples: 0,
+            send_routing_warning: None,
             hosted_error_count: AtomicU64::new(0),
             hosted_error_track: AtomicU32::new(NO_HOSTED_ERROR),
             hosted_error_insert: AtomicU32::new(NO_HOSTED_ERROR),
@@ -1389,13 +1600,69 @@ impl PlaybackPlan {
             .iter()
             .map(|track| hosted_track_latency(&track.hosted_inserts, latency_cap))
             .collect();
-        let hosted_max_latency_samples = track_latencies.iter().copied().max().unwrap_or(0);
-        let group_order = tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, track)| track.is_group.then_some(index))
-            .rev()
-            .collect();
+        let original_max_latency = track_latencies.iter().copied().max().unwrap_or(0);
+        let mut tracks = tracks;
+        for track in &mut tracks {
+            track
+                .sends
+                .truncate(opentrack_core::project::MAX_SEND_SLOTS);
+        }
+        let mut send_routing_warning = None;
+        let mut group_order = if let Some(order) = group_playback_order(&tracks) {
+            order
+        } else {
+            for track in &mut tracks {
+                track
+                    .sends
+                    .retain(|send| !matches!(send.destination, PlaybackOutputRoute::Group(_)));
+            }
+            send_routing_warning = Some("Invalid group routing was disabled");
+            if let Some(order) = group_playback_order(&tracks) {
+                order
+            } else {
+                // An invalid main route must not alias a group's own mutable buffer.
+                for track in &mut tracks {
+                    if matches!(track.output_route, PlaybackOutputRoute::Group(_)) {
+                        track.output_route = PlaybackOutputRoute::Disconnected;
+                    }
+                }
+                group_playback_order(&tracks).expect("disconnected group graph is acyclic")
+            }
+        };
+        let has_sends = tracks.iter().any(|track| !track.sends.is_empty());
+        let has_group_routes = tracks.iter().any(|track| {
+            matches!(track.output_route, PlaybackOutputRoute::Group(_))
+                || track
+                    .sends
+                    .iter()
+                    .any(|send| matches!(send.destination, PlaybackOutputRoute::Group(_)))
+        });
+        let route_latency = if hosted_processing
+            && original_max_latency > 0
+            && has_sends
+            && has_group_routes
+        {
+            match routing_latency_plan(&tracks, &track_latencies, &group_order, latency_cap) {
+                Some(plan) => Some(plan),
+                None => {
+                    // Never silently render an uncompensated send path.
+                    for track in &mut tracks {
+                        track.sends.clear();
+                    }
+                    group_order =
+                        group_playback_order(&tracks).expect("main routing was validated above");
+                    send_routing_warning = Some(
+                        "Sends were disabled because routing latency exceeds the compensation limit",
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let hosted_max_latency_samples = route_latency
+            .as_ref()
+            .map_or(original_max_latency, |plan| plan.maximum);
         Self {
             output_bus: bus::BusRuntime::new(
                 &opentrack_core::project::BusChannel::output().strip,
@@ -1410,14 +1677,29 @@ impl PlaybackPlan {
             tracks: tracks
                 .into_iter()
                 .zip(track_latencies)
-                .map(|(track, latency)| {
+                .enumerate()
+                .map(|(index, (track, latency))| {
+                    let delays = route_latency.as_ref().map(|plan| TrackRouteDelays {
+                        main: StereoRouteDelay::new(plan.main[index]),
+                        sends: plan.sends[index]
+                            .iter()
+                            .copied()
+                            .map(StereoRouteDelay::new)
+                            .collect(),
+                    });
+                    let track_max_latency = if delays.is_some() {
+                        latency
+                    } else {
+                        hosted_max_latency_samples
+                    };
                     PlaybackTrackRuntime::new(
                         track,
                         tempo_bpm,
                         sample_rate,
                         latency,
-                        hosted_max_latency_samples,
+                        track_max_latency,
                         hosted_processing,
+                        delays,
                     )
                 })
                 .collect(),
@@ -1429,6 +1711,7 @@ impl PlaybackPlan {
             monitor_mute_mask,
             hosted_processing,
             hosted_max_latency_samples,
+            send_routing_warning,
             hosted_error_count: AtomicU64::new(0),
             hosted_error_track: AtomicU32::new(NO_HOSTED_ERROR),
             hosted_error_insert: AtomicU32::new(NO_HOSTED_ERROR),
@@ -1603,6 +1886,11 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
+    /// Reports when sends were disabled while preparing an unsafe routing plan.
+    pub fn send_routing_warning(&self) -> Option<&'static str> {
+        self.plan.load().send_routing_warning
+    }
+
     /// Opens and starts a silent stream on the default output device.
     pub fn open_default_output() -> Result<Self, String> {
         Self::open_output_device_mode(None, None, None, AudioDeviceMode::SharedLowLatency)
@@ -3408,9 +3696,18 @@ fn render_hosted_blocks<T>(
                 let accumulator = unsafe { &mut *track.meter_accumulator.get() };
                 accumulator[0] = accumulator[0].max(output_left.abs());
                 accumulator[1] = accumulator[1].max(output_right.abs());
-                route_group_or_output(
+                route_track_sends(
                     plan,
-                    track.settings.output_route,
+                    track,
+                    (track_left, track_right),
+                    (output_left, output_right),
+                    index,
+                    &mut master_left[index],
+                    &mut master_right[index],
+                );
+                route_track_output(
+                    plan,
+                    track,
                     output_left,
                     output_right,
                     index,
@@ -3700,9 +3997,18 @@ fn render_hosted_group_block(
         let accumulator = unsafe { &mut *track.meter_accumulator.get() };
         accumulator[0] = accumulator[0].max(output_left.abs());
         accumulator[1] = accumulator[1].max(output_right.abs());
-        route_group_or_output(
+        route_track_sends(
             plan,
-            track.settings.output_route,
+            track,
+            (left, right),
+            (output_left, output_right),
+            index,
+            &mut master_left[index],
+            &mut master_right[index],
+        );
+        route_track_output(
+            plan,
+            track,
             output_left,
             output_right,
             index,
@@ -3854,9 +4160,18 @@ fn mix_frame_with_policy(
         let accumulator = unsafe { &mut *track.meter_accumulator.get() };
         accumulator[0] = accumulator[0].max(output_left.abs());
         accumulator[1] = accumulator[1].max(output_right.abs());
-        route_group_or_output(
+        route_track_sends(
             plan,
-            track.settings.output_route,
+            track,
+            (track_left, track_right),
+            (output_left, output_right),
+            0,
+            &mut left,
+            &mut right,
+        );
+        route_track_output(
+            plan,
+            track,
             output_left,
             output_right,
             0,
@@ -3906,9 +4221,18 @@ fn mix_frame_with_policy(
         let accumulator = unsafe { &mut *track.meter_accumulator.get() };
         accumulator[0] = accumulator[0].max(output_left.abs());
         accumulator[1] = accumulator[1].max(output_right.abs());
-        route_group_or_output(
+        route_track_sends(
             plan,
-            track.settings.output_route,
+            track,
+            (track_left, track_right),
+            (output_left, output_right),
+            0,
+            &mut left,
+            &mut right,
+        );
+        route_track_output(
+            plan,
+            track,
             output_left,
             output_right,
             0,
@@ -3917,6 +4241,76 @@ fn mix_frame_with_policy(
         );
     }
     (left, right)
+}
+
+/// Send values are prepared outside the callback; routing only accumulates
+/// into the already allocated destination buffers.
+fn route_track_sends(
+    plan: &PlaybackPlan,
+    track: &PlaybackTrackRuntime,
+    before_fader: (f32, f32),
+    after_fader: (f32, f32),
+    frame: usize,
+    left: &mut f32,
+    right: &mut f32,
+) {
+    // SAFETY: the serialized callback is the only writer of these plan-owned delay lines.
+    let delays = unsafe { &mut *track.route_delays.get() };
+    for (slot, send) in track.settings.sends.iter().enumerate() {
+        if !send.gain.is_finite() || send.gain <= 0.0 || !send.pan.is_finite() {
+            continue;
+        }
+        let (source_left, source_right) = match send.tap {
+            opentrack_core::project::SendTap::PreFader => before_fader,
+            opentrack_core::project::SendTap::PostFader => after_fader,
+        };
+        let pan = send.pan.clamp(-1.0, 1.0);
+        let gain = send.gain.min(3.981_072);
+        let send_left = source_left * gain * (1.0 - pan.max(0.0));
+        let send_right = source_right * gain * (1.0 + pan.min(0.0));
+        let (send_left, send_right) = delays
+            .as_mut()
+            .and_then(|delays| delays.sends.get_mut(slot))
+            .map_or((send_left, send_right), |delay| {
+                delay.next(send_left, send_right)
+            });
+        route_group_or_output(
+            plan,
+            send.destination,
+            send_left,
+            send_right,
+            frame,
+            left,
+            right,
+        );
+    }
+}
+
+fn route_track_output(
+    plan: &PlaybackPlan,
+    track: &PlaybackTrackRuntime,
+    left_sample: f32,
+    right_sample: f32,
+    frame: usize,
+    left: &mut f32,
+    right: &mut f32,
+) {
+    // SAFETY: the serialized callback is the only writer of this delay line.
+    let delays = unsafe { &mut *track.route_delays.get() };
+    let (left_sample, right_sample) = delays
+        .as_mut()
+        .map_or((left_sample, right_sample), |delays| {
+            delays.main.next(left_sample, right_sample)
+        });
+    route_group_or_output(
+        plan,
+        track.settings.output_route,
+        left_sample,
+        right_sample,
+        frame,
+        left,
+        right,
+    );
 }
 
 fn route_group_or_output(
@@ -5368,6 +5762,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: None,
+                    sends: Vec::new(),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
                 1,
@@ -5464,6 +5859,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
             1,
@@ -5500,6 +5896,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: Some(PlaybackInputChannel::Stereo),
+                    sends: Vec::new(),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
                 1,
@@ -5581,6 +5978,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: None,
+                    sends: Vec::new(),
                     output_route: PlaybackOutputRoute::Stereo,
                 }],
                 1,
@@ -5668,6 +6066,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
             1,
@@ -6793,6 +7192,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: Some(PlaybackInputChannel::Stereo),
+                sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
             1,
@@ -6902,6 +7302,7 @@ mod processing_tests {
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
                     monitor_input: Some(PlaybackInputChannel::Stereo),
+                    sends: Vec::new(),
                     output_route: route,
                 }],
                 1,
@@ -6989,6 +7390,7 @@ mod processing_tests {
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
+                sends: Vec::new(),
                 output_route: PlaybackOutputRoute::Stereo,
             }],
             1,
@@ -7304,6 +7706,7 @@ mod hosted_processing_tests {
             inserts_bypassed: false,
             hosted_inserts,
             monitor_input: None,
+            sends: Vec::new(),
             output_route: PlaybackOutputRoute::Stereo,
         }
     }
@@ -7334,6 +7737,439 @@ mod hosted_processing_tests {
             &mut phase,
         );
         samples
+    }
+
+    #[test]
+    fn group_order_follows_send_and_output_edges_and_rejects_cycles() {
+        let mut tracks: Vec<_> = (0..3)
+            .map(|_| {
+                let mut settings = track(constant_source(0.0, 8), Vec::new());
+                settings.is_group = true;
+                settings
+            })
+            .collect();
+        tracks[0].output_route = PlaybackOutputRoute::Group(2);
+        tracks[0].sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(2),
+            tap: opentrack_core::project::SendTap::PostFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        tracks[2].sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(1),
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        assert_eq!(group_playback_order(&tracks), Some(vec![0, 2, 1]));
+        tracks[1].sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(0),
+            tap: opentrack_core::project::SendTap::PostFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        assert_eq!(group_playback_order(&tracks), None);
+        let plan = PlaybackPlan::new(120.0, tracks, 1, 48_000, None);
+        assert!(
+            plan.tracks
+                .iter()
+                .all(|track| track.settings.sends.is_empty())
+        );
+    }
+
+    #[test]
+    fn sends_route_audio_before_and_after_fader_in_both_render_paths() {
+        use opentrack_core::project::SendTap;
+        for hosted in [false, true] {
+            for (tap, expected) in [(SendTap::PreFader, 0.0625), (SendTap::PostFader, 0.015625)] {
+                let inserts = if hosted {
+                    vec![HostedInsert {
+                        processor: GainProcessor::new(1.0, 0.0, 0, false),
+                        enabled: true,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let mut settings = track(constant_source(0.125, 256), inserts);
+                settings.output_route = PlaybackOutputRoute::Disconnected;
+                settings.gain = 0.25;
+                settings.sends.push(PlaybackSend {
+                    destination: PlaybackOutputRoute::Stereo,
+                    tap,
+                    gain: 0.5,
+                    pan: 0.0,
+                });
+                let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+                for sample in render(plan, 128) {
+                    assert!(
+                        (sample - expected).abs() < 1.0e-6,
+                        "hosted={hosted} tap={tap:?}, expected={expected}, got={sample}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_sends_follow_dependency_order_in_both_render_paths() {
+        use opentrack_core::project::SendTap;
+        for hosted in [false, true] {
+            let inserts = if hosted {
+                vec![HostedInsert {
+                    processor: GainProcessor::new(1.0, 0.0, 0, false),
+                    enabled: true,
+                }]
+            } else {
+                Vec::new()
+            };
+            let mut source = track(constant_source(0.125, 256), inserts);
+            source.output_route = PlaybackOutputRoute::Disconnected;
+            source.sends.push(PlaybackSend {
+                destination: PlaybackOutputRoute::Group(2),
+                tap: SendTap::PreFader,
+                gain: 1.0,
+                pan: 0.0,
+            });
+            let mut last = track(constant_source(0.0, 256), Vec::new());
+            last.is_group = true;
+            let mut first = track(constant_source(0.0, 256), Vec::new());
+            first.is_group = true;
+            first.output_route = PlaybackOutputRoute::Disconnected;
+            first.sends.push(PlaybackSend {
+                destination: PlaybackOutputRoute::Group(1),
+                tap: SendTap::PostFader,
+                gain: 1.0,
+                pan: 0.0,
+            });
+            let plan = Arc::new(PlaybackPlan::new(
+                120.0,
+                vec![source, last, first],
+                1,
+                48_000,
+                None,
+            ));
+            assert_eq!(plan.group_order, vec![2, 1]);
+            for sample in render(plan, 128) {
+                assert!(
+                    (sample - 0.125).abs() < 1.0e-6,
+                    "hosted={hosted}, got={sample}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sends_respect_source_mute_pan_and_destination_channels() {
+        use opentrack_core::project::SendTap;
+        for hosted in [false, true] {
+            for (muted, pan, destination, expected) in [
+                (false, 1.0, PlaybackOutputRoute::Stereo, [0.0, 0.125]),
+                (false, 0.0, PlaybackOutputRoute::Left, [0.125, 0.0]),
+                (false, 0.0, PlaybackOutputRoute::Right, [0.0, 0.125]),
+                (true, 0.0, PlaybackOutputRoute::Stereo, [0.0, 0.0]),
+            ] {
+                let inserts = if hosted {
+                    vec![HostedInsert {
+                        processor: GainProcessor::new(1.0, 0.0, 0, false),
+                        enabled: true,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let mut settings = track(constant_source(0.125, 256), inserts);
+                settings.output_route = PlaybackOutputRoute::Disconnected;
+                settings.muted = muted;
+                settings.sends.push(PlaybackSend {
+                    destination,
+                    tap: SendTap::PreFader,
+                    gain: 1.0,
+                    pan,
+                });
+                let plan = Arc::new(PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None));
+                for frame in render(plan, 128).chunks_exact(2) {
+                    assert!(
+                        (frame[0] - expected[0]).abs() < 1.0e-6
+                            && (frame[1] - expected[1]).abs() < 1.0e-6,
+                        "hosted={hosted}, muted={muted}, pan={pan}, destination={destination:?}, got={frame:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_send_is_time_aligned_with_dry_path_when_a_plugin_has_latency() {
+        let slow = track(
+            constant_source(0.0, 256),
+            vec![HostedInsert {
+                processor: DelayProcessor::new(4),
+                enabled: true,
+            }],
+        );
+        let mut source = track(constant_source(0.125, 256), Vec::new());
+        source.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(2),
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        let mut group = track(constant_source(0.0, 256), Vec::new());
+        group.is_group = true;
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![slow, source, group],
+            1,
+            48_000,
+            None,
+        ));
+        let output = render(plan, 128);
+        for (index, frame) in output.chunks_exact(2).enumerate() {
+            let expected = if index < 4 { 0.0 } else { 0.25 };
+            assert!(
+                (frame[0] - expected).abs() < 1.0e-6 && (frame[1] - expected).abs() < 1.0e-6,
+                "frame {index}: {frame:?}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn latency_on_receiving_group_aligns_send_and_dry_output() {
+        let mut source = track(constant_source(0.125, 256), Vec::new());
+        source.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(1),
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        let mut group = track(
+            constant_source(0.0, 256),
+            vec![HostedInsert {
+                processor: DelayProcessor::new(4),
+                enabled: true,
+            }],
+        );
+        group.is_group = true;
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![source, group],
+            1,
+            48_000,
+            None,
+        ));
+        for (index, frame) in render(plan, 128).chunks_exact(2).enumerate() {
+            let expected = if index < 4 { 0.0 } else { 0.25 };
+            assert!(
+                (frame[0] - expected).abs() < 1.0e-6 && (frame[1] - expected).abs() < 1.0e-6,
+                "frame {index}: {frame:?}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_send_merges_sources_with_different_plugin_latencies_in_phase() {
+        let mut slow = track(
+            constant_source(0.125, 256),
+            vec![HostedInsert {
+                processor: DelayProcessor::new(4),
+                enabled: true,
+            }],
+        );
+        let mut fast = track(constant_source(0.125, 256), Vec::new());
+        for source in [&mut slow, &mut fast] {
+            source.output_route = PlaybackOutputRoute::Disconnected;
+            source.sends.push(PlaybackSend {
+                destination: PlaybackOutputRoute::Group(2),
+                tap: opentrack_core::project::SendTap::PreFader,
+                gain: 1.0,
+                pan: 0.0,
+            });
+        }
+        let mut group = track(constant_source(0.0, 256), Vec::new());
+        group.is_group = true;
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![slow, fast, group],
+            1,
+            48_000,
+            None,
+        ));
+        for (index, frame) in render(plan, 128).chunks_exact(2).enumerate() {
+            let expected = if index < 4 { 0.0 } else { 0.25 };
+            assert!(
+                (frame[0] - expected).abs() < 1.0e-6 && (frame[1] - expected).abs() < 1.0e-6,
+                "frame {index}: {frame:?}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_group_send_plans_report_an_error_and_offline_render_refuses_them() {
+        let mut first = track(constant_source(0.0, 256), Vec::new());
+        let mut second = track(constant_source(0.0, 256), Vec::new());
+        first.is_group = true;
+        second.is_group = true;
+        first.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(1),
+            tap: opentrack_core::project::SendTap::PostFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        second.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(0),
+            tap: opentrack_core::project::SendTap::PostFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        let plan = PlaybackPlan::new(120.0, vec![first.clone(), second.clone()], 1, 48_000, None);
+        assert!(plan.send_routing_warning.is_some());
+        assert!(
+            plan.tracks
+                .iter()
+                .all(|track| track.settings.sends.is_empty())
+        );
+        let result = OfflineRenderer::new(
+            120.0,
+            vec![first, second],
+            48_000,
+            0.0,
+            1.0,
+            &opentrack_core::project::BusChannel::output().strip,
+            Vec::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(OfflineRenderError::SendRoutingUnavailable(_))
+        ));
+    }
+
+    #[test]
+    fn routing_latency_plan_rejects_unbounded_delay_allocation() {
+        let mut tracks: Vec<_> = (0..18)
+            .map(|_| track(constant_source(0.0, 8), Vec::new()))
+            .collect();
+        for source in &mut tracks {
+            source.sends.push(PlaybackSend {
+                destination: PlaybackOutputRoute::Group(18),
+                tap: opentrack_core::project::SendTap::PostFader,
+                gain: 1.0,
+                pan: 0.0,
+            });
+        }
+        let mut group = track(constant_source(0.0, 8), Vec::new());
+        group.is_group = true;
+        tracks.push(group);
+        let mut latencies = vec![0; tracks.len()];
+        latencies[18] = 480_000;
+        assert!(routing_latency_plan(&tracks, &latencies, &[18], 480_000).is_none());
+    }
+
+    #[test]
+    fn cumulative_group_latency_over_the_limit_disables_group_sends_with_warning() {
+        let mut source = track(constant_source(0.0, 256), Vec::new());
+        source.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(1),
+            tap: opentrack_core::project::SendTap::PostFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        let mut first = track(
+            constant_source(0.0, 256),
+            vec![HostedInsert {
+                processor: GainProcessor::new(1.0, 0.0, 300_000, false),
+                enabled: true,
+            }],
+        );
+        first.is_group = true;
+        first.output_route = PlaybackOutputRoute::Group(2);
+        let mut second = track(
+            constant_source(0.0, 256),
+            vec![HostedInsert {
+                processor: GainProcessor::new(1.0, 0.0, 300_000, false),
+                enabled: true,
+            }],
+        );
+        second.is_group = true;
+        let plan = PlaybackPlan::new(120.0, vec![source, first, second], 1, 48_000, None);
+        assert_eq!(
+            plan.send_routing_warning,
+            Some("Sends were disabled because routing latency exceeds the compensation limit")
+        );
+        assert!(plan.tracks[0].settings.sends.is_empty());
+    }
+
+    #[test]
+    fn direct_send_aligns_with_main_group_route_when_plugin_latency_exists() {
+        let slow = track(
+            constant_source(0.0, 256),
+            vec![HostedInsert {
+                processor: DelayProcessor::new(4),
+                enabled: true,
+            }],
+        );
+        let mut source = track(constant_source(0.125, 256), Vec::new());
+        source.output_route = PlaybackOutputRoute::Group(2);
+        source.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Stereo,
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        let mut group = track(constant_source(0.0, 256), Vec::new());
+        group.is_group = true;
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![slow, source, group],
+            1,
+            48_000,
+            None,
+        ));
+        for (index, frame) in render(plan, 128).chunks_exact(2).enumerate() {
+            let expected = if index < 4 { 0.0 } else { 0.25 };
+            assert!(
+                (frame[0] - expected).abs() < 1.0e-6 && (frame[1] - expected).abs() < 1.0e-6,
+                "frame {index}: {frame:?}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_self_routing_is_disconnected_before_audio_processing() {
+        let mut group = track(constant_source(0.0, 256), Vec::new());
+        group.is_group = true;
+        group.output_route = PlaybackOutputRoute::Group(0);
+        let plan = PlaybackPlan::new(120.0, vec![group], 1, 48_000, None);
+        assert_eq!(
+            plan.tracks[0].settings.output_route,
+            PlaybackOutputRoute::Disconnected
+        );
+        assert!(plan.send_routing_warning.is_some());
+    }
+
+    #[test]
+    fn offline_render_includes_active_sends() {
+        let mut settings = track(constant_source(0.125, 512), Vec::new());
+        settings.output_route = PlaybackOutputRoute::Disconnected;
+        settings.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Stereo,
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 0.5,
+            pan: 0.0,
+        });
+        let mut offline = OfflineRenderer::new(
+            120.0,
+            vec![settings],
+            48_000,
+            0.0,
+            1.0,
+            &opentrack_core::project::BusChannel::output().strip,
+            Vec::new(),
+        )
+        .unwrap();
+        let mut output = vec![0.0; 256];
+        assert_eq!(offline.render_next(&mut output).unwrap(), 128);
+        for sample in output {
+            assert!((sample - 0.0625).abs() < 1.0e-6, "got {sample}");
+        }
     }
 
     #[test]

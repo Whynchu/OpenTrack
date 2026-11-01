@@ -9,6 +9,7 @@ struct MixerView {
     hide_audio: bool,
     hide_output: bool,
     clipboard: Option<Track>,
+    paste_error: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -316,6 +317,30 @@ pub(super) fn show_channels(
     (modified, selection_requested, requires_plan_rebuild)
 }
 
+fn paste_channel_settings(
+    project: &mut Project,
+    source: &Track,
+    index: usize,
+) -> Result<(), &'static str> {
+    let mut candidate = project.clone();
+    let target = candidate
+        .tracks
+        .get_mut(index)
+        .ok_or("Selected channel is unavailable")?;
+    target.gain = source.gain;
+    target.pan = source.pan;
+    target.input_gain_db = source.input_gain_db;
+    target.input_phase_inverted = source.input_phase_inverted;
+    target.equalizer = source.equalizer.clone();
+    target.inserts = source.inserts.clone();
+    target.send_routing = source.send_routing.clone();
+    target.send_parameters = source.send_parameters.clone();
+    target.sends_bypassed = source.sends_bypassed;
+    candidate.validate()?;
+    *project = candidate;
+    Ok(())
+}
+
 fn sidebar(
     ui: &mut egui::Ui,
     r: Rect,
@@ -440,22 +465,26 @@ fn sidebar(
     )
     .clicked()
     {
-        if let (Some(source), Some(target)) = (
-            &view.clipboard,
-            project
-                .selected_track
-                .and_then(|i| project.tracks.get_mut(i as usize)),
-        ) {
-            target.gain = source.gain;
-            target.pan = source.pan;
-            target.input_gain_db = source.input_gain_db;
-            target.input_phase_inverted = source.input_phase_inverted;
-            target.equalizer = source.equalizer.clone();
-            target.inserts = source.inserts.clone();
-            target.send_routing = source.send_routing.clone();
-            target.send_parameters = source.send_parameters.clone();
-            *modified = true;
+        if let (Some(source), Some(index)) = (&view.clipboard, project.selected_track) {
+            match paste_channel_settings(project, source, index as usize) {
+                Ok(()) => {
+                    *modified = true;
+                    view.paste_error = None;
+                }
+                Err(reason) => view.paste_error = Some(reason.to_owned()),
+            }
         }
+    }
+    if let Some(reason) = view.paste_error.clone() {
+        egui::Window::new("Cannot paste channel settings")
+            .collapsible(false)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(reason);
+                if ui.button("OK").clicked() {
+                    view.paste_error = None;
+                }
+            });
     }
     control(
         ui,
@@ -1201,20 +1230,24 @@ fn strip(
             modified = true;
             requires_plan_rebuild = true;
         }
-        // Send audio processing is not implemented; expose the observed state and usage without a fake bypass.
         let send = control(
             ui,
             at(8.0, 273.0, 21.0, 15.0),
             "sends",
             Icon::Send,
+            channel_settings::has_active_sends(track),
             false,
-            false,
-            false,
-            Some("Sends State (Bypass Sends with click / Context-menu shows usage)"),
+            !is_bus,
+            Some("Sends State (click to bypass sends / right-click to show destinations)"),
         );
+        if send.clicked() {
+            track.sends_bypassed = !track.sends_bypassed;
+            modified = true;
+            requires_plan_rebuild = true;
+        }
         send.context_menu(|ui| {
             for route in track.send_routing.iter().flatten() {
-                ui.label(route);
+                ui.label(display_group_route(route, group_names));
             }
             if !track.send_routing.iter().any(Option::is_some) {
                 ui.label("No Bus");
@@ -1727,6 +1760,89 @@ fn fader_impl(
 #[cfg(test)]
 mod bus_tests {
     use super::*;
+    #[test]
+    fn mixer_send_button_bypasses_sends_and_requests_plan_rebuild() {
+        let context = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 600.0));
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(82.0, 500.0));
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track = &mut project.tracks[0];
+        track.send_routing = vec![Some("Stereo Out".into())];
+        track.send_parameters = vec![opentrack_core::project::SendParameters {
+            enabled: true,
+            ..Default::default()
+        }];
+        let mut hold = metering::Hold::default();
+        let mut settings = NativeWindowState::default();
+        let mut run = |time, events| {
+            let mut result = (false, false, false, false);
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    result = strip(
+                        ui,
+                        rect,
+                        track,
+                        0,
+                        true,
+                        [0.0; 2],
+                        [0.0; 2],
+                        &mut hold,
+                        &mut settings,
+                        false,
+                        &HashMap::new(),
+                        None,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            result
+        };
+        run(0.0, Vec::new());
+        let point = Pos2::new(18.0, 280.0);
+        let event = |pressed| egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(0.1, vec![egui::Event::PointerMoved(point), event(true)]);
+        let (changed, _, _, rebuild) = run(0.2, vec![event(false)]);
+        assert!(changed && rebuild);
+        assert!(track.sends_bypassed);
+    }
+
+    #[test]
+    fn paste_rejects_self_routing_without_partially_changing_channel() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Audio);
+        let group = project.tracks[1].id;
+        project.tracks[0].send_routing = vec![Some(format!("Group:{group}"))];
+        project.tracks[0].send_parameters = vec![opentrack_core::project::SendParameters {
+            enabled: true,
+            level_db: -6.0,
+            ..Default::default()
+        }];
+        project.tracks[0].sends_bypassed = true;
+        let source = project.tracks[0].clone();
+        let before = project.tracks[1].clone();
+        assert!(paste_channel_settings(&mut project, &source, 1).is_err());
+        assert_eq!(project.tracks[1], before);
+        paste_channel_settings(&mut project, &source, 2).unwrap();
+        assert_eq!(project.tracks[2].send_routing, source.send_routing);
+        assert_eq!(project.tracks[2].send_parameters, source.send_parameters);
+        assert!(project.tracks[2].sends_bypassed);
+        assert!(project.validate().is_ok());
+    }
+
     #[test]
     fn led_light_is_brighter_than_dark_track_colors_and_preserves_their_hue() {
         for base in [

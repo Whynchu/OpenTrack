@@ -12,6 +12,7 @@ pub enum OfflineRenderError {
     MediaReader(String),
     MissingHostedEffects { required: usize, available: usize },
     HostedProcessingFailed,
+    SendRoutingUnavailable(&'static str),
 }
 
 impl std::fmt::Display for OfflineRenderError {
@@ -34,6 +35,7 @@ impl std::fmt::Display for OfflineRenderError {
             Self::HostedProcessingFailed => {
                 f.write_str("a hosted effect failed while rendering offline")
             }
+            Self::SendRoutingUnavailable(reason) => f.write_str(reason),
         }
     }
 }
@@ -167,6 +169,9 @@ impl OfflineRenderer {
             None,
             output_hosted_inserts,
         );
+        if let Some(reason) = plan.send_routing_warning {
+            return Err(OfflineRenderError::SendRoutingUnavailable(reason));
+        }
         plan.output_bus = bus::BusRuntime::new(output_channel, sample_rate);
         plan.cycle_mode = CycleMode::Loop;
 
@@ -275,6 +280,7 @@ mod tests {
             inserts_bypassed: false,
             hosted_inserts: Vec::new(),
             monitor_input: None,
+            sends: Vec::new(),
             output_route: PlaybackOutputRoute::Stereo,
         };
         OfflineRenderer::new(
