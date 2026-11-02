@@ -1,6 +1,67 @@
 //! Routing decisions shared by Channel Settings and playback plan preparation.
-use opentrack_audio::{PlaybackOutputRoute, PlaybackSend};
+use opentrack_audio::{PlaybackInputChannel, PlaybackOutputRoute, PlaybackSend};
 use opentrack_core::project::{Track, TrackKind};
+use opentrack_core::routing::{InputRoute, OutputRoute};
+
+/// The channel's input route, with the historical default for its width.
+pub(super) fn input_route(track: &Track) -> InputRoute {
+    match track.input_routing.as_deref().map(InputRoute::parse) {
+        Some(Ok(route)) => route,
+        _ => {
+            if track.audio_channels == 1 {
+                InputRoute::MonoIn { channel: 1 }
+            } else {
+                InputRoute::StereoIn
+            }
+        }
+    }
+}
+
+/// The channel's output route, defaulting to the stereo master like the engine.
+pub(super) fn output_route(track: &Track) -> OutputRoute {
+    match track.output_routing.as_deref().map(OutputRoute::parse) {
+        Some(Ok(route)) => route,
+        _ => OutputRoute::StereoOut,
+    }
+}
+
+/// Resolves a persisted output route into the playback representation.
+///
+/// An unparseable route becomes [`PlaybackOutputRoute::Disconnected`] rather than
+/// the master: a channel that stores something this build cannot route must not
+/// silently join the stereo mix, and [`opentrack_core::project::Project::validate_routing`]
+/// reports the same value at load time.
+pub(super) fn playback_output_route(route: Option<&str>, tracks: &[Track]) -> PlaybackOutputRoute {
+    match route.map(OutputRoute::parse) {
+        None => PlaybackOutputRoute::Stereo,
+        Some(Ok(OutputRoute::StereoOut)) => PlaybackOutputRoute::Stereo,
+        Some(Ok(OutputRoute::Left)) => PlaybackOutputRoute::Left,
+        Some(Ok(OutputRoute::Right)) => PlaybackOutputRoute::Right,
+        Some(Ok(OutputRoute::NoBus)) => PlaybackOutputRoute::Disconnected,
+        Some(Ok(OutputRoute::Group(group_id))) => tracks
+            .iter()
+            .position(|candidate| candidate.id == group_id && candidate.kind == TrackKind::Group)
+            .map_or(
+                PlaybackOutputRoute::Disconnected,
+                PlaybackOutputRoute::Group,
+            ),
+        Some(Err(_)) => PlaybackOutputRoute::Disconnected,
+    }
+}
+
+/// Resolves a persisted input route into the live-monitor channel.
+pub(super) fn playback_input_channel(route: Option<&str>) -> Option<PlaybackInputChannel> {
+    match route.map(InputRoute::parse) {
+        None => Some(PlaybackInputChannel::Stereo),
+        Some(Ok(InputRoute::StereoIn)) => Some(PlaybackInputChannel::Stereo),
+        Some(Ok(InputRoute::MonoIn { channel: 1 })) => Some(PlaybackInputChannel::Left),
+        Some(Ok(InputRoute::MonoIn { channel: 2 })) => Some(PlaybackInputChannel::Right),
+        // A mono route on a wider model has no monitor tap on a stereo bus, and
+        // No Bus has none by definition.
+        Some(Ok(InputRoute::MonoIn { .. })) | Some(Ok(InputRoute::NoBus)) => None,
+        Some(Err(_)) => None,
+    }
+}
 
 /// Resolve persisted sends into the bounded immutable playback representation.
 pub(super) fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<PlaybackSend> {
@@ -17,12 +78,12 @@ pub(super) fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<PlaybackSen
             if !settings.enabled || !settings.level_db.is_finite() || !settings.pan.is_finite() {
                 return None;
             }
-            let destination = match route.as_deref()? {
-                "Stereo Out" => PlaybackOutputRoute::Stereo,
-                "Left" => PlaybackOutputRoute::Left,
-                "Right" => PlaybackOutputRoute::Right,
-                value if value.starts_with("Group:") => {
-                    let id = value.strip_prefix("Group:")?.parse::<u64>().ok()?;
+            let destination = match OutputRoute::parse(route.as_deref()?).ok()? {
+                OutputRoute::StereoOut => PlaybackOutputRoute::Stereo,
+                OutputRoute::Left => PlaybackOutputRoute::Left,
+                OutputRoute::Right => PlaybackOutputRoute::Right,
+                OutputRoute::NoBus => return None,
+                OutputRoute::Group(id) => {
                     let index = tracks.iter().position(|candidate| {
                         candidate.id == id
                             && candidate.id != track.id
@@ -30,7 +91,6 @@ pub(super) fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<PlaybackSen
                     })?;
                     PlaybackOutputRoute::Group(index)
                 }
-                _ => return None,
             };
             let db = settings.level_db.clamp(-90.0, 12.0);
             let gain = if db <= -90.0 {
@@ -71,9 +131,9 @@ pub(super) fn group_route_would_cycle(
             .map(String::as_str)
             .chain(track.send_routing.iter().flatten().map(String::as_str));
         for destination in destinations {
-            if let Some(id) = destination
-                .strip_prefix("Group:")
-                .and_then(|id| id.parse::<u64>().ok())
+            if let Some(id) = OutputRoute::parse(destination)
+                .ok()
+                .and_then(OutputRoute::group)
             {
                 pending.push(id);
             }

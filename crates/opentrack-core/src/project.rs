@@ -2134,6 +2134,102 @@ impl Project {
     }
 
     /// Validates project data loaded from a file before replacing live state.
+    /// Checks every channel's routing against the project it belongs to.
+    ///
+    /// [`Self::validate`] keeps its historical short messages; routing needs to
+    /// say *which* route is wrong, so it reports the parsed model's error. A
+    /// project that fails this cannot play what it stores, and the save path
+    /// refuses it instead of letting playback silently fall back to the master.
+    pub fn validate_routing(&self) -> Result<(), crate::routing::RoutingError> {
+        use crate::routing::{InputRoute, OutputRoute, RoutingError};
+
+        let group_ids = self
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Group)
+            .map(|track| track.id)
+            .collect::<BTreeSet<_>>();
+
+        // A destination may not be the channel itself or anything it already
+        // feeds, which is the same rule the routing menu uses.
+        let feeds_cycle = |track_id: u64, target: u64| -> bool {
+            let mut pending = vec![target];
+            let mut visited = BTreeSet::new();
+            while let Some(current) = pending.pop() {
+                if current == track_id {
+                    return true;
+                }
+                if !visited.insert(current) {
+                    continue;
+                }
+                let Some(track) = self.tracks.iter().find(|track| track.id == current) else {
+                    continue;
+                };
+                let destinations = track
+                    .output_routing
+                    .as_deref()
+                    .and_then(|route| OutputRoute::parse(route).ok())
+                    .into_iter()
+                    .chain(
+                        track
+                            .send_routing
+                            .iter()
+                            .flatten()
+                            .filter_map(|route| OutputRoute::parse(route).ok()),
+                    );
+                for destination in destinations {
+                    if let Some(group) = destination.group() {
+                        pending.push(group);
+                    }
+                }
+            }
+            false
+        };
+
+        for channel in self
+            .tracks
+            .iter()
+            .chain([&self.input_channel.strip, &self.output_channel.strip])
+        {
+            let is_strip = channel.id >= INPUT_BUS_ID;
+            if let Some(route) = channel.input_routing.as_deref() {
+                let input = InputRoute::parse(route)?;
+                if !is_strip {
+                    input.validate(crate::routing::MAX_INPUT_CHANNELS)?;
+                }
+            }
+            if let Some(route) = channel.output_routing.as_deref() {
+                let output = OutputRoute::parse(route)?;
+                if let Some(group) = output.group() {
+                    if group == channel.id {
+                        return Err(RoutingError::SelfGroup { group });
+                    }
+                    if !group_ids.contains(&group) {
+                        return Err(RoutingError::MissingGroup { group });
+                    }
+                    if !is_strip && feeds_cycle(channel.id, group) {
+                        return Err(RoutingError::RoutingCycle { group });
+                    }
+                }
+            }
+            for route in channel.send_routing.iter().flatten() {
+                let Some(group) = OutputRoute::parse(route)?.group() else {
+                    continue;
+                };
+                if group == channel.id {
+                    return Err(RoutingError::SelfGroup { group });
+                }
+                if !group_ids.contains(&group) {
+                    return Err(RoutingError::MissingGroup { group });
+                }
+                if !is_strip && feeds_cycle(channel.id, group) {
+                    return Err(RoutingError::RoutingCycle { group });
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.media_pool.iter().any(|p| p.as_os_str().is_empty()) {
             return Err("media pool contains an empty source path");
@@ -3764,6 +3860,111 @@ mod sample_edit_tests {
         // Only the muted event changes, so unmuting reports one edit.
         assert_eq!(project.set_audio_clips_muted(&[first, second], false), 1);
         assert!(project.tracks[0].clips.iter().all(|clip| !clip.muted));
+    }
+
+    #[test]
+    fn routing_validation_accepts_every_route_the_menus_offer() {
+        use crate::routing::{InputRoute, OutputRoute};
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Audio);
+        let group_id = project.tracks[0].id;
+        project.tracks[1].parent_group_id = Some(group_id);
+        project.tracks[1].input_routing = Some(InputRoute::MonoIn { channel: 2 }.persisted());
+        project.tracks[1].output_routing = Some(OutputRoute::Group(group_id).persisted());
+        assert_eq!(project.validate_routing(), Ok(()));
+
+        // Speaker assignments and No Bus are legal too.
+        for route in [
+            OutputRoute::Left,
+            OutputRoute::Right,
+            OutputRoute::StereoOut,
+            OutputRoute::NoBus,
+        ] {
+            project.tracks[1].output_routing = Some(route.persisted());
+            project.tracks[1].group_output_auto = false;
+            assert_eq!(project.validate_routing(), Ok(()), "{route:?}");
+        }
+        for route in [
+            InputRoute::StereoIn,
+            InputRoute::MonoIn { channel: 1 },
+            InputRoute::NoBus,
+        ] {
+            project.tracks[1].input_routing = Some(route.persisted());
+            assert_eq!(project.validate_routing(), Ok(()), "{route:?}");
+        }
+    }
+
+    #[test]
+    fn routing_validation_reports_a_group_that_does_not_exist() {
+        use crate::routing::RoutingError;
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].output_routing = Some("Group:999".to_owned());
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::MissingGroup { group: 999 })
+        );
+
+        // A send to a missing group is caught the same way.
+        project.tracks[0].output_routing = Some("Stereo Out".to_owned());
+        project.tracks[0].send_routing = vec![Some("Group:999".to_owned())];
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::MissingGroup { group: 999 })
+        );
+    }
+
+    #[test]
+    fn routing_validation_rejects_unknown_routes_and_narrow_inputs() {
+        use crate::routing::RoutingError;
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].output_routing = Some("Surround 5.1".to_owned());
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::UnknownRoute("Surround 5.1".to_owned()))
+        );
+
+        project.tracks[0].output_routing = Some("Stereo Out".to_owned());
+        project.tracks[0].input_routing = Some("Input 3".to_owned());
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::UnsupportedInputChannel {
+                channel: 3,
+                available: 2
+            })
+        );
+    }
+
+    #[test]
+    fn routing_validation_rejects_self_routing_and_feedback_loops() {
+        use crate::routing::RoutingError;
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Group);
+        let (first, second) = (project.tracks[0].id, project.tracks[1].id);
+
+        project.tracks[0].output_routing = Some(format!("Group:{first}"));
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::SelfGroup { group: first })
+        );
+
+        project.tracks[0].output_routing = Some(format!("Group:{second}"));
+        project.tracks[1].output_routing = Some(format!("Group:{first}"));
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::RoutingCycle { group: second })
+        );
+
+        // Breaking the loop makes the project routable again.
+        project.tracks[1].output_routing = Some("Stereo Out".to_owned());
+        assert_eq!(project.validate_routing(), Ok(()));
     }
 
     #[test]

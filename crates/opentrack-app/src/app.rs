@@ -470,18 +470,10 @@ struct TrackAddDialog {
     kind: TrackKind,
     count: u32,
     audio_channels: u8,
-    mono_input_right: bool,
+    mono_input_channel: u8,
     browse_presets: bool,
     /// Index into the scanned VST3 instrument list, or none for an empty track.
     instrument: Option<usize>,
-}
-
-fn mono_track_input_routing(right_channel: bool) -> &'static str {
-    if right_channel {
-        "Right - Stereo In"
-    } else {
-        "Left - Stereo In"
-    }
 }
 
 #[derive(Clone)]
@@ -774,12 +766,28 @@ fn window_level_request_needed(
 
 #[cfg(test)]
 mod add_track_configuration_tests {
-    use super::mono_track_input_routing;
+    use opentrack_core::routing::InputRoute;
 
     #[test]
     fn mono_input_choice_maps_to_the_matching_persisted_route() {
-        assert_eq!(mono_track_input_routing(false), "Left - Stereo In");
-        assert_eq!(mono_track_input_routing(true), "Right - Stereo In");
+        // The picker stores the historical spellings for the two channels the
+        // capture bus provides, so existing projects and recordings agree.
+        assert_eq!(
+            InputRoute::MonoIn { channel: 1 }.persisted(),
+            "Left - Stereo In"
+        );
+        assert_eq!(
+            InputRoute::MonoIn { channel: 2 }.persisted(),
+            "Right - Stereo In"
+        );
+        assert_eq!(
+            InputRoute::parse("Left - Stereo In"),
+            Ok(InputRoute::MonoIn { channel: 1 })
+        );
+        assert_eq!(
+            InputRoute::parse("Right - Stereo In"),
+            Ok(InputRoute::MonoIn { channel: 2 })
+        );
     }
 }
 
@@ -3343,37 +3351,16 @@ impl OpenTrackApp {
                 inserts_bypassed,
                 hosted_inserts,
                 monitor_input: if monitor_enabled {
-                    match input_routing.as_deref().unwrap_or("Stereo In") {
-                        "Left - Stereo In" => Some(PlaybackInputChannel::Left),
-                        "Right - Stereo In" => Some(PlaybackInputChannel::Right),
-                        "No Bus" => None,
-                        _ => Some(PlaybackInputChannel::Stereo),
-                    }
+                    routing::playback_input_channel(input_routing.as_deref())
                 } else {
                     None
                 },
                 sends,
                 volume_automation,
-                output_route: if let Some(group_id) = output_routing
-                    .as_deref()
-                    .and_then(|route| route.strip_prefix("Group:"))
-                    .and_then(|id| id.parse::<u64>().ok())
-                {
-                    project_tracks
-                        .iter()
-                        .position(|candidate| candidate.id == group_id)
-                        .map_or(
-                            PlaybackOutputRoute::Disconnected,
-                            PlaybackOutputRoute::Group,
-                        )
-                } else {
-                    match output_routing.as_deref().unwrap_or("Stereo Out") {
-                        "Left" => PlaybackOutputRoute::Left,
-                        "Right" => PlaybackOutputRoute::Right,
-                        "No Bus" => PlaybackOutputRoute::Disconnected,
-                        _ => PlaybackOutputRoute::Stereo,
-                    }
-                },
+                output_route: routing::playback_output_route(
+                    output_routing.as_deref(),
+                    project_tracks,
+                ),
             });
         }
         self.data
@@ -4195,6 +4182,11 @@ impl OpenTrackApp {
         self.mark_saved();
         self.detect_interrupted_recording(path.clone());
         self.detect_unsaved_recovery(path);
+        // A stored route this build cannot play is reported instead of being
+        // silently replaced by the stereo master during playback.
+        if let Err(error) = self.data.project.validate_routing() {
+            self.status_message = format!("{}; routing problem: {error}", self.status_message);
+        }
     }
 
     fn project_root(&self) -> Option<std::path::PathBuf> {
@@ -8580,7 +8572,7 @@ impl OpenTrackApp {
                                     kind,
                                     count: 1,
                                     audio_channels: 1,
-                                    mono_input_right: false,
+                                    mono_input_channel: 1,
                                     browse_presets: true,
                                     instrument: None,
                                 });
@@ -10822,7 +10814,7 @@ impl OpenTrackApp {
                     kind,
                     count: 1,
                     audio_channels: 1,
-                    mono_input_right: false,
+                    mono_input_channel: 1,
                     browse_presets: false,
                     instrument: None,
                 });
@@ -11077,27 +11069,38 @@ impl OpenTrackApp {
                                                 );
                                             });
                                             if dialog.audio_channels == 1 {
+                                                let available = self
+                                                    .audio_input_probe
+                                                    .as_ref()
+                                                    .map_or(opentrack_core::routing::MAX_INPUT_CHANNELS, |probe| {
+                                                        probe.channels.min(u16::from(
+                                                            opentrack_core::routing::MAX_INPUT_CHANNELS,
+                                                        )) as u8
+                                                    });
+                                                dialog.mono_input_channel =
+                                                    dialog.mono_input_channel.clamp(1, available.max(1));
                                                 ui.vertical(|ui| {
                                                     egui::ComboBox::from_id_salt(
                                                         "add-mono-input-channel",
                                                     )
                                                     .width(78.0)
-                                                    .selected_text(if dialog.mono_input_right {
-                                                        "Right In"
-                                                    } else {
-                                                        "Left In"
-                                                    })
+                                                    .selected_text(
+                                                        opentrack_core::routing::InputRoute::MonoIn {
+                                                            channel: dialog.mono_input_channel,
+                                                        }
+                                                        .label(),
+                                                    )
                                                     .show_ui(ui, |ui| {
-                                                        ui.selectable_value(
-                                                            &mut dialog.mono_input_right,
-                                                            false,
-                                                            "Left In",
-                                                        );
-                                                        ui.selectable_value(
-                                                            &mut dialog.mono_input_right,
-                                                            true,
-                                                            "Right In",
-                                                        );
+                                                        for channel in 1..=available.max(1) {
+                                                            ui.selectable_value(
+                                                                &mut dialog.mono_input_channel,
+                                                                channel,
+                                                                opentrack_core::routing::InputRoute::MonoIn {
+                                                                    channel,
+                                                                }
+                                                                .label(),
+                                                            );
+                                                        }
                                                     });
                                                     ui.label(
                                                         egui::RichText::new("input channel")
@@ -11236,8 +11239,12 @@ impl OpenTrackApp {
                     .project
                     .insert_track_below_selection(dialog.kind, dialog.audio_channels);
                 if dialog.kind == TrackKind::Audio && dialog.audio_channels == 1 {
-                    self.data.project.tracks[index].input_routing =
-                        Some(mono_track_input_routing(dialog.mono_input_right).to_owned());
+                    self.data.project.tracks[index].input_routing = Some(
+                        opentrack_core::routing::InputRoute::MonoIn {
+                            channel: dialog.mono_input_channel,
+                        }
+                        .persisted(),
+                    );
                 }
                 last_track_id = self.data.project.tracks.get(index).map(|track| track.id);
             }
@@ -21074,6 +21081,124 @@ mod plugin_catalog_tests {
                 .expect("catalog round-trip");
         assert_eq!(restored_folders, folders);
         assert_eq!(restored_catalog, catalog);
+    }
+}
+
+#[cfg(test)]
+mod routing_model_tests {
+    use super::*;
+    use opentrack_core::routing::{InputRoute, OutputRoute};
+
+    #[test]
+    fn the_plan_never_treats_an_unplayable_route_as_the_stereo_master() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Group);
+        let group_id = project.tracks[1].id;
+        let tracks = project.tracks.clone();
+
+        // Default, speaker assignments and No Bus.
+        assert_eq!(
+            routing::playback_output_route(None, &tracks),
+            PlaybackOutputRoute::Stereo
+        );
+        for (route, expected) in [
+            (OutputRoute::StereoOut, PlaybackOutputRoute::Stereo),
+            (OutputRoute::Left, PlaybackOutputRoute::Left),
+            (OutputRoute::Right, PlaybackOutputRoute::Right),
+            (OutputRoute::NoBus, PlaybackOutputRoute::Disconnected),
+        ] {
+            assert_eq!(
+                routing::playback_output_route(Some(&route.persisted()), &tracks),
+                expected,
+                "{route:?}"
+            );
+        }
+        assert_eq!(
+            routing::playback_output_route(
+                Some(&OutputRoute::Group(group_id).persisted()),
+                &tracks
+            ),
+            PlaybackOutputRoute::Group(1)
+        );
+
+        // A route this build cannot resolve is silent, not a silent master sum.
+        assert_eq!(
+            routing::playback_output_route(Some("Surround 5.1"), &tracks),
+            PlaybackOutputRoute::Disconnected
+        );
+        assert_eq!(
+            routing::playback_output_route(Some("Group:999"), &tracks),
+            PlaybackOutputRoute::Disconnected,
+            "a group that no longer exists must not fall back to the master"
+        );
+    }
+
+    #[test]
+    fn the_live_monitor_follows_the_channels_the_capture_bus_provides() {
+        assert_eq!(
+            routing::playback_input_channel(None),
+            Some(opentrack_audio::PlaybackInputChannel::Stereo)
+        );
+        assert_eq!(
+            routing::playback_input_channel(Some(&InputRoute::MonoIn { channel: 1 }.persisted())),
+            Some(opentrack_audio::PlaybackInputChannel::Left)
+        );
+        assert_eq!(
+            routing::playback_input_channel(Some(&InputRoute::MonoIn { channel: 2 }.persisted())),
+            Some(opentrack_audio::PlaybackInputChannel::Right)
+        );
+        assert_eq!(
+            routing::playback_input_channel(Some(&InputRoute::NoBus.persisted())),
+            None
+        );
+        assert_eq!(
+            routing::playback_input_channel(Some("Input 3")),
+            None,
+            "a channel the stereo bus does not have gets no monitor tap"
+        );
+    }
+
+    #[test]
+    fn a_project_with_a_broken_route_reports_it_when_it_opens() {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-routing-{}-{}",
+            std::process::id(),
+            "broken"
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("project layout");
+        let project_file = root.join("Song.opr");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        let document = app.project_file().expect("document");
+        document.write(&project_file).expect("write project");
+        // A hand-edited or foreign file can name a destination this build does
+        // not have; opening it must say so instead of silently re-routing.
+        let bytes = std::fs::read_to_string(&project_file).expect("read project");
+        let marker = "\"output_routing\": \"Stereo Out\"";
+        assert!(bytes.contains(marker), "project stores the default route");
+        std::fs::write(
+            &project_file,
+            bytes.replacen(marker, "\"output_routing\": \"Surround 5.1\"", 1),
+        )
+        .expect("patch project");
+
+        app.load_project(project_file);
+        assert!(
+            app.status_message.contains("routing problem"),
+            "status was {}",
+            app.status_message
+        );
+        assert!(
+            app.status_message.contains("Surround 5.1"),
+            "the message names the route: {}",
+            app.status_message
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

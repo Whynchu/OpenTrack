@@ -3,6 +3,7 @@
 use super::routing::{group_route_would_cycle, has_active_sends};
 use super::*;
 use opentrack_core::project::ChannelEqualizer;
+use opentrack_core::routing::{InputRoute, MAX_INPUT_CHANNELS};
 
 const HEADER: f32 = 20.0;
 
@@ -2442,41 +2443,31 @@ fn strip(
         let label = if is_bus {
             if track.id == opentrack_core::project::INPUT_BUS_ID {
                 if input {
-                    "Device Input 1/2"
+                    "Device Input 1/2".to_owned()
                 } else {
-                    "To Tracks"
+                    "To Tracks".to_owned()
                 }
             } else if input {
-                "From Tracks"
+                "From Tracks".to_owned()
             } else {
-                "Device Output 1/2"
+                "Device Output 1/2".to_owned()
             }
         } else if input {
-            track
-                .input_routing
-                .as_deref()
-                .unwrap_or(if track.audio_channels == 1 {
-                    "Left - Stereo In"
-                } else {
-                    "Stereo In"
-                })
+            routing::input_route(track).label()
         } else {
-            track.output_routing.as_deref().unwrap_or("Stereo Out")
+            routing::output_route(track).label()
         };
         let group_route_label = if input || is_bus {
             None
         } else {
-            label
-                .strip_prefix("Group:")
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|group_id| {
-                    group_options
-                        .iter()
-                        .find(|(candidate_id, _)| *candidate_id == group_id)
-                        .map(|(_, name)| format!("Group: {name}"))
-                })
+            routing::output_route(track).group().and_then(|group_id| {
+                group_options
+                    .iter()
+                    .find(|(candidate_id, _)| *candidate_id == group_id)
+                    .map(|(_, name)| format!("Group: {name}"))
+            })
         };
-        let label = group_route_label.as_deref().unwrap_or(label);
+        let label = group_route_label.as_deref().unwrap_or(&label);
         text(
             ui,
             field.shrink2(Vec2::new(2.0, 0.0)),
@@ -2492,40 +2483,38 @@ fn strip(
                 "Output Routing (all selected with Shift + ALT + click)"
             });
         context(&response, state);
-        let mut selected = None;
+        let mut selected: Option<String> = None;
         if !is_bus {
             menu(&response, 170.0, |ui| {
-                if ui.button("No Bus").clicked() {
-                    selected = Some("No Bus".to_owned());
-                    ui.close();
-                }
                 if input {
-                    for label in ["Stereo In", "Left - Stereo In", "Right - Stereo In"] {
+                    // The menu offers exactly the channels the capture bus
+                    // provides, so a route it shows can always be recorded.
+                    for route in opentrack_core::routing::input_destinations(MAX_INPUT_CHANNELS) {
+                        // A stereo track has two channels to feed from one bus
+                        // pair; a mono track cannot take both at once.
+                        let enabled = route != InputRoute::StereoIn || track.audio_channels != 1;
                         if ui
-                            .add_enabled(
-                                label != "Stereo In" || track.audio_channels != 1,
-                                egui::Button::new(label),
-                            )
+                            .add_enabled(enabled, egui::Button::new(route.label()))
                             .clicked()
                         {
-                            selected = Some(label.to_owned());
+                            selected = Some(route.persisted());
                             ui.close();
                         }
                     }
                 } else {
-                    for label in ["Stereo Out", "Left", "Right"] {
-                        if ui.button(label).clicked() {
-                            selected = Some(label.to_owned());
+                    for route in opentrack_core::routing::output_destinations(&group_options) {
+                        let text = match route.group().and_then(|group_id| {
+                            group_options
+                                .iter()
+                                .find(|(candidate_id, _)| *candidate_id == group_id)
+                                .map(|(_, name)| format!("Group: {name}"))
+                        }) {
+                            Some(name) => name,
+                            None => route.label(),
+                        };
+                        if ui.button(text).clicked() {
+                            selected = Some(route.persisted());
                             ui.close();
-                        }
-                    }
-                    if !group_options.is_empty() {
-                        ui.separator();
-                        for (group_id, group_name) in group_options {
-                            if ui.button(format!("Group: {group_name}")).clicked() {
-                                selected = Some(format!("Group:{group_id}"));
-                                ui.close();
-                            }
                         }
                     }
                 }

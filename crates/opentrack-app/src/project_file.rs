@@ -385,6 +385,12 @@ impl ProjectFile {
 
     pub(crate) fn write(&self, path: &Path) -> Result<(), ProjectFileError> {
         self.validate()?;
+        // A save must not store a destination playback cannot honor. Reading is
+        // deliberately more permissive so a project that already contains one
+        // still opens, is reported, and can be re-routed in Channel Settings.
+        self.project
+            .validate_routing()
+            .map_err(|error| ProjectFileError::InvalidData(format!("routing: {error}")))?;
         // The live dock state is stored as data, not as a view-state string, so
         // normalize it here as well: an unlaid-out dock still holds `+/-infinity`
         // surface rectangles that JSON cannot represent.

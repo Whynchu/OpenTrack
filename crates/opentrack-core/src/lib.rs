@@ -8,4 +8,5 @@ pub mod cpr;
 pub mod midi_file;
 pub mod pitch_time;
 pub mod project;
+pub mod routing;
 pub mod workspaces;
