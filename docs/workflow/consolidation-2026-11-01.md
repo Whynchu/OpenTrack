@@ -52,10 +52,11 @@ written to match the delivered behavior.
 Measured in `app.rs`:
 
 - 68 distinct menu commands are wired through `menu_command`.
-- 165 distinct entries are still shown disabled, across 8 `disabled_menu_commands`
+- 162 distinct entries are still shown disabled, across 8 `disabled_menu_commands`
   lists (176 when this report was written; Lock/Unlock, Group/Ungroup, Repeat,
-  Fill Loop, Crop, Invert, Events under Cursor and Move to Locator were implemented
-  afterwards). They are honest placeholders: each is visible but inert.
+  Fill Loop, Crop, Invert, Events under Cursor, Move to Locator, Convert to Real
+  Copy, Auto Select Events under Cursor and Enlarge Selected Track were
+  implemented afterwards). They are honest placeholders: each is visible but inert.
 - 52 command ids have a dispatch arm in `dispatch_reference_command`; the
   reference keymap has 152 ids, so 100 shortcut ids still report
   "Not implemented yet" when pressed.

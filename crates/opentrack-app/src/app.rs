@@ -1083,6 +1083,8 @@ pub struct OpenTrackApp {
     vst3_plugin_catalog: Vec<PluginDescriptor>,
     /// Modules the scanner refuses to load until the user retries them.
     vst3_quarantine: Vec<opentrack_plugins::QuarantineEntry>,
+    /// Select the events under the cursor whenever the transport position moves.
+    auto_select_events_under_cursor: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2353,6 +2355,10 @@ impl OpenTrackApp {
                 });
                 opentrack_plugins::normalize_quarantine(stored.unwrap_or_default())
             },
+            auto_select_events_under_cursor: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "auto-select-events-v1"))
+                .unwrap_or(false),
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -6225,6 +6231,19 @@ impl OpenTrackApp {
             "edit.duplicate" => self.duplicate_selected_audio_events(),
             "edit.lock" => self.set_selected_audio_events_locked(true),
             "edit.unlock" => self.set_selected_audio_events_locked(false),
+            "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
+            "edit.enlarge_selected_track" => self.toggle_zoom_tracks_exclusive(),
+            "edit.auto_select_events_under_cursor" => {
+                self.auto_select_events_under_cursor = !self.auto_select_events_under_cursor;
+                if self.auto_select_events_under_cursor {
+                    self.apply_auto_select_under_cursor();
+                }
+                self.status_message = if self.auto_select_events_under_cursor {
+                    "Auto Select Events under Cursor is on".to_owned()
+                } else {
+                    "Auto Select Events under Cursor is off".to_owned()
+                };
+            }
             "edit.group" => self.group_selected_audio_events(),
             "edit.ungroup" => self.ungroup_selected_audio_events(),
             "edit.repeat" => self.repeat_dialog = Some(RepeatDialog { count: 2 }),
@@ -8256,6 +8275,21 @@ impl OpenTrackApp {
     }
 
     fn advance_transport(&mut self, ctx: &egui::Context) {
+        let position_before = self.data.transport.position_beats;
+        let was_playing = self.data.transport.playing;
+        self.advance_transport_inner(ctx);
+        // Auto Select Events under Cursor follows a seek the user made, never
+        // playback: stealing the selection every frame while playing would make
+        // editing impossible.
+        if !was_playing
+            && !self.data.transport.playing
+            && (self.data.transport.position_beats - position_before).abs() > 1e-9
+        {
+            self.apply_auto_select_under_cursor();
+        }
+    }
+
+    fn advance_transport_inner(&mut self, ctx: &egui::Context) {
         if self
             .audio_engine
             .as_ref()
@@ -8672,15 +8706,59 @@ impl OpenTrackApp {
                         self.set_selected_audio_events_locked(false);
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Convert to Real Copy",
+                        "",
+                        can_duplicate && self.project_folder_managed,
+                    )
+                    .clicked()
+                    {
+                        self.convert_selected_events_to_real_copy();
+                        ui.close();
+                    }
+                    if checked_menu_command(
+                        ui,
+                        "Auto Select Events under Cursor",
+                        "",
+                        self.auto_select_events_under_cursor,
+                        self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.auto_select_events_under_cursor =
+                            !self.auto_select_events_under_cursor;
+                        if self.auto_select_events_under_cursor {
+                            self.apply_auto_select_under_cursor();
+                        }
+                        ui.close();
+                    }
+                    let enlarged = self
+                        .data
+                        .project
+                        .selected_track
+                        .and_then(|index| self.data.project.tracks.get(index as usize))
+                        .is_some_and(|track| {
+                            self.arrange_view_state.exclusive_track_ids == vec![track.id]
+                        });
+                    if checked_menu_command(
+                        ui,
+                        "Enlarge Selected Track",
+                        "",
+                        enlarged,
+                        self.data.project.selected_track.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.toggle_zoom_tracks_exclusive();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Convert to Real Copy", ""),
                             ("Project Logical Editor...", ""),
                             ("Process Project Logical Editor", ""),
                             ("Automation follows Events", ""),
-                            ("Auto Select Events under Cursor", ""),
-                            ("Enlarge Selected Track", ""),
                         ],
                     );
                     ui.menu_button("Zoom", |ui| {
@@ -12463,6 +12541,11 @@ impl eframe::App for OpenTrackApp {
         eframe::set_value(storage, "vst3-plugin-folders-v1", &self.vst3_plugin_folders);
         eframe::set_value(storage, "vst3-plugin-catalog-v1", &self.vst3_plugin_catalog);
         eframe::set_value(storage, "vst3-quarantine-v1", &self.vst3_quarantine);
+        eframe::set_value(
+            storage,
+            "auto-select-events-v1",
+            &self.auto_select_events_under_cursor,
+        );
     }
 }
 

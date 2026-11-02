@@ -81,6 +81,13 @@ pub(crate) struct State {
 ///
 /// A grouped event behaves as one object, so clicking any member selects the
 /// whole group and every gesture that follows has the same target.
+/// Where a real copy of `source` should live, or `None` when it is already the
+/// project's own media.
+fn audio_copy_destination(source: &Path, project_root: &Path) -> Result<Option<PathBuf>, String> {
+    let (destination, copied) = super::audio_import_destination(source, project_root)?;
+    Ok(copied.then_some(destination))
+}
+
 fn select_event_including_group(project: &Project, state: &mut State, clip_id: u64) {
     let members = project.expand_selection_to_groups(&[clip_id]);
     if members.len() > 1 {
@@ -514,6 +521,163 @@ impl OpenTrackApp {
         self.mark_modified();
         self.status_message =
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
+    }
+
+    /// Copies the selected events' media into the project's own import folder.
+    ///
+    /// The event keeps every edit but stops depending on a shared source file, so
+    /// editing or removing that source elsewhere cannot change this project.
+    pub(super) fn convert_selected_events_to_real_copy(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before converting audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to convert".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message =
+                "Choose or create this project's folder before converting audio events".to_owned();
+            return;
+        }
+        let Some(project_root) = self
+            .project_path
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+        else {
+            self.status_message =
+                "Save this project into its folder before converting audio events".to_owned();
+            return;
+        };
+
+        let mut candidate = self.data.project.clone();
+        let mut copied = Vec::new();
+        let mut sources = Vec::new();
+        let mut already_local = 0;
+        let mut skipped_pitch = 0;
+        let mut issues = Vec::new();
+        for track in candidate
+            .tracks
+            .iter_mut()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            for clip in track.clips.iter_mut() {
+                if !ids.contains(&clip.id) {
+                    continue;
+                }
+                if clip.pitch_time.is_some() {
+                    // Pitch & Time analysis is keyed to the source bytes and
+                    // modification time, so a copy would invalidate it.
+                    skipped_pitch += 1;
+                    continue;
+                }
+                match audio_copy_destination(&clip.source_path, &project_root) {
+                    Ok(None) => already_local += 1,
+                    Ok(Some(destination)) => match fs::copy(&clip.source_path, &destination) {
+                        Ok(_) => {
+                            copied.push((clip.source_path.clone(), destination.clone()));
+                            clip.source_path = destination.clone();
+                            sources.push(destination);
+                        }
+                        Err(error) => issues.push(format!(
+                            "could not copy {}: {error}",
+                            clip.source_path.display()
+                        )),
+                    },
+                    Err(error) => issues.push(error),
+                }
+            }
+        }
+
+        if copied.is_empty() {
+            let mut status = if already_local > 0 {
+                "Those audio events already use this project's own media".to_owned()
+            } else {
+                "No audio event could be converted".to_owned()
+            };
+            if skipped_pitch > 0 {
+                status.push_str(&format!(
+                    "; {skipped_pitch} event(s) with Pitch & Time edits are left unchanged because a copy would invalidate the analysis"
+                ));
+            }
+            if !issues.is_empty() {
+                status.push_str("; ");
+                status.push_str(&issues.join(" · "));
+            }
+            self.status_message = status;
+            return;
+        }
+
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            // The copies are on disk already; the event still points at its
+            // original source, so the project is unchanged and consistent.
+            for (_, destination) in &copied {
+                let _ = fs::remove_file(destination);
+            }
+            self.status_message = "Cannot convert: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        for path in sources {
+            if let Ok(source) = AudioSource::open(&path) {
+                self.data.audio_sources.insert(path, source);
+            } else {
+                issues.push(format!("{} could not be opened", path.display()));
+            }
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Converted {} audio event(s) to copies in Audio/Imports",
+            copied.len()
+        );
+        if already_local > 0 {
+            status.push_str(&format!("; {already_local} already used project media"));
+        }
+        if skipped_pitch > 0 {
+            status.push_str(&format!(
+                "; {skipped_pitch} event(s) with Pitch & Time edits were left unchanged"
+            ));
+        }
+        if !issues.is_empty() {
+            status.push_str("; ");
+            status.push_str(&issues.join(" · "));
+        }
+        self.status_message = status;
+    }
+
+    /// Selects the events under the cursor when the preference asks for it.
+    pub(super) fn apply_auto_select_under_cursor(&mut self) {
+        if !self.auto_select_events_under_cursor {
+            return;
+        }
+        let beat = self.data.transport.position_beats;
+        let tempo = self.data.project.tempo_bpm;
+        let ids = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio && !track.muted)
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| {
+                let end = clip.start_beats + clip.duration_seconds * tempo / 60.0;
+                clip.start_beats <= beat && beat < end
+            })
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        self.arrange_view_state
+            .audio_events
+            .select_many(self.data.project.expand_selection_to_groups(&ids));
     }
 
     /// Locks or unlocks the selected events as one undo step.
@@ -3753,6 +3917,200 @@ mod split_selection_tests {
         assert_eq!(
             app.data.project.tracks[0].clips, before.tracks[0].clips,
             "no event was trimmed"
+        );
+    }
+
+    /// A minimal readable WAV so a copied event can be opened like a real take.
+    fn write_wav(path: &Path, frames: usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + (frames * 8) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 8).to_le_bytes());
+        bytes.extend_from_slice(&8_u16.to_le_bytes());
+        bytes.extend_from_slice(&32_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&((frames * 8) as u32).to_le_bytes());
+        for index in 0..frames {
+            let value = (index as f32) / 48_000.0;
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&(-value).to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("write wav");
+    }
+
+    #[test]
+    fn converting_to_a_real_copy_moves_the_event_onto_project_media() {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-real-copy-{}-{}",
+            std::process::id(),
+            "app"
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Audio").join("Recordings")).expect("folders");
+        std::fs::create_dir_all(root.join("Audio").join("Imports")).expect("imports");
+        std::fs::create_dir_all(root.join("Metadata")).expect("metadata");
+        // The shared source lives outside the project, which is the case a real
+        // copy is for.
+        let outside = root.with_file_name(format!("{}-shared", "opentrack-real-copy-src"));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("shared folder");
+        let shared = outside.join("shared-take.wav");
+        write_wav(&shared, 480);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, shared.clone(), 0.0, 1.0)
+            .unwrap();
+        app.project_history.clear();
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.convert_selected_events_to_real_copy();
+
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, shared, "the event left the shared source");
+        assert_eq!(
+            clip.source_path.parent(),
+            Some(root.join("Audio").join("Imports").as_path())
+        );
+        assert!(clip.source_path.exists(), "the copy exists on disk");
+        assert!(
+            app.data.audio_sources.contains_key(&clip.source_path),
+            "the copy is ready to play"
+        );
+        assert!(app.status_message.contains("Audio/Imports"));
+
+        // Converting again is a no-op because the media already belongs to the
+        // project.
+        app.convert_selected_events_to_real_copy();
+        assert!(
+            app.status_message
+                .contains("already use this project's own media")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn converting_leaves_pitch_and_time_events_alone() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-real-copy-{}-pitch", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Audio").join("Imports")).expect("imports");
+        std::fs::create_dir_all(root.join("Metadata")).expect("metadata");
+        let outside = root.with_file_name("opentrack-real-copy-src-pitch");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("shared folder");
+        let shared = outside.join("pitched.wav");
+        write_wav(&shared, 480);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, shared.clone(), 0.0, 1.0)
+            .unwrap();
+        app.data.project.tracks[0].clips[0].pitch_time =
+            Some(opentrack_core::pitch_time::PitchTimeEdit {
+                detector_version: opentrack_core::pitch_time::DETECTOR_VERSION,
+                source_bytes: 0,
+                source_modified_ns: 0,
+                analysis: opentrack_audio::PitchAnalysis {
+                    sample_rate_hz: 16_000,
+                    source_start_seconds: 0.0,
+                    source_duration_seconds: 1.0,
+                    points: Vec::new(),
+                },
+                notes: Vec::new(),
+                rendered_source: None,
+                enabled: true,
+            });
+        let id = app.data.project.tracks[0].clips[0].id;
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.convert_selected_events_to_real_copy();
+
+        assert_eq!(
+            app.data.project.tracks[0].clips[0].source_path, shared,
+            "a pitch-edited event keeps its analysed source"
+        );
+        assert!(
+            app.status_message.contains("Pitch & Time"),
+            "the reason is explained: {}",
+            app.status_message
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn auto_select_under_cursor_follows_the_preference() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 8.0, 2.0)
+            .unwrap();
+
+        // Off by default: seeking selects nothing.
+        app.data.transport.position_beats = 9.0;
+        app.apply_auto_select_under_cursor();
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+        );
+
+        // On: the event under the cursor becomes the selection.
+        app.auto_select_events_under_cursor = true;
+        app.apply_auto_select_under_cursor();
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            vec![second]
+        );
+
+        // Moving the cursor follows; a position in a gap clears the selection.
+        app.data.transport.position_beats = 1.0;
+        app.apply_auto_select_under_cursor();
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            vec![first]
+        );
+        app.data.transport.position_beats = 6.0;
+        app.apply_auto_select_under_cursor();
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty(),
+            "nothing is under the cursor between the events"
         );
     }
 
