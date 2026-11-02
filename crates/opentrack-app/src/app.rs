@@ -8856,17 +8856,33 @@ impl OpenTrackApp {
                 ));
                 continue;
             };
-            if self
-                .data
-                .project
-                .add_audio_clip(
+            // A recording that crossed the loop boundaries becomes one clip per
+            // pass, so the passes stack as take lanes instead of one long event.
+            let loop_takes = self.data.transport.cycle.then(|| {
+                self.data.project.add_loop_take_clips(
                     track_index,
                     summary.path.clone(),
                     start_beats,
                     source.duration_seconds(),
+                    self.data.project.loop_start_beats,
+                    self.data.project.loop_end_beats,
                 )
-                .is_none()
-            {
+            });
+            let placed = match loop_takes.flatten() {
+                Some(takes) => takes.len(),
+                None => usize::from(
+                    self.data
+                        .project
+                        .add_audio_clip(
+                            track_index,
+                            summary.path.clone(),
+                            start_beats,
+                            source.duration_seconds(),
+                        )
+                        .is_some(),
+                ),
+            };
+            if placed == 0 {
                 issues.push(format!(
                     "{} was saved but could not be placed on its track",
                     summary.path.display()
@@ -8917,6 +8933,9 @@ impl OpenTrackApp {
             recorded_names.len(),
             recorded_names.join(", ")
         );
+        if self.data.transport.cycle {
+            status.push_str("; each loop pass is its own take lane and the last pass plays");
+        }
         if dropped_frames > 0 {
             status.push_str(&format!(
                 "; {dropped_frames} input frames dropped because the writer could not keep up"
@@ -10232,6 +10251,13 @@ impl OpenTrackApp {
                     let can_glue = self.project_open
                         && !self.is_recording()
                         && self.arrange_view_state.audio_events.selected_ids().len() >= 2;
+                    let can_activate_take = self.project_open
+                        && !self.is_recording()
+                        && self.arrange_view_state.audio_events.selected_ids().len() == 1;
+                    if menu_command(ui, "Make Take Active", "", can_activate_take).clicked() {
+                        self.make_selected_event_active_take();
+                        ui.close();
+                    }
                     if menu_command(ui, "Glue", "", can_glue).clicked() {
                         self.glue_selected_audio_events();
                         ui.close();

@@ -173,8 +173,13 @@ Still open from revision 1:
    snapshot carries the mode and forces Off on device bus strips. A project saved
    with the old `monitor` flag loads as On, so no one loses monitoring on upgrade.
    3 app and 1 core test.
-20. **Loop recording takes.** Repeated cycle passes create take lanes instead of
-    overlapping events, with a way to pick the active take.
+20. **Loop recording takes.** *Delivered.* A recording made with Cycle active is
+   split into one clip per pass (`Project::add_loop_take_clips`): each pass starts
+   at the loop start and reads further into the recorded file, all passes share a
+   `take_group`, and only the newest is `take_active`. Inactive takes are kept,
+   drawn dimmed with a `T`, and excluded from playback by `clip_is_audible`. Edit >
+   Make Take Active switches which pass plays as one undo step. 3 core and 2 app
+   tests. A device run of a real multi-pass take remains.
 21. **Metronome configuration** (accent pattern, level, count-in) persisted and
     applied by the engine.
 

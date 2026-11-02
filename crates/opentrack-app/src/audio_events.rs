@@ -278,9 +278,9 @@ fn move_selected_clips_to_cursor(
     }
 }
 
-/// A muted event keeps its place in the project but never reaches playback.
+/// A muted event, or a take that is not the active one, never reaches playback.
 pub(super) fn clip_is_audible(clip: &AudioClip) -> bool {
-    !clip.muted
+    !clip.muted && clip.take_active
 }
 
 impl OpenTrackApp {
@@ -533,6 +533,43 @@ impl OpenTrackApp {
         self.mark_modified();
         self.status_message =
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
+    }
+
+    /// Makes the selected event the active take of its loop-recording group.
+    pub(super) fn make_selected_event_active_take(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before choosing a take".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        let Some(clip_id) = ids.first().copied() else {
+            self.status_message = "Select one recorded take to make active".to_owned();
+            return;
+        };
+        if ids.len() > 1 {
+            self.status_message = "Select one take at a time to make it active".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        if !candidate.set_active_take(clip_id) {
+            self.status_message =
+                "The selected event is not one of several takes in a loop recording".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot switch takes: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Select Take");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "That take now plays; the others are kept but silent".to_owned();
     }
 
     /// Joins contiguous pieces of one source into a single event.
@@ -2067,7 +2104,7 @@ fn paint(
     // A muted event stays readable but clearly inactive, matching its silence.
     let alpha = if ghost {
         0.28
-    } else if c.muted {
+    } else if c.muted || !c.take_active {
         0.45
     } else {
         1.0
@@ -2119,6 +2156,8 @@ fn paint(
             Some("L")
         } else if c.muted {
             Some("M")
+        } else if !c.take_active {
+            Some("T")
         } else {
             None
         };
@@ -4813,6 +4852,79 @@ mod split_selection_tests {
                 .is_empty(),
             "nothing is under the cursor between the events"
         );
+    }
+
+    #[test]
+    fn only_the_active_loop_take_reaches_playback() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.set_loop_range(0.0, 8.0);
+        let created = project
+            .add_loop_take_clips(0, PathBuf::from("take.wav"), 0.0, 12.0, 0.0, 8.0)
+            .expect("three passes");
+        assert_eq!(created.len(), 3);
+
+        let audible = project.tracks[0]
+            .clips
+            .iter()
+            .filter(|clip| clip_is_audible(clip))
+            .count();
+        assert_eq!(audible, 1, "one take plays, the other two are kept");
+        // Trying another take moves playback without deleting audio.
+        assert!(project.set_active_take(created[0]));
+        assert_eq!(
+            project.tracks[0]
+                .clips
+                .iter()
+                .filter(|clip| clip_is_audible(clip))
+                .count(),
+            1
+        );
+        assert!(project.tracks[0].clips[0].take_active);
+        assert_eq!(project.tracks[0].clips.len(), 3);
+    }
+
+    #[test]
+    fn the_take_command_is_one_labelled_undo_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.set_loop_range(0.0, 8.0);
+        let created = app
+            .data
+            .project
+            .add_loop_take_clips(0, PathBuf::from("take.wav"), 0.0, 12.0, 0.0, 8.0)
+            .expect("passes");
+        app.project_history.clear();
+
+        app.arrange_view_state
+            .audio_events
+            .select_many([created[0]]);
+        app.make_selected_event_active_take();
+        assert!(app.status_message.contains("now plays"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Select Take");
+        assert!(app.data.project.tracks[0].clips[0].take_active);
+
+        // A plain event that is not part of a loop recording is refused.
+        let plain = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("plain.wav"), 20.0, 1.0)
+            .unwrap();
+        app.arrange_view_state.audio_events.select_many([plain]);
+        app.make_selected_event_active_take();
+        assert!(app.status_message.contains("not one of several takes"));
+
+        // Several selected events are refused too.
+        app.arrange_view_state
+            .audio_events
+            .select_many([created[0], created[1]]);
+        app.make_selected_event_active_take();
+        assert!(app.status_message.contains("one take at a time"));
     }
 
     #[test]

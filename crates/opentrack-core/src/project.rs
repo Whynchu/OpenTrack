@@ -843,6 +843,16 @@ pub struct AudioClip {
     /// Events sharing a group id move together, like one object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u64>,
+    /// Loop-recording passes that belong together, one clip per pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take_group: Option<u64>,
+    /// False for a take that is kept but not played; one take per group is active.
+    #[serde(default = "default_take_active")]
+    pub take_active: bool,
+}
+
+fn default_take_active() -> bool {
+    true
 }
 
 /// A MIDI event container arranged on the project beat timeline.
@@ -928,6 +938,9 @@ pub struct Project {
     pub loop_end_beats: f64,
     #[serde(default)]
     pub cycle_mode: CycleMode,
+    /// Next loop-recording take group id.
+    #[serde(default = "first_marker_id")]
+    pub next_take_group: u64,
     /// Timeline markers, ordered by beat. Older projects have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
@@ -1037,6 +1050,7 @@ impl Default for Project {
             cycle_mode: CycleMode::Loop,
             markers: Vec::new(),
             next_marker_id: first_marker_id(),
+            next_take_group: 1,
         }
     }
 }
@@ -2450,6 +2464,106 @@ impl Project {
         Some(keeper.id)
     }
 
+    /// Splits one continuous loop recording into one clip per cycle pass.
+    ///
+    /// The recorder writes one file for the whole take, so each pass is a clip
+    /// whose source offset points at that pass's audio and whose timeline start is
+    /// the loop start again. The last pass is left active, which is what a user
+    /// expects after recording several loops.
+    ///
+    /// Returns `None` when the take did not cross a loop boundary, so the caller
+    /// keeps the ordinary single-clip behavior.
+    pub fn add_loop_take_clips(
+        &mut self,
+        track_index: usize,
+        source_path: PathBuf,
+        start_beats: f64,
+        duration_seconds: f64,
+        loop_start_beats: f64,
+        loop_end_beats: f64,
+    ) -> Option<Vec<u64>> {
+        let pass_length = loop_end_beats - loop_start_beats;
+        if !pass_length.is_finite() || pass_length <= 1e-6 || self.next_take_group == u64::MAX {
+            return None;
+        }
+        let beats_to_seconds = 60.0 / self.tempo_bpm.max(1.0);
+        let take_end = start_beats + duration_seconds / beats_to_seconds;
+        // Nothing to split when the take never reached the next pass.
+        if take_end <= loop_end_beats + 1e-6 || start_beats >= loop_end_beats - 1e-6 {
+            return None;
+        }
+        let mut segments = Vec::new();
+        let mut source_offset = 0.0;
+        let mut remaining = duration_seconds;
+        // Pass one starts where the recording started and runs to the loop end.
+        let first_beats = (loop_end_beats - start_beats).max(0.0);
+        let mut segment_beats = first_beats.min(remaining / beats_to_seconds);
+        loop {
+            if segment_beats <= 1e-6 || remaining <= 1e-6 {
+                break;
+            }
+            let segment_seconds = (segment_beats * beats_to_seconds).min(remaining);
+            segments.push((source_offset, segment_seconds));
+            source_offset += segment_seconds;
+            remaining -= segment_seconds;
+            segment_beats = pass_length;
+        }
+        if segments.len() < 2 {
+            return None;
+        }
+        let group = self.next_take_group;
+        self.next_take_group += 1;
+        let last = segments.len() - 1;
+        let mut created = Vec::with_capacity(segments.len());
+        for (index, (offset, seconds)) in segments.iter().enumerate() {
+            let start = if index == 0 {
+                start_beats
+            } else {
+                loop_start_beats
+            };
+            let id = self.add_audio_clip(track_index, source_path.clone(), start, *seconds)?;
+            let track = self.tracks.get_mut(track_index)?;
+            let clip = track.clips.iter_mut().find(|clip| clip.id == id)?;
+            clip.source_offset_seconds = *offset;
+            clip.take_group = Some(group);
+            clip.take_active = index == last;
+            created.push(id);
+        }
+        if self.validate().is_err() {
+            return None;
+        }
+        Some(created)
+    }
+
+    /// Makes one take of a loop group active and reports whether it changed.
+    pub fn set_active_take(&mut self, clip_id: u64) -> bool {
+        let group = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == clip_id)
+            .and_then(|clip| clip.take_group);
+        let Some(group) = group else {
+            return false;
+        };
+        let mut changed = false;
+        for clip in self
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.clips.iter_mut())
+        {
+            if clip.take_group != Some(group) {
+                continue;
+            }
+            let active = clip.id == clip_id;
+            if clip.take_active != active {
+                clip.take_active = active;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Locks or unlocks the given events and reports how many changed.
     ///
     /// A locked event keeps its audio and its place but refuses move, trim,
@@ -3044,6 +3158,8 @@ impl Project {
             muted: false,
             locked: false,
             group: None,
+            take_group: None,
+            take_active: true,
         });
         Some(id)
     }
@@ -5163,6 +5279,96 @@ mod sample_edit_tests {
         // An empty mapping is a no-op.
         assert_eq!(project.relink_media(&BTreeMap::new()), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loop_recording_creates_one_take_per_pass_with_the_last_active() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.set_loop_range(0.0, 8.0);
+        // 2 s at 120 BPM is 4 beats. Recording from beat 0 for 12 s covers three
+        // passes of the 4-beat loop.
+        let created = project
+            .add_loop_take_clips(0, PathBuf::from("take.wav"), 0.0, 12.0, 0.0, 8.0)
+            .expect("three passes");
+
+        assert_eq!(created.len(), 3, "one clip per loop pass");
+        let clips = &project.tracks[0].clips;
+        assert!(clips.iter().all(|clip| clip.take_group == Some(1)));
+        assert_eq!(clips.iter().filter(|clip| clip.take_active).count(), 1);
+        assert!(
+            clips.last().is_some_and(|clip| clip.take_active),
+            "the newest pass is the active take"
+        );
+        // Every pass starts at the loop start, and each one reads further into
+        // the recorded file.
+        let offsets = clips
+            .iter()
+            .map(|clip| (clip.start_beats, clip.source_offset_seconds))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets[0], (0.0, 0.0));
+        assert_eq!(offsets[1].0, 0.0);
+        assert!((offsets[1].1 - 4.0).abs() < 1e-9);
+        assert!((offsets[2].1 - 8.0).abs() < 1e-9);
+        assert!(project.validate().is_ok());
+
+        // Picking another take moves the active flag within the group.
+        assert!(project.set_active_take(created[0]));
+        let clips = &project.tracks[0].clips;
+        assert_eq!(clips.iter().filter(|clip| clip.take_active).count(), 1);
+        assert!(clips[0].take_active);
+        assert!(!project.set_active_take(created[0]), "already active");
+    }
+
+    #[test]
+    fn a_take_that_never_crosses_the_loop_boundary_stays_a_single_clip() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.set_loop_range(0.0, 8.0);
+        // 1.5 s is 3 beats: still inside the first pass.
+        assert!(
+            project
+                .add_loop_take_clips(0, PathBuf::from("take.wav"), 0.0, 1.5, 0.0, 8.0)
+                .is_none()
+        );
+        // An empty loop cannot be split either.
+        assert!(
+            project
+                .add_loop_take_clips(0, PathBuf::from("take.wav"), 0.0, 12.0, 4.0, 4.0)
+                .is_none()
+        );
+        // A recording that starts after the loop end is not a loop take.
+        assert!(
+            project
+                .add_loop_take_clips(0, PathBuf::from("take.wav"), 9.0, 12.0, 0.0, 8.0)
+                .is_none()
+        );
+        assert!(project.tracks[0].clips.is_empty());
+    }
+
+    #[test]
+    fn take_fields_round_trip_and_older_projects_read_as_active() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        project.tracks[0].clips[0].take_group = Some(4);
+        project.tracks[0].clips[0].take_active = false;
+        let encoded = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.tracks[0].clips[0].take_group, Some(4));
+        assert!(!restored.tracks[0].clips[0].take_active);
+
+        // A clip written before takes existed is an active, ungrouped take.
+        let legacy = encoded
+            .replace(",\"take_active\":false", "")
+            .replace(",\"take_group\":4", "");
+        let legacy: Project = serde_json::from_str(&legacy).unwrap();
+        assert!(legacy.tracks[0].clips[0].take_active);
+        assert_eq!(legacy.tracks[0].clips[0].take_group, None);
     }
 
     #[test]
