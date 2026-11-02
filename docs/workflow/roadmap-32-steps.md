@@ -79,7 +79,7 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 23. **Improve recording reliability.** Recover incomplete takes with clear collision and restore/discard decisions; validate timing and persistence against real devices.
 24. **Harden current plug-in workflows.** Audit VST3 scan/load/state/editor behavior and improve failure isolation based on evidence; document limits. New formats require a demonstrated user need.
 25. **Complete a high-value edit family.** Use the command audit to implement split, duplicate, mute or range actions with shared selection, undo/redo and persistence.
-26. **Complete Add Track choices.** Count, mono/stereo, and mono Left/Right input channel are source-connected; unavailable speaker layouts, instrument selection, and preset browsing are labeled. Instrument catalog selection and runtime review remain open.
+26. **Complete Add Track choices.** Count is bounded by remaining project capacity; mono/stereo and mono Left/Right input channel are source-connected. Unavailable speaker layouts, instrument selection, and preset browsing are labeled. Instrument catalog selection and runtime review remain open.
 27. **Unify command execution.** Connect menu, shortcut and editor entry points for a bounded command family to one operation; retain stable shortcut IDs.
 28. **Build regression around shared identity.** Verify Project, Mixer, Inspector and editors agree on track/event selection for touched workflows.
 29. **Complete recording resilience follow-up.** Close remaining abnormal-exit recovery defects from real-device review and verify restore/discard decisions.

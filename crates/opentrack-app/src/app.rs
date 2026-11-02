@@ -10557,7 +10557,7 @@ impl OpenTrackApp {
             response.as_ref(),
         );
         if accepted && open {
-            let count = dialog.count.clamp(1, 64);
+            let count = dialog.count.clamp(1, max_track_count as u32);
             let mut last_track_id = None;
             for _ in 0..count {
                 let index = self
