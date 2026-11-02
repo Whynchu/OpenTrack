@@ -1,6 +1,6 @@
 //! The application's native, version-independent project domain model.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -2350,6 +2350,41 @@ impl Project {
             }
         }
         changed
+    }
+
+    /// Sources the project references that are not on disk.
+    ///
+    /// Sorted and de-duplicated, so a caller can present and relink them once.
+    pub fn missing_media(&self) -> Vec<PathBuf> {
+        self.media_paths()
+            .into_iter()
+            .filter(|path| !path.as_os_str().is_empty() && !path.exists())
+            .collect()
+    }
+
+    /// Points every reference from `from` to `to`, returning how many events moved.
+    ///
+    /// The media pool follows the same mapping, so a relinked project has no
+    /// dangling entry left behind.
+    pub fn relink_media(&mut self, mapping: &BTreeMap<PathBuf, PathBuf>) -> usize {
+        if mapping.is_empty() {
+            return 0;
+        }
+        let mut relinked = 0;
+        for track in self.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if let Some(replacement) = mapping.get(&clip.source_path) {
+                    clip.source_path = replacement.clone();
+                    relinked += 1;
+                }
+            }
+        }
+        self.media_pool = self
+            .media_pool
+            .iter()
+            .map(|path| mapping.get(path).cloned().unwrap_or_else(|| path.clone()))
+            .collect();
+        relinked
     }
 
     /// Joins contiguous pieces of one source into a single event.
@@ -4828,6 +4863,42 @@ mod sample_edit_tests {
         assert_eq!(project.tracks[0].automation_lanes[0].points[0].beat, 4.0);
         assert_eq!(project.tracks[0].clips.len(), 0);
         assert_eq!(project.tracks[1].clips[0].id, id);
+    }
+
+    #[test]
+    fn missing_media_and_relinking_follow_the_pool_and_the_events() {
+        let root = std::env::temp_dir().join(format!("opentrack-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let present = root.join("here.wav");
+        std::fs::write(&present, b"x").expect("write");
+        let absent = root.join("gone.wav");
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let kept = project
+            .add_audio_clip(0, present.clone(), 0.0, 1.0)
+            .unwrap();
+        let broken = project.add_audio_clip(0, absent.clone(), 2.0, 1.0).unwrap();
+
+        assert_eq!(project.missing_media(), vec![absent.clone()]);
+
+        let replacement = root.join("found.wav");
+        std::fs::write(&replacement, b"y").expect("write");
+        let mapping = BTreeMap::from([(absent.clone(), replacement.clone())]);
+        assert_eq!(project.relink_media(&mapping), 1);
+
+        assert_eq!(project.tracks[0].clips[0].id, kept);
+        assert_eq!(project.tracks[0].clips[0].source_path, present);
+        assert_eq!(project.tracks[0].clips[1].id, broken);
+        assert_eq!(project.tracks[0].clips[1].source_path, replacement);
+        assert_eq!(project.missing_media(), Vec::<PathBuf>::new());
+        assert!(!project.media_pool.contains(&absent), "the pool followed");
+        assert!(project.validate().is_ok());
+
+        // An empty mapping is a no-op.
+        assert_eq!(project.relink_media(&BTreeMap::new()), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

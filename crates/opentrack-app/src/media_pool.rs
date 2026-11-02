@@ -381,6 +381,118 @@ impl OpenTrackApp {
         self.status_message = status;
     }
 
+    /// Finds replacement files for the project's missing sources in `folder`.
+    ///
+    /// The search is bounded (depth and entry count) and matches by file name
+    /// case-insensitively, so a project moved between machines can be relinked by
+    /// pointing at the folder that still holds its audio.
+    pub(super) fn find_relinked_media(
+        &self,
+        folder: &Path,
+    ) -> std::collections::BTreeMap<PathBuf, PathBuf> {
+        use std::collections::BTreeMap;
+        let missing = self.data.project.missing_media();
+        if missing.is_empty() || !folder.is_dir() {
+            return BTreeMap::new();
+        }
+        // One index by lower-case name: the first match wins, which keeps the
+        // result stable when several folders hold a copy.
+        let mut by_name = std::collections::BTreeMap::<String, PathBuf>::new();
+        let mut pending = vec![(folder.to_path_buf(), 0usize)];
+        let mut visited = 0usize;
+        const MAX_DEPTH: usize = 6;
+        const MAX_ENTRIES: usize = 20_000;
+        while let Some((directory, depth)) = pending.pop() {
+            if depth > MAX_DEPTH || visited >= MAX_ENTRIES {
+                break;
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                visited += 1;
+                if visited >= MAX_ENTRIES {
+                    break;
+                }
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push((path, depth + 1));
+                    continue;
+                }
+                if let Some(name) = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_lowercase())
+                {
+                    by_name.entry(name).or_insert(path);
+                }
+            }
+        }
+        missing
+            .into_iter()
+            .filter_map(|path| {
+                let name = path.file_name()?.to_string_lossy().to_lowercase();
+                let found = by_name.get(&name)?.clone();
+                Some((path, found))
+            })
+            .collect()
+    }
+
+    /// Relinks missing sources from `folder` as one undo step.
+    pub(super) fn relink_missing_media(&mut self, folder: &Path) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before relinking media".to_owned();
+            return;
+        }
+        let missing = self.data.project.missing_media();
+        if missing.is_empty() {
+            self.status_message = "This project has no missing media".to_owned();
+            return;
+        }
+        let mapping = self.find_relinked_media(folder);
+        if mapping.is_empty() {
+            self.status_message = format!(
+                "Found none of the {} missing source(s) in {}",
+                missing.len(),
+                folder.display()
+            );
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let relinked = candidate.relink_media(&mapping);
+        if relinked == 0 {
+            self.status_message = "No event referenced the files that were found".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot relink: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Relink Media");
+        self.data.project = candidate;
+        for (source, replacement) in &mapping {
+            self.data.audio_sources.remove(source);
+            if let Ok(audio) = AudioSource::open(replacement) {
+                self.data.audio_sources.insert(replacement.clone(), audio);
+            }
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let still_missing = self.data.project.missing_media().len();
+        let mut status = format!(
+            "Relinked {relinked} event(s) to {} source(s)",
+            mapping.len()
+        );
+        if still_missing > 0 {
+            status.push_str(&format!("; {still_missing} source(s) are still missing"));
+        }
+        self.status_message = status;
+    }
+
     pub(super) fn add_pool_media(&mut self, path: PathBuf) {
         if self.is_recording() {
             return;
@@ -661,6 +773,80 @@ mod tests {
             app.data.project.tracks[0].clips[0].source_path,
             PathBuf::from("/nowhere/missing.wav")
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relinking_finds_named_sources_in_a_moved_project_folder() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-relink-{}-app", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Audio")).expect("audio");
+        std::fs::create_dir_all(root.join("Metadata")).expect("metadata");
+        // The media lives one level down, as it would after a project was copied
+        // without its Audio folder flattening.
+        std::fs::create_dir_all(root.join("Audio").join("Old")).expect("old");
+        let found = root.join("Audio").join("Old").join("Kick.WAV");
+        write_wav(&found, 480);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        // Two events reference a path that no longer exists.
+        let missing = root.join("Audio").join("kick.wav");
+        app.data
+            .project
+            .add_audio_clip(0, missing.clone(), 0.0, 1.0)
+            .unwrap();
+        app.data
+            .project
+            .add_audio_clip(0, missing.clone(), 4.0, 1.0)
+            .unwrap();
+        app.project_history.clear();
+
+        assert_eq!(app.data.project.missing_media(), vec![missing.clone()]);
+        app.relink_missing_media(&root);
+
+        assert_eq!(
+            app.data.project.tracks[0].clips[0].source_path, found,
+            "the events point at the found file"
+        );
+        assert!(app.data.project.missing_media().is_empty());
+        assert_eq!(
+            app.data
+                .project
+                .media_pool
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![found.clone()],
+            "the pool followed the relink"
+        );
+        assert!(
+            app.data.audio_sources.contains_key(&found),
+            "the relinked source is ready to play"
+        );
+        assert!(app.status_message.contains("Relinked 2 event(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Relink Media");
+
+        // A folder without the file reports instead of guessing.
+        app.data.project.tracks[0].clips[0].source_path = root.join("Audio").join("gone.wav");
+        app.data.project.register_media();
+        let empty = root.join("Metadata");
+        app.relink_missing_media(&empty);
+        assert!(app.status_message.contains("Found none of the"));
+
+        // A project with nothing missing says so.
+        for clip in app.data.project.tracks[0].clips.iter_mut() {
+            clip.source_path = found.clone();
+        }
+        app.data.project.media_pool.clear();
+        app.data.project.register_media();
+        app.relink_missing_media(&root);
+        assert!(app.status_message.contains("no missing media"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

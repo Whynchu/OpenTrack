@@ -9750,6 +9750,22 @@ impl OpenTrackApp {
                         self.consolidate_project_media();
                         ui.close();
                     }
+                    let missing_media = self.data.project.missing_media().len();
+                    if menu_command(
+                        ui,
+                        &format!("Relink Missing Media ({missing_media})..."),
+                        "",
+                        self.project_open && !self.is_recording() && missing_media > 0,
+                    )
+                    .clicked()
+                    {
+                        if let Some(folder) =
+                            FileDialog::new().set_title("Find Missing Media").pick_folder()
+                        {
+                            self.relink_missing_media(&folder);
+                        }
+                        ui.close();
+                    }
                     if menu_command(ui, "Project Setup...", "Shift+S", true).clicked() {
                         self.project_setup_open = true;
                         ui.close();

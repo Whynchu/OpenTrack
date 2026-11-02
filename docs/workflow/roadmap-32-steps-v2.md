@@ -103,8 +103,13 @@ Still open from revision 1:
    every event, rewrites the media pool and the open audio sources, and reports
    what moved, what was already local and what is missing. Missing sources are
    reported, never dropped. One undo step. 2 tests.
-11. **Missing media detection and relink.** Report events whose source is gone,
-    search a folder for matching names, and relink as one undo step.
+11. **Missing media detection and relink.** *Delivered.* `Project::missing_media`
+   reports referenced sources that are not on disk, and `relink_media` repoints
+   the events and the media pool. Project > Relink Missing Media (N)... opens a
+   folder picker, searches it (depth 6, 20 000 entries) for files with the same
+   name case-insensitively, and applies the matches as one undo step labelled
+   "Relink Media", opening the relinked audio and reporting anything still
+   missing. 1 core and 1 app test.
 12. **Multiple recovery points.** Keep the last N recovery copies and let the
     user pick one, instead of one autosave file.
 13. **Project templates.** Save the current project's structure as a template and
