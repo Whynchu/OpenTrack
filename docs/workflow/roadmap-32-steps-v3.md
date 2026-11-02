@@ -568,5 +568,14 @@ still one commit with tests and refreshed counts.
    and a clicked-row scope are handled, and the pass is one labelled "Conform
    Files" undo step. 1 audio and 1 app tests. Disabled entries 73 -> 72.
 
+56. **Set Pool Record Folder.** *Delivered.* Media > Set Pool Record Folder sets
+   `pool_record_folder` (OPR version 33 with a v32 migration test): a project-relative
+   folder where new pool files — imports, bounces and every processed copy — are
+   written, defaulting to `Audio/Imports`. Absolute paths, `..` hops and empty parts
+   are refused so a project never writes outside its own folder, and the dialog
+   states that recording takes stay in `Audio/Recordings`. The setting is one
+   labelled undo step and can be cleared back to the default. 1 core, 1 migration
+   and 1 app tests. Disabled entries 72 -> 71.
+
 Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
 Archive, then the user-dependent reviews and CPR fixtures.

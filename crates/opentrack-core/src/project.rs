@@ -984,6 +984,10 @@ pub struct Project {
     /// Named pool folders. Organisation only: the pool still lists the sources.
     #[serde(default, skip_serializing_if = "MediaFolders::is_empty")]
     pub media_folders: MediaFolders,
+    /// Project-relative folder where new pool files are written. `None` means the
+    /// default `Audio/Imports`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_record_folder: Option<String>,
     #[serde(default = "BusChannel::input")]
     pub input_channel: BusChannel,
     #[serde(default = "BusChannel::output")]
@@ -1082,6 +1086,23 @@ pub const MAX_MARKERS: usize = 1024;
 /// Bound on a marker name, in characters.
 pub const MAX_MARKER_NAME_CHARS: usize = 96;
 
+/// Where new pool files go when the project has not chosen a folder.
+pub const DEFAULT_POOL_RECORD_FOLDER: &str = "Audio/Imports";
+
+/// True for a relative folder path that stays inside the project.
+fn is_usable_relative_folder(folder: &str) -> bool {
+    let folder = folder.trim();
+    if folder.is_empty() || folder.chars().count() > 120 {
+        return false;
+    }
+    if folder.starts_with('/') || folder.starts_with('\\') || folder.contains(':') {
+        return false;
+    }
+    folder
+        .split(['/', '\\'])
+        .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 /// Bound on regions per project.
 pub const MAX_REGIONS: usize = 1024;
 /// Bound on a region name, in characters.
@@ -1157,6 +1178,7 @@ impl Default for Project {
             tracks: Vec::new(),
             media_pool: BTreeSet::new(),
             media_folders: MediaFolders::default(),
+            pool_record_folder: None,
             input_channel: BusChannel::input(),
             output_channel: BusChannel::output(),
             selected_track: None,
@@ -4555,6 +4577,11 @@ impl Project {
             return Err("project notepad is too long");
         }
         self.media_folders.is_valid()?;
+        if let Some(folder) = &self.pool_record_folder
+            && !is_usable_relative_folder(folder)
+        {
+            return Err("the pool record folder must be a relative folder inside the project");
+        }
         if self.regions.len() > MAX_REGIONS {
             return Err("too many regions");
         }
@@ -7068,6 +7095,68 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn the_pool_record_folder_is_relative_and_can_be_cleared() {
+        use crate::project::DEFAULT_POOL_RECORD_FOLDER;
+
+        let mut project = Project::default();
+        assert_eq!(
+            project.pool_record_folder_or_default(),
+            DEFAULT_POOL_RECORD_FOLDER
+        );
+        assert!(project.pool_record_folder.is_none());
+
+        // Trailing separators are trimmed; nested folders are fine.
+        project
+            .set_pool_record_folder(Some("  Audio/Takes/  "))
+            .expect("folder");
+        assert_eq!(project.pool_record_folder.as_deref(), Some("Audio/Takes"));
+        assert_eq!(project.pool_record_folder_or_default(), "Audio/Takes");
+
+        // Absolute paths, parent hops and empty parts are refused, leaving the
+        // setting untouched.
+        for bad in [
+            "/tmp",
+            "C:\\Audio",
+            "../outside",
+            "Audio/../Takes",
+            "Audio//Takes",
+            "   ",
+        ] {
+            assert!(
+                project.set_pool_record_folder(Some(bad)).is_err(),
+                "{bad} should be refused"
+            );
+        }
+        assert_eq!(project.pool_record_folder.as_deref(), Some("Audio/Takes"));
+
+        // Clearing restores the default.
+        project.set_pool_record_folder(None).expect("clear");
+        assert!(project.pool_record_folder.is_none());
+        assert_eq!(
+            project.pool_record_folder_or_default(),
+            DEFAULT_POOL_RECORD_FOLDER
+        );
+        assert!(project.validate().is_ok());
+
+        // It round trips, and a bad value loaded from a file is rejected.
+        project
+            .set_pool_record_folder(Some("Audio/Takes"))
+            .expect("folder");
+        let encoded = serde_json::to_value(&project).expect("encode");
+        let decoded: Project = serde_json::from_value(encoded.clone()).expect("decode");
+        assert_eq!(decoded.pool_record_folder.as_deref(), Some("Audio/Takes"));
+        let mut legacy = encoded;
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("pool_record_folder");
+        let legacy: Project = serde_json::from_value(legacy).expect("legacy");
+        assert!(legacy.pool_record_folder.is_none());
+        project.pool_record_folder = Some("../escape".to_owned());
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
     fn regions_are_added_renamed_removed_and_validated() {
         let mut project = Project::default();
         let second = project.add_region(8.0, 16.0, " Chorus ").expect("region");
@@ -8731,6 +8820,38 @@ impl Project {
         self.media_pool = self.media_paths();
         // A source that left the pool cannot keep its folder assignment.
         self.media_folders.retain_paths(&self.media_pool);
+    }
+
+    /// The project-relative folder new pool files go to, defaulting to
+    /// `Audio/Imports`.
+    pub fn pool_record_folder_or_default(&self) -> &str {
+        self.pool_record_folder
+            .as_deref()
+            .unwrap_or(DEFAULT_POOL_RECORD_FOLDER)
+    }
+
+    /// Sets the pool record folder, or clears it back to the default.
+    ///
+    /// Only a relative folder inside the project is accepted, so a project stays
+    /// portable and never writes outside its own tree.
+    pub fn set_pool_record_folder(&mut self, folder: Option<&str>) -> Result<(), String> {
+        match folder {
+            None => {
+                self.pool_record_folder = None;
+                Ok(())
+            }
+            Some(folder) => {
+                let folder = folder.trim().trim_end_matches(['/', '\\']);
+                if !is_usable_relative_folder(folder) {
+                    return Err(
+                        "the pool record folder must be a relative folder inside the project"
+                            .to_owned(),
+                    );
+                }
+                self.pool_record_folder = Some(folder.to_owned());
+                Ok(())
+            }
+        }
     }
 
     /// Creates an empty Media Pool folder and returns its trimmed name.

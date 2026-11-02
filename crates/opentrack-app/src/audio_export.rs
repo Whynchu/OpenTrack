@@ -387,7 +387,11 @@ impl super::OpenTrackApp {
         self.vst3_runtime.capture_states(&mut project);
         let track_id = project.tracks[track_index].id;
         let track_name = project.tracks[track_index].name.clone();
-        let destination = match unique_wav_path(&root, &format!("{track_name} bounce")) {
+        let destination = match unique_wav_path(
+            &root,
+            &self.pool_import_subfolder(),
+            &format!("{track_name} bounce"),
+        ) {
             Ok(path) => path,
             Err(error) => {
                 self.status_message = format!("Could not choose a bounce file: {error}");
@@ -627,8 +631,12 @@ pub(super) struct BounceTask {
 }
 
 /// A free file name for rendered audio inside the project's `Audio/Imports`.
-pub(super) fn unique_wav_path(root: &std::path::Path, name: &str) -> Result<PathBuf, String> {
-    let directory = root.join("Audio").join("Imports");
+pub(super) fn unique_wav_path(
+    root: &std::path::Path,
+    subfolder: &str,
+    name: &str,
+) -> Result<PathBuf, String> {
+    let directory = root.join(subfolder);
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
     let base = stem_file_name(name, 0)

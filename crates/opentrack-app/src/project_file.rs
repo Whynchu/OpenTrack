@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 32;
+const FORMAT_VERSION: u32 = 33;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1332,6 +1332,40 @@ mod tests {
         assert_eq!(loaded.version, FORMAT_VERSION);
         assert!(loaded.project.regions.is_empty());
         assert_eq!(loaded.project.markers.len(), 1, "markers still load");
+        assert!(loaded.project.validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_32_file_without_a_pool_folder_loads_with_the_default() {
+        let mut project = Project::default();
+        project
+            .set_pool_record_folder(Some("Audio/Takes"))
+            .expect("folder");
+        project.add_track(TrackKind::Audio);
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 32.into();
+        legacy["project"]
+            .as_object_mut()
+            .expect("project")
+            .remove("pool_record_folder");
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v32-pool-folder-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert_eq!(loaded.project.pool_record_folder, None);
+        assert_eq!(
+            loaded.project.pool_record_folder_or_default(),
+            opentrack_core::project::DEFAULT_POOL_RECORD_FOLDER
+        );
         assert!(loaded.project.validate().is_ok());
         fs::remove_file(path).unwrap();
     }

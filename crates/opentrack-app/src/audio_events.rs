@@ -83,8 +83,12 @@ pub(crate) struct State {
 /// whole group and every gesture that follows has the same target.
 /// Where a real copy of `source` should live, or `None` when it is already the
 /// project's own media.
-fn audio_copy_destination(source: &Path, project_root: &Path) -> Result<Option<PathBuf>, String> {
-    let (destination, copied) = super::audio_import_destination(source, project_root)?;
+fn audio_copy_destination(
+    source: &Path,
+    project_root: &Path,
+    subfolder: &str,
+) -> Result<Option<PathBuf>, String> {
+    let (destination, copied) = super::audio_import_destination(source, project_root, subfolder)?;
     Ok(copied.then_some(destination))
 }
 
@@ -1002,6 +1006,7 @@ impl OpenTrackApp {
                 "Save this project into its folder before converting audio events".to_owned();
             return;
         };
+        let subfolder = self.pool_import_subfolder();
 
         let mut candidate = self.data.project.clone();
         let mut copied = Vec::new();
@@ -1024,7 +1029,7 @@ impl OpenTrackApp {
                     skipped_pitch += 1;
                     continue;
                 }
-                match audio_copy_destination(&clip.source_path, &project_root) {
+                match audio_copy_destination(&clip.source_path, &project_root, &subfolder) {
                     Ok(None) => already_local += 1,
                     Ok(Some(destination)) => match fs::copy(&clip.source_path, &destination) {
                         Ok(_) => {

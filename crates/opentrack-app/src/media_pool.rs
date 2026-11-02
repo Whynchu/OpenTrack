@@ -671,15 +671,18 @@ impl OpenTrackApp {
                 self.status_message = "The selected event is no longer in the project".to_owned();
                 return;
             };
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} reversed")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} reversed"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             if let Err(error) =
                 opentrack_audio::reverse_wav_range(&source, offset, duration, &destination)
             {
@@ -792,15 +795,18 @@ impl OpenTrackApp {
                 self.status_message = "The selected event is no longer in the project".to_owned();
                 return;
             };
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} dc")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} dc"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             let offsets = match opentrack_audio::remove_dc_offset_wav_range(
                 &source,
                 offset,
@@ -926,15 +932,18 @@ impl OpenTrackApp {
                 self.status_message = "The selected event is no longer in the project".to_owned();
                 return;
             };
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} flipped")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} flipped"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             match opentrack_audio::flip_stereo_wav_range(&source, offset, duration, &destination) {
                 Ok(_) => {}
                 Err(error) if error.contains("mono") => {
@@ -1091,14 +1100,17 @@ impl OpenTrackApp {
             );
             return;
         }
-        let destination =
-            match super::audio_export::unique_wav_path(&root, &format!("{name} merged")) {
-                Ok(path) => path,
-                Err(error) => {
-                    self.status_message = error;
-                    return;
-                }
-            };
+        let destination = match super::audio_export::unique_wav_path(
+            &root,
+            &self.pool_import_subfolder(),
+            &format!("{name} merged"),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status_message = error;
+                return;
+            }
+        };
         let layers = planned
             .iter()
             .map(
@@ -1428,6 +1440,105 @@ impl OpenTrackApp {
         }
     }
 
+    /// Opens the pool record-folder dialog with the current folder.
+    pub(super) fn open_pool_record_folder_dialog(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to choose its pool folder".to_owned();
+            return;
+        }
+        self.pool_record_folder_dialog =
+            Some(self.data.project.pool_record_folder_or_default().to_owned());
+    }
+
+    /// Sets where new pool files are written, or restores the default.
+    pub(super) fn apply_pool_record_folder(&mut self, folder: &str) {
+        let folder = folder.trim();
+        let mut candidate = self.data.project.clone();
+        let folder = if folder.is_empty() {
+            None
+        } else {
+            Some(folder)
+        };
+        if let Err(message) = candidate.set_pool_record_folder(folder) {
+            self.status_message = message;
+            return;
+        }
+        if candidate.pool_record_folder == self.data.project.pool_record_folder {
+            self.status_message = "The pool record folder is already set to that".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot set the pool folder: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Set Pool Record Folder");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "New pool files are written to {}; recording takes stay in Audio/Recordings",
+            self.data.project.pool_record_folder_or_default()
+        );
+    }
+
+    pub(super) fn show_pool_record_folder_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut folder) = self.pool_record_folder_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Set Pool Record Folder")
+            .id(Id::new("pool-record-folder-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.label("Folder for new pool files, relative to the project folder.");
+                ui.add(
+                    egui::TextEdit::singleline(&mut folder)
+                        .desired_width(340.0)
+                        .hint_text("Audio/Imports"),
+                );
+                if ui.button("Use the default").clicked() {
+                    folder = opentrack_core::project::DEFAULT_POOL_RECORD_FOLDER.to_owned();
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Imports and processed copies are written here. Recording takes stay in Audio/Recordings, and an absolute path or one containing '..' is refused so a project never writes outside its own folder.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("pool-record-folder-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_pool_record_folder(&folder);
+        } else if !cancel && open {
+            self.pool_record_folder_dialog = Some(folder);
+        }
+    }
+
     /// Opens the pool Conform Files dialog seeded from the project tempo.
     pub(super) fn open_conform_files_dialog(&mut self) {
         if !self.project_open {
@@ -1489,15 +1600,18 @@ impl OpenTrackApp {
                 .file_stem()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "conformed".to_owned());
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} conformed")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} conformed"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             if let Err(error) = opentrack_audio::conform_wav_file(&source, ratio, &destination) {
                 self.cleanup_created_files(&created);
                 self.status_message = format!("Could not conform {}: {error}", source.display());
@@ -1725,16 +1839,18 @@ impl OpenTrackApp {
                 .file_stem()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "converted".to_owned());
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} {target_rate}"))
-                {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} {target_rate}"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             if let Err(error) =
                 opentrack_audio::convert_wav_file(&source, target_rate, &destination)
             {
@@ -1947,15 +2063,18 @@ impl OpenTrackApp {
                 self.status_message = "The selected event is no longer in the project".to_owned();
                 return;
             };
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} enveloped")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} enveloped"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             if let Err(error) = opentrack_audio::apply_gain_envelope_wav_range(
                 &source,
                 offset,
@@ -2267,6 +2386,7 @@ impl OpenTrackApp {
             };
             let destination = match super::audio_export::unique_wav_path(
                 &root,
+                &self.pool_import_subfolder(),
                 &format!("{name} {}pct", percent.round() as i64),
             ) {
                 Ok(path) => path,
@@ -2465,16 +2585,18 @@ impl OpenTrackApp {
                 self.status_message = "The selected event is no longer in the project".to_owned();
                 return;
             };
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} {target_rate}"))
-                {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} {target_rate}"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             match opentrack_audio::resample_wav_range(
                 &source,
                 offset,
@@ -2682,15 +2804,18 @@ impl OpenTrackApp {
                 self.status_message = "The selected event is no longer in the project".to_owned();
                 return;
             };
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} normalized")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} normalized"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             let outcome = match opentrack_audio::normalize_wav_range(
                 &source,
                 offset,
@@ -3003,6 +3128,7 @@ impl OpenTrackApp {
         };
 
         let sources = self.data.project.media_paths();
+        let subfolder = self.pool_import_subfolder();
         let mut moved = std::collections::BTreeMap::<PathBuf, PathBuf>::new();
         let mut already_local = 0;
         let mut missing = Vec::new();
@@ -3012,7 +3138,7 @@ impl OpenTrackApp {
                 missing.push(source);
                 continue;
             }
-            match audio_import_destination(&source, &project_root) {
+            match audio_import_destination(&source, &project_root, &subfolder) {
                 Ok((_, false)) => already_local += 1,
                 Ok((destination, true)) => match fs::copy(&source, &destination) {
                     Ok(_) => {
@@ -3152,15 +3278,18 @@ impl OpenTrackApp {
                 continue;
             }
             let (clip_id, offset, duration, name) = uses[0].clone();
-            let destination =
-                match super::audio_export::unique_wav_path(&root, &format!("{name} minimized")) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.cleanup_created_files(&created);
-                        self.status_message = error;
-                        return;
-                    }
-                };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &self.pool_import_subfolder(),
+                &format!("{name} minimized"),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
             let outcome =
                 match opentrack_audio::trim_wav_range(&source, offset, duration, &destination) {
                     Ok(outcome) => outcome,
@@ -4173,6 +4302,76 @@ mod tests {
         assert!(app.status_message.contains("Created"));
         app.project_history.finish_frame(&app.data.project, true);
         assert_eq!(app.project_history.steps()[0].label, "Create Regions");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_pool_record_folder_redirects_new_files_as_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-pool-folder-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("ramp.wav");
+        write_ramp_wav(&source, 48_000);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 0.5)
+            .expect("clip");
+        app.project_history.clear();
+
+        // The dialog seeds the current folder.
+        app.open_pool_record_folder_dialog();
+        assert_eq!(
+            app.pool_record_folder_dialog.as_deref(),
+            Some("Audio/Imports")
+        );
+
+        // An unusable folder is refused without touching the project.
+        app.apply_pool_record_folder("../outside");
+        assert!(
+            app.status_message
+                .contains("relative folder inside the project")
+        );
+        assert!(app.data.project.pool_record_folder.is_none());
+
+        // Setting it is one labelled undo step.
+        app.apply_pool_record_folder("Audio/Takes");
+        assert_eq!(
+            app.data.project.pool_record_folder.as_deref(),
+            Some("Audio/Takes")
+        );
+        assert!(app.status_message.contains("Audio/Takes"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(
+            app.project_history.steps()[0].label,
+            "Set Pool Record Folder"
+        );
+
+        // A processed copy now lands in the chosen folder.
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.reverse_selected_audio_events();
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert!(
+            clip.source_path
+                .starts_with(root.join("Audio").join("Takes")),
+            "{}",
+            clip.source_path.display()
+        );
+        assert!(clip.source_path.exists());
+
+        // Clearing restores the default.
+        app.apply_pool_record_folder("   ");
+        assert!(app.data.project.pool_record_folder.is_none());
+        assert!(app.status_message.contains("Audio/Imports"));
         let _ = std::fs::remove_dir_all(root);
     }
 

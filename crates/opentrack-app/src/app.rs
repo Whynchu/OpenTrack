@@ -1230,6 +1230,8 @@ pub struct OpenTrackApp {
     detect_silence_dialog: Option<(f32, f64)>,
     /// Conform Files dialog draft: the source's own tempo in BPM.
     conform_files_dialog: Option<f64>,
+    /// Pool record-folder dialog draft.
+    pool_record_folder_dialog: Option<String>,
     /// On-screen MIDI keyboard: open state, base octave and held keys.
     virtual_keyboard_open: bool,
     virtual_keyboard_octave: u8,
@@ -2683,6 +2685,7 @@ impl OpenTrackApp {
             convert_files_dialog: None,
             detect_silence_dialog: None,
             conform_files_dialog: None,
+            pool_record_folder_dialog: None,
             virtual_keyboard_open: false,
             virtual_keyboard_octave: 3,
             virtual_keyboard_held: std::collections::BTreeSet::new(),
@@ -3222,7 +3225,9 @@ impl OpenTrackApp {
                 "Save this project into its folder before importing audio".to_owned();
             return;
         };
-        let (destination, copied) = match audio_import_destination(&path, project_root) {
+        let subfolder = self.pool_import_subfolder();
+        let (destination, copied) = match audio_import_destination(&path, project_root, &subfolder)
+        {
             Ok(destination) => destination,
             Err(error) => {
                 self.status_message = format!("Could not prepare project audio folder: {error}");
@@ -4059,6 +4064,7 @@ impl OpenTrackApp {
         self.convert_files_dialog = None;
         self.detect_silence_dialog = None;
         self.conform_files_dialog = None;
+        self.pool_record_folder_dialog = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -5294,6 +5300,11 @@ impl OpenTrackApp {
                 self.status_message
             );
         }
+    }
+
+    /// Project-relative folder new pool files are written to.
+    fn pool_import_subfolder(&self) -> String {
+        self.data.project.pool_record_folder_or_default().to_owned()
     }
 
     fn project_root(&self) -> Option<std::path::PathBuf> {
@@ -14352,6 +14363,17 @@ impl OpenTrackApp {
                         self.open_convert_files_dialog();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Set Pool Record Folder",
+                        "",
+                        self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.open_pool_record_folder_dialog();
+                        ui.close();
+                    }
                     if menu_command(ui, "Create Folder", "", self.project_open).clicked() {
                         self.open_media_folder_dialog();
                         ui.close();
@@ -14385,7 +14407,6 @@ impl OpenTrackApp {
                             ("Reconstruct", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
-                            ("Set Pool Record Folder", ""),
                         ],
                     );
                     ui.menu_button("Insert into Project", |ui| {
@@ -15449,6 +15470,7 @@ impl OpenTrackApp {
             || self.convert_files_dialog.is_some()
             || self.detect_silence_dialog.is_some()
             || self.conform_files_dialog.is_some()
+            || self.pool_record_folder_dialog.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -18239,6 +18261,7 @@ impl eframe::App for OpenTrackApp {
         self.show_convert_files_dialog(&ctx);
         self.show_detect_silence_dialog(&ctx);
         self.show_conform_files_dialog(&ctx);
+        self.show_pool_record_folder_dialog(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
@@ -25303,7 +25326,11 @@ fn next_recording_paths(
     })
 }
 
-fn audio_import_destination(source: &Path, project_root: &Path) -> Result<(PathBuf, bool), String> {
+fn audio_import_destination(
+    source: &Path,
+    project_root: &Path,
+    subfolder: &str,
+) -> Result<(PathBuf, bool), String> {
     let is_inside_project = match (fs::canonicalize(source), fs::canonicalize(project_root)) {
         (Ok(source), Ok(root)) => source.starts_with(root),
         _ => source.starts_with(project_root),
@@ -25311,7 +25338,7 @@ fn audio_import_destination(source: &Path, project_root: &Path) -> Result<(PathB
     if is_inside_project {
         return Ok((source.to_path_buf(), false));
     }
-    let directory = project_root.join("Audio").join("Imports");
+    let directory = project_root.join(subfolder);
     fs::create_dir_all(&directory)
         .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
     let file_name = source
