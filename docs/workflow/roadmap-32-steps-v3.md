@@ -229,6 +229,14 @@ and measured numbers.
    dropping notes. One labelled "Build N-Tuplet" undo step. 1 core and 2 app
    tests. Disabled entries 104 -> 103.
 
+29. **Explode Pitches.** *Delivered.* MIDI > Functions > Explode Pitches splits the
+   selected part into one new MIDI track per distinct pitch: each new part keeps
+   the original span and only that pitch's notes, the source part is removed, and
+   controller events are copied once into the lowest-pitched part instead of being
+   lost or duplicated. Bounded to 16 pitches, and a refused explode leaves the
+   project unchanged. One labelled "Explode Pitches" undo step. 2 core and 1 app
+   tests. Disabled entries 103 -> 102.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

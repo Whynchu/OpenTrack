@@ -2806,6 +2806,106 @@ impl Project {
         changed
     }
 
+    /// Splits a MIDI part into one new MIDI track per distinct pitch.
+    ///
+    /// Each new track receives a copy of the part containing only that pitch's
+    /// notes, and the original part is removed. Controller events have no pitch,
+    /// so they are copied once — into the lowest-pitched exploded part — rather
+    /// than lost or duplicated. The pitch count is bounded so a dense drum part
+    /// cannot create an unbounded number of tracks; the whole edit is refused
+    /// rather than left half-applied.
+    pub fn explode_midi_part_by_pitch(
+        &mut self,
+        track_id: u64,
+        part_id: u64,
+        max_pitches: usize,
+    ) -> Result<Vec<u64>, String> {
+        let track_index = self
+            .tracks
+            .iter()
+            .position(|track| track.id == track_id)
+            .ok_or_else(|| "The MIDI track no longer exists".to_owned())?;
+        let part_index = self.tracks[track_index]
+            .midi_parts
+            .iter()
+            .position(|part| part.id == part_id)
+            .ok_or_else(|| "The MIDI part no longer exists".to_owned())?;
+        let original = self.tracks[track_index].midi_parts[part_index].clone();
+        let pitches = original
+            .notes
+            .iter()
+            .map(|note| note.pitch)
+            .collect::<BTreeSet<_>>();
+        if pitches.is_empty() {
+            return Err("The MIDI part has no notes to explode".to_owned());
+        }
+        if pitches.len() > max_pitches.max(1) {
+            return Err(format!(
+                "The part uses {} pitches; exploding supports at most {}",
+                pitches.len(),
+                max_pitches.max(1)
+            ));
+        }
+        let track_name = self.tracks[track_index].name.clone();
+        let notes = original.notes.clone();
+        let controllers = original.controller_events.clone();
+        let lowest = *pitches.iter().next().expect("non-empty");
+        let mut candidate = self.clone();
+        candidate.tracks[track_index].midi_parts.remove(part_index);
+        if candidate.selected_midi_part_id == Some(part_id) {
+            candidate.selected_midi_part_id = None;
+        }
+        let mut created = Vec::with_capacity(pitches.len());
+        for pitch in pitches.iter().copied() {
+            candidate.add_track(TrackKind::Midi);
+            let index = candidate.tracks.len() - 1;
+            candidate.tracks[index].name = format!("{track_name} - pitch {pitch}");
+            let new_part = candidate
+                .add_midi_part(index, original.start_beats, original.duration_beats)
+                .ok_or_else(|| "Could not create an exploded part".to_owned())?;
+            if let Some(part) = candidate.tracks[index]
+                .midi_parts
+                .iter_mut()
+                .find(|part| part.id == new_part)
+            {
+                part.name = format!("{} ({pitch})", original.name);
+            }
+            for note in notes.iter().filter(|note| note.pitch == pitch) {
+                candidate
+                    .add_midi_note_on_channel(
+                        index,
+                        new_part,
+                        note.start_beats,
+                        note.duration_beats,
+                        note.pitch,
+                        note.channel,
+                        note.velocity,
+                    )
+                    .ok_or_else(|| "Could not copy an exploded note".to_owned())?;
+            }
+            if pitch == lowest {
+                for event in &controllers {
+                    candidate
+                        .add_midi_controller_event_on_channel(
+                            index,
+                            new_part,
+                            event.position_beats,
+                            event.controller,
+                            event.channel,
+                            event.value,
+                        )
+                        .ok_or_else(|| "Could not copy a controller event".to_owned())?;
+                }
+            }
+            created.push(new_part);
+        }
+        candidate
+            .validate()
+            .map_err(|error| format!("The exploded part would not be valid: {error}"))?;
+        *self = candidate;
+        Ok(created)
+    }
+
     /// Inserts `beats` of silence at `beat` and reports how many items moved.
     ///
     /// Events and MIDI parts that cross the insertion point are split first, so
@@ -6503,6 +6603,94 @@ mod sample_edit_tests {
             MIN_CLIP_EDGE_SECONDS
         ));
         assert_eq!(project.tracks[0].clips[0], before);
+    }
+
+    #[test]
+    fn exploding_pitches_makes_one_track_per_pitch_and_keeps_controllers_once() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Midi);
+        let part = project.add_midi_part(0, 0.0, 8.0).expect("part");
+        for (start, pitch) in [(0.0, 60), (1.0, 64), (2.0, 60), (3.0, 67)] {
+            project
+                .add_midi_note_on_channel(0, part, start, 0.5, pitch, 0, 100)
+                .expect("note");
+        }
+        project
+            .add_midi_controller_event_on_channel(0, part, 1.0, 11, 0, 64)
+            .expect("controller");
+        let track_id = project.tracks[0].id;
+
+        let exploded = project
+            .explode_midi_part_by_pitch(track_id, part, 16)
+            .expect("explode");
+        assert_eq!(exploded.len(), 3, "three distinct pitches");
+        assert_eq!(project.tracks.len(), 4);
+        assert!(
+            project.tracks[0].midi_parts.is_empty(),
+            "the source part was removed"
+        );
+        let pitches = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.midi_parts.iter())
+            .map(|part| part.notes[0].pitch)
+            .collect::<Vec<_>>();
+        assert_eq!(pitches, vec![60, 64, 67]);
+        let counts = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.midi_parts.iter())
+            .map(|part| part.notes.len())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            counts,
+            vec![2, 1, 1],
+            "the duplicated pitch keeps both notes"
+        );
+        // Controller events live on the lowest-pitched part only.
+        let controller_parts = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.midi_parts.iter())
+            .filter(|part| !part.controller_events.is_empty())
+            .count();
+        assert_eq!(controller_parts, 1);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn exploding_refuses_empty_or_too_wide_parts_without_half_applying() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let empty = project.add_midi_part(0, 0.0, 4.0).expect("part");
+        let track_id = project.tracks[0].id;
+        let before = project.clone();
+        assert!(
+            project
+                .explode_midi_part_by_pitch(track_id, empty, 16)
+                .is_err()
+        );
+        assert_eq!(project, before, "a refused explode changes nothing");
+
+        let part = project.add_midi_part(0, 4.0, 4.0).expect("part");
+        for pitch in [60, 62, 64] {
+            project
+                .add_midi_note_on_channel(0, part, 0.0, 0.5, pitch, 0, 100)
+                .expect("note");
+        }
+        let before = project.clone();
+        assert!(
+            project
+                .explode_midi_part_by_pitch(track_id, part, 2)
+                .is_err()
+        );
+        assert_eq!(project, before);
+        assert!(
+            project
+                .explode_midi_part_by_pitch(track_id, part, 3)
+                .is_ok()
+        );
     }
 
     #[test]
