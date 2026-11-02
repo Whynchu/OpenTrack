@@ -14581,14 +14581,15 @@ impl OpenTrackApp {
                         self.play_until_next_marker();
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Post-roll from Selection Start", ""),
-                            ("Post-roll from Selection End", ""),
-                        ],
-                    );
                     let can_roll = self.project_open && !self.is_recording();
+                    if menu_command(ui, "Post-roll from Selection Start", "", can_roll).clicked() {
+                        self.schedule_roll(true, false);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Post-roll from Selection End", "", can_roll).clicked() {
+                        self.schedule_roll(true, true);
+                        ui.close();
+                    }
                     if menu_command(ui, "Pre-roll to Selection Start", "", can_roll).clicked() {
                         self.schedule_roll(false, false);
                         ui.close();
@@ -30469,6 +30470,54 @@ mod transport_locate_tests {
         assert!(!app.schedule_roll(false, false));
         assert!(app.status_message.contains("no room to pre-roll"));
         assert!(!app.data.transport.playing);
+    }
+
+    #[test]
+    fn post_roll_uses_both_edges_with_independent_lengths_and_no_history() {
+        let mut app = app_with_events();
+        let first = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([first]);
+        app.roll_lengths.pre_beats = 1.0;
+        app.roll_lengths.post_beats = 6.0;
+        let history_before = app.project_history.counts();
+
+        assert!(app.schedule_roll(true, false), "{}", app.status_message);
+        assert_eq!(app.data.transport.position_beats, 4.0);
+        assert_eq!(app.play_until, Some(10.0));
+        app.set_transport_playing(false);
+
+        assert!(app.schedule_roll(true, true), "{}", app.status_message);
+        assert_eq!(app.data.transport.position_beats, 8.0);
+        assert_eq!(app.play_until, Some(14.0));
+        app.set_transport_playing(false);
+
+        assert_eq!(app.project_history.counts(), history_before);
+
+        // A selection near the end of the project still gets its full tail;
+        // the transport plays the silence after the last event.
+        let late = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("late.wav"), 100.0, 1.0)
+            .expect("clip");
+        app.arrange_view_state.audio_events.select_many([late]);
+        assert!(app.schedule_roll(true, false), "{}", app.status_message);
+        assert_eq!(app.data.transport.position_beats, 100.0);
+        assert_eq!(app.play_until, Some(106.0));
+        app.set_transport_playing(false);
+    }
+
+    #[test]
+    fn post_roll_interruption_clears_the_target() {
+        let mut app = app_with_events();
+        let first = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([first]);
+        assert!(app.schedule_roll(true, false));
+        assert!(app.play_until.is_some());
+        app.set_transport_playing(false);
+        assert_eq!(app.play_until, None);
+        app.seek_to_beats(1.0);
+        assert_eq!(app.play_until, None);
     }
 
     #[test]

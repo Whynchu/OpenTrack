@@ -12,7 +12,9 @@ Step 4 added the roll contract and scheduler: independent persisted pre/post len
 
 Step 5 enabled Transport > Pre-roll to Selection Start/End (audio events plus the selected MIDI part) and added a `Roll Lengths...` submenu with labelled pre/post fields. Missing/zero selection, target at beat 0, Cycle, recording and zero length report reasons; scheduling writes no undo step. App suite: 510 passed, 9 ignored; the generated menu inventory is now 271 leaves with 93 unavailable. See [R4-05](tasks/R4-05-pre-roll-commands.md).
 
-Next ready work: revision-4 step 6, enable Post-roll from Selection Start/End. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.---
+Step 6 enabled Post-roll from Selection Start/End with the same scheduler and independent post length. Both edges, late selections running into silence, interruption/seek cancellation and no-history behavior are tested. App suite: 512 passed, 9 ignored; inventory is 271 leaves with 91 unavailable. The step-4 per-frame stop limitation applies to both rolls. See [R4-06](tasks/R4-06-post-roll-commands.md).
+
+Next ready work: revision-4 step 7, MIDI Reset. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.---
 
 # Current assignment — roadmap activation (2026-11-01)
 

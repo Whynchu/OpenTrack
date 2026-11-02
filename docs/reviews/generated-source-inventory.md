@@ -8,7 +8,7 @@ $env:UPDATE_SOURCE_INVENTORY = "1"
 cargo test -p opentrack generated_source_inventory -- --nocapture
 ```
 
-- Source snapshot: `app.rs` FNV-1a 64 `0xe4880973eea9a522`; keymap CSV `0xa9f1eb00c81948c7`
+- Source snapshot: `app.rs` FNV-1a 64 `0x4ddf617249b5aae2`; keymap CSV `0xa9f1eb00c81948c7`
 - Scope: the project-open main menu and the empty-project shell. Context menus are
 enumerated in the curated `docs/reviews/audit-menus.md` register; this generated file
 does not claim to cover them.
@@ -22,7 +22,7 @@ counted once, not per runtime instance.
 
 ## Project-open main menu
 
-271 leaves: 37 available, 133 state-dependent, 93 unavailable, 8 informational.
+271 leaves: 37 available, 135 state-dependent, 91 unavailable, 8 informational.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
@@ -55,17 +55,17 @@ counted once, not per runtime instance.
 | Audio > Realtime Processing > Remove Plug-in |  | unavailable | `false` | 14044 |
 | Audio > Spectrum Analyzer |  | unavailable | `false` | 13997 |
 | Audio > Statistics |  | state-dependent | `self.project_open` | 13998 |
-| Devices > Control Room Mixer |  | unavailable | `false` | 14714 |
-| Devices > Control Room Overview |  | unavailable | `false` | 14714 |
-| Devices > Device Setup... |  | available | `true` | 14685 |
-| Devices > MIDI Device Manager |  | unavailable | `false` | 14714 |
-| Devices > MMC Master |  | unavailable | `false` | 14714 |
-| Devices > Mixer | F3 | available | `true` | 14723 |
-| Devices > Plug-in Information |  | available | `true` | 14694 |
-| Devices > Realtime Performance... | F12 | available | `true` | 14699 |
-| Devices > VST Connections... | F4 | state-dependent | `self.project_open` | 14689 |
-| Devices > VST Instruments | F11 | available | `true` | 14703 |
-| Devices > Video Window | F8 | unavailable | `false` | 14780 |
+| Devices > Control Room Mixer |  | unavailable | `false` | 14715 |
+| Devices > Control Room Overview |  | unavailable | `false` | 14715 |
+| Devices > Device Setup... |  | available | `true` | 14686 |
+| Devices > MIDI Device Manager |  | unavailable | `false` | 14715 |
+| Devices > MMC Master |  | unavailable | `false` | 14715 |
+| Devices > Mixer | F3 | available | `true` | 14724 |
+| Devices > Plug-in Information |  | available | `true` | 14695 |
+| Devices > Realtime Performance... | F12 | available | `true` | 14700 |
+| Devices > VST Connections... | F4 | state-dependent | `self.project_open` | 14690 |
+| Devices > VST Instruments | F11 | available | `true` | 14704 |
+| Devices > Video Window | F8 | unavailable | `false` | 14781 |
 | Edit > Auto Select Events under Cursor |  | state-dependent | `self.project_open` | 13634 |
 | Edit > Automation follows Events |  | state-dependent | `self.project_open` | 13670 |
 | Edit > Bounce Selection in Place |  | state-dependent | `can_bounce` | 13492 |
@@ -153,10 +153,10 @@ counted once, not per runtime instance.
 | File > Save As... | Ctrl+Shift+S | available | `true` | 13221 |
 | File > Save Library... |  | unavailable | `false` | 13227 |
 | File > Save as Template... |  | unavailable | `false` | 13226 |
-| Help > About OpenTrack... |  | available | `true` | 14891 |
-| Help > Credits and Copyrights |  | available | `true` | 14887 |
-| Help > OpenTrack on the Web |  | unavailable | `false` | 14885 |
-| Help > Registration |  | unavailable | `false` | 14886 |
+| Help > About OpenTrack... |  | available | `true` | 14892 |
+| Help > Credits and Copyrights |  | available | `true` | 14888 |
+| Help > OpenTrack on the Web |  | unavailable | `false` | 14886 |
+| Help > Registration |  | unavailable | `false` | 14887 |
 | MIDI > Arm a MIDI or Instrument track to monitor its input |  | informational | `` | 14229 |
 | MIDI > CC Automation Setup... |  | unavailable | `false` | 14153 |
 | MIDI > Drum Map Setup... |  | unavailable | `false` | 14153 |
@@ -270,33 +270,33 @@ counted once, not per runtime instance.
 | Transport > Locate Selection End |  | state-dependent | `self.project_open` | 14552 |
 | Transport > Locators to Selection | P | state-dependent | `self.project_open` | 14552 |
 | Transport > Loop Selection | Shift+G | state-dependent | `self.project_open` | 14552 |
-| Transport > Metronome On | C | available | `true` | 14649 |
-| Transport > Metronome Setup... |  | available | `true` | 14645 |
+| Transport > Metronome On | C | available | `true` | 14650 |
+| Transport > Metronome Setup... |  | available | `true` | 14646 |
 | Transport > Play Selection Range | Alt+Space | state-dependent | `self.project_open` | 14552 |
 | Transport > Play from Selection End |  | state-dependent | `self.project_open` | 14563 |
 | Transport > Play from Selection Start |  | state-dependent | `self.project_open` | 14557 |
 | Transport > Play until Next Marker |  | state-dependent | `self.project_open` | 14579 |
 | Transport > Play until Selection End |  | state-dependent | `self.project_open` | 14574 |
 | Transport > Play until Selection Start |  | state-dependent | `self.project_open` | 14568 |
-| Transport > Post-roll from Selection End |  | unavailable | `false` | 14584 |
-| Transport > Post-roll from Selection Start |  | unavailable | `false` | 14584 |
-| Transport > Pre-roll to Selection End |  | state-dependent | `can_roll` | 14596 |
-| Transport > Pre-roll to Selection Start |  | state-dependent | `can_roll` | 14592 |
-| Transport > Precount On |  | available | `true` | 14655 |
-| Transport > Project Synchronization Setup... |  | unavailable | `false` | 14675 |
-| Transport > Retrospective Record | Shift+Num * | unavailable | `false` | 14675 |
-| Transport > Roll Lengths... > Post-roll (beats, 0-64) |  | informational | `` | 14617 |
-| Transport > Roll Lengths... > Pre-roll (beats, 0-64) |  | informational | `` | 14601 |
-| Transport > Roll Lengths... > The selection is the selected audio events plus the selected MIDI part. |  | informational | `` | 14633 |
-| Transport > Start Record at Left Locator |  | unavailable | `false` | 14643 |
+| Transport > Post-roll from Selection End |  | state-dependent | `can_roll` | 14589 |
+| Transport > Post-roll from Selection Start |  | state-dependent | `can_roll` | 14585 |
+| Transport > Pre-roll to Selection End |  | state-dependent | `can_roll` | 14597 |
+| Transport > Pre-roll to Selection Start |  | state-dependent | `can_roll` | 14593 |
+| Transport > Precount On |  | available | `true` | 14656 |
+| Transport > Project Synchronization Setup... |  | unavailable | `false` | 14676 |
+| Transport > Retrospective Record | Shift+Num * | unavailable | `false` | 14676 |
+| Transport > Roll Lengths... > Post-roll (beats, 0-64) |  | informational | `` | 14618 |
+| Transport > Roll Lengths... > Pre-roll (beats, 0-64) |  | informational | `` | 14602 |
+| Transport > Roll Lengths... > The selection is the selected audio events plus the selected MIDI part. |  | informational | `` | 14634 |
+| Transport > Start Record at Left Locator |  | unavailable | `false` | 14644 |
 | Transport > Transport Panel | F2 | available | `true` | 14534 |
-| Transport > Use External Sync | T | unavailable | `false` | 14675 |
-| Transport > Use Post-roll |  | unavailable | `false` | 14642 |
-| Transport > Use Pre-roll |  | unavailable | `false` | 14641 |
-| Window > Windows... |  | unavailable | `false` | 14812 |
-| Window > Workspaces > <lock_label> |  | available | `true` | 14807 |
-| Window > Workspaces > <name> |  | available | `*active` | 14785 |
-| Window > Workspaces > Organize Workspaces... |  | available | `true` | 14791 |
+| Transport > Use External Sync | T | unavailable | `false` | 14676 |
+| Transport > Use Post-roll |  | unavailable | `false` | 14643 |
+| Transport > Use Pre-roll |  | unavailable | `false` | 14642 |
+| Window > Windows... |  | unavailable | `false` | 14813 |
+| Window > Workspaces > <lock_label> |  | available | `true` | 14808 |
+| Window > Workspaces > <name> |  | available | `*active` | 14786 |
+| Window > Workspaces > Organize Workspaces... |  | available | `true` | 14792 |
 
 No duplicate full paths.
 
@@ -306,24 +306,24 @@ No duplicate full paths.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
-| Audio > No project is open |  | unavailable | `false` | 14938 |
-| Devices > Device Setup... |  | available | `true` | 14941 |
-| Devices > VST Connections... | F4 | unavailable | `false` | 14945 |
-| Edit > Key Commands... |  | available | `true` | 14929 |
-| Edit > Redo |  | unavailable | `false` | 14927 |
-| Edit > Undo |  | unavailable | `false` | 14926 |
-| File > New Project... | Ctrl+N | available | `true` | 14908 |
-| File > Open... | Ctrl+O | available | `true` | 14912 |
-| File > Quit | Alt+F4 | available | `true` | 14920 |
-| File > Save | Ctrl+S | unavailable | `false` | 14917 |
-| File > Save As... | Ctrl+Shift+S | unavailable | `false` | 14918 |
-| Help > About OpenTrack... |  | available | `true` | 14953 |
-| MIDI > No project is open |  | unavailable | `false` | 14949 |
-| Media > No project is open |  | unavailable | `false` | 14949 |
-| Project > No project is open |  | unavailable | `false` | 14935 |
-| Scores > No project is open |  | unavailable | `false` | 14949 |
-| Transport > No project is open |  | unavailable | `false` | 14949 |
-| Window > No project is open |  | unavailable | `false` | 14949 |
+| Audio > No project is open |  | unavailable | `false` | 14939 |
+| Devices > Device Setup... |  | available | `true` | 14942 |
+| Devices > VST Connections... | F4 | unavailable | `false` | 14946 |
+| Edit > Key Commands... |  | available | `true` | 14930 |
+| Edit > Redo |  | unavailable | `false` | 14928 |
+| Edit > Undo |  | unavailable | `false` | 14927 |
+| File > New Project... | Ctrl+N | available | `true` | 14909 |
+| File > Open... | Ctrl+O | available | `true` | 14913 |
+| File > Quit | Alt+F4 | available | `true` | 14921 |
+| File > Save | Ctrl+S | unavailable | `false` | 14918 |
+| File > Save As... | Ctrl+Shift+S | unavailable | `false` | 14919 |
+| Help > About OpenTrack... |  | available | `true` | 14954 |
+| MIDI > No project is open |  | unavailable | `false` | 14950 |
+| Media > No project is open |  | unavailable | `false` | 14950 |
+| Project > No project is open |  | unavailable | `false` | 14936 |
+| Scores > No project is open |  | unavailable | `false` | 14950 |
+| Transport > No project is open |  | unavailable | `false` | 14950 |
+| Window > No project is open |  | unavailable | `false` | 14950 |
 
 No duplicate full paths.
 
