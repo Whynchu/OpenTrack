@@ -248,6 +248,229 @@ fn run_processor(
     Ok(())
 }
 
+/// Editing state for one event's chain, so a burst of edits is one history step.
+pub(super) struct ChainDraft {
+    pub clip_id: u64,
+    pub chain: Vec<OfflineProcess>,
+}
+
+impl OpenTrackApp {
+    /// Opens the Direct Offline Processing window for the first selected event.
+    pub(super) fn open_offline_processing(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to process events offline".to_owned();
+            return;
+        }
+        let Some(clip_id) = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .first()
+            .copied()
+        else {
+            self.status_message = "Select an audio event to process offline".to_owned();
+            return;
+        };
+        let Some(chain) = self.data.project.offline_chain_of(clip_id) else {
+            self.status_message = "The selected event is no longer in the project".to_owned();
+            return;
+        };
+        self.offline_chain_draft = Some(ChainDraft {
+            clip_id,
+            chain: chain.to_vec(),
+        });
+    }
+
+    /// Commits the draft as one labelled history step.
+    fn save_offline_chain_draft(&mut self, draft: &ChainDraft) -> bool {
+        if self.data.project.offline_chain_of(draft.clip_id) == Some(draft.chain.as_slice()) {
+            return true;
+        }
+        let mut candidate = self.data.project.clone();
+        if let Err(message) = candidate.set_offline_chain(draft.clip_id, draft.chain.clone()) {
+            self.status_message = message.to_owned();
+            return false;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot edit the chain: undo snapshot is unavailable".to_owned();
+            return false;
+        }
+        self.project_history.label_next("Edit Offline Chain");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        true
+    }
+
+    pub(super) fn show_offline_processing(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.offline_chain_draft.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut save = false;
+        let mut apply = false;
+        let name = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == draft.clip_id)
+            .map(|clip| clip.name.clone())
+            .unwrap_or_else(|| "the selected event".to_owned());
+        let response = egui::Window::new("Direct Offline Processing")
+            .id(Id::new("offline-processing"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(460.0, 320.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Chain for {name}"));
+                ui.label(
+                    egui::RichText::new(
+                        "Processors run top to bottom when applied. The chain is not baked until Apply.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.separator();
+                let mut remove = None;
+                let mut move_up = None;
+                let mut move_down = None;
+                for (index, process) in draft.chain.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}. {}", index + 1, process.label()));
+                        match process {
+                            OfflineProcess::GainDb { db } => {
+                                ui.add(
+                                    egui::DragValue::new(db)
+                                        .range(-60.0..=12.0)
+                                        .speed(0.1)
+                                        .suffix(" dB"),
+                                );
+                            }
+                            OfflineProcess::Normalize { target_dbfs } => {
+                                ui.add(
+                                    egui::DragValue::new(target_dbfs)
+                                        .range(-60.0..=0.0)
+                                        .speed(0.1)
+                                        .suffix(" dBFS"),
+                                );
+                            }
+                            OfflineProcess::Resample { target_rate } => {
+                                ui.add(
+                                    egui::DragValue::new(target_rate)
+                                        .range(8_000..=192_000)
+                                        .speed(100.0)
+                                        .suffix(" Hz"),
+                                );
+                            }
+                            OfflineProcess::TimeStretch { percent } => {
+                                ui.add(
+                                    egui::DragValue::new(percent)
+                                        .range(25.0..=400.0)
+                                        .speed(0.5)
+                                        .suffix(" %"),
+                                );
+                            }
+                            _ => {
+                                ui.weak(process.description());
+                            }
+                        }
+                        if ui.small_button("↑").clicked() && index > 0 {
+                            move_up = Some(index);
+                        }
+                        if ui.small_button("↓").clicked() {
+                            move_down = Some(index);
+                        }
+                        if ui.small_button("✕").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                }
+                if draft.chain.is_empty() {
+                    ui.weak("No processors yet.");
+                }
+                if let Some(index) = remove {
+                    draft.chain.remove(index);
+                }
+                if let Some(index) = move_up {
+                    draft.chain.swap(index, index - 1);
+                }
+                if let Some(index) = move_down
+                    && index + 1 < draft.chain.len()
+                {
+                    draft.chain.swap(index, index + 1);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("offline-add-processor")
+                        .selected_text("Add processor")
+                        .show_ui(ui, |ui| {
+                            for process in [
+                                OfflineProcess::GainDb { db: -3.0 },
+                                OfflineProcess::Normalize { target_dbfs: -0.1 },
+                                OfflineProcess::Reverse,
+                                OfflineProcess::RemoveDcOffset,
+                                OfflineProcess::StereoFlip,
+                                OfflineProcess::Resample { target_rate: 48_000 },
+                                OfflineProcess::TimeStretch { percent: 100.0 },
+                            ] {
+                                if ui
+                                    .selectable_label(false, process.label())
+                                    .clicked()
+                                {
+                                    if draft.chain.len() < opentrack_core::project::MAX_OFFLINE_CHAIN {
+                                        draft.chain.push(process);
+                                    }
+                                }
+                            }
+                        });
+                    if ui.button("Save Chain").clicked() {
+                        save = true;
+                    }
+                    if ui
+                        .button("Apply Chain")
+                        .on_hover_text("Bake the chain into new audio as one undo step")
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("offline-processing"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            if self.save_offline_chain_draft(&draft) {
+                self.apply_offline_chain(draft.clip_id);
+            }
+            return;
+        }
+        if save {
+            if self.save_offline_chain_draft(&draft) {
+                self.status_message = format!(
+                    "Saved a {}-processor offline chain for {name}",
+                    draft.chain.len()
+                );
+            }
+            self.offline_chain_draft = Some(draft);
+            return;
+        }
+        if open {
+            self.offline_chain_draft = Some(draft);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +523,75 @@ mod tests {
             .expect("clip");
         app.project_history.clear();
         (app, clip, root)
+    }
+
+    #[test]
+    fn the_editor_saves_and_applies_a_draft_chain() {
+        let source_root =
+            std::env::temp_dir().join(format!("opentrack-offline-src3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&source_root);
+        std::fs::create_dir_all(&source_root).expect("src");
+        let source = source_root.join("flat.wav");
+        write_flat_wav(&source, 24_000, 0.25);
+
+        let (mut app, clip, root) = app_with_clip(&source, 0.5, "editor");
+        // Without a selection the window refuses to open.
+        app.open_offline_processing();
+        assert!(app.status_message.contains("Select an audio event"));
+
+        app.arrange_view_state.audio_events.select_many([clip]);
+        app.open_offline_processing();
+        assert_eq!(
+            app.offline_chain_draft.as_ref().map(|d| d.chain.len()),
+            Some(0)
+        );
+
+        // Editing the draft does not touch the project until it is saved.
+        let preview = ChainDraft {
+            clip_id: clip,
+            chain: vec![OfflineProcess::GainDb { db: -6.0 }, OfflineProcess::Reverse],
+        };
+        assert!(
+            app.data
+                .project
+                .offline_chain_of(clip)
+                .expect("clip")
+                .is_empty()
+        );
+        assert!(app.save_offline_chain_draft(&preview));
+        assert_eq!(
+            app.data.project.offline_chain_of(clip).expect("clip").len(),
+            2
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Edit Offline Chain");
+
+        // An invalid draft is refused without touching the project.
+        let invalid = ChainDraft {
+            clip_id: clip,
+            chain: vec![OfflineProcess::GainDb { db: 99.0 }],
+        };
+        assert!(!app.save_offline_chain_draft(&invalid));
+        assert_eq!(
+            app.data.project.offline_chain_of(clip).expect("clip").len(),
+            2
+        );
+
+        // Applying the saved chain bakes it as its own step.
+        app.apply_offline_chain(clip);
+        assert!(
+            app.data
+                .project
+                .offline_chain_of(clip)
+                .expect("clip")
+                .is_empty()
+        );
+        assert!(
+            app.status_message
+                .contains("Applied 2 offline processor(s)")
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(source_root);
     }
 
     #[test]

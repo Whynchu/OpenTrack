@@ -1266,6 +1266,8 @@ pub struct OpenTrackApp {
     tempo_editor: Option<tempo_editor::Draft>,
     /// Bounded retrospective MIDI buffer for the Retrospective Record command.
     retrospective: retrospective::Capture,
+    /// Direct Offline Processing draft for one event's chain.
+    offline_chain_draft: Option<offline_processing::ChainDraft>,
     /// On-screen MIDI keyboard: open state, base octave and held keys.
     virtual_keyboard_open: bool,
     virtual_keyboard_octave: u8,
@@ -2737,6 +2739,7 @@ impl OpenTrackApp {
             pool_record_folder_dialog: None,
             tempo_editor: None,
             retrospective: retrospective::Capture::default(),
+            offline_chain_draft: None,
             virtual_keyboard_open: false,
             virtual_keyboard_octave: 3,
             virtual_keyboard_held: std::collections::BTreeSet::new(),
@@ -4292,6 +4295,7 @@ impl OpenTrackApp {
         self.pool_record_folder_dialog = None;
         self.tempo_editor = None;
         self.retrospective.clear();
+        self.offline_chain_draft = None;
         self.drum_map_setup = None;
         self.drum_editor_open = false;
         self.drum_editor_drag = None;
@@ -14440,13 +14444,22 @@ impl OpenTrackApp {
                         }
                     });
                     ui.menu_button("Realtime Processing", |ui| {
+                        let has_event =
+                            !self.arrange_view_state.audio_events.selected_ids().is_empty();
+                        if menu_command(
+                            ui,
+                            "Direct Offline Processing",
+                            "",
+                            self.project_open && !self.is_recording() && has_event,
+                        )
+                        .clicked()
+                        {
+                            self.open_offline_processing();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
-                            &[
-                                ("Direct Offline Processing", ""),
-                                ("Add Plug-in", ""),
-                                ("Remove Plug-in", ""),
-                            ],
+                            &[("Add Plug-in", ""), ("Remove Plug-in", "")],
                         );
                     });
                     ui.menu_button("Advanced", |ui| {
@@ -16025,6 +16038,7 @@ impl OpenTrackApp {
             || self.conform_files_dialog.is_some()
             || self.pool_record_folder_dialog.is_some()
             || self.tempo_editor.is_some()
+            || self.offline_chain_draft.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -19067,6 +19081,7 @@ impl eframe::App for OpenTrackApp {
         self.show_conform_files_dialog(&ctx);
         self.show_pool_record_folder_dialog(&ctx);
         self.show_tempo_editor(&ctx);
+        self.show_offline_processing(&ctx);
         self.show_drum_map_setup(&ctx);
         self.show_drum_editor(&ctx);
         self.show_logical_presets(&ctx);
