@@ -174,7 +174,93 @@ pub(super) struct Clipboard {
     items: Vec<ClipboardItem>,
 }
 
+fn split_selected_clips(
+    project: &mut Project,
+    selected: &HashSet<u64>,
+    beat: f64,
+) -> usize {
+    let mut candidate = project.clone();
+    let targets = candidate
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Audio)
+        .flat_map(|track| {
+            track
+                .clips
+                .iter()
+                .filter(|clip| selected.contains(&clip.id))
+                .map(move |clip| (track.id, clip.id))
+        })
+        .collect::<Vec<_>>();
+    let split = targets
+        .into_iter()
+        .filter(|(track_id, clip_id)| {
+            candidate
+                .split_audio_clip(*track_id, *clip_id, beat)
+                .is_some()
+        })
+        .count();
+    let selected_count = project
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Audio)
+        .flat_map(|track| &track.clips)
+        .filter(|clip| selected.contains(&clip.id))
+        .count();
+    if selected_count == selected.len() && split == selected_count && split > 0 {
+        *project = candidate;
+        split
+    } else {
+        0
+    }
+}
+
 impl OpenTrackApp {
+    pub(super) fn split_selected_audio_events_at_cursor(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before splitting audio events".into();
+            return;
+        }
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_group_segment()
+            .is_some()
+        {
+            self.status_message = "Splitting selected group segments is not available yet".into();
+            return;
+        }
+        let selected: HashSet<_> = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect();
+        if selected.is_empty() {
+            self.status_message = "Select audio events to split".into();
+            return;
+        }
+        let beat = self.data.transport.position_beats;
+        let mut candidate = self.data.project.clone();
+        let split = split_selected_clips(&mut candidate, &selected, beat);
+        if split == 0 {
+            self.status_message = "No selected audio event crosses the cursor".into();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self.project_history.begin(&self.data.project) {
+            self.status_message = "Cannot split: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.arrange_view_state.audio_events.clear_selection();
+        self.project_history.finish_frame(&self.data.project, true);
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Split {split} audio event(s) at the cursor; Undo restores them");
+    }
+
     pub(super) fn cut_selected_audio_events(&mut self) {
         if self
             .arrange_view_state
@@ -2744,5 +2830,60 @@ mod group_lane_tests {
             2,
             "the cut should be visible on the group, got {segments:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod split_selection_tests {
+    use super::*;
+
+    #[test]
+    fn split_selected_clips_splits_each_crossing_event_atomically() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("first.wav"), 0.0, 4.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(1, PathBuf::from("second.wav"), 0.0, 4.0)
+            .unwrap();
+        let selected = HashSet::from([first, second]);
+        assert_eq!(split_selected_clips(&mut project, &selected, 4.0), 2);
+        assert_eq!(project.tracks[0].clips.len(), 2);
+        assert_eq!(project.tracks[1].clips.len(), 2);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn split_selected_clips_leaves_project_unchanged_when_cursor_misses() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("event.wav"), 0.0, 1.0)
+            .unwrap();
+        let before = project.clone();
+        assert_eq!(split_selected_clips(&mut project, &HashSet::from([clip]), 4.0), 0);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn split_selected_clips_rolls_back_when_only_some_cross_the_cursor() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let crossing = project
+            .add_audio_clip(0, PathBuf::from("crossing.wav"), 0.0, 4.0)
+            .unwrap();
+        let elsewhere = project
+            .add_audio_clip(0, PathBuf::from("elsewhere.wav"), 8.0, 2.0)
+            .unwrap();
+        let before = project.clone();
+        assert_eq!(
+            split_selected_clips(&mut project, &HashSet::from([crossing, elsewhere]), 4.0),
+            0
+        );
+        assert_eq!(project, before);
     }
 }

@@ -4,6 +4,10 @@
 
 Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce. The arrange lane draws curves, inserts snapped points, supports left-drag movement and right-click removal using validated core commands, and clamps movement between neighboring points. Project history wraps gestures; command-level tests and the app check pass. Write capture, gesture cancellation, fader-follow/manual override and desktop playback review remain open. The existing expanded-lane snap test fails at beat 3.25 vs 3.5, reproduced at baseline `8b90b8a`. See [T078](tasks/T078-volume-automation.md).
 
+## Shared Split at Cursor command
+
+Edit > Split at Cursor and the existing `edit.split_at_cursor` shortcut now share one operation for selected ordinary audio clips. The selection is atomic: if any selected clip cannot split at the cursor, no clip changes. Project undo/redo applies. Group-segment and loop splitting remain unavailable. Three focused app helper tests cover multi-clip split, cursor miss, and rollback; runtime menu/shortcut review remains pending.
+
 ## Routing boundary
 
 The application routing module now owns send-to-playback resolution, group-cycle checks used by routing menus, and the shared active-send predicate. Core project validation and the audio engine retain their existing responsibilities; routing UI and broader typed-bus commands remain for later work. Local-ASIO check and focused Channel Settings (28), mixer (11), and preset/history (4) checks passed. The running EQ review build remains untouched.

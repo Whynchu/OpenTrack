@@ -78,9 +78,9 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 22. **Expand physical device routing.** The Add Track dialog now chooses Left or Right Stereo In for a new mono audio track, matching the existing record-route consumers. General physical input/output channel maps, speaker layouts, and multi-channel routes remain open.
 23. **Improve recording reliability.** Recover incomplete takes with clear collision and restore/discard decisions; validate timing and persistence against real devices.
 24. **Harden current plug-in workflows.** Audit VST3 scan/load/state/editor behavior and improve failure isolation based on evidence; document limits. New formats require a demonstrated user need.
-25. **Complete a high-value edit family.** Use the command audit to implement split, duplicate, mute or range actions with shared selection, undo/redo and persistence.
+25. **Complete a high-value edit family.** First slice implemented: selected ordinary audio clips can Split at Cursor via Edit menu or the existing `edit.split_at_cursor` shortcut; multi-selection is atomic and project undo/redo applies. Group-segment/range split, duplicate, mute and further families remain open.
 26. **Complete Add Track choices.** Count is bounded by remaining project capacity; mono/stereo and mono Left/Right input channel are source-connected. Unavailable speaker layouts, instrument selection, and preset browsing are labeled. Instrument catalog selection and runtime review remain open.
-27. **Unify command execution.** Connect menu, shortcut and editor entry points for a bounded command family to one operation; retain stable shortcut IDs.
+27. **Unify command execution.** First shared command implemented: Edit > Split at Cursor and `edit.split_at_cursor` call the same bounded audio-clip operation; group segments/range remain unavailable.
 28. **Build regression around shared identity.** Verify Project, Mixer, Inspector and editors agree on track/event selection for touched workflows.
 29. **Complete recording resilience follow-up.** Close remaining abnormal-exit recovery defects from real-device review and verify restore/discard decisions.
 30. **Make one editing policy real.** Choose a user-valued Preferences setting only when its consumer is specified. Persist it and prove it changes relevant Project/editor behavior.

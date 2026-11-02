@@ -57,7 +57,7 @@
 | 484 | Edit | Select None | `edit.select_none` | Ctrl+Shift+A | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
 | 484 | Edit | Snap On/Off | `edit.snap_on_off` | J | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
 | 484 | Edit | Solo | `edit.solo` | S | Global keymap; dispatcher requires project open | Implemented | toggle selected track solo |
-| 484 | Edit | Split At Cursor | `edit.split_at_cursor` | Alt+X | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
+| 484 | Edit | Split At Cursor | `edit.split_at_cursor` | Alt+X | Global keymap; dispatcher requires project open | Partial | Splits selected ordinary audio clips atomically at the transport cursor; project undo/redo applies. Group-segment and range splits remain unavailable. |
 | 484 | Edit | Split Range | `edit.split_range` | Shift+X | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
 | 484 | Edit | Undo | `edit.undo` | Ctrl+Z | Global keymap; dispatcher requires project open | Implemented | project undo |
 | 484 | Edit | Ungroup | `edit.ungroup` | Ctrl+U | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |

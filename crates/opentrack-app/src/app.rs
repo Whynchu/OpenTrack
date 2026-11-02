@@ -5615,6 +5615,7 @@ impl OpenTrackApp {
             "edit.copy" => self.copy_selected_audio_events(),
             "edit.cut" => self.cut_selected_audio_events(),
             "edit.paste" => self.paste_audio_events(),
+            "edit.split_at_cursor" => self.split_selected_audio_events_at_cursor(),
             "edit.open_default_editor" => self.open_selected_midi_editor(),
             "edit.open_close_editor" => self.midi_editor_open = false,
             "devices.mixer" => self.focus_tab(PanelTab::Mixer),
@@ -7867,14 +7868,28 @@ impl OpenTrackApp {
                         self.paste_audio_events();
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Paste at Origin", "Alt+V"),
-                            ("Split at Cursor", "Alt+X"),
-                            ("Split Loop", ""),
-                        ],
-                    );
+                    disabled_menu_commands(ui, &[("Paste at Origin", "Alt+V")]);
+                    let can_split = self.project_open
+                        && !self.is_recording()
+                        && self.data.project.tracks.iter().any(|track| {
+                            track.kind == TrackKind::Audio
+                                && track.clips.iter().any(|clip| {
+                                    self.arrange_view_state
+                                        .audio_events
+                                        .selected_ids()
+                                        .contains(&clip.id)
+                                })
+                        })
+                        && self
+                            .arrange_view_state
+                            .audio_events
+                            .selected_group_segment()
+                            .is_none();
+                    if menu_command(ui, "Split at Cursor", "Alt+X", can_split).clicked() {
+                        self.split_selected_audio_events_at_cursor();
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Split Loop", "")]);
                     let can_delete_audio = self.project_open
                         && !self.is_recording()
                         && media_pool::selection_target(
