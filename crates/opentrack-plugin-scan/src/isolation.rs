@@ -228,6 +228,34 @@ impl ChildProcessEnumerator {
         })
     }
 
+    /// The scanner binary shipped next to an application executable.
+    ///
+    /// The application is not the scanner, so it spawns the copy beside it. The
+    /// build scripts stage `opentrack-plugin-scan` next to `OpenTrack` for this.
+    pub fn sibling_of(directory: &Path, limits: IsolationLimits) -> Option<Self> {
+        let name = if cfg!(windows) {
+            "opentrack-plugin-scan.exe"
+        } else {
+            "opentrack-plugin-scan"
+        };
+        let candidate = directory.join(name);
+        candidate.is_file().then(|| Self {
+            program: candidate,
+            extra_args: Vec::new(),
+            limits: limits.sanitized(),
+        })
+    }
+
+    /// Resolves the worker for the running executable: the scanner itself, or
+    /// the copy staged beside an application executable.
+    pub fn for_current_executable(limits: IsolationLimits) -> Option<Self> {
+        if let Some(scanner) = Self::current_scanner(limits) {
+            return Some(scanner);
+        }
+        let exe = std::env::current_exe().ok()?;
+        Self::sibling_of(exe.parent()?, limits)
+    }
+
     /// Builds an enumerator around any worker program. Used by the isolation
     /// tests to drive a process that hangs or exits abnormally.
     pub fn with_program(
@@ -411,6 +439,32 @@ mod tests {
             "opentrack-isolation-missing-{}.vst3",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn an_application_finds_the_scanner_staged_beside_it() {
+        let name = if cfg!(windows) {
+            "opentrack-plugin-scan.exe"
+        } else {
+            "opentrack-plugin-scan"
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "opentrack-isolation-sibling-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("temp dir");
+        assert!(
+            ChildProcessEnumerator::sibling_of(&directory, IsolationLimits::default()).is_none(),
+            "no worker next to the application yet"
+        );
+
+        std::fs::write(directory.join(name), b"worker").expect("write worker");
+        let enumerator = ChildProcessEnumerator::sibling_of(&directory, IsolationLimits::default())
+            .expect("the staged worker is found");
+        assert_eq!(enumerator.program, directory.join(name));
+        assert!(!enumerator.runs_in_process());
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

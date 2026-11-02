@@ -37,7 +37,7 @@ foreach ($arch in $architectures) {
     # before the exit code is checked.
     $buildErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    & cargo build @audioFeatures --release -p opentrack --manifest-path $manifest --target $triple --target-dir $cache
+    & cargo build @audioFeatures --release -p opentrack -p opentrack-plugin-scan --manifest-path $manifest --target $triple --target-dir $cache
     $buildExitCode = $LASTEXITCODE
     $ErrorActionPreference = $buildErrorPreference
     if ($buildExitCode -ne 0) { throw "Build failed for $arch." }
@@ -47,6 +47,10 @@ foreach ($arch in $architectures) {
     $null = New-Item -ItemType Directory -Path $staging -Force
     $stagedExecutable = Join-Path $staging 'OpenTrack.exe'
     Copy-Item -LiteralPath (Join-Path $cache "$triple\release\opentrack.exe") -Destination $stagedExecutable -Force
+    # The app enumerates each VST3 module in this worker, so it ships beside the
+    # executable; without it the app falls back to in-process scanning.
+    $stagedScanner = Join-Path $staging 'opentrack-plugin-scan.exe'
+    Copy-Item -LiteralPath (Join-Path $cache "$triple\release\opentrack-plugin-scan.exe") -Destination $stagedScanner -Force
 
     # The builds/<arch> directory is a distribution folder, not a scratchpad
     # for test reports, compatibility inventories, or historical build logs.
@@ -64,6 +68,7 @@ foreach ($arch in $architectures) {
         Remove-Item -LiteralPath $entryFullPath -Recurse -Force
     }
     Copy-Item -LiteralPath $stagedExecutable -Destination (Join-Path $destination 'OpenTrack.exe') -Force
+    Copy-Item -LiteralPath $stagedScanner -Destination (Join-Path $destination 'opentrack-plugin-scan.exe') -Force
     if ($useLocalAsio) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'vendor\maolan-asio\LICENSE') -Destination (Join-Path $destination 'maolan-asio-LICENSE.txt') -Force
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'docs\third-party-notices.md') -Destination (Join-Path $destination 'third-party-notices.md') -Force

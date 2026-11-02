@@ -108,6 +108,11 @@ FILE`) under a bounded budget (`--module-timeout SECS`, default 30, range 1-600)
   with its status label, path and reason, so a timeout or crash is visible
   without reading a log.
 
+The worker ships beside the application (`opentrack-plugin-scan` /
+`opentrack-plugin-scan.exe`), and the app resolves it from its own directory. When
+the worker is missing the scan still runs, in-process, and the report note and the
+Plug-in Information status say so instead of implying isolation.
+
 Unit tests drive the isolation directly with stand-in programs (a hanging
 process, an abnormal exit, a clean exit without a result, a result written from
 the worker side). Integration tests run the real binary: the worker protocol for

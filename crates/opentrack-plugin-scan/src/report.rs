@@ -502,7 +502,7 @@ pub fn scan_folders_isolated(
     isolation: crate::isolation::IsolationLimits,
 ) -> ScanReport {
     let isolation = isolation.sanitized();
-    match crate::isolation::ChildProcessEnumerator::current_scanner(isolation) {
+    match crate::isolation::ChildProcessEnumerator::for_current_executable(isolation) {
         Some(enumerator) => {
             build_report_with(folders, limits, crate::unix_time_ms(), Some(&enumerator))
         }
@@ -512,7 +512,7 @@ pub fn scan_folders_isolated(
                 build_report_with(folders, limits, crate::unix_time_ms(), Some(&in_process));
             report.notes.insert(
                 0,
-                "Module isolation is unavailable in this process; modules were enumerated in-process."
+                "No scanner worker was found next to the application, so modules were enumerated in-process; a module that hangs or crashes will stop the scan. Reinstall OpenTrack with the scanner binary beside the application."
                     .to_owned(),
             );
             report

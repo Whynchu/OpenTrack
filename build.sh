@@ -65,11 +65,13 @@ esac
 
 printf 'Building %s release for %s\n' "$arch" "$triple"
 if [[ "$triple" == "$host_triple" ]]; then
-    cargo build --release --locked -p opentrack
+    cargo build --release --locked -p opentrack -p opentrack-plugin-scan
     binary=".build-cache/release/opentrack"
+    scanner_binary=".build-cache/release/opentrack-plugin-scan"
 else
-    cargo build --release --locked -p opentrack --target "$triple"
+    cargo build --release --locked -p opentrack -p opentrack-plugin-scan --target "$triple"
     binary=".build-cache/$triple/release/opentrack"
+    scanner_binary=".build-cache/$triple/release/opentrack-plugin-scan"
 fi
 
 if [[ ! -f "$binary" ]]; then
@@ -80,6 +82,13 @@ fi
 rm -rf -- "$destination"
 mkdir -p "$destination"
 install -m 0755 "$binary" "$destination/OpenTrack"
+# The application enumerates each VST3 module in this worker, so it must ship
+# beside the executable; without it the app falls back to in-process scanning.
+if [[ ! -f "$scanner_binary" ]]; then
+    printf 'expected the scanner worker at %s\n' "$scanner_binary" >&2
+    exit 1
+fi
+install -m 0755 "$scanner_binary" "$destination/opentrack-plugin-scan"
 if [[ -f docs/third-party-notices.md ]]; then
     install -m 0644 docs/third-party-notices.md "$destination/third-party-notices.md"
 fi
