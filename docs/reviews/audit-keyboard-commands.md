@@ -9,7 +9,7 @@
 
 | CSV rows / stable command IDs | CSV binding expressions | Expanded shortcut bindings | Implemented | Partial | Fallback |
 |---:|---:|---:|---:|---:|---:|
-| 152 | 158 | 198 | 44 | 6 | 102 |
+| 152 | 158 | 198 | 45 | 7 | 100 |
 
 ## Row-by-row mapping
 
@@ -17,7 +17,7 @@
 |---:|---|---|---|---|---|---|---|
 | 484 | Audio | Adjust Fades to Range | `audio.adjust_fades_to_range` | A | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
 | 484 | Audio | Auto Grid | `audio.auto_grid` | Shift+Q | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
-| 484 | Audio | Crossfade | `audio.crossfade` | X | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
+| 484 | Audio | Crossfade | `audio.crossfade` | X | Global keymap; dispatcher requires project open | Implemented | Crossfades exactly two overlapping selected audio clips on the same track; menu, shortcut, and arrange X gesture share the same operation. |
 | 484 | Audio | Find Selected in Pool | `audio.find_selected_in_pool` | Ctrl+F | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
 | 484 | Automation | Toggle Read Enable All Tracks | `automation.toggle_read_enable_all_tracks` | Alt+R | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |
 | 484 | Automation | Toggle Write Enable All Tracks | `automation.toggle_write_enable_all_tracks` | Alt+W | Global keymap; dispatcher requires project open | Fallback | No dispatcher branch or identified pre-dispatch action; resolves to `Not implemented yet: <label>`. |

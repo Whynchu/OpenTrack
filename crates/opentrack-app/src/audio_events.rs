@@ -215,7 +215,27 @@ fn split_selected_clips(
     }
 }
 
+fn crossfade_selection(project: &mut Project, ids: &[u64]) -> bool {
+    ids.len() == 2 && project.crossfade_audio_clips(ids[0], ids[1])
+}
+
 impl OpenTrackApp {
+    pub(super) fn crossfade_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before creating a crossfade".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if !crossfade_selection(&mut self.data.project, &ids) {
+            self.status_message =
+                "Crossfade needs two overlapping audio events on the same track".into();
+            return;
+        }
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "Crossfade created; Undo restores the previous fade".into();
+    }
+
     pub(super) fn split_selected_audio_events_at_cursor(&mut self) {
         if self.is_recording() {
             self.status_message = "Stop recording before splitting audio events".into();
@@ -527,6 +547,7 @@ pub(super) struct Lane {
 pub(super) struct Outcome {
     pub changed: bool,
     pub scroll: f32,
+    pub crossfade_requested: bool,
 }
 pub(super) fn take_lane_layout(
     track: &opentrack_core::project::Track,
@@ -1125,6 +1146,7 @@ pub(super) fn show_with_tool(
     let mut out = Outcome {
         changed: false,
         scroll: 0.0,
+        crossfade_requested: false,
     };
     let tempo = project.tempo_bpm;
     let mut reset_gain = None;
@@ -2172,8 +2194,8 @@ pub(super) fn show_with_tool(
             .into_iter()
             .chain(state.extra_selected.iter().copied())
             .collect::<Vec<_>>();
-        if ids.len() == 2 && project.crossfade_audio_clips(ids[0], ids[1]) {
-            out.changed = true;
+        if ids.len() == 2 {
+            out.crossfade_requested = true;
         } else {
             state.message=Some("Crossfade needs two overlapping audio events on the same track (Shift-click to select).".into());
         }
@@ -2884,6 +2906,42 @@ mod split_selection_tests {
             split_selected_clips(&mut project, &HashSet::from([crossing, elsewhere]), 4.0),
             0
         );
+        assert_eq!(project, before);
+    }
+}
+
+#[cfg(test)]
+mod crossfade_selection_tests {
+    use super::*;
+
+    #[test]
+    fn crossfade_selection_applies_only_to_two_overlapping_same_track_clips() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("first.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(0, PathBuf::from("second.wav"), 0.5, 2.0)
+            .unwrap();
+        assert!(crossfade_selection(&mut project, &[first, second]));
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn crossfade_selection_rejects_disjoint_and_wrong_count_without_mutation() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("first.wav"), 0.0, 1.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(0, PathBuf::from("second.wav"), 2.0, 1.0)
+            .unwrap();
+        let before = project.clone();
+        assert!(!crossfade_selection(&mut project, &[first, second]));
+        assert_eq!(project, before);
+        assert!(!crossfade_selection(&mut project, &[first]));
         assert_eq!(project, before);
     }
 }

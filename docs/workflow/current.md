@@ -8,6 +8,10 @@ Track-volume automation points have a bounded persistent model and sample-accura
 
 Edit > Split at Cursor and the existing `edit.split_at_cursor` shortcut now share one operation for selected ordinary audio clips. The selection is atomic: if any selected clip cannot split at the cursor, no clip changes. Project undo/redo applies. Group-segment and loop splitting remain unavailable. Three focused app helper tests cover multi-clip split, cursor miss, and rollback; runtime menu/shortcut review remains pending.
 
+## Shared Crossfade command
+
+Edit > Crossfade, `audio.crossfade` (X), and the arrange X gesture now share one operation. It requires two overlapping audio clips on the same track and leaves the project unchanged otherwise. Two focused app tests cover success and rejection; runtime listening remains pending.
+
 ## Routing boundary
 
 The application routing module now owns send-to-playback resolution, group-cycle checks used by routing menus, and the shared active-send predicate. Core project validation and the audio engine retain their existing responsibilities; routing UI and broader typed-bus commands remain for later work. Local-ASIO check and focused Channel Settings (28), mixer (11), and preset/history (4) checks passed. The running EQ review build remains untouched.

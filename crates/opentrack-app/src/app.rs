@@ -5616,6 +5616,7 @@ impl OpenTrackApp {
             "edit.cut" => self.cut_selected_audio_events(),
             "edit.paste" => self.paste_audio_events(),
             "edit.split_at_cursor" => self.split_selected_audio_events_at_cursor(),
+            "audio.crossfade" => self.crossfade_selected_audio_events(),
             "edit.open_default_editor" => self.open_selected_midi_editor(),
             "edit.open_close_editor" => self.midi_editor_open = false,
             "devices.mixer" => self.focus_tab(PanelTab::Mixer),
@@ -7889,6 +7890,13 @@ impl OpenTrackApp {
                         self.split_selected_audio_events_at_cursor();
                         ui.close();
                     }
+                    let can_crossfade = self.project_open
+                        && !self.is_recording()
+                        && self.arrange_view_state.audio_events.selected_ids().len() == 2;
+                    if menu_command(ui, "Crossfade", "X", can_crossfade).clicked() {
+                        self.crossfade_selected_audio_events();
+                        ui.close();
+                    }
                     disabled_menu_commands(ui, &[("Split Loop", "")]);
                     let can_delete_audio = self.project_open
                         && !self.is_recording()
@@ -10139,6 +10147,9 @@ impl OpenTrackApp {
                 Err(error) => self.status_message = format!("Automation edit rejected: {error}"),
             }
         }
+        if project_changes.crossfade_requested {
+            self.crossfade_selected_audio_events();
+        }
         let settings_response = ui.interact(
             readout,
             ui.id().with("project-recording-setup"),
@@ -11895,6 +11906,7 @@ struct ProjectViewChanges {
     live_mix: Option<(u64, f32, f32)>,
     defer_audio_plan: bool,
     automation_action: Option<automation::LaneAction>,
+    crossfade_requested: bool,
 }
 
 const PANEL_HEADER_HEIGHT: f32 = 29.0;
@@ -12282,6 +12294,7 @@ fn show_project(
     let mut pending_midi_part_remove = None;
     let mut pending_midi_part_split = None;
     let mut pending_automation_action = None;
+    let mut audio_events_crossfade_requested = false;
     if *edit_tool != EditTool::Draw {
         *midi_part_draw = None;
     }
@@ -14496,6 +14509,7 @@ fn show_project(
                 edit_tool,
             );
             modified |= outcome.changed;
+            audio_events_crossfade_requested |= outcome.crossfade_requested;
             if let Some((group_id, _)) = arrange_view_state.audio_events.selected_group_segment()
                 && let Some(group_index) =
                     project.tracks.iter().position(|track| track.id == group_id)
@@ -15077,6 +15091,7 @@ fn show_project(
             .flatten(),
         defer_audio_plan: arrange_view_state.audio_events.edit_drag_active(),
         automation_action: pending_automation_action,
+        crossfade_requested: audio_events_crossfade_requested,
     }
 }
 
