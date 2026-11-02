@@ -46,6 +46,7 @@ mod project_tools;
 mod recording_recovery;
 #[path = "recording_undo.rs"]
 mod recording_undo;
+mod region_editor;
 #[path = "routing.rs"]
 mod routing;
 #[path = "sample_editor.rs"]
@@ -1297,6 +1298,7 @@ pub struct OpenTrackApp {
     drum_editor_velocity: u8,
     logical_preset_dialog: Option<logical_presets::LogicalPresetDialog>,
     cc_automation_setup: Option<cc_automation::CcAutomationSetup>,
+    region_editor: Option<region_editor::RegionEditor>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2790,6 +2792,7 @@ impl OpenTrackApp {
             drum_editor_velocity: 96,
             logical_preset_dialog: None,
             cc_automation_setup: None,
+            region_editor: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4117,6 +4120,7 @@ impl OpenTrackApp {
         self.drum_editor_drag = None;
         self.logical_preset_dialog = None;
         self.cc_automation_setup = None;
+        self.region_editor = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -13996,6 +14000,10 @@ impl OpenTrackApp {
                         self.markers_window_open = true;
                         ui.close();
                     }
+                    if menu_command(ui, "Regions...", "", self.project_open).clicked() {
+                        self.open_region_editor();
+                        ui.close();
+                    }
                     if menu_command(ui, "Browser", "Ctrl+B", self.project_open).clicked() {
                         self.data.selected_media = 0;
                         self.focus_tab(PanelTab::Media);
@@ -18693,6 +18701,7 @@ impl eframe::App for OpenTrackApp {
         self.show_drum_editor(&ctx);
         self.show_logical_presets(&ctx);
         self.show_cc_automation_setup(&ctx);
+        self.show_region_editor(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
@@ -31336,6 +31345,76 @@ mod transport_locate_tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn region_editor_applies_one_undoable_content_step_without_touching_event_selection() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        let first = app
+            .data
+            .project
+            .add_region(0.0, 4.0, "Intro")
+            .expect("first");
+        let second = app
+            .data
+            .project
+            .add_region(8.0, 12.0, "Verse")
+            .expect("second");
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.clear_selection();
+        app.arrange_view_state.snap_enabled = false;
+
+        let mut editor = region_editor::RegionEditor::from_project(&app.data.project);
+        let draft = editor
+            .drafts
+            .iter_mut()
+            .find(|draft| draft.id == first)
+            .expect("draft");
+        draft.name = "Intro Edit".to_owned();
+        draft.start_beats = 1.0;
+        draft.end_beats = 5.0;
+        editor
+            .drafts
+            .iter_mut()
+            .find(|draft| draft.id == second)
+            .expect("second draft")
+            .removed = true;
+
+        app.apply_region_editor(&editor);
+        assert_eq!(app.data.project.regions.len(), 1);
+        let region = &app.data.project.regions[0];
+        assert_eq!(region.name, "Intro Edit");
+        assert!((region.start_beats - 1.0).abs() < 1.0e-9);
+        assert!((region.end_beats - 5.0).abs() < 1.0e-9);
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Edit Regions");
+        app.undo_project();
+        assert_eq!(app.data.project.regions.len(), 2);
+
+        let mut invalid = region_editor::RegionEditor::from_project(&app.data.project);
+        let draft = invalid
+            .drafts
+            .iter_mut()
+            .find(|draft| draft.id == first)
+            .expect("draft");
+        draft.start_beats = 10.0;
+        draft.end_beats = 2.0;
+        let before = app.data.project.clone();
+        app.apply_region_editor(&invalid);
+        assert_eq!(
+            app.data.project, before,
+            "invalid range leaves project alone"
+        );
+        assert!(app.status_message.contains("must end after"));
     }
 
     #[test]

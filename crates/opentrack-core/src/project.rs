@@ -2663,6 +2663,26 @@ impl Project {
     }
 
     /// Renames a region and reports whether it changed.
+    /// Changes a region's half-open beat range, keeping its identity.
+    pub fn set_region_range(&mut self, id: u64, start_beats: f64, end_beats: f64) -> bool {
+        if !start_beats.is_finite()
+            || !end_beats.is_finite()
+            || start_beats < 0.0
+            || end_beats <= start_beats + 1e-9
+            || end_beats > MAX_LOOP_BEATS
+        {
+            return false;
+        }
+        let Some(region) = self.regions.iter_mut().find(|region| region.id == id) else {
+            return false;
+        };
+        region.start_beats = start_beats;
+        region.end_beats = end_beats;
+        self.regions
+            .sort_by(|left, right| left.start_beats.total_cmp(&right.start_beats));
+        true
+    }
+
     pub fn rename_region(&mut self, id: u64, name: impl Into<String>) -> bool {
         let name = name.into();
         let name = name.trim();
@@ -9431,6 +9451,22 @@ mod sample_edit_tests {
             .find(|track| track.parent_folder_id == Some(duplicated_folder))
             .expect("duplicated nested folder");
         assert_eq!(duplicated_inner.parent_folder_id, Some(duplicated_folder));
+        assert_eq!(project.validate(), Ok(()));
+    }
+
+    #[test]
+    fn regions_can_be_resized_without_changing_identity() {
+        let mut project = Project::default();
+        let first = project.add_region(0.0, 4.0, "A").expect("region");
+        let second = project.add_region(8.0, 12.0, "B").expect("region");
+        assert!(project.set_region_range(first, 2.0, 6.0));
+        assert_eq!(project.regions[0].id, first);
+        assert_eq!(project.regions[0].start_beats, 2.0);
+        assert_eq!(project.regions[0].end_beats, 6.0);
+        assert!(!project.set_region_range(first, 6.0, 2.0));
+        assert!(!project.set_region_range(9999, 0.0, 2.0));
+        // Overlaps are allowed; regions are not clips.
+        assert!(project.set_region_range(second, 5.0, 9.0));
         assert_eq!(project.validate(), Ok(()));
     }
 

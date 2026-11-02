@@ -44,7 +44,9 @@ Step 20 aligned folder identity across views: Mixer strips omit folders, Inspect
 
 Step 21 added an optional real Marker lane backed by `Project.markers`: snapped add, drag move, right-click delete, click-to-seek, shared hit/bar geometry, one undo step per gesture and Escape rollback. Visibility is workspace state and defaults off to keep existing row geometry unchanged; Project > Show Marker Lane enables it. App suite: 536 passed, 9 ignored; inventory is 272 leaves with 84 unavailable. Rename stays in the existing Markers window; desktop lane review remains pending. See [R4-21](tasks/R4-21-marker-lane.md).
 
-Next ready work: revision-4 step 22, expose regions as editable ranges. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 22 added a Regions editor for `Project.regions` with select/locate/rename/resize/add/delete, Apply-time snapping and one "Edit Regions" history step; invalid ranges and empty names are refused unchanged, overlaps remain valid, and the editor's selection is separate from audio-event selection. Hitpoint-created regions appear in the same list. Core suite: 160 passed; app suite: 537 passed, 9 ignored; inventory is 273 leaves with 84 unavailable. Desktop editor review remains pending. See [R4-22](tasks/R4-22-regions-editor.md).
+
+Next ready work: revision-4 step 23, additional ruler presentation. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 
