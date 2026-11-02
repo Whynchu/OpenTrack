@@ -6718,6 +6718,35 @@ impl OpenTrackApp {
                     ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                 }
             }
+            "edit.select_all" => self.select_all_audio_events(),
+            "edit.select_none" => self.select_no_audio_events(),
+            "edit.delete" => self.delete_audio_selection(false),
+            "edit.snap_on_off" => {
+                self.arrange_view_state.snap_enabled = !self.arrange_view_state.snap_enabled;
+                self.status_message = if self.arrange_view_state.snap_enabled {
+                    "Snap is on".to_owned()
+                } else {
+                    "Snap is off".to_owned()
+                };
+            }
+            "edit.autoscroll" => {
+                self.arrange_view_state.autoscroll_enabled =
+                    !self.arrange_view_state.autoscroll_enabled;
+                self.status_message = if self.arrange_view_state.autoscroll_enabled {
+                    "Autoscroll follows the playhead".to_owned()
+                } else {
+                    "Autoscroll is off".to_owned()
+                };
+            }
+            "midi.quantize" => {
+                self.midi_quantize_dialog = Some(opentrack_core::midi_quantize::QuantizeOptions {
+                    grid_beats: self.arrange_view_state.quantize.step_beats(),
+                    ..opentrack_core::midi_quantize::QuantizeOptions::default()
+                });
+            }
+            "devices.vst_connections" => {
+                self.vst_connections_open = !self.vst_connections_open;
+            }
             "edit.undo" => self.undo_project(),
             "edit.redo" => self.redo_project(),
             "edit.copy" => self.copy_selected_audio_events(),
@@ -18151,6 +18180,24 @@ fn is_adjacent_part(track: &opentrack_core::project::Track, first: u64, second: 
     a_start <= b_end + 1e-6 && b_start <= a_end + 1e-6
 }
 
+/// Command ids the bundled keymap binds but `dispatch_reference_command` does not
+/// handle, so the shortcut does nothing.
+///
+/// The dispatch table is matched against the source text rather than run, because
+/// most commands need a live project and a window. The test that uses this also
+/// prints the covered and uncovered counts for the accessibility report.
+#[cfg(test)]
+fn unhandled_bound_commands(source: &str, profile: &KeymapProfile) -> Vec<String> {
+    let mut bound = std::collections::BTreeSet::new();
+    for binding in profile.keymap.bindings() {
+        bound.insert(binding.command.as_str().to_owned());
+    }
+    bound
+        .into_iter()
+        .filter(|id| !source.contains(&format!("\"{id}\" =>")))
+        .collect()
+}
+
 fn split_midi_part(
     project: &mut Project,
     track_index: usize,
@@ -25532,6 +25579,167 @@ mod outside_click_window_tests {
             }
         }
         assert!(!open, "outside click should dismiss the transient window");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_coverage_tests {
+    use super::*;
+    use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+
+    fn app_with_events() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        for index in 0..3 {
+            app.data
+                .project
+                .add_audio_clip(
+                    0,
+                    PathBuf::from(format!("e{index}.wav")),
+                    index as f64 * 4.0,
+                    2.0,
+                )
+                .unwrap();
+        }
+        app
+    }
+
+    fn dispatch(app: &mut OpenTrackApp, id: &str, ctx: &egui::Context) {
+        app.dispatch_reference_command(
+            id,
+            id,
+            KeyChord::new(KeyCode::Letter('A'), KeyModifiers::default()),
+            ctx,
+        );
+    }
+
+    #[test]
+    fn select_all_and_select_none_reach_the_arrange_selection() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_events();
+        dispatch(&mut app, "edit.select_all", &ctx);
+        assert_eq!(app.arrange_view_state.audio_events.selected_ids().len(), 3);
+        assert!(app.status_message.contains("Selected 3 audio event(s)"));
+
+        dispatch(&mut app, "edit.select_none", &ctx);
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn delete_reaches_the_selected_events_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_events();
+        let ids = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        app.arrange_view_state.audio_events.select_many(ids);
+        app.project_history.clear();
+        dispatch(&mut app, "edit.delete", &ctx);
+        assert!(app.data.project.tracks[0].clips.is_empty());
+    }
+
+    #[test]
+    fn the_toolbar_toggles_are_reachable_from_their_reference_shortcuts() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_events();
+        let snap = app.arrange_view_state.snap_enabled;
+        dispatch(&mut app, "edit.snap_on_off", &ctx);
+        assert_eq!(app.arrange_view_state.snap_enabled, !snap);
+        assert!(app.status_message.contains("Snap is"));
+
+        dispatch(&mut app, "edit.autoscroll", &ctx);
+        assert!(app.arrange_view_state.autoscroll_enabled);
+        dispatch(&mut app, "edit.autoscroll", &ctx);
+        assert!(!app.arrange_view_state.autoscroll_enabled);
+
+        dispatch(&mut app, "devices.vst_connections", &ctx);
+        assert!(app.vst_connections_open);
+        dispatch(&mut app, "devices.vst_connections", &ctx);
+        assert!(!app.vst_connections_open);
+
+        dispatch(&mut app, "midi.quantize", &ctx);
+        assert!(app.midi_quantize_dialog.is_some());
+    }
+
+    #[test]
+    fn the_keymap_audit_reports_which_bound_commands_are_handled() {
+        let profile = KeymapProfile::windows_reference_default().expect("keymap");
+        let unhandled = unhandled_bound_commands(include_str!("app.rs"), &profile);
+        let commands = profile
+            .keymap
+            .bindings()
+            .iter()
+            .map(|binding| binding.command.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let handled = commands.len() - unhandled.len();
+        eprintln!(
+            "keyboard coverage: {handled} of {} distinct bound commands have a dispatch arm ({} chords); {} unhandled",
+            commands.len(),
+            profile.keymap.bindings().len(),
+            unhandled.len()
+        );
+
+        // The commands a user relies on to work must be handled, whatever else
+        // remains unimplemented.
+        for essential in [
+            "file.new",
+            "file.open",
+            "file.save",
+            "edit.undo",
+            "edit.redo",
+            "edit.copy",
+            "edit.cut",
+            "edit.paste",
+            "edit.delete",
+            "edit.select_all",
+            "edit.select_none",
+            "edit.snap_on_off",
+            "edit.autoscroll",
+            "edit.split_at_cursor",
+            "transport.play",
+            "transport.stop",
+            "transport.record",
+            "transport.insert_marker",
+            "midi.quantize",
+            "nudge.left",
+            "nudge.right",
+        ] {
+            assert!(
+                !unhandled.iter().any(|id| id == essential),
+                "{essential} is bound but does nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_text_keeps_its_contrast_in_both_themes() {
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let palette = theme::palette_for(&visuals);
+            // WCAG AA for non-text UI components and large text is 3:1; disabled
+            // text is exempt from the text minimum but must stay readable.
+            let muted_ratio = theme::contrast_ratio(palette.muted, palette.surface);
+            assert!(
+                muted_ratio >= 3.0,
+                "muted text contrast is {muted_ratio:.2}:1 in the {} theme",
+                if visuals.dark_mode { "dark" } else { "light" }
+            );
+            let text_ratio = theme::contrast_ratio(palette.text, palette.surface);
+            assert!(
+                text_ratio >= 4.5,
+                "body text contrast is {text_ratio:.2}:1 in the {} theme",
+                if visuals.dark_mode { "dark" } else { "light" }
+            );
+        }
     }
 }
 

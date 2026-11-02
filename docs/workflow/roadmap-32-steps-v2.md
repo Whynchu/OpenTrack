@@ -257,9 +257,18 @@ Still open from revision 1:
 
 ### H. Consolidation
 
-31. **Accessibility and keyboard coverage.** Focus order, labelled controls,
-    contrast of disabled text, and a report of which menu entries are reachable
-    by keyboard alone.
+31. **Accessibility and keyboard coverage.** *Delivered with a measured gap left
+   visible.* Disabled/secondary text now meets the 3:1 contrast ratio for non-text
+   UI in both themes (`theme::readable_muted`; the dark theme measured 2.27:1
+   before). Seven reference shortcuts that did nothing now reach real commands:
+   Select All, Select None, Delete, Snap On/Off, Autoscroll, Quantize and VST
+   Connections. A test audits the bundled keymap against the dispatch table on
+   every run (75 of 152 bound commands handled, 121 of 198 chords), asserts
+   twenty essential commands stay handled, and a contrast test covers both themes.
+   `docs/workflow/accessibility-2026-11-02.md` records the measurements, the 77
+   uncovered commands by category, the focus/label behaviour, and the remaining
+   gaps (screen readers, high-contrast theme, manual keyboard-only review). 5 app
+   tests.
 32. **Consolidate revision 2.** Reconcile this plan with the delivered code,
     re-measure the menu inventory and the suites, and choose revision 3.
 

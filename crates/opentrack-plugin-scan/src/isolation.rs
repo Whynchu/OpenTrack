@@ -9,6 +9,11 @@
 //! attributes a timeout or a crash to that module, so one broken plug-in becomes
 //! one rejected module in the report instead of a dead scan.
 //!
+//! On Windows the child is also placed in a kill-on-close job object
+//! (`opentrack-win-jobs`), so a scanner crash cannot leave a worker running
+//! plug-in code. A worker that cannot be contained is stopped instead of run
+//! uncontained.
+//!
 //! The child is the scanner binary itself in worker mode
 //! (`--enumerate-module PATH --output FILE`), so both sides share one
 //! implementation of the VST3 loading. The parent never reads the module in
@@ -332,6 +337,17 @@ impl ModuleEnumerator for ChildProcessEnumerator {
             Err(error) => {
                 return IsolationOutcome::Crashed(format!(
                     "could not start the module worker: {error}"
+                ));
+            }
+        };
+        // The worker must not outlive the scanner, even if the scanner crashes.
+        let _containment = match opentrack_win_jobs::contain_worker(child.id()) {
+            Ok(containment) => containment,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return IsolationOutcome::Crashed(format!(
+                    "module worker was stopped because it could not be contained: {error}"
                 ));
             }
         };

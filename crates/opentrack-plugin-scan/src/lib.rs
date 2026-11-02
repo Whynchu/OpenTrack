@@ -11,8 +11,9 @@
 //! Without `--enumerate`, no module is loaded and host-compatible modules remain
 //! [`opentrack_plugins::PluginScanStatus::ReadyForEnumeration`]. With it, the
 //! scanner process loads each module and records factory class metadata through
-//! `opentrack-vst3`. Per-module timeout/crash attribution, quarantine, the job
-//! object, instance introspection, and audio hosting remain future work.
+//! `opentrack-vst3`. Per-module timeout/crash attribution, persistent quarantine
+//! and the Windows job-object containment are implemented; instance
+//! introspection and audio hosting remain future work.
 //!
 //! Discovery keeps [`std::path::PathBuf`] values internally. Report text uses
 //! a display conversion; a path that is not valid UTF-8 is marked in the report

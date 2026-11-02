@@ -157,7 +157,58 @@ pub fn control_label_font(ui: &egui::Ui, rect: Rect) -> FontId {
     FontId::new((rect.height() * 0.76).clamp(9.0, 12.0), family)
 }
 
-fn palette_for(visuals: &egui::Visuals) -> Palette {
+/// Relative luminance used by the WCAG contrast ratio.
+fn relative_luminance(color: egui::Color32) -> f32 {
+    fn channel(value: u8) -> f32 {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+}
+
+/// WCAG contrast ratio between two opaque colours.
+pub(crate) fn contrast_ratio(foreground: egui::Color32, background: egui::Color32) -> f32 {
+    let (a, b) = (
+        relative_luminance(foreground),
+        relative_luminance(background),
+    );
+    let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Weak text that still reaches the contrast WCAG asks of non-text UI, which is
+/// also what makes disabled labels readable rather than invisible.
+///
+/// The theme's own weak colour is preferred and only moved toward the body text
+/// colour as far as needed, so the look stays muted instead of becoming a second
+/// body colour.
+fn readable_muted(visuals: &egui::Visuals) -> egui::Color32 {
+    let background = visuals.panel_fill;
+    let body = visuals.text_color();
+    let mut muted = visuals.weak_text_color();
+    for _ in 0..24 {
+        if contrast_ratio(muted, background) >= 3.05 {
+            break;
+        }
+        let mix = |from: u8, to: u8| {
+            (f32::from(from) + (f32::from(to) - f32::from(from)) * 0.08)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        muted = egui::Color32::from_rgb(
+            mix(muted.r(), body.r()),
+            mix(muted.g(), body.g()),
+            mix(muted.b(), body.b()),
+        );
+    }
+    muted
+}
+
+pub(crate) fn palette_for(visuals: &egui::Visuals) -> Palette {
     Palette {
         canvas: visuals.extreme_bg_color,
         canvas_alternate: visuals.faint_bg_color,
@@ -165,7 +216,7 @@ fn palette_for(visuals: &egui::Visuals) -> Palette {
         surface_raised: visuals.widgets.inactive.bg_fill,
         grid: visuals.widgets.noninteractive.bg_stroke.color,
         text: visuals.text_color(),
-        muted: visuals.weak_text_color(),
+        muted: readable_muted(visuals),
         accent: visuals.hyperlink_color,
         solo_defeat: visuals.widgets.hovered.bg_fill,
         master_surface: visuals.window_fill,

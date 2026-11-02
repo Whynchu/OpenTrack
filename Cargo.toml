@@ -7,6 +7,7 @@ members = [
     "crates/opentrack-plugins",
     "crates/opentrack-plugin-scan",
     "crates/opentrack-vst3",
+    "crates/opentrack-win-jobs",
 ]
 resolver = "3"
 exclude = ["vendor/maolan-asio"]
