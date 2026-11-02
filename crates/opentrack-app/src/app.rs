@@ -19569,6 +19569,10 @@ mod toolbar_presentation_tests {
     }
 }
 
+/// Bar numbers are drawn this many pixels right of their bar line.
+#[cfg(test)]
+const LABEL_INSET: f32 = 2.0;
+
 #[cfg(test)]
 mod ruler_interaction_tests {
     use super::*;
@@ -19580,6 +19584,8 @@ mod ruler_interaction_tests {
         position: f64,
         cursor: egui::CursorIcon,
         ruler_labels: Vec<String>,
+        ruler_marks: Vec<(String, f32)>,
+        text_marks: Vec<(String, Pos2)>,
         track_label_x: HashMap<String, f32>,
     }
 
@@ -19595,6 +19601,8 @@ mod ruler_interaction_tests {
                 position: 0.0,
                 cursor: egui::CursorIcon::Default,
                 ruler_labels: Vec::new(),
+                ruler_marks: Vec::new(),
+                text_marks: Vec::new(),
                 track_label_x: HashMap::new(),
             }
         }
@@ -19634,6 +19642,8 @@ mod ruler_interaction_tests {
             );
             self.cursor = output.platform_output.cursor_icon;
             self.ruler_labels.clear();
+            self.ruler_marks.clear();
+            self.text_marks.clear();
             self.track_label_x.clear();
             fn collect_labels(shape: &egui::Shape, labels: &mut Vec<String>) {
                 match shape {
@@ -19678,12 +19688,118 @@ mod ruler_interaction_tests {
                     _ => {}
                 }
             }
+            fn collect_marks(shape: &egui::Shape, marks: &mut Vec<(String, f32)>) {
+                match shape {
+                    egui::Shape::Text(text)
+                        if text.pos.x >= 198.0
+                            && text.pos.x < 1200.0
+                            && text.pos.y >= 0.0
+                            && text.pos.y < 22.0 =>
+                    {
+                        marks.push((text.galley.text().to_owned(), text.pos.x));
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect_marks(shape, marks);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            fn collect_text_marks(shape: &egui::Shape, marks: &mut Vec<(String, Pos2)>) {
+                match shape {
+                    egui::Shape::Text(text) => {
+                        marks.push((text.galley.text().to_owned(), text.pos));
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect_text_marks(shape, marks);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             for shape in &output.shapes {
                 collect_labels(&shape.shape, &mut self.ruler_labels);
+                collect_marks(&shape.shape, &mut self.ruler_marks);
+                collect_text_marks(&shape.shape, &mut self.text_marks);
                 collect_track_labels(&shape.shape, &track_names, &mut self.track_label_x);
             }
             output.textures_delta.clear();
             modified
+        }
+
+        /// Pixels per beat, read from the ruler's own bar labels.
+        ///
+        /// Hardcoding this made every ruler test depend on one particular
+        /// window width and zoom; the labels are drawn by the code under test,
+        /// so measuring them keeps the expectation honest.
+        fn pixels_per_beat(&self) -> f32 {
+            let beats_per_bar = f64::from(self.project.beats_per_bar.max(1)) as f32;
+            let mut numbered = self
+                .ruler_marks
+                .iter()
+                .filter_map(|(label, x)| label.parse::<f32>().ok().map(|bar| (bar, *x)))
+                .collect::<Vec<_>>();
+            numbered.sort_by(|left, right| left.0.total_cmp(&right.0));
+            let (first_bar, first_x) = *numbered.first().expect("ruler draws bar numbers");
+            let (last_bar, last_x) = *numbered.last().expect("ruler draws bar numbers");
+            assert!(
+                last_bar > first_bar,
+                "the ruler must draw at least two bar numbers"
+            );
+            (last_x - first_x) / ((last_bar - first_bar) * beats_per_bar)
+        }
+
+        /// Beat the ruler draws at a screen x, measured from its own labels.
+        fn beat_at(&self, x: f32) -> f64 {
+            let beats_per_bar = f64::from(self.project.beats_per_bar.max(1));
+            let anchor = self
+                .ruler_marks
+                .iter()
+                .filter_map(|(label, mark_x)| label.parse::<f64>().ok().map(|bar| (bar, *mark_x)))
+                .filter(|(_, mark_x)| *mark_x <= x)
+                .max_by(|left, right| left.1.total_cmp(&right.1))
+                .expect("ruler draws a bar number left of the pointer");
+            (anchor.0 - 1.0) * beats_per_bar
+                + f64::from(x - (anchor.1 - LABEL_INSET)) / f64::from(self.pixels_per_beat())
+        }
+
+        /// Screen x for a beat, using the scale the ruler is actually drawn at.
+        fn x_for_beat(&self, beat: f64) -> f32 {
+            let first = self
+                .ruler_marks
+                .iter()
+                .filter_map(|(label, x)| label.parse::<f32>().ok().map(|bar| (bar, *x)))
+                .min_by(|left, right| left.0.total_cmp(&right.0))
+                .expect("ruler draws bar numbers");
+            let beats_per_bar = f64::from(self.project.beats_per_bar.max(1));
+            (first.1 - LABEL_INSET)
+                + (beat - f64::from(first.0 - 1.0) * beats_per_bar) as f32 * self.pixels_per_beat()
+        }
+
+        /// Clicks the centre of a labelled control inside one track row.
+        fn click_row_control(&mut self, label: &str, row_top: f32, row_height: f32) -> bool {
+            let pos = self
+                .text_marks
+                .iter()
+                .find(|(text, pos)| {
+                    text == label && pos.y >= row_top && pos.y < row_top + row_height
+                })
+                .map(|(_, pos)| *pos + Vec2::new(3.0, 5.0))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no {label} control in the row at {row_top}; marks: {:?}",
+                        self.text_marks
+                    )
+                });
+            self.button(pos.x, pos.y, true);
+            self.button(pos.x, pos.y, false)
+        }
+
+        /// Screen y for the middle of a track row.
+        fn y_for_track(&self, row: usize) -> f32 {
+            22.0 + 42.0 * row as f32 + 21.0
         }
 
         fn button(&mut self, x: f32, y: f32, pressed: bool) -> bool {
@@ -19768,8 +19884,19 @@ mod ruler_interaction_tests {
                 f.track_label_x[&child_name] - f.track_label_x[&group_name] >= 23.0,
                 "child label must visibly indent beneath its group"
             );
-            f.button(9.0, 33.0, true);
-            f.button(9.0, 33.0, false);
+            // The group's collapse control is the last button of the row strip:
+            // it starts 154 px into the header and is 22 px wide, and the row's
+            // buttons start 22 px below the row top.
+            let group_row = f
+                .project
+                .tracks
+                .iter()
+                .position(|track| track.id == group_id)
+                .expect("group row");
+            let row_top = 22.0 + 80.0 * group_row as f32;
+            let collapse = Pos2::new(154.0 + 11.0, row_top + 22.0 + 7.0);
+            f.button(collapse.x, collapse.y, true);
+            f.button(collapse.x, collapse.y, false);
             assert!(
                 f.project
                     .tracks
@@ -19918,14 +20045,18 @@ mod ruler_interaction_tests {
             .unwrap();
         f.frame(vec![]);
         f.frame(vec![]);
-        f.button(400.0, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(580.0, 120.0))]);
-        f.button(580.0, 120.0, false);
+        // Drag the event two and a quarter beats to the right and one row down.
+        let from = f.x_for_beat(2.0);
+        let to = f.x_for_beat(4.25);
+        f.button(from, 60.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(to, 120.0))]);
+        f.button(to, 120.0, false);
         assert_eq!(f.project.tracks[0].clips.len(), 1);
         assert!(f.project.tracks[1].clips.is_empty());
-        f.button(400.0, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(580.0, 180.0))]);
-        f.button(580.0, 180.0, false);
+        // Dragging into the automation lane of the first track must not move it.
+        f.button(from, 60.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(to, 180.0))]);
+        f.button(to, 180.0, false);
         assert!(f.project.tracks[0].clips.is_empty());
         assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
     }
@@ -19945,10 +20076,12 @@ mod ruler_interaction_tests {
             .unwrap();
         f.frame(vec![]);
         f.frame(vec![]);
-        f.button(400.0, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(580.0, 140.0))]);
+        let from = f.x_for_beat(2.0);
+        let to = f.x_for_beat(4.25);
+        f.button(from, 60.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(to, 140.0))]);
         f.frame(vec![]);
-        f.button(580.0, 140.0, false);
+        f.button(to, 140.0, false);
         assert!(f.project.tracks[0].clips.is_empty());
         assert_eq!(f.project.tracks[1].clips.len(), 1);
         assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
@@ -20042,12 +20175,14 @@ mod ruler_interaction_tests {
             f.view.grid_type = grid_type;
             f.view.quantize.note = note;
             f.frame(vec![]);
-            f.button(382.0, 16.0, true);
-            f.button(382.0, 16.0, false);
+            let target = f.x_for_beat(expected);
+            f.button(target, 16.0, true);
+            f.button(target, 16.0, false);
             assert_eq!(f.position, expected);
-            f.button(320.0, 16.0, true);
-            f.frame(vec![egui::Event::PointerMoved(Pos2::new(382.0, 16.0))]);
-            f.button(382.0, 16.0, false);
+            let start = f.x_for_beat(2.0);
+            f.button(start, 16.0, true);
+            f.frame(vec![egui::Event::PointerMoved(Pos2::new(target, 16.0))]);
+            f.button(target, 16.0, false);
             assert_eq!(f.position, expected);
         }
         let mut f = Fixture::new();
@@ -20056,24 +20191,35 @@ mod ruler_interaction_tests {
         f.view.quantize.note = QuantizeNote::Eighth;
         f.project.set_loop_range(100.0, 110.0);
         f.frame(vec![]);
-        f.button(320.0, 3.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(382.0, 3.0))]);
-        f.button(382.0, 3.0, false);
+        // Draw a range from beat 6 to 9.5 in the top strip.
+        f.button(f.x_for_beat(6.0), 3.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(
+            f.x_for_beat(9.5),
+            3.0,
+        ))]);
+        f.button(f.x_for_beat(9.5), 3.0, false);
         assert_eq!(
             (f.project.loop_start_beats, f.project.loop_end_beats),
             (6.0, 9.5)
         );
-        f.button(340.0, 3.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(382.0, 3.0))]);
-        f.button(382.0, 3.0, false);
+        // Grabbing the range interior moves both locators by the drag distance.
+        f.button(f.x_for_beat(8.0), 3.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(
+            f.x_for_beat(10.0),
+            3.0,
+        ))]);
+        f.button(f.x_for_beat(10.0), 3.0, false);
         assert_eq!(
             (f.project.loop_start_beats, f.project.loop_end_beats),
             (8.0, 11.5)
         );
-        let right_x = 198.0 + 11.5 / 4.0 * ((1200.0 - 198.0 - 34.0) / 49.0 * 4.0);
-        f.button(right_x + 2.0, 3.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(460.0, 3.0))]);
-        f.button(460.0, 3.0, false);
+        // The right handle resizes only the end of the range.
+        f.button(f.x_for_beat(11.5) + 2.0, 3.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(
+            f.x_for_beat(13.0),
+            3.0,
+        ))]);
+        f.button(f.x_for_beat(13.0), 3.0, false);
         assert_eq!(
             (f.project.loop_start_beats, f.project.loop_end_beats),
             (8.0, 13.0)
@@ -20228,16 +20374,19 @@ mod ruler_interaction_tests {
                 if skip { 20.5 } else { 37.25 },
             );
             f.frame(vec![]);
-            f.frame(vec![egui::Event::PointerMoved(Pos2::new(320.0, 3.0))]);
+            // Grab the range interior and move it exactly 16 beats.
+            let grab = f.x_for_beat(28.0);
+            let moved = f.x_for_beat(44.0);
+            f.frame(vec![egui::Event::PointerMoved(Pos2::new(grab, 3.0))]);
             assert_eq!(f.cursor, crate::timeline::move_cursor_icon(false));
             let before = serde_json::to_value(&f.project).unwrap();
             let mut history = ProjectHistory::default();
             history.begin(&f.project, false);
-            f.button(320.0, 3.0, true);
-            f.frame(vec![egui::Event::PointerMoved(Pos2::new(400.0, 80.0))]);
+            f.button(grab, 3.0, true);
+            f.frame(vec![egui::Event::PointerMoved(Pos2::new(moved, 80.0))]);
             assert_eq!(f.cursor, crate::timeline::move_cursor_icon(true));
             assert_eq!(serde_json::to_value(&f.project).unwrap(), before);
-            assert!(f.button(400.0, 80.0, false));
+            assert!(f.button(moved, 80.0, false));
             assert_eq!(
                 (f.project.loop_start_beats, f.project.loop_end_beats),
                 (36.5, 53.25)
@@ -20288,18 +20437,20 @@ mod ruler_interaction_tests {
                 f.position, next_position,
                 "seek must use the updated zoom transform"
             );
-            let anchor = crate::timeline::ruler_position_beats(
-                320.0,
-                198.0 - f.view.timeline_scroll_x,
-                (1200.0 - 198.0 - 34.0) / 49.0 * f.view.timeline_zoom,
-                4,
-            );
-            assert!(
-                (anchor - (320.0 - 198.0) / ((1200.0 - 198.0 - 34.0) / 49.0) * 4.0).abs() < 0.001
-            );
             f.view.snap_enabled = true;
             f.button(480.0, 26.0, false);
             assert_eq!(f.position.rem_euclid(4.0), 0.0);
+            // A seek on the zoomed ruler lands on the beat it draws there.
+            f.view.snap_enabled = false;
+            f.frame(vec![]);
+            f.button(480.0, 16.0, true);
+            f.button(480.0, 16.0, false);
+            let under_pointer = f.beat_at(480.0);
+            assert!(
+                (f.position - under_pointer).abs() < 0.01,
+                "position {} is not the drawn beat {under_pointer}",
+                f.position
+            );
         }
     }
 
@@ -20308,17 +20459,25 @@ mod ruler_interaction_tests {
         let mut f = Fixture::new();
         f.view.snap_enabled = false;
         f.frame(vec![]);
-        f.button(320.0, 16.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(320.0, -40.0))]);
+        let x = f.x_for_beat(6.0);
+        f.button(x, 16.0, true);
+        // Zooming out past the project start clamps the scroll instead of
+        // showing empty time before bar one.
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(x, -40.0))]);
         assert_eq!(f.view.timeline_scroll_x, 0.0);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(320.0, 46.0))]);
-        let expected = (320.0 - 198.0) / ((1200.0 - 198.0 - 34.0) / 49.0) * 4.0;
-        assert!((f.position - expected).abs() < 0.001);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(x, 46.0))]);
+        f.frame(vec![]);
+        // Seeking again after the zoom lands on the beat the ruler draws there.
+        f.button(x, 16.0, true);
+        f.button(x, 16.0, false);
+        assert!(
+            (f.position - f.beat_at(x)).abs() < 0.01,
+            "the pointer seeks the beat drawn under it"
+        );
     }
 
     #[test]
     fn corner_handles_resize_only_their_boundary_for_loop_and_skip() {
-        let bar_width = (1200.0 - 198.0 - 34.0) / 49.0;
         for skip in [false, true] {
             for left in [false, true] {
                 let mut f = Fixture::new();
@@ -20331,8 +20490,10 @@ mod ruler_interaction_tests {
                 let target = if left { 12.0 } else { 52.0 };
                 // Grab within the triangle, not exactly on its boundary, to
                 // verify that taking hold does not jump the locator.
-                let start_x = 198.0 + bound / 4.0 * bar_width + if left { 2.0 } else { -2.0 };
-                let end_x = start_x + (target - bound) / 4.0 * bar_width;
+                // Grab within the handle, not exactly on its boundary, to verify
+                // that taking hold does not jump the locator.
+                let start_x = f.x_for_beat(bound) + if left { 2.0 } else { -2.0 };
+                let end_x = f.x_for_beat(target);
                 f.frame(vec![egui::Event::PointerMoved(Pos2::new(start_x, 3.0))]);
                 assert_eq!(f.cursor, egui::CursorIcon::ResizeHorizontal);
                 let before = serde_json::to_value(&f.project).unwrap();
@@ -20841,6 +21002,109 @@ mod plugin_catalog_tests {
                 .expect("catalog round-trip");
         assert_eq!(restored_folders, folders);
         assert_eq!(restored_catalog, catalog);
+    }
+}
+
+#[cfg(test)]
+mod selection_identity_tests {
+    use super::*;
+
+    /// Every surface reads `Project::selected_track`, so an event click has to
+    /// leave the shared field on that event's track.
+    #[test]
+    fn clicking_an_event_selects_its_track_for_every_surface() {
+        let ctx = egui::Context::default();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].name = "Drums".to_owned();
+        project.tracks[1].name = "Bass".to_owned();
+        let bass_track = project.tracks[1].id;
+        let first = project
+            .add_audio_clip(0, PathBuf::from("drums.wav"), 0.0, 8.0)
+            .unwrap();
+        // 4 s at 120 BPM is 8 beats, so the bass event covers beats 8 through 16.
+        let second = project
+            .add_audio_clip(1, PathBuf::from("bass.wav"), 8.0, 4.0)
+            .unwrap();
+        assert_ne!(first, second);
+
+        let mut view = ArrangeViewState {
+            show_inspector: false,
+            ..Default::default()
+        };
+        let mut position = 0.0;
+        let mut tool = EditTool::Select;
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 600.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = show_project(
+                        ui,
+                        &mut tool,
+                        &mut project,
+                        &mut position,
+                        true,
+                        4,
+                        44_100,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        None,
+                        &mut view,
+                        &mut false,
+                        &mut None,
+                        &mut NativeWindowState::default(),
+                        &mut None,
+                        true,
+                        &mut None,
+                    );
+                },
+            );
+            let _ = ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
+            out.textures_delta.clear();
+        };
+        frame(vec![]);
+        frame(vec![]);
+
+        // The second track row starts below the 22 px ruler and a 42 px first row.
+        let point = Pos2::new(320.0, 85.0);
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        frame(vec![]);
+
+        assert_eq!(
+            view.audio_events.selected_ids(),
+            vec![second],
+            "the clicked event is the selection"
+        );
+        assert_eq!(
+            project.selected_track,
+            Some(1),
+            "the shared track selection follows the clicked event"
+        );
+        let shared = project
+            .selected_track
+            .and_then(|index| project.tracks.get(index as usize))
+            .map(|track| track.id);
+        assert_eq!(
+            shared,
+            Some(bass_track),
+            "Mixer and Channel Settings read this id"
+        );
     }
 }
 

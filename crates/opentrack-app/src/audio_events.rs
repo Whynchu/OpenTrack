@@ -2676,6 +2676,7 @@ mod tests {
         tool: EditTool,
         time: f64,
         guide: Option<f32>,
+        crossfade_requested: bool,
     }
     impl Fixture {
         fn new() -> Self {
@@ -2715,6 +2716,7 @@ mod tests {
                 tool: EditTool::Select,
                 time: 0.0,
                 guide: None,
+                crossfade_requested: false,
             };
             f.frame(vec![]);
             f.frame(vec![]);
@@ -2723,6 +2725,7 @@ mod tests {
         fn frame(&mut self, events: Vec<egui::Event>) -> bool {
             self.time += 1.0 / 60.0;
             let mut changed = false;
+            let mut crossfade_requested = false;
             let mut out = self.ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 230.0))),
@@ -2738,7 +2741,7 @@ mod tests {
                         Id::new(("track-arrange-row", self.project.tracks[0].id)),
                         Sense::hover(),
                     );
-                    changed = show_with_tool(
+                    let result = show_with_tool(
                         ui,
                         &mut self.project,
                         &HashMap::new(),
@@ -2751,10 +2754,12 @@ mod tests {
                         &mut self.state,
                         true,
                         &mut self.tool,
-                    )
-                    .changed;
+                    );
+                    changed = result.changed;
+                    crossfade_requested = result.crossfade_requested;
                 },
             );
+            self.crossfade_requested = crossfade_requested;
             self.guide = out.shapes.iter().find_map(|s| match &s.shape {
                 egui::Shape::LineSegment { points, stroke }
                     if stroke.color == Color32::WHITE
@@ -2877,16 +2882,21 @@ mod tests {
             ]);
         }
         assert!(f.state.extra_selected.contains(&second));
-        assert!(f.frame(vec![
+        f.frame(vec![
             egui::Event::ModifiersChanged(egui::Modifiers::NONE),
             egui::Event::Key {
                 key: egui::Key::X,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
-                modifiers: egui::Modifiers::NONE
-            }
-        ]));
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert!(
+            f.crossfade_requested,
+            "X must request a crossfade for the two selected events"
+        );
+        assert!(crossfade_selection(&mut f.project, &f.state.selected_ids()));
         assert_eq!(f.project.tracks[0].clips[0].fade_out_seconds, 1.0);
         assert_eq!(f.project.tracks[0].clips[1].fade_in_seconds, 1.0);
     }
