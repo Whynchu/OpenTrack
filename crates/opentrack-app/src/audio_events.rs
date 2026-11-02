@@ -239,6 +239,7 @@ fn move_selected_clips_to_cursor(
     project: &mut Project,
     selected: &HashSet<u64>,
     cursor_beat: f64,
+    follow_automation: bool,
 ) -> usize {
     if !cursor_beat.is_finite() || cursor_beat < 0.0 || selected.is_empty() {
         return 0;
@@ -270,7 +271,7 @@ fn move_selected_clips_to_cursor(
             (*track_id, *track_id, moved)
         })
         .collect::<Vec<_>>();
-    if project.move_audio_clips(&edits) {
+    if project.move_audio_clips_with_automation(&edits, follow_automation) {
         clips.len()
     } else {
         0
@@ -300,7 +301,12 @@ impl OpenTrackApp {
             .snap_grid_beats(self.data.project.beats_per_bar)
             .map_or(beat, |grid| crate::timeline::snap_beats_to_grid(beat, grid));
         let mut candidate = self.data.project.clone();
-        let moved = move_selected_clips_to_cursor(&mut candidate, &selected, beat);
+        let moved = move_selected_clips_to_cursor(
+            &mut candidate,
+            &selected,
+            beat,
+            self.automation_follows_events,
+        );
         if moved == 0 {
             self.status_message = "Select audio events that can move to the cursor".into();
             return;
@@ -823,7 +829,12 @@ impl OpenTrackApp {
             self.data.project.loop_end_beats
         };
         let mut candidate = self.data.project.clone();
-        let moved = move_selected_clips_to_cursor(&mut candidate, &selected, beat);
+        let moved = move_selected_clips_to_cursor(
+            &mut candidate,
+            &selected,
+            beat,
+            self.automation_follows_events,
+        );
         if moved == 0 {
             self.status_message = "The selected audio events could not be moved".to_owned();
             return;
@@ -2019,6 +2030,7 @@ pub(super) fn show_with_tool(
     state: &mut State,
     enabled: bool,
     edit_tool: &mut EditTool,
+    automation_follows_events: bool,
 ) -> Outcome {
     toolbox(ui, visible, &mut state.toolbox, edit_tool);
     let mut split = None;
@@ -2493,7 +2505,8 @@ pub(super) fn show_with_tool(
                     .iter()
                     .map(|member| (member.track, member.target, member.candidate.clone()))
                     .collect::<Vec<_>>();
-                let moved = project.move_audio_clips(&edits);
+                let moved =
+                    project.move_audio_clips_with_automation(&edits, automation_follows_events);
                 out.changed |= moved;
                 if moved
                     && (start_delta.abs() > f64::EPSILON || end_delta.abs() > f64::EPSILON)
@@ -3293,6 +3306,7 @@ mod tests {
                         &mut self.state,
                         true,
                         &mut self.tool,
+                        false,
                     );
                     changed = result.changed;
                     crossfade_requested = result.crossfade_requested;
@@ -4061,6 +4075,63 @@ mod split_selection_tests {
     }
 
     #[test]
+    fn automation_follows_events_decides_whether_the_curve_travels() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let track_id = app.data.project.tracks[0].id;
+        for beat in [1.0, 3.0] {
+            opentrack_core::automation::set_volume_point(
+                &mut app.data.project,
+                track_id,
+                opentrack_core::automation::AutomationPoint { beat, value: 0.5 },
+            )
+            .unwrap();
+        }
+        let beats = |app: &OpenTrackApp| {
+            app.data.project.tracks[0].automation_lanes[0]
+                .points
+                .iter()
+                .map(|point| point.beat)
+                .collect::<Vec<_>>()
+        };
+
+        // Off by default: moving the event leaves the curve in place. The event
+        // spans beats 0-4, so the points at 1 and 3 sit under it.
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.position_beats = 4.0;
+        app.move_selected_audio_events_to_cursor();
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 4.0);
+        assert_eq!(beats(&app), vec![1.0, 3.0], "the curve stayed put");
+
+        // Back to the start so the next move has the points under the event.
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.position_beats = 0.0;
+        app.move_selected_audio_events_to_cursor();
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 0.0);
+        assert_eq!(beats(&app), vec![1.0, 3.0]);
+
+        // On: the points under the event travel with it.
+        app.automation_follows_events = true;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.position_beats = 4.0;
+        app.move_selected_audio_events_to_cursor();
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 4.0);
+        assert_eq!(
+            beats(&app),
+            vec![5.0, 7.0],
+            "the points moved by the same four beats"
+        );
+    }
+
+    #[test]
     fn auto_select_under_cursor_follows_the_preference() {
         let ctx = egui::Context::default();
         let creation = eframe::CreationContext::_new_kittest(ctx);
@@ -4486,7 +4557,12 @@ mod move_to_cursor_tests {
             .add_audio_clip(1, PathBuf::from("second.wav"), 5.0, 1.0)
             .unwrap();
         assert_eq!(
-            move_selected_clips_to_cursor(&mut project, &HashSet::from([first, second]), 8.0),
+            move_selected_clips_to_cursor(
+                &mut project,
+                &HashSet::from([first, second]),
+                8.0,
+                false,
+            ),
             2
         );
         assert_eq!(project.tracks[0].clips[0].start_beats, 8.0);
@@ -4502,7 +4578,12 @@ mod move_to_cursor_tests {
             .unwrap();
         let before = project.clone();
         assert_eq!(
-            move_selected_clips_to_cursor(&mut project, &HashSet::from([clip, u64::MAX]), 8.0),
+            move_selected_clips_to_cursor(
+                &mut project,
+                &HashSet::from([clip, u64::MAX]),
+                8.0,
+                false,
+            ),
             0
         );
         assert_eq!(project, before);

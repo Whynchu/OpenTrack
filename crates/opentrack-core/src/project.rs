@@ -221,6 +221,65 @@ fn default_audio_channels() -> u8 {
     2
 }
 
+/// Shifts the volume points inside each `(track, start, end, delta)` span.
+///
+/// A lane is edited all-or-nothing: if any point would leave the timeline or the
+/// shifted curve would collide with a neighbouring point, that lane keeps its
+/// original points so the curve never becomes ambiguous.
+fn shift_volume_automation_within_spans(
+    project: &mut Project,
+    spans: &[(u64, f64, f64, f64)],
+) -> usize {
+    let mut shifted_lanes = 0;
+    for track in project.tracks.iter_mut() {
+        let track_spans = spans
+            .iter()
+            .filter(|(track_id, ..)| *track_id == track.id)
+            .map(|(_, start, end, delta)| (*start, *end, *delta))
+            .collect::<Vec<_>>();
+        if track_spans.is_empty() {
+            continue;
+        }
+        for lane in track
+            .automation_lanes
+            .iter_mut()
+            .filter(|lane| lane.target == AutomationTarget::TrackVolume)
+        {
+            let original = lane.points.clone();
+            let mut changed = false;
+            for point in lane.points.iter_mut() {
+                // A point exactly on the boundary belongs to the neighbouring
+                // region, so only the interior travels with the event.
+                let hit = track_spans
+                    .iter()
+                    .find(|(start, end, _)| point.beat > *start + 1e-9 && point.beat < *end - 1e-9);
+                let Some((_, _, delta)) = hit else {
+                    continue;
+                };
+                let beat = point.beat + delta;
+                if beat < 0.0 {
+                    changed = false;
+                    lane.points.clone_from(&original);
+                    break;
+                }
+                point.beat = beat;
+                changed = true;
+            }
+            if !changed {
+                continue;
+            }
+            lane.points
+                .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+            if !lane.is_valid() {
+                lane.points = original;
+                continue;
+            }
+            shifted_lanes += 1;
+        }
+    }
+    shifted_lanes
+}
+
 fn rename_clip(project: &mut Project, track_id: u64, from: u64, to: u64) {
     if let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id)
         && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == from)
@@ -1592,6 +1651,21 @@ impl Project {
     /// Move several audio events as one validated project mutation.
     /// The batch is rejected in full if any identity, destination or edited clip is invalid.
     pub fn move_audio_clips(&mut self, edits: &[(u64, u64, AudioClip)]) -> bool {
+        self.move_audio_clips_with_automation(edits, false)
+    }
+
+    /// Moves events, and when `follow_automation` is set carries the volume
+    /// automation under each moved event along with it.
+    ///
+    /// This is the "Automation follows Events" behavior: the curve keeps its
+    /// shape relative to the event instead of staying at its timeline position.
+    /// A clip that changes track still shifts the curve on the track it came
+    /// from, because that is where the points were written.
+    pub fn move_audio_clips_with_automation(
+        &mut self,
+        edits: &[(u64, u64, AudioClip)],
+        follow_automation: bool,
+    ) -> bool {
         if edits.is_empty() {
             return false;
         }
@@ -1640,6 +1714,32 @@ impl Project {
                 grouped.push((track_id, track_id, moved));
             }
         }
+
+        // The spans are read before anything moves: a point belongs to the span
+        // the event occupied when the gesture started.
+        let followed = if follow_automation {
+            grouped
+                .iter()
+                .filter_map(|(source_track_id, _, edited)| {
+                    let original = self
+                        .tracks
+                        .iter()
+                        .find(|track| track.id == *source_track_id)?
+                        .clips
+                        .iter()
+                        .find(|clip| clip.id == edited.id)?;
+                    let delta = edited.start_beats - original.start_beats;
+                    if delta.abs() <= f64::EPSILON {
+                        return None;
+                    }
+                    let end =
+                        original.start_beats + original.duration_seconds * self.tempo_bpm / 60.0;
+                    Some((*source_track_id, original.start_beats, end, delta))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
         let mut ids = BTreeSet::new();
         let mut removals = Vec::with_capacity(grouped.len());
@@ -1698,6 +1798,9 @@ impl Project {
         }
         if candidate.validate().is_err() {
             return false;
+        }
+        if !followed.is_empty() {
+            shift_volume_automation_within_spans(&mut candidate, &followed);
         }
         *self = candidate;
         true
@@ -4255,6 +4358,149 @@ mod sample_edit_tests {
         // Only the muted event changes, so unmuting reports one edit.
         assert_eq!(project.set_audio_clips_muted(&[first, second], false), 1);
         assert!(project.tracks[0].clips.iter().all(|clip| !clip.muted));
+    }
+
+    #[test]
+    fn automation_follows_a_moved_event_only_when_asked() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        // 2 s at 120 BPM is 4 beats, so the event spans beats 0 through 4.
+        let track_id = project.tracks[0].id;
+        for (beat, value) in [(1.0, 0.5), (3.0, 0.9), (8.0, 0.2)] {
+            crate::automation::set_volume_point(
+                &mut project,
+                track_id,
+                crate::automation::AutomationPoint { beat, value },
+            )
+            .unwrap();
+        }
+
+        // Without following, the curve stays where it was written.
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 4.0;
+        assert!(project.move_audio_clips(&[(project.tracks[0].id, project.tracks[0].id, moved)]));
+        let beats = |project: &Project| {
+            project.tracks[0].automation_lanes[0]
+                .points
+                .iter()
+                .map(|point| point.beat)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(beats(&project), vec![1.0, 3.0, 8.0]);
+
+        // With following, the interior points travel with the event.
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 2.0;
+        assert!(project.move_audio_clips_with_automation(
+            &[(project.tracks[0].id, project.tracks[0].id, moved)],
+            true
+        ));
+        // The event started at 4 and now starts at 2, so the points at 1.0 and
+        // 3.0 were outside its span; only points inside 4..8 move. The point at
+        // 8.0 is on the boundary and stays.
+        assert_eq!(beats(&project), vec![1.0, 3.0, 8.0]);
+    }
+
+    #[test]
+    fn following_automation_moves_the_points_under_the_event() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let track_id = project.tracks[0].id;
+        for (beat, value) in [(0.0, 0.25), (2.0, 0.5), (4.0, 0.75), (6.0, 0.1)] {
+            crate::automation::set_volume_point(
+                &mut project,
+                track_id,
+                crate::automation::AutomationPoint { beat, value },
+            )
+            .unwrap();
+        }
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 1.0;
+        assert!(project.move_audio_clips_with_automation(
+            &[(project.tracks[0].id, project.tracks[0].id, moved)],
+            true
+        ));
+        let points = &project.tracks[0].automation_lanes[0].points;
+        let beats = points.iter().map(|point| point.beat).collect::<Vec<_>>();
+        // The event spanned 0..4, so 2.0 moves to 3.0. The boundary points at
+        // 0.0 and 4.0 and the one outside at 6.0 stay put.
+        assert_eq!(beats, vec![0.0, 3.0, 4.0, 6.0]);
+        assert_eq!(points[1].value, 0.5, "values travel with their points");
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn following_automation_keeps_the_curve_valid_when_it_would_collide() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        // Moving the interior point onto the fixed point at 6.0 would create a
+        // duplicate beat, which is not a valid curve.
+        let track_id = project.tracks[0].id;
+        for (beat, value) in [(0.0, 0.2), (5.0, 0.4), (6.0, 0.6)] {
+            crate::automation::set_volume_point(
+                &mut project,
+                track_id,
+                crate::automation::AutomationPoint { beat, value },
+            )
+            .unwrap();
+        }
+        let before = project.tracks[0].automation_lanes[0].clone();
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 1.0;
+        assert!(project.move_audio_clips_with_automation(
+            &[(project.tracks[0].id, project.tracks[0].id, moved)],
+            true
+        ));
+        assert_eq!(
+            project.tracks[0].automation_lanes[0], before,
+            "an ambiguous curve is left untouched rather than made invalid"
+        );
+        assert_eq!(
+            project.tracks[0].clips[0].start_beats, 1.0,
+            "the event still moves"
+        );
+    }
+
+    #[test]
+    fn following_automation_uses_the_track_the_event_came_from() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let track_id = project.tracks[0].id;
+        crate::automation::set_volume_point(
+            &mut project,
+            track_id,
+            crate::automation::AutomationPoint {
+                beat: 2.0,
+                value: 0.5,
+            },
+        )
+        .unwrap();
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 2.0;
+        assert!(project.move_audio_clips_with_automation(
+            &[(project.tracks[0].id, project.tracks[1].id, moved)],
+            true
+        ));
+        assert_eq!(project.tracks[0].automation_lanes[0].points[0].beat, 4.0);
+        assert_eq!(project.tracks[0].clips.len(), 0);
+        assert_eq!(project.tracks[1].clips[0].id, id);
     }
 
     #[test]

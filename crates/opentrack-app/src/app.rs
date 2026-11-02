@@ -1085,6 +1085,8 @@ pub struct OpenTrackApp {
     vst3_quarantine: Vec<opentrack_plugins::QuarantineEntry>,
     /// Select the events under the cursor whenever the transport position moves.
     auto_select_events_under_cursor: bool,
+    /// Carry the volume automation under an event when the event moves.
+    automation_follows_events: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2358,6 +2360,12 @@ impl OpenTrackApp {
             auto_select_events_under_cursor: creation
                 .storage
                 .and_then(|storage| eframe::get_value::<bool>(storage, "auto-select-events-v1"))
+                .unwrap_or(false),
+            automation_follows_events: creation
+                .storage
+                .and_then(|storage| {
+                    eframe::get_value::<bool>(storage, "automation-follows-events-v1")
+                })
                 .unwrap_or(false),
             plugin_scan_report: None,
             plugin_scan_status,
@@ -6232,6 +6240,14 @@ impl OpenTrackApp {
             "edit.lock" => self.set_selected_audio_events_locked(true),
             "edit.unlock" => self.set_selected_audio_events_locked(false),
             "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
+            "edit.automation_follows_events" => {
+                self.automation_follows_events = !self.automation_follows_events;
+                self.status_message = if self.automation_follows_events {
+                    "Automation follows Events is on".to_owned()
+                } else {
+                    "Automation follows Events is off".to_owned()
+                };
+            }
             "edit.enlarge_selected_track" => self.toggle_zoom_tracks_exclusive(),
             "edit.auto_select_events_under_cursor" => {
                 self.auto_select_events_under_cursor = !self.auto_select_events_under_cursor;
@@ -8753,12 +8769,30 @@ impl OpenTrackApp {
                         self.toggle_zoom_tracks_exclusive();
                         ui.close();
                     }
+                    if checked_menu_command(
+                        ui,
+                        "Automation follows Events",
+                        "",
+                        self.automation_follows_events,
+                        self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.automation_follows_events = !self.automation_follows_events;
+                        self.status_message = if self.automation_follows_events {
+                            "Automation follows Events is on: moving an event carries its volume points"
+                                .to_owned()
+                        } else {
+                            "Automation follows Events is off: volume points stay in place"
+                                .to_owned()
+                        };
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Project Logical Editor...", ""),
                             ("Process Project Logical Editor", ""),
-                            ("Automation follows Events", ""),
                         ],
                     );
                     ui.menu_button("Zoom", |ui| {
@@ -10945,6 +10979,7 @@ impl OpenTrackApp {
                         &mut self.track_rename_dialog,
                         can_remove,
                         &mut context_action,
+                        self.automation_follows_events,
                     )
                 },
             )
@@ -12546,6 +12581,11 @@ impl eframe::App for OpenTrackApp {
             "auto-select-events-v1",
             &self.auto_select_events_under_cursor,
         );
+        eframe::set_value(
+            storage,
+            "automation-follows-events-v1",
+            &self.automation_follows_events,
+        );
     }
 }
 
@@ -13221,6 +13261,7 @@ fn show_project(
     _track_rename_dialog: &mut Option<TrackRenameDialog>,
     can_remove: bool,
     context_action: &mut Option<project_controls::Action>,
+    automation_follows_events: bool,
 ) -> ProjectViewChanges {
     let mut modified = false;
     let mut inspector_changes = project_inspector::InspectorChanges::default();
@@ -15449,6 +15490,7 @@ fn show_project(
                 &mut arrange_view_state.audio_events,
                 can_remove,
                 edit_tool,
+                automation_follows_events,
             );
             modified |= outcome.changed;
             audio_events_crossfade_requested |= outcome.crossfade_requested;
@@ -19955,6 +19997,7 @@ mod ruler_interaction_tests {
                         &mut None,
                         true,
                         &mut None,
+                        false,
                     )
                     .modified;
                 },
@@ -21594,6 +21637,7 @@ mod selection_identity_tests {
                         &mut None,
                         true,
                         &mut None,
+                        false,
                     );
                 },
             );
