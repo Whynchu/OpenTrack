@@ -32478,6 +32478,27 @@ mod virtual_keyboard_tests {
     }
 
     #[test]
+    fn midi_reset_and_close_release_held_keys() {
+        let mut app = app();
+        app.virtual_keyboard_open = true;
+        app.virtual_keyboard_held.insert(60);
+        app.virtual_keyboard_held.insert(64);
+
+        // MIDI Reset clears the on-screen keys first, then reports the missing
+        // device instead of pretending messages went out.
+        app.reset_midi_destination();
+        assert!(app.virtual_keyboard_held.is_empty());
+        assert!(app.status_message.contains("cleared the on-screen keys"));
+
+        // Closing the window releases anything still held.
+        app.virtual_keyboard_held.insert(67);
+        app.close_virtual_keyboard();
+        assert!(app.virtual_keyboard_held.is_empty());
+        assert!(!app.virtual_keyboard_open);
+        assert_eq!(app.status_message, "Virtual keyboard closed");
+    }
+
+    #[test]
     fn the_keyboard_window_draws_keys_and_its_octave_control() {
         let ctx = egui::Context::default();
         let mut app = app();

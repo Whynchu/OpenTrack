@@ -8,7 +8,9 @@ Delivered so far: R5-01 (baseline reconciliation), R5-03 (export/delivery contra
 
 R5-09 was a verification (the transpose dialog already existed; `Add Track > Transpose` stays unavailable because it names a transpose track). R5-10 and R5-11 delivered the retrospective capture buffer and its command, so Shift+NumpadMultiply now dispatches.
 
-Next ready step: R5-12, closing the virtual-keyboard review items. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+R5-12 closed the virtual-keyboard review items at source level (MIDI Reset and close both release held keys, now covered by a test; the audible result stays pending).
+
+Next ready step: R5-13, the per-event offline processing chain contract. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 
