@@ -1042,6 +1042,9 @@ pub struct Marker {
 /// The marker slots reachable from the numeric shortcuts.
 pub const MARKER_SLOTS: std::ops::RangeInclusive<u8> = 1..=9;
 
+/// Largest linear gain an audio event may carry (about +12 dB).
+pub const MAX_AUDIO_CLIP_GAIN: f64 = 4.0;
+
 /// Bound on the project notepad, in characters.
 pub const MAX_NOTEPAD_CHARS: usize = 100_000;
 
@@ -2945,6 +2948,36 @@ impl Project {
             }
         }
         false
+    }
+
+    /// Sets the selected events' gain from a decibel value.
+    ///
+    /// The linear result is clamped to the event-gain range (0 to 4.0, about
+    /// +12 dB), -60 dB and below is silence, and locked events are skipped, so a
+    /// gain edit cannot make the project invalid.
+    pub fn set_audio_clip_gain_db(&mut self, ids: &[u64], db: f64) -> usize {
+        if !db.is_finite() {
+            return 0;
+        }
+        let linear = if db <= -60.0 {
+            0.0
+        } else {
+            10.0_f64.powf(db / 20.0).clamp(0.0, MAX_AUDIO_CLIP_GAIN) as f32
+        };
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut changed = 0;
+        for track in self.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if !selected.contains(&clip.id) || clip.locked {
+                    continue;
+                }
+                if (clip.gain - linear).abs() > 1e-6 {
+                    clip.gain = linear;
+                    changed += 1;
+                }
+            }
+        }
+        changed
     }
 
     /// Applies a fade to the selected events and reports how many changed.
@@ -6470,6 +6503,40 @@ mod sample_edit_tests {
             MIN_CLIP_EDGE_SECONDS
         ));
         assert_eq!(project.tracks[0].clips[0], before);
+    }
+
+    #[test]
+    fn event_gain_is_set_from_decibels_and_clamped() {
+        use crate::project::MAX_AUDIO_CLIP_GAIN;
+
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let locked = project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 2.0)
+            .unwrap();
+        project.set_audio_clips_locked(&[locked], true);
+
+        // +6 dB is about 1.995 linear.
+        assert_eq!(project.set_audio_clip_gain_db(&[clip, locked], 6.0), 1);
+        assert!((project.tracks[0].clips[0].gain - 1.995_262).abs() < 1e-4);
+        assert_eq!(project.tracks[0].clips[1].gain, 1.0, "locked stays put");
+        assert_eq!(
+            project.set_audio_clip_gain_db(&[clip], 6.0),
+            0,
+            "no change twice"
+        );
+
+        // The range is clamped instead of producing an invalid project.
+        assert_eq!(project.set_audio_clip_gain_db(&[clip], 40.0), 1);
+        assert!((project.tracks[0].clips[0].gain as f64 - MAX_AUDIO_CLIP_GAIN).abs() < 1e-6);
+        assert_eq!(project.set_audio_clip_gain_db(&[clip], -80.0), 1);
+        assert_eq!(project.tracks[0].clips[0].gain, 0.0);
+        assert_eq!(project.set_audio_clip_gain_db(&[clip], f64::NAN), 0);
+        assert!(project.validate().is_ok());
     }
 
     #[test]

@@ -172,6 +172,14 @@ and measured numbers.
    and defaults off. 2 app tests (toggle/persistence, render plus click-seek).
    Shortcut coverage 145 -> 146.
 
+21. **Gain dialog and the editor entries.** *Delivered.* Audio > Process > Gain...
+   opens a dB dialog over the selected events; `Project::set_audio_clip_gain_db`
+   clamps to 0..4.0 linear, treats -60 dB and below as silence, and skips locked
+   events. One labelled "Event Gain" undo step. MIDI > Open In-Place Editor and
+   Scores > Open Selection now open the same editor as Ctrl+Shift+I (Sample
+   Editor for audio, MIDI editor for parts). 1 core and 1 app tests. Disabled
+   entries 122 -> 119.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

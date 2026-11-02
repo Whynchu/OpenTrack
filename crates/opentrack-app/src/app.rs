@@ -1184,6 +1184,8 @@ pub struct OpenTrackApp {
     project_statistics_open: bool,
     /// Save / Discard / Cancel prompt for closing an unsaved project.
     close_project_prompt: bool,
+    /// Event-gain dialog draft, in decibels.
+    gain_dialog: Option<f64>,
     /// Source the Media Pool should show and highlight, set by Find in Pool.
     pool_reveal: Option<PathBuf>,
     /// Where the overview strip was drawn last frame, for click tests.
@@ -2598,6 +2600,7 @@ impl OpenTrackApp {
             session_health_open: false,
             project_statistics_open: false,
             close_project_prompt: false,
+            gain_dialog: None,
             pool_reveal: None,
             #[cfg(test)]
             last_overview_rect: None,
@@ -4132,6 +4135,129 @@ impl OpenTrackApp {
         if let Some(beat) = seek {
             self.seek_to_beats(beat);
             self.status_message = format!("Located to beat {beat:.3} from the overview");
+        }
+    }
+
+    /// Opens the event-gain dialog with the selection's current gain.
+    fn open_gain_dialog(&mut self) {
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .is_empty()
+        {
+            // Never leave a stale draft that the next selection would inherit.
+            self.gain_dialog = None;
+            self.status_message = "Select audio events to change their gain".to_owned();
+            return;
+        }
+        let db = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .first()
+            .and_then(|id| {
+                self.data
+                    .project
+                    .tracks
+                    .iter()
+                    .flat_map(|track| track.clips.iter())
+                    .find(|clip| clip.id == *id)
+            })
+            .map(|clip| {
+                if clip.gain > 0.0 {
+                    20.0 * f64::from(clip.gain).log10()
+                } else {
+                    -60.0
+                }
+            })
+            .unwrap_or(0.0);
+        self.gain_dialog = Some(db.clamp(-60.0, 12.0));
+    }
+
+    /// Applies the gain dialog's value to the selected events.
+    fn apply_event_gain(&mut self, db: f64) {
+        if !db.is_finite() {
+            self.status_message = "Enter a finite gain".to_owned();
+            return;
+        }
+        if !(-60.0..=12.0).contains(&db) {
+            self.status_message = "Event gain must be between -60 and +12 dB".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to change their gain".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.set_audio_clip_gain_db(&ids, db);
+        if changed == 0 {
+            self.status_message =
+                "No event gain changed: locked events and the current value are left alone"
+                    .to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot change gain: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Event Gain");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!("Set {changed} event(s) to {db:+.1} dB; Undo restores them");
+    }
+
+    fn show_gain_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut db) = self.gain_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Event Gain")
+            .id(Id::new("event-gain"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(260.0);
+                ui.label("Gain for the selected audio events");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut db)
+                            .range(-60.0..=12.0)
+                            .speed(0.1)
+                            .suffix(" dB"),
+                    );
+                    ui.label(
+                        egui::RichText::new("-60 dB and below is silence")
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(ctx, Id::new("event-gain"), &mut open, response.as_ref());
+        if apply {
+            self.apply_event_gain(db);
+        } else if !cancel && open {
+            self.gain_dialog = Some(db);
         }
     }
 
@@ -12377,11 +12503,14 @@ impl OpenTrackApp {
                             self.silence_selected_audio_events();
                             ui.close();
                         }
+                        if menu_command(ui, "Gain...", "", has_selection).clicked() {
+                            self.open_gain_dialog();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
                                 ("Envelope...", ""),
-                                ("Gain...", ""),
                                 ("Merge Clipboard", ""),
                                 ("Normalize...", ""),
                                 ("Remove DC Offset", ""),
@@ -12446,13 +12575,25 @@ impl OpenTrackApp {
                         self.open_selected_midi_editor();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Open In-Place Editor",
+                        "",
+                        self.project_open
+                            && (!self.arrange_view_state.audio_events.selected_ids().is_empty()
+                                || self.data.project.selected_midi_part_id.is_some()),
+                    )
+                    .clicked()
+                    {
+                        self.edit_selected_event_in_place();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Open Score Editor", ""),
                             ("Open Drum Editor", ""),
                             ("Open List Editor", ""),
-                            ("Open In-Place Editor", ""),
                         ],
                     );
                     ui.separator();
@@ -12551,10 +12692,22 @@ impl OpenTrackApp {
                     }
                 });
                 ui.menu_button("Scores", |ui| {
+                    if menu_command(
+                        ui,
+                        "Open Selection",
+                        "Ctrl+R",
+                        self.project_open
+                            && (!self.arrange_view_state.audio_events.selected_ids().is_empty()
+                                || self.data.project.selected_midi_part_id.is_some()),
+                    )
+                    .clicked()
+                    {
+                        self.edit_selected_event_in_place();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Open Selection", "Ctrl+R"),
                             ("Open Layout...", ""),
                             ("Page Mode", ""),
                             ("Settings...", ""),
@@ -13627,6 +13780,7 @@ impl OpenTrackApp {
             || self.beat_calculator.is_some()
             || self.numeric_input.is_some()
             || self.close_project_prompt
+            || self.gain_dialog.is_some()
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -16027,6 +16181,7 @@ impl eframe::App for OpenTrackApp {
         self.show_numeric_input(&ctx);
         self.show_close_project_prompt(&ctx);
         self.show_project_overview(&ctx);
+        self.show_gain_dialog(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);

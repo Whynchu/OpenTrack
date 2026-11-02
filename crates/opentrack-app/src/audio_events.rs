@@ -4756,6 +4756,53 @@ mod split_selection_tests {
     }
 
     #[test]
+    fn the_gain_dialog_sets_event_gain_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+        app.arrange_view_state
+            .audio_events
+            .select_many([first, second]);
+
+        app.open_gain_dialog();
+        assert_eq!(app.gain_dialog, Some(0.0), "seeded from the current gain");
+        app.apply_event_gain(6.0);
+        assert!((app.data.project.tracks[0].clips[0].gain - 1.995_262).abs() < 1e-4);
+        assert!(app.status_message.contains("+6.0 dB"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Event Gain");
+
+        // Silence at the bottom of the range and the refusals.
+        app.apply_event_gain(-60.0);
+        assert_eq!(app.data.project.tracks[0].clips[0].gain, 0.0);
+        let steps = app.project_history.counts().0;
+        app.apply_event_gain(40.0);
+        assert!(app.status_message.contains("between -60 and +12 dB"));
+        app.apply_event_gain(f64::NAN);
+        assert!(app.status_message.contains("finite"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        app.arrange_view_state.audio_events.clear_selection();
+        app.apply_event_gain(3.0);
+        assert!(app.status_message.contains("Select audio events"));
+        app.open_gain_dialog();
+        assert!(app.gain_dialog.is_none());
+    }
+
+    #[test]
     fn fading_and_silencing_the_selection_are_labelled_undo_steps() {
         let ctx = egui::Context::default();
         let creation = eframe::CreationContext::_new_kittest(ctx);
