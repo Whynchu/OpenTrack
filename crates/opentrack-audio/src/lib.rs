@@ -37,7 +37,7 @@ pub use waveform::{WAVEFORM_BLOCK_FRAMES, Waveform};
 #[cfg(windows)]
 mod wasapi_backend;
 
-pub use audio_process::reverse_wav_range;
+pub use audio_process::{remove_dc_offset_wav_range, reverse_wav_range};
 pub use devices::{
     AudioDevice, AudioDeviceInventory, AudioOutputConfig, available_audio_devices,
     output_configurations, scan_audio_devices,

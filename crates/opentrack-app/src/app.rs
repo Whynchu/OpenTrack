@@ -13224,13 +13224,16 @@ impl OpenTrackApp {
                             self.reverse_selected_audio_events();
                             ui.close();
                         }
+                        if menu_command(ui, "Remove DC Offset", "", has_selection).clicked() {
+                            self.remove_dc_offset_from_selected_events();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
                                 ("Envelope...", ""),
                                 ("Merge Clipboard", ""),
                                 ("Normalize...", ""),
-                                ("Remove DC Offset", ""),
                                 ("Stereo Flip", ""),
                                 ("Time Stretch...", ""),
                                 ("Resample...", ""),

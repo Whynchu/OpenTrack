@@ -361,6 +361,13 @@ still one commit with tests and refreshed counts.
    source. A failed reversal deletes its partial files, and the command is bounded
    to 64 events. 2 audio and 1 app tests. Disabled entries 100 -> 99.
 
-Next candidates in the same family: Remove DC Offset, Normalize, Stereo Flip,
-then the interchange adapters with explicit format/version scopes. Revision 4
-should still start with the user-dependent reviews and CPR fixtures.
+33. **Remove DC Offset.** *Delivered.* Audio > Process > Remove DC Offset reads
+   the event's used range, subtracts each channel's mean, writes new float32 media,
+   and repoints the events in one labelled "Remove DC Offset" undo step. The status
+   reports the largest removed offset in dBFS; failures clean up their files, and
+   the command is bounded to 64 events. 1 audio and 1 app tests. Disabled entries
+   99 -> 98.
+
+Next candidates in the same family: Normalize and Stereo Flip, then the
+interchange adapters with explicit format/version scopes. Revision 4 should still
+start with the user-dependent reviews and CPR fixtures.

@@ -595,6 +595,141 @@ impl OpenTrackApp {
         );
     }
 
+    /// Removes the per-channel DC offset from the selected events' used audio.
+    ///
+    /// Like Reverse, it writes new project media and repoints the events; pitch
+    /// analysis and source-fade lineage are cleared because they describe the old
+    /// source.
+    pub(super) fn remove_dc_offset_from_selected_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before processing audio events".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to remove their DC offset".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Remove DC Offset is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before processing audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before processing audio".to_owned();
+            return;
+        };
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut processed = 0;
+        let mut largest_offset = 0.0_f32;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} dc")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            let offsets = match opentrack_audio::remove_dc_offset_wav_range(
+                &source,
+                offset,
+                duration,
+                &destination,
+            ) {
+                Ok((_, offsets)) => offsets,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message =
+                        format!("Could not remove the DC offset from {name}: {error}");
+                    return;
+                }
+            };
+            largest_offset = largest_offset.max(offsets[0].abs()).max(offsets[1].abs());
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the processed audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                processed += 1;
+            }
+        }
+        if processed == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = "No event could be processed".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message =
+                "Cannot remove DC offset: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Remove DC Offset");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let removed_db = if largest_offset > 0.0 {
+            20.0 * f64::from(largest_offset).log10()
+        } else {
+            f64::NEG_INFINITY
+        };
+        self.status_message = format!(
+            "Removed the DC offset from {processed} event(s) (largest {removed_db:.1} dBFS); Undo restores the originals"
+        );
+    }
+
     fn cleanup_created_files(&self, files: &[PathBuf]) {
         for file in files {
             let _ = std::fs::remove_file(file);
@@ -1405,6 +1540,88 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn removing_dc_offset_writes_new_media_and_is_one_undo_step() {
+        let root = std::env::temp_dir().join(format!("opentrack-dc-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("dc.wav");
+        // A steady +0.2 offset with a tiny ripple.
+        {
+            let mut bytes = Vec::new();
+            let frames: u32 = 24_000;
+            let data_bytes = frames * 2;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for frame in 0..frames {
+                let ripple = (frame % 10) as f32 * 0.0001;
+                let sample = ((0.2 + ripple) * f32::from(i16::MAX)) as i16;
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            std::fs::write(&source, bytes).expect("wav");
+        }
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 0.4)
+            .expect("clip");
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.remove_dc_offset_from_selected_events();
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, source);
+        assert!(
+            clip.source_path
+                .starts_with(root.join("Audio").join("Imports")),
+            "{}",
+            clip.source_path.display()
+        );
+        assert!(clip.source_path.exists());
+        assert!(
+            app.status_message
+                .contains("Removed the DC offset from 1 event(s)")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Remove DC Offset");
+
+        // A missing source fails cleanly and adds no file.
+        let before = std::fs::read_dir(root.join("Audio").join("Imports"))
+            .expect("imports")
+            .count();
+        app.data.project.tracks[0].clips[0].source_path =
+            root.join("Audio").join("Imports").join("missing.wav");
+        app.remove_dc_offset_from_selected_events();
+        assert!(
+            app.status_message
+                .contains("Could not remove the DC offset")
+        );
+        let after = std::fs::read_dir(root.join("Audio").join("Imports"))
+            .expect("imports")
+            .count();
+        assert_eq!(before, after);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
