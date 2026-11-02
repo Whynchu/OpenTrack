@@ -52,7 +52,9 @@ Step 24 added the arranger data contract in `opentrack-core::arranger`: stable s
 
 Step 25 added the arranger editor: sections from locators/regions, rename/resize, sequence append/repeats/reorder/remove, separate source/sequence positions, empty-sequence messaging and one-step "Edit Arranger" Apply with candidate validation. Source clips and ordinary timeline playback are untouched; Add Arranger remains disabled pending preview. App suite: 538 passed, 9 ignored; inventory remains 273 leaves with 84 unavailable. Desktop editor review and steps 26–28 preview work remain. See [R4-25](tasks/R4-25-arranger-editor.md).
 
-Next ready work: revision-4 step 26, render an arranger sequence offline. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 26 added the offline arranger sequence transformer in `opentrack-audio::arranger`: it copies audio clips, MIDI notes/controllers and volume automation into sequence order with source offsets and boundary clipping, refuses fades/envelopes rather than flattening them, bounds total length and feeds the existing `OfflineRenderer`. Generated-signal output has exact repeated length. Audio suite: 171 passed, 3 ignored. Audible preview and UI integration remain steps 27–28. See [R4-26](tasks/R4-26-arranger-offline-render.md).
+
+Next ready work: revision-4 step 27, connect audible arranger preview. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

@@ -3,6 +3,7 @@
 //! WAV files are decoded before reaching the audio callback. Playback plans
 //! are immutable snapshots; the callback only reads them and writes samples.
 
+pub mod arranger;
 #[cfg(all(windows, feature = "local-asio"))]
 mod asio_backend;
 mod audition;
@@ -8878,6 +8879,164 @@ mod hosted_processing_tests {
         assert_eq!(offline.render_next(&mut output).unwrap(), 128);
         for sample in output {
             assert!((sample - 0.09375).abs() < 1.0e-6, "offline got {sample}");
+        }
+    }
+
+    #[test]
+    fn arranger_sequence_preserves_offsets_repeats_and_boundaries() {
+        use crate::arranger::{ArrangerSequenceError, ArrangerSequenceSegment, arrange_sequence};
+        use opentrack_core::automation::{AutomationLane, AutomationPoint, AutomationTarget};
+
+        let mut settings = track(constant_source(0.125, 512), Vec::new());
+        settings.clips[0].duration_seconds = 2.0; // four beats at 120 BPM
+        settings.midi_notes.push(PlaybackMidiNote {
+            id: 1,
+            start_beats: 3.0,
+            duration_beats: 4.0,
+            frequency_hz: 220.0,
+            channel: 0,
+            velocity: 1.0,
+        });
+        settings.midi_controllers.push(PlaybackMidiController {
+            position_beats: 3.0,
+            channel: 0,
+            controller: 11,
+            value: 90,
+        });
+        settings.volume_automation = Some(Arc::new(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![
+                AutomationPoint {
+                    beat: 1.0,
+                    value: 0.5,
+                },
+                AutomationPoint {
+                    beat: 5.0,
+                    value: 1.0,
+                },
+            ],
+        }));
+
+        let sequence = arrange_sequence(
+            120.0,
+            &[settings],
+            &[ArrangerSequenceSegment {
+                start_beats: 0.0,
+                end_beats: 4.0,
+                repeats: 2,
+            }],
+        )
+        .expect("sequence");
+        assert_eq!(sequence.total_beats, 8.0);
+        let clips = &sequence.tracks[0].clips;
+        assert_eq!(clips.len(), 2);
+        assert!((clips[1].start_beats - 4.0).abs() < 1.0e-9);
+        assert!((clips[0].duration_seconds - 2.0).abs() < 1.0e-9);
+        let notes = &sequence.tracks[0].midi_notes;
+        assert_eq!(notes.len(), 2);
+        assert!(
+            (notes[0].duration_beats - 1.0).abs() < 1.0e-9,
+            "clipped note"
+        );
+        assert!((notes[1].start_beats - 7.0).abs() < 1.0e-9);
+        let controllers = &sequence.tracks[0].midi_controllers;
+        assert_eq!(controllers.len(), 2);
+        assert!((controllers[1].position_beats - 7.0).abs() < 1.0e-9);
+        let automation = sequence.tracks[0]
+            .volume_automation
+            .as_ref()
+            .expect("automation");
+        assert!(
+            automation
+                .points
+                .iter()
+                .any(|point| (point.beat - 4.0).abs() < 1.0e-9)
+        );
+        assert!(
+            automation
+                .points
+                .iter()
+                .any(|point| (point.beat - 5.0).abs() < 1.0e-9)
+        );
+
+        // A later section keeps its source offset.
+        let partial = arrange_sequence(
+            120.0,
+            &[track(constant_source(0.125, 512), Vec::new())],
+            &[ArrangerSequenceSegment {
+                start_beats: 2.0,
+                end_beats: 4.0,
+                repeats: 1,
+            }],
+        )
+        .expect("partial");
+        assert!((partial.tracks[0].clips[0].source_offset_seconds - 1.0).abs() < 1.0e-9);
+        assert!((partial.tracks[0].clips[0].duration_seconds - 1.0).abs() < 1.0e-9);
+
+        assert!(matches!(
+            arrange_sequence(120.0, &[], &[]),
+            Err(ArrangerSequenceError::EmptySequence)
+        ));
+    }
+
+    #[test]
+    fn arranger_sequence_refuses_fades_and_refuses_to_flatten_them() {
+        use crate::arranger::{ArrangerSequenceError, ArrangerSequenceSegment, arrange_sequence};
+        let mut settings = track(constant_source(0.125, 512), Vec::new());
+        settings.clips[0].fade_in_seconds = 0.1;
+        let result = arrange_sequence(
+            120.0,
+            &[settings],
+            &[ArrangerSequenceSegment {
+                start_beats: 0.0,
+                end_beats: 4.0,
+                repeats: 1,
+            }],
+        );
+        assert!(matches!(
+            result,
+            Err(ArrangerSequenceError::UnsupportedFades)
+        ));
+    }
+
+    #[test]
+    fn arranger_sequence_renders_exact_repeated_length_through_offline_renderer() {
+        use crate::arranger::{ArrangerSequenceSegment, arrange_sequence};
+        let mut settings = track(constant_source(0.125, 48_000 * 4), Vec::new());
+        settings.clips[0].duration_seconds = 1.0; // two beats at 120 BPM
+        let sequence = arrange_sequence(
+            120.0,
+            &[settings],
+            &[ArrangerSequenceSegment {
+                start_beats: 0.0,
+                end_beats: 2.0,
+                repeats: 3,
+            }],
+        )
+        .expect("sequence");
+        assert!((sequence.total_beats - 6.0).abs() < 1.0e-9);
+        let mut renderer = OfflineRenderer::new(
+            120.0,
+            sequence.tracks,
+            48_000,
+            0.0,
+            sequence.total_beats,
+            &opentrack_core::project::BusChannel::output().strip,
+            Vec::new(),
+        )
+        .expect("renderer");
+        let mut rendered = Vec::new();
+        let mut block = vec![0.0; 512];
+        loop {
+            let frames = renderer.render_next(&mut block).expect("render");
+            if frames == 0 {
+                break;
+            }
+            rendered.extend_from_slice(&block[..frames * 2]);
+        }
+        assert_eq!(rendered.len(), 48_000 * 3 * 2, "exactly three seconds");
+        for sample in rendered {
+            assert!((sample - 0.125).abs() < 1.0e-6, "got {sample}");
         }
     }
 
