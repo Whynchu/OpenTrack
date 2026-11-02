@@ -1817,9 +1817,17 @@ mod tests {
         let dock = finite_test_dock_state();
         let workspace = initial_workspace_state(&dock).unwrap();
         let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
         project.add_track(TrackKind::Fx);
-        project.tracks[0].name = "Reverb Return".to_owned();
-        project.tracks[0].gain = 0.7;
+        let fx_id = project.tracks[1].id;
+        project.tracks[0].send_routing = vec![Some(format!("FX:{fx_id}"))];
+        project.tracks[0].send_parameters = vec![opentrack_core::project::SendParameters {
+            enabled: true,
+            ..opentrack_core::project::SendParameters::default()
+        }];
+        project.tracks[1].name = "Reverb Return".to_owned();
+        project.tracks[1].gain = 0.7;
+        assert_eq!(project.validate_routing(), Ok(()));
         let document = ProjectFile::new(project, workspace, dock, true, 0, false);
         let path = std::env::temp_dir().join(format!(
             "opentrack-fx-kind-{}-{}.opr",
@@ -1829,8 +1837,13 @@ mod tests {
         document.write(&path).unwrap();
         let restored = ProjectFile::read(&path).unwrap();
         assert_eq!(restored.version, FORMAT_VERSION);
-        assert_eq!(restored.project.tracks[0].kind, TrackKind::Fx);
-        assert_eq!(restored.project.tracks[0].name, "Reverb Return");
+        assert_eq!(restored.project.tracks[1].kind, TrackKind::Fx);
+        assert_eq!(restored.project.tracks[1].name, "Reverb Return");
+        assert_eq!(
+            restored.project.tracks[0].send_routing,
+            vec![Some(format!("FX:{fx_id}"))]
+        );
+        assert_eq!(restored.project.validate_routing(), Ok(()));
         assert_eq!(restored.project.validate(), Ok(()));
         fs::remove_file(&path).unwrap();
     }

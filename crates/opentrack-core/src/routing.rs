@@ -34,6 +34,14 @@ pub enum RoutingError {
     SelfGroup { group: u64 },
     /// The output would send the channel's audio back into its own input.
     RoutingCycle { group: u64 },
+    /// A send names an FX channel that does not exist.
+    MissingFx { fx: u64 },
+    /// A send would feed its own FX channel.
+    SelfFx { fx: u64 },
+    /// An FX send chain would create a feedback loop.
+    FxRoutingCycle { fx: u64 },
+    /// An FX channel is a return and cannot be a main output destination.
+    FxIsSendOnly { fx: u64 },
 }
 
 impl std::fmt::Display for RoutingError {
@@ -55,6 +63,23 @@ impl std::fmt::Display for RoutingError {
             Self::RoutingCycle { group } => write!(
                 formatter,
                 "routing to group {group} would create a feedback loop"
+            ),
+            Self::MissingFx { fx } => {
+                write!(formatter, "routing target FX channel {fx} does not exist")
+            }
+            Self::SelfFx { fx } => {
+                write!(
+                    formatter,
+                    "channel cannot send to itself as FX channel {fx}"
+                )
+            }
+            Self::FxRoutingCycle { fx } => write!(
+                formatter,
+                "routing to FX channel {fx} would create a feedback loop"
+            ),
+            Self::FxIsSendOnly { fx } => write!(
+                formatter,
+                "FX channel {fx} is a return and cannot be a main output"
             ),
         }
     }
@@ -151,6 +176,8 @@ pub enum OutputRoute {
     Right,
     /// A group channel, summed into that group's bus.
     Group(u64),
+    /// A shared effect return, used by sends only.
+    Fx(u64),
 }
 
 impl OutputRoute {
@@ -160,11 +187,19 @@ impl OutputRoute {
             "Stereo Out" => Ok(Self::StereoOut),
             "Left" => Ok(Self::Left),
             "Right" => Ok(Self::Right),
-            other => other
-                .strip_prefix("Group:")
-                .and_then(|id| id.trim().parse::<u64>().ok())
-                .map(Self::Group)
-                .ok_or_else(|| RoutingError::UnknownRoute(other.to_owned())),
+            other => {
+                if let Some(id) = other
+                    .strip_prefix("Group:")
+                    .and_then(|id| id.trim().parse::<u64>().ok())
+                {
+                    return Ok(Self::Group(id));
+                }
+                other
+                    .strip_prefix("FX:")
+                    .and_then(|id| id.trim().parse::<u64>().ok())
+                    .map(Self::Fx)
+                    .ok_or_else(|| RoutingError::UnknownRoute(other.to_owned()))
+            }
         }
     }
 
@@ -175,6 +210,7 @@ impl OutputRoute {
             Self::Left => "Left".to_owned(),
             Self::Right => "Right".to_owned(),
             Self::Group(id) => format!("Group:{id}"),
+            Self::Fx(id) => format!("FX:{id}"),
         }
     }
 
@@ -185,6 +221,7 @@ impl OutputRoute {
             Self::Left => "Left only".to_owned(),
             Self::Right => "Right only".to_owned(),
             Self::Group(id) => format!("Group:{id}"),
+            Self::Fx(id) => format!("FX:{id}"),
         }
     }
 
@@ -196,6 +233,22 @@ impl OutputRoute {
         }
     }
 
+    /// The FX return this route feeds, when it feeds one.
+    pub const fn fx(self) -> Option<u64> {
+        match self {
+            Self::Fx(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The bus channel this route feeds, group or FX.
+    pub const fn bus(self) -> Option<u64> {
+        match self {
+            Self::Group(id) | Self::Fx(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Speaker assignment for the main stereo output, if this is one.
     pub const fn speaker(self) -> Option<Speaker> {
         match self {
@@ -203,7 +256,7 @@ impl OutputRoute {
             Self::Left => Some(Speaker::Left),
             Self::Right => Some(Speaker::Right),
             Self::NoBus => Some(Speaker::None),
-            Self::Group(_) => None,
+            Self::Group(_) | Self::Fx(_) => None,
         }
     }
 }
@@ -244,6 +297,18 @@ pub fn output_destinations(groups: &[(u64, String)]) -> Vec<OutputRoute> {
     destinations
 }
 
+/// Every send destination a channel may pick, in menu order.
+///
+/// Group and FX lists contain only channels that would not create a cycle, so
+/// the caller decides which buses are legal and the menu cannot offer a route
+/// that validation would reject. Main output menus intentionally use only
+/// [`output_destinations`], because an FX channel is a send return.
+pub fn send_destinations(groups: &[(u64, String)], fx: &[(u64, String)]) -> Vec<OutputRoute> {
+    let mut destinations = output_destinations(groups);
+    destinations.extend(fx.iter().map(|(id, _)| OutputRoute::Fx(*id)));
+    destinations
+}
+
 /// Every input route the capture bus can deliver.
 pub fn input_destinations(available_channels: u8) -> Vec<InputRoute> {
     let mut destinations = vec![InputRoute::StereoIn];
@@ -277,6 +342,7 @@ mod tests {
             ("Left", OutputRoute::Left),
             ("Right", OutputRoute::Right),
             ("Group:7", OutputRoute::Group(7)),
+            ("FX:9", OutputRoute::Fx(9)),
         ] {
             assert_eq!(OutputRoute::parse(text), Ok(route));
             assert_eq!(route.persisted(), text);
@@ -326,12 +392,18 @@ mod tests {
         assert_eq!(OutputRoute::NoBus.speaker(), Some(Speaker::None));
         assert_eq!(OutputRoute::Group(3).speaker(), None);
         assert_eq!(OutputRoute::Group(3).group(), Some(3));
+        assert_eq!(OutputRoute::Fx(4).speaker(), None);
+        assert_eq!(OutputRoute::Fx(4).fx(), Some(4));
+        assert_eq!(OutputRoute::Fx(4).group(), None);
+        assert_eq!(OutputRoute::Fx(4).bus(), Some(4));
+        assert_eq!(OutputRoute::Group(3).bus(), Some(3));
         assert_eq!(OutputRoute::Left.group(), None);
     }
 
     #[test]
     fn destination_lists_match_what_validation_accepts() {
         let groups = [(4_u64, "Drums".to_owned())];
+        let fx = [(5_u64, "Hall".to_owned())];
         assert_eq!(
             output_destinations(&groups),
             vec![
@@ -340,6 +412,17 @@ mod tests {
                 OutputRoute::Right,
                 OutputRoute::NoBus,
                 OutputRoute::Group(4),
+            ]
+        );
+        assert_eq!(
+            send_destinations(&groups, &fx),
+            vec![
+                OutputRoute::StereoOut,
+                OutputRoute::Left,
+                OutputRoute::Right,
+                OutputRoute::NoBus,
+                OutputRoute::Group(4),
+                OutputRoute::Fx(5),
             ]
         );
         assert_eq!(

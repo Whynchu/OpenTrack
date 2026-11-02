@@ -27239,11 +27239,14 @@ mod bus_persistence_tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Fx);
         let group_id = project.tracks[1].id;
+        let fx_id = project.tracks[2].id;
         let source = &mut project.tracks[0];
         source.send_routing = vec![
             Some("Stereo Out".into()),
             Some(format!("Group:{group_id}")),
+            Some(format!("FX:{fx_id}")),
             Some("unknown legacy route".into()),
         ];
         source.send_parameters = vec![
@@ -27262,14 +27265,19 @@ mod bus_persistence_tests {
                 enabled: true,
                 ..SendParameters::default()
             },
+            SendParameters {
+                enabled: true,
+                ..SendParameters::default()
+            },
         ];
         let sends = playback_sends(&project.tracks[0], &project.tracks);
-        assert_eq!(sends.len(), 2);
+        assert_eq!(sends.len(), 3);
         assert_eq!(sends[0].destination, PlaybackOutputRoute::Stereo);
         assert!((sends[0].gain - 0.5).abs() < 0.0001);
         assert_eq!(sends[0].tap, SendTap::PreFader);
         assert_eq!(sends[1].destination, PlaybackOutputRoute::Group(1));
         assert_eq!(sends[1].gain, 0.0);
+        assert_eq!(sends[2].destination, PlaybackOutputRoute::Group(2));
         project.tracks[0].sends_bypassed = true;
         assert!(playback_sends(&project.tracks[0], &project.tracks).is_empty());
         project.tracks[0].sends_bypassed = false;

@@ -4531,6 +4531,12 @@ impl Project {
             .filter(|track| track.kind == TrackKind::Group)
             .map(|track| track.id)
             .collect::<BTreeSet<_>>();
+        let fx_ids = self
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Fx)
+            .map(|track| track.id)
+            .collect::<BTreeSet<_>>();
 
         // A destination may not be the channel itself or anything it already
         // feeds, which is the same rule the routing menu uses.
@@ -4560,8 +4566,8 @@ impl Project {
                             .filter_map(|route| OutputRoute::parse(route).ok()),
                     );
                 for destination in destinations {
-                    if let Some(group) = destination.group() {
-                        pending.push(group);
+                    if let Some(bus) = destination.bus() {
+                        pending.push(bus);
                     }
                 }
             }
@@ -4582,6 +4588,9 @@ impl Project {
             }
             if let Some(route) = channel.output_routing.as_deref() {
                 let output = OutputRoute::parse(route)?;
+                if let Some(fx) = output.fx() {
+                    return Err(RoutingError::FxIsSendOnly { fx });
+                }
                 if let Some(group) = output.group() {
                     if group == channel.id {
                         return Err(RoutingError::SelfGroup { group });
@@ -4595,17 +4604,30 @@ impl Project {
                 }
             }
             for route in channel.send_routing.iter().flatten() {
-                let Some(group) = OutputRoute::parse(route)?.group() else {
-                    continue;
-                };
-                if group == channel.id {
-                    return Err(RoutingError::SelfGroup { group });
-                }
-                if !group_ids.contains(&group) {
-                    return Err(RoutingError::MissingGroup { group });
-                }
-                if !is_strip && feeds_cycle(channel.id, group) {
-                    return Err(RoutingError::RoutingCycle { group });
+                match OutputRoute::parse(route)? {
+                    OutputRoute::Group(group) => {
+                        if group == channel.id {
+                            return Err(RoutingError::SelfGroup { group });
+                        }
+                        if !group_ids.contains(&group) {
+                            return Err(RoutingError::MissingGroup { group });
+                        }
+                        if !is_strip && feeds_cycle(channel.id, group) {
+                            return Err(RoutingError::RoutingCycle { group });
+                        }
+                    }
+                    OutputRoute::Fx(fx) => {
+                        if fx == channel.id {
+                            return Err(RoutingError::SelfFx { fx });
+                        }
+                        if !fx_ids.contains(&fx) {
+                            return Err(RoutingError::MissingFx { fx });
+                        }
+                        if !is_strip && feeds_cycle(channel.id, fx) {
+                            return Err(RoutingError::FxRoutingCycle { fx });
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -8900,6 +8922,66 @@ mod sample_edit_tests {
         assert_eq!(
             project.validate(),
             Err("MIDI parts must be stored on MIDI or instrument tracks")
+        );
+    }
+
+    #[test]
+    fn fx_sends_are_typed_validated_and_cycle_checked() {
+        use crate::routing::RoutingError;
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Fx);
+        project.add_track(TrackKind::Fx);
+        let group_id = project.tracks[2].id;
+        let first_fx = project.tracks[3].id;
+        let second_fx = project.tracks[4].id;
+
+        // Several tracks may share one return.
+        project.tracks[0].send_routing = vec![Some(format!("FX:{first_fx}"))];
+        project.tracks[1].send_routing = vec![Some(format!("FX:{first_fx}"))];
+        assert_eq!(project.validate_routing(), Ok(()));
+
+        // A main output cannot target a return.
+        project.tracks[0].output_routing = Some(format!("FX:{first_fx}"));
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::FxIsSendOnly { fx: first_fx })
+        );
+        project.tracks[0].output_routing = Some("Stereo Out".to_owned());
+
+        // A send cannot target itself, a missing channel, or a feedback loop.
+        project.tracks[0].send_routing = vec![Some(format!("FX:{}", project.tracks[0].id))];
+        let audio_id = project.tracks[0].id;
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::SelfFx { fx: audio_id })
+        );
+        project.tracks[0].send_routing = vec![Some("FX:9999".to_owned())];
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::MissingFx { fx: 9999 })
+        );
+
+        project.tracks[0].send_routing = vec![Some(format!("FX:{first_fx}"))];
+        project.tracks[3].send_routing = vec![Some(format!("FX:{second_fx}"))];
+        project.tracks[4].send_routing = vec![Some(format!("FX:{first_fx}"))];
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::FxRoutingCycle { fx: second_fx })
+        );
+
+        // A group and an FX channel may reference each other without a cycle,
+        // but a return into the group that feeds it is refused.
+        project.tracks[3].send_routing.clear();
+        project.tracks[4].send_routing.clear();
+        project.tracks[3].output_routing = Some(format!("Group:{group_id}"));
+        project.tracks[2].send_routing = vec![Some(format!("FX:{first_fx}"))];
+        assert_eq!(
+            project.validate_routing(),
+            Err(RoutingError::FxRoutingCycle { fx: first_fx })
         );
     }
 

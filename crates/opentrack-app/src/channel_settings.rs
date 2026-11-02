@@ -165,6 +165,18 @@ pub(super) fn show(
         })
         .map(|candidate| (candidate.id, candidate.name.clone()))
         .collect::<Vec<_>>();
+    let fx_options = project
+        .tracks
+        .iter()
+        .filter(|candidate| candidate.kind == TrackKind::Fx)
+        .filter(|candidate| Some(candidate.id) != selected_track_id)
+        .filter(|candidate| {
+            selected_track_id.is_none_or(|track_id| {
+                !group_route_would_cycle(&project.tracks, track_id, candidate.id)
+            })
+        })
+        .map(|candidate| (candidate.id, candidate.name.clone()))
+        .collect::<Vec<_>>();
     let mut names = project
         .tracks
         .iter()
@@ -283,10 +295,10 @@ pub(super) fn show(
             ChannelSettingsViewItem::Sends | ChannelSettingsViewItem::SendRouting => {
                 if track.id >= opentrack_core::project::INPUT_BUS_ID {
                     child.add_enabled_ui(false, |ui| {
-                        sends(ui, r, track, state, &group_options);
+                        sends(ui, r, track, state, &group_options, &fx_options);
                     });
                 } else {
-                    changed |= sends(&mut child, r, track, state, &group_options);
+                    changed |= sends(&mut child, r, track, state, &group_options, &fx_options);
                 }
             }
             ChannelSettingsViewItem::Fader | ChannelSettingsViewItem::ControlStrip => {
@@ -841,6 +853,7 @@ fn send_destination_menu(
     ui: &mut egui::Ui,
     selected: &mut Option<Option<String>>,
     groups: &[(u64, String)],
+    fx: &[(u64, String)],
 ) {
     if ui.button("No Bus").clicked() {
         *selected = Some(None);
@@ -865,6 +878,17 @@ fn send_destination_menu(
             }
         }
     });
+    ui.menu_button("FX Channels", |ui| {
+        if fx.is_empty() {
+            ui.add_enabled(false, egui::Button::new("No available FX channels"));
+        }
+        for (id, name) in fx {
+            if ui.button(name).clicked() {
+                *selected = Some(Some(format!("FX:{id}")));
+                ui.close();
+            }
+        }
+    });
 }
 
 fn sends(
@@ -873,6 +897,7 @@ fn sends(
     track: &mut Track,
     state: &mut ChannelSettingsUiState,
     groups: &[(u64, String)],
+    fx: &[(u64, String)],
 ) -> bool {
     let mut changed = false;
     if header(ui, r, "Sends", has_active_sends(track), state) {
@@ -944,13 +969,18 @@ fn sends(
                 .and_then(|id| id.parse::<u64>().ok())
                 .and_then(|id| groups.iter().find(|(group_id, _)| *group_id == id))
                 .map_or(destination, |(_, name)| name.as_str());
+            let name = destination
+                .strip_prefix("FX:")
+                .and_then(|id| id.parse::<u64>().ok())
+                .and_then(|id| fx.iter().find(|(fx_id, _)| *fx_id == id))
+                .map_or(name, |(_, name)| name.as_str());
             text(ui, rects.label, name, 10.0, Align2::RIGHT_CENTER);
         }
         let mut selected = None;
         let mut settings = track.send_parameters.get(i).copied().unwrap_or_default();
         let old_settings = settings;
         menu(&list, 180.0, |ui| {
-            send_destination_menu(ui, &mut selected, groups);
+            send_destination_menu(ui, &mut selected, groups, fx);
             if has_target {
                 ui.separator();
                 ui.label("Send level");
@@ -4084,7 +4114,7 @@ mod bus_tests {
                     ..Default::default()
                 },
                 |ui| {
-                    sends(ui, rack, track, &mut state, &[]);
+                    sends(ui, rack, track, &mut state, &[], &[]);
                 },
             );
             output.textures_delta.clear();
@@ -4162,7 +4192,7 @@ mod bus_tests {
                     ..Default::default()
                 },
                 |ui| {
-                    changed = sends(ui, rect, track, &mut state, &[]);
+                    changed = sends(ui, rect, track, &mut state, &[], &[]);
                 },
             );
             output.textures_delta.clear();

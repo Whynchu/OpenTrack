@@ -45,6 +45,9 @@ pub(super) fn playback_output_route(route: Option<&str>, tracks: &[Track]) -> Pl
                 PlaybackOutputRoute::Disconnected,
                 PlaybackOutputRoute::Group,
             ),
+        // FX channels are returns for sends; a main output here is disconnected
+        // rather than silently falling back to the stereo master.
+        Some(Ok(OutputRoute::Fx(_))) => PlaybackOutputRoute::Disconnected,
         Some(Err(_)) => PlaybackOutputRoute::Disconnected,
     }
 }
@@ -91,6 +94,14 @@ pub(super) fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<PlaybackSen
                     })?;
                     PlaybackOutputRoute::Group(index)
                 }
+                OutputRoute::Fx(id) => {
+                    let index = tracks.iter().position(|candidate| {
+                        candidate.id == id
+                            && candidate.id != track.id
+                            && candidate.kind == TrackKind::Fx
+                    })?;
+                    PlaybackOutputRoute::Group(index)
+                }
             };
             let db = settings.level_db.clamp(-90.0, 12.0);
             let gain = if db <= -90.0 {
@@ -133,7 +144,7 @@ pub(super) fn group_route_would_cycle(
         for destination in destinations {
             if let Some(id) = OutputRoute::parse(destination)
                 .ok()
-                .and_then(OutputRoute::group)
+                .and_then(OutputRoute::bus)
             {
                 pending.push(id);
             }
