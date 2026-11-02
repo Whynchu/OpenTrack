@@ -1182,6 +1182,8 @@ pub struct OpenTrackApp {
     template_name_draft: Option<String>,
     session_health_open: bool,
     project_statistics_open: bool,
+    /// Save / Discard / Cancel prompt for closing an unsaved project.
+    close_project_prompt: bool,
     beat_calculator: Option<project_tools::BeatCalculator>,
     /// Open numeric input dialog: what it edits and the value being typed.
     numeric_input: Option<NumericInput>,
@@ -2587,6 +2589,7 @@ impl OpenTrackApp {
             template_name_draft: None,
             session_health_open: false,
             project_statistics_open: false,
+            close_project_prompt: false,
             beat_calculator: None,
             numeric_input: None,
             notepad_draft: None,
@@ -3896,12 +3899,17 @@ impl OpenTrackApp {
         }
     }
 
-    fn reset_project(&mut self, parent: PathBuf) {
+    /// Clears everything a project owns and returns to the no-project shell.
+    ///
+    /// Returns how many global workspace presets were instantiated, which the
+    /// new-project status names.
+    fn clear_project_state(&mut self) -> usize {
         self.set_transport_playing(false);
         self.project_history.clear();
         self.project_history.skip_next_commit = true;
         self.data = AppData::default();
         self.audio_event_clipboard = None;
+        self.close_project_prompt = false;
         self.dock_state = default_dock_state();
         self.workspace_state = initial_workspace_state(&self.dock_state)
             .expect("the built-in dock layout must be serializable");
@@ -3934,6 +3942,14 @@ impl OpenTrackApp {
         self.project_path = None;
         self.project_open = false;
         self.project_folder_managed = false;
+        self.project_folder_setup = None;
+        self.rebuild_audio_plan();
+        self.mark_saved();
+        instantiated
+    }
+
+    fn reset_project(&mut self, parent: PathBuf) {
+        let instantiated = self.clear_project_state();
         self.project_folder_setup = Some(ProjectFolderSetup::New {
             project_name: self.data.project.name.clone(),
             parent,
@@ -3944,8 +3960,91 @@ impl OpenTrackApp {
         } else {
             format!("New project with {instantiated} global workspace preset(s)")
         };
-        self.rebuild_audio_plan();
-        self.mark_saved();
+    }
+
+    /// Asks to close the project, prompting when it has unsaved changes.
+    fn request_close_project(&mut self) {
+        if !self.project_open {
+            self.status_message = "No project is open".to_owned();
+            return;
+        }
+        if self.audio_import_task.is_some() {
+            self.status_message =
+                "Wait for the project audio import to finish before closing".to_owned();
+            return;
+        }
+        if self.has_unsaved_changes() {
+            self.close_project_prompt = true;
+            self.status_message = "Save changes before closing the project".to_owned();
+            return;
+        }
+        self.close_project();
+    }
+
+    fn show_close_project_prompt(&mut self, ctx: &egui::Context) {
+        if !self.close_project_prompt {
+            return;
+        }
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Window::new("Close Project")
+            .id(Id::new("close-project"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label("This project has unsaved changes.");
+                ui.label(
+                    "Saving writes them to the open project file. Discarding closes the \
+                     project and leaves the last saved file as it was.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Save and Close").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Discard").clicked() {
+                        discard = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if save {
+            self.close_project_with_save();
+        } else if discard {
+            self.close_project_discarding();
+        } else if cancel {
+            self.cancel_close_project();
+        }
+    }
+
+    /// Saves the project and closes it only when the save succeeded.
+    fn close_project_with_save(&mut self) {
+        self.close_project_prompt = false;
+        if self.save_project() {
+            self.close_project();
+        }
+    }
+
+    /// Closes the project without saving; the last saved file is untouched.
+    fn close_project_discarding(&mut self) {
+        self.close_project_prompt = false;
+        self.close_project();
+    }
+
+    fn cancel_close_project(&mut self) {
+        self.close_project_prompt = false;
+        self.status_message = "Close cancelled".to_owned();
+    }
+
+    /// Closes the open project and returns to the no-project shell.
+    fn close_project(&mut self) {
+        self.clear_project_state();
+        self.status_message = "Project closed".to_owned();
     }
 
     fn begin_project_folder_setup(&mut self) {
@@ -6823,6 +6922,7 @@ impl OpenTrackApp {
                     ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                 }
             }
+            "file.close" => self.request_close_project(),
             "file.save_new_version" => self.save_new_project_version(),
             "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
             "edit.paste_time" => self.paste_time(),
@@ -11180,7 +11280,10 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     menu_command(ui, "Open Library...", "", false);
-                    menu_command(ui, "Close", "Ctrl+W", false);
+                    if menu_command(ui, "Close", "Ctrl+W", self.project_open).clicked() {
+                        self.request_close_project();
+                        ui.close();
+                    }
                     if menu_command(
                         ui,
                         "New Version",
@@ -13150,6 +13253,7 @@ impl OpenTrackApp {
             || self.project_statistics_open
             || self.beat_calculator.is_some()
             || self.numeric_input.is_some()
+            || self.close_project_prompt
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -15548,6 +15652,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_statistics(&ctx);
         self.show_beat_calculator(&ctx);
         self.show_numeric_input(&ctx);
+        self.show_close_project_prompt(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -27413,6 +27518,113 @@ mod transport_locate_tests {
 }
 
 #[cfg(test)]
+mod close_project_tests {
+    use super::*;
+
+    fn open_app_with_track() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.mark_saved();
+        app
+    }
+
+    #[test]
+    fn an_unmodified_project_closes_straight_to_the_no_project_shell() {
+        let mut app = open_app_with_track();
+        app.data.transport.position_beats = 8.0;
+        app.request_close_project();
+        assert!(!app.close_project_prompt, "no prompt without changes");
+        assert!(!app.project_open);
+        assert!(app.project_path.is_none());
+        assert!(app.data.project.tracks.is_empty());
+        assert_eq!(app.status_message, "Project closed");
+        assert!(app.audio_event_clipboard.is_none());
+        assert_eq!(app.data.transport.position_beats, 0.0);
+
+        // Closing again reports instead of pretending.
+        app.request_close_project();
+        assert_eq!(app.status_message, "No project is open");
+    }
+
+    #[test]
+    fn unsaved_changes_prompt_and_cancel_keeps_the_project() {
+        let mut app = open_app_with_track();
+        app.data.project.tracks[0].name = "Changed".to_owned();
+        app.modified = true;
+        app.request_close_project();
+        assert!(app.close_project_prompt);
+        assert!(app.project_open);
+        assert!(app.status_message.contains("Save changes"));
+
+        app.cancel_close_project();
+        assert!(!app.close_project_prompt);
+        assert!(app.project_open);
+        assert_eq!(app.data.project.tracks[0].name, "Changed");
+        assert_eq!(app.status_message, "Close cancelled");
+    }
+
+    #[test]
+    fn discard_closes_without_writing_and_save_and_close_writes_first() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-close-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let path = root.join("Song.opr");
+
+        // Discard: the last saved file is untouched and the project closes.
+        let mut app = open_app_with_track();
+        app.project_folder_managed = true;
+        app.project_path = Some(path.clone());
+        app.data.project.tracks[0].name = "Changed".to_owned();
+        app.modified = true;
+        app.request_close_project();
+        app.close_project_discarding();
+        assert!(!app.project_open);
+        assert!(!path.exists(), "discard wrote nothing");
+
+        // Save and close: the file exists and the shell is empty afterwards.
+        let mut app = open_app_with_track();
+        app.project_folder_managed = true;
+        app.project_path = Some(path.clone());
+        app.data.project.tracks[0].name = "Saved".to_owned();
+        app.modified = true;
+        app.request_close_project();
+        app.close_project_with_save();
+        assert!(path.exists(), "save wrote the project");
+        assert!(!app.project_open);
+        let restored = ProjectFile::read(&path).expect("read");
+        assert_eq!(restored.project.tracks[0].name, "Saved");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_close_shortcut_reaches_the_prompt() {
+        use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+
+        let ctx = egui::Context::default();
+        let mut app = open_app_with_track();
+        app.modified = true;
+        app.dispatch_reference_command(
+            "file.close",
+            "Close",
+            KeyChord::new(
+                KeyCode::Letter('W'),
+                KeyModifiers {
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            &ctx,
+        );
+        assert!(app.close_project_prompt);
+        assert!(app.project_open);
+    }
+}
+
+#[cfg(test)]
 mod numeric_input_tests {
     use super::*;
 
@@ -27817,6 +28029,7 @@ mod keyboard_coverage_tests {
             "file.new",
             "file.open",
             "file.save",
+            "file.close",
             "file.save_new_version",
             "edit.undo",
             "edit.redo",

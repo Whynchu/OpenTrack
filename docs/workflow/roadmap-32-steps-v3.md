@@ -115,6 +115,14 @@ and measured numbers.
    the ordinary, at-origin and time pastes. 2 app tests. Shortcut coverage
    128 -> 129.
 
+13. **Close Project.** *Delivered.* File > Close (Ctrl+W) returns to the
+   no-project shell. An unmodified project closes immediately; unsaved changes
+   open a Save and Close / Discard / Cancel prompt. Save writes the project file
+   and only closes when the write succeeded; Discard closes without writing.
+   `reset_project` and Close now share one `clear_project_state` path, so a closed
+   project leaves no clipboard, transport, window or workspace state behind. 4 app
+   tests. Shortcut coverage 129 -> 130.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
