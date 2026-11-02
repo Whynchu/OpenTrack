@@ -1192,6 +1192,8 @@ pub struct OpenTrackApp {
     play_until: Option<f64>,
     /// Insert Velocities dialog draft: start and end velocity.
     insert_velocities: Option<(u8, u8)>,
+    /// Build N-Tuplet dialog draft: note count and span in beats.
+    tuplet_dialog: Option<(u8, f64)>,
     /// Media Pool search term and whether the field should take focus next frame.
     pool_search: String,
     pool_search_focus: bool,
@@ -2613,6 +2615,7 @@ impl OpenTrackApp {
             gain_dialog: None,
             play_until: None,
             insert_velocities: None,
+            tuplet_dialog: None,
             pool_search: String::new(),
             pool_search_focus: false,
             default_fade_seconds: creation
@@ -8036,6 +8039,162 @@ impl OpenTrackApp {
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
     }
 
+    /// Builds an N-note tuplet from the selected notes as one undo step.
+    fn build_note_tuplet(&mut self, count: u8, span_beats: f64) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before building a tuplet".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let changed =
+            match opentrack_core::midi_transform::build_tuplet(part, &ids, count, span_beats) {
+                Ok(changed) => changed,
+                Err(message) => {
+                    self.status_message = message;
+                    return;
+                }
+            };
+        if changed == 0 {
+            self.status_message = "The selected notes are already on that tuplet grid".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot build the tuplet: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Build N-Tuplet");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Built a {count}-note tuplet over {span_beats:.3} beat(s); Undo restores the notes"
+        );
+    }
+
+    /// Opens the tuplet dialog seeded from the selection.
+    fn open_tuplet_dialog(&mut self) {
+        if self.data.project.selected_midi_part_id.is_none() {
+            self.status_message = "Select a MIDI part before building a tuplet".to_owned();
+            return;
+        }
+        let notes = self
+            .data
+            .project
+            .selected_midi_part_id
+            .and_then(|part_id| {
+                self.data
+                    .project
+                    .tracks
+                    .iter()
+                    .flat_map(|track| track.midi_parts.iter())
+                    .find(|part| part.id == part_id)
+            })
+            .map(|part| {
+                let selected = part
+                    .notes
+                    .iter()
+                    .filter(|note| {
+                        self.selected_midi_note_ids.is_empty()
+                            || self.selected_midi_note_ids.contains(&note.id)
+                    })
+                    .collect::<Vec<_>>();
+                let count = selected.len().clamp(2, 16) as u8;
+                let start = selected
+                    .iter()
+                    .map(|note| note.start_beats)
+                    .fold(f64::INFINITY, f64::min);
+                let end = selected
+                    .iter()
+                    .map(|note| note.start_beats + note.duration_beats)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let span = if start.is_finite() && end > start {
+                    end - start
+                } else {
+                    1.0
+                };
+                (count, span.clamp(0.0625, 64.0))
+            })
+            .unwrap_or((2, 1.0));
+        self.tuplet_dialog = Some(notes);
+    }
+
+    fn show_tuplet_dialog(&mut self, ctx: &egui::Context) {
+        let Some((mut count, mut span)) = self.tuplet_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Build N-Tuplet")
+            .id(Id::new("build-tuplet"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label("Fits the selected notes evenly into the tuplet");
+                egui::Grid::new("build-tuplet-grid")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Notes");
+                        ui.add(egui::DragValue::new(&mut count).range(2..=16));
+                        ui.end_row();
+                        ui.label("Span (beats)");
+                        ui.add(
+                            egui::DragValue::new(&mut span)
+                                .range(0.0625..=64.0)
+                                .speed(0.0625),
+                        );
+                        ui.end_row();
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "Select exactly this many notes, or change the count. The span stops at the part end.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Build").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(ctx, Id::new("build-tuplet"), &mut open, response.as_ref());
+        if apply {
+            self.build_note_tuplet(count, span);
+        } else if !cancel && open {
+            self.tuplet_dialog = Some((count, span));
+        }
+    }
+
     /// Applies a fixed velocity or a ramp to the selected notes.
     fn insert_note_velocities(&mut self, start: u8, end: u8) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
@@ -13012,6 +13171,18 @@ impl OpenTrackApp {
                         self.edit_selected_event_in_place();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Build N-Tuplet...",
+                        "",
+                        self.project_open
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.open_tuplet_dialog();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -13020,7 +13191,6 @@ impl OpenTrackApp {
                             ("Settings...", ""),
                             ("Group/Ungroup Notes", ""),
                             ("Convert to Grace Note", ""),
-                            ("Build N-Tuplet...", ""),
                             ("Insert Slur", ""),
                             ("Hide/Show", ""),
                             ("Flip", ""),
@@ -14151,6 +14321,7 @@ impl OpenTrackApp {
             || self.gain_dialog.is_some()
             || self.auto_fades_settings_open
             || self.insert_velocities.is_some()
+            || self.tuplet_dialog.is_some()
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -16560,6 +16731,7 @@ impl eframe::App for OpenTrackApp {
         self.show_gain_dialog(&ctx);
         self.show_auto_fades_settings(&ctx);
         self.show_insert_velocities_dialog(&ctx);
+        self.show_tuplet_dialog(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -28542,6 +28714,105 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod tuplet_tests {
+    use super::*;
+    use opentrack_core::project::{MidiNote, MidiPart};
+
+    fn app_with_notes() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.next_midi_part_id = 2;
+        app.data.project.next_midi_note_id = 4;
+        app.data.project.tracks[0].midi_parts.push(MidiPart {
+            id: 1,
+            name: "Part".to_owned(),
+            start_beats: 0.0,
+            duration_beats: 8.0,
+            notes: vec![
+                MidiNote {
+                    id: 1,
+                    start_beats: 0.0,
+                    duration_beats: 0.5,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                },
+                MidiNote {
+                    id: 2,
+                    start_beats: 1.0,
+                    duration_beats: 0.5,
+                    pitch: 62,
+                    channel: 0,
+                    velocity: 100,
+                },
+                MidiNote {
+                    id: 3,
+                    start_beats: 2.0,
+                    duration_beats: 0.5,
+                    pitch: 64,
+                    channel: 0,
+                    velocity: 100,
+                },
+            ],
+            controller_events: Vec::new(),
+        });
+        app.data.project.selected_midi_part_id = Some(1);
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn building_a_tuplet_is_one_labelled_undo_step_and_reports_refusals() {
+        let mut app = app_with_notes();
+        app.build_note_tuplet(3, 1.5);
+        let starts = app.data.project.tracks[0].midi_parts[0]
+            .notes
+            .iter()
+            .map(|note| (note.start_beats, note.duration_beats))
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec![(0.0, 0.5), (0.5, 0.5), (1.0, 0.5)]);
+        assert!(app.status_message.contains("Built a 3-note tuplet"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Build N-Tuplet");
+
+        // A mismatched count is refused with the core's message and no step.
+        let steps = app.project_history.counts().0;
+        app.build_note_tuplet(4, 1.5);
+        assert!(
+            app.status_message.contains("Select exactly 4 note(s)"),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // Without a selected part it reports.
+        app.data.project.selected_midi_part_id = None;
+        app.build_note_tuplet(3, 1.0);
+        assert!(app.status_message.contains("Select a MIDI part"));
+        app.open_tuplet_dialog();
+        assert!(app.tuplet_dialog.is_none());
+    }
+
+    #[test]
+    fn the_dialog_seeds_the_count_and_span_from_the_selection() {
+        let mut app = app_with_notes();
+        app.open_tuplet_dialog();
+        let (count, span) = app.tuplet_dialog.expect("draft");
+        assert_eq!(count, 3);
+        assert!((span - 2.5).abs() < 1e-9, "span was {span}");
+
+        // A one-note selection still offers a usable tuplet count.
+        app.selected_midi_note_ids = [1].into_iter().collect();
+        app.open_tuplet_dialog();
+        let (count, _) = app.tuplet_dialog.expect("draft");
+        assert_eq!(count, 2);
     }
 }
 

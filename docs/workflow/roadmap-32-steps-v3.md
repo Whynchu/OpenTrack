@@ -221,6 +221,14 @@ and measured numbers.
    undo step, no-change and no-part reported. 1 core and 1 app tests. Disabled
    entries 105 -> 104.
 
+28. **Build N-Tuplet.** *Delivered.* Scores > Build N-Tuplet... opens a dialog for
+   the note count (2-16) and span in beats, seeded from the selection. Core
+   `midi_transform::build_tuplet` places exactly that many selected notes on even
+   slots from the earliest note, gives each the slot length, clamps the span to the
+   part end, and refuses a count that does not match the selection rather than
+   dropping notes. One labelled "Build N-Tuplet" undo step. 1 core and 2 app
+   tests. Disabled entries 104 -> 103.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

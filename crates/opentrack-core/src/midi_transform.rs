@@ -111,6 +111,64 @@ pub fn ramp_velocity(part: &mut MidiPart, ids: &[u64], start: u8, end: u8) -> us
     changed
 }
 
+/// Builds an evenly spaced tuplet from the selected notes.
+///
+/// The user picks the note count and the span; every selected note is placed on
+/// its own slot from the earliest selected note and gets that slot's length. The
+/// span is clamped to the part so the last note never crosses its end, and a
+/// selection whose size does not match the requested count is refused rather
+/// than silently dropping or adding notes.
+pub fn build_tuplet(
+    part: &mut MidiPart,
+    ids: &[u64],
+    count: u8,
+    span_beats: f64,
+) -> Result<usize, String> {
+    if !(2..=16).contains(&count) {
+        return Err("A tuplet needs between 2 and 16 notes".to_owned());
+    }
+    if !span_beats.is_finite() || span_beats <= 0.0 {
+        return Err("The tuplet span must be a positive length".to_owned());
+    }
+    let mut selected = part
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| says_yes(ids, note.id))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if selected.len() != usize::from(count) {
+        return Err(format!(
+            "Select exactly {count} note(s) to build this tuplet, or change the note count"
+        ));
+    }
+    selected.sort_by(|left, right| {
+        part.notes[*left]
+            .start_beats
+            .total_cmp(&part.notes[*right].start_beats)
+            .then(left.cmp(right))
+    });
+    let anchor = part.notes[selected[0]].start_beats;
+    let span = span_beats.min((part.duration_beats - anchor).max(0.0));
+    let slot = span / f64::from(count);
+    if slot <= 1e-6 {
+        return Err("The part is too short for that tuplet".to_owned());
+    }
+    let mut changed = 0;
+    for (rank, index) in selected.iter().enumerate() {
+        let start = anchor + rank as f64 * slot;
+        let duration = slot.min((part.duration_beats - start).max(1e-6));
+        let note = &mut part.notes[*index];
+        if (note.start_beats - start).abs() > 1e-9 || (note.duration_beats - duration).abs() > 1e-9
+        {
+            note.start_beats = start;
+            note.duration_beats = duration;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +261,39 @@ mod tests {
             0,
             "already at the floor"
         );
+    }
+
+    #[test]
+    fn a_tuplet_evens_the_spacing_and_stays_inside_the_part() {
+        let (_project, mut tuplet) = part();
+        // The fixture has three notes at 0, 1 and 2 beats in an 8-beat part.
+        // Three half-beat slots leave the first note where it already was.
+        assert_eq!(build_tuplet(&mut tuplet, &[], 3, 1.5), Ok(2));
+        let starts = tuplet
+            .notes
+            .iter()
+            .map(|note| (note.start_beats, note.duration_beats))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            starts,
+            vec![(0.0, 0.5), (0.5, 0.5), (1.0, 0.5)],
+            "three slots of half a beat"
+        );
+
+        // A span that would leave the part is clamped instead of overflowing.
+        let (_project, mut clamped) = part();
+        // Clamped to the 8-beat part: three slots of about 2.67 beats.
+        assert_eq!(build_tuplet(&mut clamped, &[], 3, 100.0), Ok(3));
+        assert!(clamped
+            .notes
+            .iter()
+            .all(|note| note.start_beats + note.duration_beats <= clamped.duration_beats + 1e-9));
+
+        // A mismatched selection is refused rather than dropping notes.
+        let (_project, mut mismatched) = part();
+        assert!(build_tuplet(&mut mismatched, &[], 4, 1.0).is_err());
+        assert!(build_tuplet(&mut mismatched, &[], 1, 1.0).is_err());
+        assert!(build_tuplet(&mut mismatched, &[], 3, 0.0).is_err());
     }
 
     #[test]
