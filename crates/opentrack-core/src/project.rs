@@ -1754,6 +1754,7 @@ impl Project {
         }
         self.register_media();
         let removed_id = self.tracks[track_index].id;
+        let removed_kind = self.tracks[track_index].kind;
         let removed_parent_id = self.tracks[track_index].parent_group_id;
         for track in &mut self.tracks {
             if track.parent_group_id == Some(removed_id) {
@@ -1765,6 +1766,25 @@ impl Project {
             .and_then(|index| self.tracks.get(index as usize))
             .map(|track| track.id);
         let removed = self.tracks.remove(track_index);
+        // A removed FX return leaves no dangling send targets. Group removal
+        // keeps its existing behavior; only the FX return is cleared here.
+        if removed_kind == TrackKind::Fx {
+            for track in &mut self.tracks {
+                for (slot, route) in track.send_routing.iter_mut().enumerate() {
+                    let targets_removed = route
+                        .as_deref()
+                        .and_then(|value| crate::routing::OutputRoute::parse(value).ok())
+                        .and_then(crate::routing::OutputRoute::fx)
+                        == Some(removed_id);
+                    if targets_removed {
+                        *route = None;
+                        if let Some(settings) = track.send_parameters.get_mut(slot) {
+                            settings.enabled = false;
+                        }
+                    }
+                }
+            }
+        }
         for track in &mut self.tracks {
             if track.parent_group_id == Some(removed_id) {
                 sync_group_default_output(track, removed_parent_id);
@@ -8983,6 +9003,26 @@ mod sample_edit_tests {
             project.validate_routing(),
             Err(RoutingError::FxRoutingCycle { fx: first_fx })
         );
+    }
+
+    #[test]
+    fn removing_an_fx_return_clears_sends_that_targeted_it() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Fx);
+        let fx_id = project.tracks[1].id;
+        project.tracks[0].send_routing = vec![Some(format!("FX:{fx_id}"))];
+        project.tracks[0].send_parameters = vec![SendParameters {
+            enabled: true,
+            ..SendParameters::default()
+        }];
+        assert_eq!(project.validate_routing(), Ok(()));
+
+        let removed = project.remove_track(1).expect("FX removed");
+        assert_eq!(removed.kind, TrackKind::Fx);
+        assert_eq!(project.tracks[0].send_routing, vec![None]);
+        assert!(!project.tracks[0].send_parameters[0].enabled);
+        assert_eq!(project.validate_routing(), Ok(()));
     }
 
     #[test]

@@ -169,6 +169,7 @@ fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
     for (name, kind) in [
         ("Audio", TrackKind::Audio),
         ("Group Channel", TrackKind::Group),
+        ("FX Channel", TrackKind::Fx),
         ("Instrument", TrackKind::Instrument),
         ("MIDI", TrackKind::Midi),
     ] {
@@ -185,7 +186,6 @@ fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
     ui.separator();
     for name in [
         "Arranger",
-        "FX Channel",
         "Folder",
         "Marker",
         "Ruler",

@@ -518,7 +518,7 @@ pub(super) fn show(
             "",
             "Enable Record",
             track.armed,
-            true,
+            track.kind != TrackKind::Fx,
             true,
         )
         .clicked()

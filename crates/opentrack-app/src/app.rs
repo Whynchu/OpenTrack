@@ -491,6 +491,8 @@ struct TrackAddDialog {
     browse_presets: bool,
     /// Index into the scanned VST3 instrument list, or none for an empty track.
     instrument: Option<usize>,
+    /// Index into the scanned VST3 effect list for a new FX channel.
+    effect: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -7724,6 +7726,7 @@ impl OpenTrackApp {
                     mono_input_channel: 1,
                     browse_presets: true,
                     instrument: None,
+                    effect: None,
                 });
             }
             "devices.vst_performance" => self.realtime_diagnostics_open = true,
@@ -13799,6 +13802,7 @@ impl OpenTrackApp {
                         for (label, kind) in [
                             ("Audio", TrackKind::Audio),
                             ("Group Channel", TrackKind::Group),
+                            ("FX Channel", TrackKind::Fx),
                             ("Instrument", TrackKind::Instrument),
                             ("MIDI", TrackKind::Midi),
                         ] {
@@ -13810,6 +13814,7 @@ impl OpenTrackApp {
                                     mono_input_channel: 1,
                                     browse_presets: true,
                                     instrument: None,
+                                    effect: None,
                                 });
                                 ui.close();
                             }
@@ -13819,7 +13824,6 @@ impl OpenTrackApp {
                             ui,
                             &[
                                 ("Arranger", ""),
-                                ("FX Channel", ""),
                                 ("Folder", ""),
                                 ("Marker", ""),
                                 ("Ruler", ""),
@@ -14586,6 +14590,7 @@ impl OpenTrackApp {
                                     mono_input_channel: 1,
                                     browse_presets: true,
                                     instrument: None,
+                                    effect: None,
                                 });
                                 ui.close();
                             }
@@ -14791,6 +14796,7 @@ impl OpenTrackApp {
                             mono_input_channel: 1,
                             browse_presets: true,
                             instrument: None,
+                            effect: None,
                         });
                         ui.close();
                     }
@@ -17048,6 +17054,7 @@ impl OpenTrackApp {
                     mono_input_channel: 1,
                     browse_presets: false,
                     instrument: None,
+                    effect: None,
                 });
             }
             Some(project_controls::Action::Remove(id)) => {
@@ -17217,7 +17224,14 @@ impl OpenTrackApp {
         };
         let viewport = ctx.content_rect();
         // Window::fixed_size applies to the content area; the captured outer window is 338×162.
-        let dialog_size = Vec2::new(338.0, 128.0);
+        let dialog_size = Vec2::new(
+            338.0,
+            if dialog.kind == TrackKind::Fx {
+                160.0
+            } else {
+                128.0
+            },
+        );
         let dialog_pos = Pos2::new(
             (viewport.width() - dialog_size.x).max(0.0) * 0.5,
             (viewport.height() - dialog_size.y).max(0.0) * 0.5,
@@ -17257,7 +17271,7 @@ impl OpenTrackApp {
                                         }
                                         TrackKind::Audio => 40.0 + 6.0 + 78.0,
                                         TrackKind::Group => 40.0 + 6.0 + 78.0,
-                                        TrackKind::Fx => 40.0 + 6.0 + 78.0,
+                                        TrackKind::Fx => 40.0 + 6.0 + 78.0 + 6.0 + 160.0,
                                         TrackKind::Instrument => 40.0 + 6.0 + 160.0,
                                         TrackKind::Midi => 40.0,
                                     };
@@ -17398,6 +17412,48 @@ impl OpenTrackApp {
                                                     egui::RichText::new("configuration").size(10.0),
                                                 );
                                             });
+                                            ui.vertical(|ui| {
+                                                let effects = self
+                                                    .vst3_plugin_catalog
+                                                    .iter()
+                                                    .filter(|plugin| {
+                                                        plugin.category
+                                                            == PluginCategory::Effect
+                                                    })
+                                                    .collect::<Vec<_>>();
+                                                let selected = dialog
+                                                    .effect
+                                                    .and_then(|index| effects.get(index))
+                                                    .map(|plugin| plugin.name.as_str())
+                                                    .unwrap_or("No Effect");
+                                                egui::ComboBox::from_id_salt("add-fx-effect")
+                                                    .width(160.0)
+                                                    .selected_text(selected)
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut dialog.effect,
+                                                            None,
+                                                            "No Effect",
+                                                        );
+                                                        for (index, plugin) in
+                                                            effects.iter().enumerate()
+                                                        {
+                                                            ui.selectable_value(
+                                                                &mut dialog.effect,
+                                                                Some(index),
+                                                                plugin.name.as_str(),
+                                                            );
+                                                        }
+                                                    });
+                                                ui.label(
+                                                    egui::RichText::new(if effects.is_empty() {
+                                                        "no VST3 effects found; scan plug-ins in Preferences"
+                                                    } else {
+                                                        "first insert (optional)"
+                                                    })
+                                                    .size(10.0),
+                                                );
+                                            });
                                         }
                                         TrackKind::Instrument => {
                                             ui.vertical(|ui| {
@@ -17494,6 +17550,19 @@ impl OpenTrackApp {
         );
         if accepted && open {
             let count = dialog.count.clamp(1, max_track_count as u32);
+            let fx_effect = if dialog.kind == TrackKind::Fx {
+                dialog
+                    .effect
+                    .and_then(|index| {
+                        self.vst3_plugin_catalog
+                            .iter()
+                            .filter(|plugin| plugin.category == PluginCategory::Effect)
+                            .nth(index)
+                    })
+                    .map(vst3_insert_effect)
+            } else {
+                None
+            };
             let mut last_track_id = None;
             for _ in 0..count {
                 let index = self
@@ -17506,6 +17575,18 @@ impl OpenTrackApp {
                             channel: dialog.mono_input_channel,
                         }
                         .persisted(),
+                    );
+                }
+                if let Some(kind) = &fx_effect
+                    && let Some(track) = self.data.project.tracks.get_mut(index)
+                {
+                    track.inserts.insert(
+                        0,
+                        opentrack_core::project::InsertEffect {
+                            enabled: true,
+                            bypassed: false,
+                            kind: kind.clone(),
+                        },
                     );
                 }
                 last_track_id = self.data.project.tracks.get(index).map(|track| track.id);
@@ -30685,6 +30766,60 @@ mod transport_locate_tests {
         );
         assert!(via_key.data.transport.cycle);
         assert_eq!(via_menu.status_message, via_key.status_message);
+    }
+
+    #[test]
+    fn adding_and_deleting_an_fx_channel_is_one_undoable_step_each() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.project_history.clear();
+
+        app.project_history.begin(&app.data.project, app.modified);
+        app.project_history.label_next("Add FX Channel");
+        app.data
+            .project
+            .insert_track_below_selection(TrackKind::Fx, 2);
+        app.mark_modified();
+        assert!(app.project_history.finish_frame(&app.data.project, true));
+        assert_eq!(app.project_history.counts().0, 1);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .any(|track| track.kind == TrackKind::Fx)
+        );
+
+        app.project_history.begin(&app.data.project, app.modified);
+        app.project_history.label_next("Delete FX Channel");
+        let fx_index = app
+            .data
+            .project
+            .tracks
+            .iter()
+            .position(|track| track.kind == TrackKind::Fx)
+            .expect("FX channel");
+        app.data.project.remove_track(fx_index);
+        assert!(app.project_history.finish_frame(&app.data.project, true));
+        assert!(
+            !app.data
+                .project
+                .tracks
+                .iter()
+                .any(|track| track.kind == TrackKind::Fx)
+        );
+
+        app.undo_project();
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .any(|track| track.kind == TrackKind::Fx)
+        );
     }
 
     #[test]

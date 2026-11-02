@@ -1827,6 +1827,20 @@ mod tests {
         }];
         project.tracks[1].name = "Reverb Return".to_owned();
         project.tracks[1].gain = 0.7;
+        project.tracks[1]
+            .inserts
+            .push(opentrack_core::project::InsertEffect {
+                enabled: true,
+                bypassed: false,
+                kind: opentrack_core::project::InsertEffectKind::Vst3 {
+                    class_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                    module_path: std::path::PathBuf::from("missing/effect.vst3"),
+                    name: "Missing Effect".to_owned(),
+                    vendor: "Fixture".to_owned(),
+                    component_state: Vec::new(),
+                    controller_state: Vec::new(),
+                },
+            });
         assert_eq!(project.validate_routing(), Ok(()));
         let document = ProjectFile::new(project, workspace, dock, true, 0, false);
         let path = std::env::temp_dir().join(format!(
@@ -1839,6 +1853,12 @@ mod tests {
         assert_eq!(restored.version, FORMAT_VERSION);
         assert_eq!(restored.project.tracks[1].kind, TrackKind::Fx);
         assert_eq!(restored.project.tracks[1].name, "Reverb Return");
+        assert_eq!(restored.project.tracks[1].inserts.len(), 1);
+        assert!(matches!(
+            restored.project.tracks[1].inserts[0].kind,
+            opentrack_core::project::InsertEffectKind::Vst3 { ref name, .. }
+                if name == "Missing Effect"
+        ));
         assert_eq!(
             restored.project.tracks[0].send_routing,
             vec![Some(format!("FX:{fx_id}"))]

@@ -1288,7 +1288,7 @@ fn strip(
                 "monitor",
                 Icon::Speaker,
                 track.monitor,
-                true,
+                track.kind != TrackKind::Fx,
                 true,
                 Some("Monitor"),
             )
@@ -1305,7 +1305,7 @@ fn strip(
                 "record",
                 Icon::Record,
                 track.armed,
-                true,
+                track.kind != TrackKind::Fx,
                 true,
                 Some("Record Enable"),
             )
