@@ -375,6 +375,12 @@ still one commit with tests and refreshed counts.
    other source processes apply. 1 audio and 1 app tests. Disabled entries
    98 -> 97.
 
-Next candidates in the same family: Normalize, then the interchange adapters with
-explicit format/version scopes. Revision 4 should still start with the
-user-dependent reviews and CPR fixtures.
+35. **Normalize.** *Delivered.* Audio > Process > Normalize... opens a peak-target
+   dialog (dBFS); `opentrack_audio::normalize_wav_range` scans the used range,
+   scales to the target, refuses silence, and writes nothing when the material is
+   already at the target. Repointed events use the same cleanup/undo rules as the
+   other source processes; the status names the target and how many events were
+   already level or silent. 1 audio and 1 app tests. Disabled entries 97 -> 96.
+
+Next candidates: the interchange adapters with explicit format/version scopes.
+Revision 4 should still start with the user-dependent reviews and CPR fixtures.

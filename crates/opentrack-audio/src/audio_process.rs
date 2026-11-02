@@ -35,6 +35,63 @@ pub fn reverse_wav_range(
     Ok(range.frames)
 }
 
+/// What one normalization did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NormalizeOutcome {
+    pub frames: u64,
+    /// Peak amplitude found in the used range.
+    pub peak: f32,
+    /// Linear gain applied (or that would be applied when already at target).
+    pub gain: f32,
+    /// False when the material was already at the target and no file was written.
+    pub written: bool,
+}
+
+/// Scales the used range so its peak reaches `target_peak`, writing new media.
+///
+/// A silent range has no peak to normalize and is refused; material already at
+/// the target is reported without writing a duplicate file.
+pub fn normalize_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    target_peak: f32,
+    destination: &Path,
+) -> Result<NormalizeOutcome, String> {
+    if !target_peak.is_finite() || target_peak <= 0.0 || target_peak > 1.0 {
+        return Err("the normalize target must be above 0 and at most 1.0".to_owned());
+    }
+    let range = read_range(source, offset_seconds, duration_seconds)?;
+    let peak = range
+        .samples
+        .iter()
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+    if peak <= 1e-7 {
+        return Err("the event is silent; there is nothing to normalize".to_owned());
+    }
+    let gain = (target_peak / peak).clamp(0.0, 64.0);
+    if (gain - 1.0).abs() <= 1e-3 {
+        return Ok(NormalizeOutcome {
+            frames: range.frames,
+            peak,
+            gain,
+            written: false,
+        });
+    }
+    let samples = range
+        .samples
+        .iter()
+        .map(|sample| (sample * gain).clamp(-1.0, 1.0))
+        .collect::<Vec<_>>();
+    write_float_wav(destination, range.channels, range.sample_rate, &samples)?;
+    Ok(NormalizeOutcome {
+        frames: range.frames,
+        peak,
+        gain,
+        written: true,
+    })
+}
+
 /// Swaps the left and right channels of the used range into new media.
 ///
 /// A mono source has nothing to flip and is refused rather than silently
@@ -258,6 +315,45 @@ mod tests {
         let (_, original) = read(&source);
         assert!((samples[0] - original[191]).abs() < 1e-6);
         assert!((samples[95] - original[96]).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalizing_scales_the_peak_and_skips_already_matching_audio() {
+        let root = std::env::temp_dir().join(format!("opentrack-normalize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("quiet.wav");
+        let destination = root.join("loud.wav");
+        // A ramp reaching 0.25.
+        write_wav(&source, 1, 4_800, |frame, _| {
+            (frame as f32 / 4_799.0) * 0.25
+        });
+
+        let outcome = normalize_wav_range(&source, 0.0, 0.1, 1.0, &destination).expect("normalize");
+        assert_eq!(outcome.frames, 4_800);
+        assert!((outcome.peak - 0.25).abs() < 1e-4, "{outcome:?}");
+        assert!((outcome.gain - 4.0).abs() < 1e-3, "{outcome:?}");
+        assert!(outcome.written);
+        let (_, samples) = read(&destination);
+        let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        assert!((peak - 1.0).abs() < 1e-4, "peak {peak}");
+
+        // Already at the target: no duplicate file.
+        let at_target = root.join("at-target.wav");
+        std::fs::copy(&destination, &at_target).expect("copy");
+        let second = root.join("second.wav");
+        let outcome =
+            normalize_wav_range(&at_target, 0.0, 0.1, 1.0, &second).expect("already at target");
+        assert!(!outcome.written);
+        assert!(!second.exists());
+
+        // Silence has nothing to scale; bad targets are refused.
+        let silent = root.join("silent.wav");
+        write_wav(&silent, 1, 480, |_, _| 0.0);
+        assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
+        assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
+        assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1196,6 +1196,8 @@ pub struct OpenTrackApp {
     tuplet_dialog: Option<(u8, f64)>,
     /// Set Timecode dialog draft, in seconds.
     timecode_dialog: Option<f64>,
+    /// Normalize dialog draft, peak target in dBFS.
+    normalize_dialog: Option<f32>,
     automation_panel_open: bool,
     /// Media Pool search term and whether the field should take focus next frame.
     pool_search: String,
@@ -2620,6 +2622,7 @@ impl OpenTrackApp {
             insert_velocities: None,
             tuplet_dialog: None,
             timecode_dialog: None,
+            normalize_dialog: None,
             automation_panel_open: false,
             pool_search: String::new(),
             pool_search_focus: false,
@@ -13232,12 +13235,15 @@ impl OpenTrackApp {
                             self.flip_selected_events_stereo();
                             ui.close();
                         }
+                        if menu_command(ui, "Normalize...", "", has_selection).clicked() {
+                            self.open_normalize_dialog();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
                                 ("Envelope...", ""),
                                 ("Merge Clipboard", ""),
-                                ("Normalize...", ""),
                                 ("Time Stretch...", ""),
                                 ("Resample...", ""),
                             ],
@@ -14622,6 +14628,7 @@ impl OpenTrackApp {
             || self.tuplet_dialog.is_some()
             || self.timecode_dialog.is_some()
             || self.automation_panel_open
+            || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -17034,6 +17041,7 @@ impl eframe::App for OpenTrackApp {
         self.show_tuplet_dialog(&ctx);
         self.show_timecode_dialog(&ctx);
         self.show_automation_panel(&ctx);
+        self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);

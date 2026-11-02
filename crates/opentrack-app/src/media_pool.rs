@@ -863,6 +863,225 @@ impl OpenTrackApp {
         self.status_message = status;
     }
 
+    /// Opens the normalize dialog with the default peak ceiling.
+    pub(super) fn open_normalize_dialog(&mut self) {
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .is_empty()
+        {
+            self.normalize_dialog = None;
+            self.status_message = "Select audio events to normalize".to_owned();
+            return;
+        }
+        self.normalize_dialog = Some(-0.1);
+    }
+
+    /// Scales the selected events so their peak reaches the dialog's ceiling.
+    pub(super) fn apply_normalize(&mut self, target_dbfs: f32) {
+        if !target_dbfs.is_finite() || !(-60.0..=0.0).contains(&target_dbfs) {
+            self.status_message = "The normalize target must be between -60 and 0 dBFS".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before normalizing audio events".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to normalize".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Normalize is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message =
+                "Set up this project's folder before normalizing audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before normalizing audio".to_owned();
+            return;
+        };
+        let target_peak = 10.0_f32.powf(target_dbfs / 20.0).clamp(0.0, 1.0);
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut normalized = 0;
+        let mut unchanged = 0;
+        let mut silent = 0;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} normalized")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            let outcome = match opentrack_audio::normalize_wav_range(
+                &source,
+                offset,
+                duration,
+                target_peak,
+                &destination,
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) if error.contains("silent") => {
+                    silent += 1;
+                    continue;
+                }
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not normalize {name}: {error}");
+                    return;
+                }
+            };
+            if !outcome.written {
+                unchanged += 1;
+                continue;
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the processed audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                normalized += 1;
+            }
+        }
+        if normalized == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = if unchanged > 0 {
+                "The selected events are already at that peak level".to_owned()
+            } else if silent > 0 {
+                "The selected events are silent; there is nothing to normalize".to_owned()
+            } else {
+                "No event could be normalized".to_owned()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message = "Cannot normalize: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Normalize");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Normalized {normalized} event(s) to {target_dbfs:.1} dBFS peak; Undo restores the originals"
+        );
+        if unchanged > 0 {
+            status.push_str(&format!("; {unchanged} were already at that level"));
+        }
+        if silent > 0 {
+            status.push_str(&format!("; {silent} were silent"));
+        }
+        self.status_message = status;
+    }
+
+    pub(super) fn show_normalize_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut target) = self.normalize_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Normalize")
+            .id(Id::new("normalize-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label("Peak target");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut target)
+                            .range(-60.0..=0.0)
+                            .speed(0.1)
+                            .suffix(" dBFS"),
+                    );
+                    ui.label(
+                        egui::RichText::new("Peak-normalizes the selected events' used audio")
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("normalize-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_normalize(target);
+        } else if !cancel && open {
+            self.normalize_dialog = Some(target);
+        }
+    }
+
     fn cleanup_created_files(&self, files: &[PathBuf]) {
         for file in files {
             let _ = std::fs::remove_file(file);
@@ -1673,6 +1892,110 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn normalizing_repoints_events_and_reports_already_level_or_silent() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-normalize-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("quiet.wav");
+        {
+            let mut bytes = Vec::new();
+            let frames: u32 = 12_000;
+            let data_bytes = frames * 2;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for frame in 0..frames {
+                // A ramp reaching 0.25.
+                let sample = ((frame as f32 / frames as f32) * 0.25 * f32::from(i16::MAX)) as i16;
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            std::fs::write(&source, bytes).expect("wav");
+        }
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 0.2)
+            .expect("clip");
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.open_normalize_dialog();
+        assert_eq!(app.normalize_dialog, Some(-0.1));
+        app.apply_normalize(-0.1);
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, source);
+        assert!(clip.source_path.exists());
+        assert!(
+            app.status_message
+                .contains("Normalized 1 event(s) to -0.1 dBFS")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Normalize");
+
+        // A second pass finds every event already at that level.
+        let steps = app.project_history.counts().0;
+        app.apply_normalize(-0.1);
+        assert!(app.status_message.contains("already at that peak level"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // Silence is reported and not edited.
+        let silent = root.join("Audio").join("Imports").join("silent.wav");
+        std::fs::write(&silent, {
+            let mut bytes = Vec::new();
+            let frames: u32 = 4_800;
+            let data_bytes = frames * 2;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            bytes.extend_from_slice(&vec![0_u8; (data_bytes as usize)]);
+            bytes
+        })
+        .expect("silent wav");
+        let silent_id = app
+            .data
+            .project
+            .add_audio_clip(0, silent.clone(), 2.0, 0.1)
+            .expect("clip");
+        app.arrange_view_state.audio_events.select_many([silent_id]);
+        app.apply_normalize(-0.1);
+        assert!(app.status_message.contains("silent"));
+        // The empty-selection refusal.
+        app.arrange_view_state.audio_events.clear_selection();
+        app.apply_normalize(-1.0);
+        assert!(app.status_message.contains("Select audio events"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
