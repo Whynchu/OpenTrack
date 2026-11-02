@@ -35,6 +35,29 @@ pub fn reverse_wav_range(
     Ok(range.frames)
 }
 
+/// Swaps the left and right channels of the used range into new media.
+///
+/// A mono source has nothing to flip and is refused rather than silently
+/// duplicated; the remainder is written unchanged.
+pub fn flip_stereo_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    destination: &Path,
+) -> Result<u64, String> {
+    let range = read_range(source, offset_seconds, duration_seconds)?;
+    if range.channels != 2 {
+        return Err("Stereo Flip needs a stereo event; this source is mono".to_owned());
+    }
+    let mut samples = Vec::with_capacity(range.samples.len());
+    for frame in range.samples.chunks_exact(2) {
+        samples.push(frame[1]);
+        samples.push(frame[0]);
+    }
+    write_float_wav(destination, range.channels, range.sample_rate, &samples)?;
+    Ok(range.frames)
+}
+
 /// Subtracts each channel's mean from the used range and writes new media.
 ///
 /// Returns the frame count and the removed offset per channel (left, right; the
@@ -235,6 +258,48 @@ mod tests {
         let (_, original) = read(&source);
         assert!((samples[0] - original[191]).abs() < 1e-6);
         assert!((samples[95] - original[96]).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stereo_flip_swaps_channels_and_refuses_mono() {
+        let root = std::env::temp_dir().join(format!("opentrack-flip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let stereo = root.join("stereo.wav");
+        let destination = root.join("flipped.wav");
+        // Left is +0.5, right is -0.25, with one ramp frame at the end.
+        write_wav(&stereo, 2, 4_800, |frame, channel| {
+            if frame == 4_799 {
+                if channel == 0 { 0.1 } else { 0.2 }
+            } else if channel == 0 {
+                0.5
+            } else {
+                -0.25
+            }
+        });
+
+        let frames = flip_stereo_wav_range(&stereo, 0.0, 0.1, &destination).expect("flip");
+        assert_eq!(frames, 4_800);
+        let (channels, samples) = read(&destination);
+        assert_eq!(channels, 2);
+        assert!((samples[0] + 0.25).abs() < 1e-6, "left is the old right");
+        assert!((samples[1] - 0.5).abs() < 1e-6, "right is the old left");
+        let last = samples.len() - 2;
+        assert!((samples[last] - 0.2).abs() < 1e-6);
+        assert!((samples[last + 1] - 0.1).abs() < 1e-6);
+
+        // Only the requested range is written.
+        let short = root.join("short.wav");
+        flip_stereo_wav_range(&stereo, 0.05, 0.01, &short).expect("short flip");
+        let (_, short_samples) = read(&short);
+        assert_eq!(short_samples.len(), 960);
+
+        // Mono cannot be flipped.
+        let mono = root.join("mono.wav");
+        write_ramp(&mono, 480);
+        assert!(flip_stereo_wav_range(&mono, 0.0, 0.1, &root.join("no.wav")).is_err());
+        assert!(flip_stereo_wav_range(&stereo, 0.0, 0.0, &root.join("no.wav")).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

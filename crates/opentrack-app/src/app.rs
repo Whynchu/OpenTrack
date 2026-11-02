@@ -13228,13 +13228,16 @@ impl OpenTrackApp {
                             self.remove_dc_offset_from_selected_events();
                             ui.close();
                         }
+                        if menu_command(ui, "Stereo Flip", "", has_selection).clicked() {
+                            self.flip_selected_events_stereo();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
                                 ("Envelope...", ""),
                                 ("Merge Clipboard", ""),
                                 ("Normalize...", ""),
-                                ("Stereo Flip", ""),
                                 ("Time Stretch...", ""),
                                 ("Resample...", ""),
                             ],

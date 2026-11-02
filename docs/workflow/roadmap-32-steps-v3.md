@@ -368,6 +368,13 @@ still one commit with tests and refreshed counts.
    the command is bounded to 64 events. 1 audio and 1 app tests. Disabled entries
    99 -> 98.
 
-Next candidates in the same family: Normalize and Stereo Flip, then the
-interchange adapters with explicit format/version scopes. Revision 4 should still
-start with the user-dependent reviews and CPR fixtures.
+34. **Stereo Flip.** *Delivered.* Audio > Process > Stereo Flip swaps the left and
+   right channels of the selected events' used range into new float32 media and
+   repoints them in one labelled "Stereo Flip" undo step. Mono events are counted
+   and left alone; the same cleanup, bounds, pitch/fade reset and undo rules as the
+   other source processes apply. 1 audio and 1 app tests. Disabled entries
+   98 -> 97.
+
+Next candidates in the same family: Normalize, then the interchange adapters with
+explicit format/version scopes. Revision 4 should still start with the
+user-dependent reviews and CPR fixtures.

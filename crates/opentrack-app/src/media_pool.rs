@@ -730,6 +730,139 @@ impl OpenTrackApp {
         );
     }
 
+    /// Swaps the stereo channels of the selected events' used audio.
+    ///
+    /// Mono events are reported and left alone; stereo ones move to new project
+    /// media with pitch analysis and source-fade lineage cleared.
+    pub(super) fn flip_selected_events_stereo(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before processing audio events".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to flip their stereo channels".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Stereo Flip is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before processing audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before processing audio".to_owned();
+            return;
+        };
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut flipped = 0;
+        let mut mono = 0;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} flipped")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            match opentrack_audio::flip_stereo_wav_range(&source, offset, duration, &destination) {
+                Ok(_) => {}
+                Err(error) if error.contains("mono") => {
+                    mono += 1;
+                    continue;
+                }
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not flip {name}: {error}");
+                    return;
+                }
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the processed audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                flipped += 1;
+            }
+        }
+        if flipped == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = if mono > 0 {
+                format!("{mono} mono event(s) cannot be stereo-flipped")
+            } else {
+                "No event could be flipped".to_owned()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message = "Cannot flip stereo: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Stereo Flip");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Flipped the stereo channels of {flipped} event(s); Undo restores the originals"
+        );
+        if mono > 0 {
+            status.push_str(&format!("; {mono} mono event(s) were left alone"));
+        }
+        self.status_message = status;
+    }
+
     fn cleanup_created_files(&self, files: &[PathBuf]) {
         for file in files {
             let _ = std::fs::remove_file(file);
@@ -1540,6 +1673,99 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn stereo_flip_repoints_stereo_events_and_skips_mono() {
+        let root = std::env::temp_dir().join(format!("opentrack-flip-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let stereo = root.join("Audio").join("Imports").join("stereo.wav");
+        {
+            let mut bytes = Vec::new();
+            let frames: u32 = 12_000;
+            let data_bytes = frames * 4;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&(48_000_u32 * 4).to_le_bytes());
+            bytes.extend_from_slice(&4_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for _ in 0..frames {
+                bytes.extend_from_slice(&16_000_i16.to_le_bytes());
+                bytes.extend_from_slice(&(-8_000_i16).to_le_bytes());
+            }
+            std::fs::write(&stereo, bytes).expect("wav");
+        }
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, stereo.clone(), 0.0, 0.2)
+            .expect("clip");
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.flip_selected_events_stereo();
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, stereo);
+        assert!(clip.source_path.exists());
+        assert!(
+            app.status_message
+                .contains("Flipped the stereo channels of 1 event(s)")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Stereo Flip");
+
+        // A mono event is reported and not edited.
+        let mono = root.join("Audio").join("Imports").join("mono.wav");
+        {
+            let mut bytes = Vec::new();
+            let frames: u32 = 12_000;
+            let data_bytes = frames * 2;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for _ in 0..frames {
+                bytes.extend_from_slice(&8_000_i16.to_le_bytes());
+            }
+            std::fs::write(&mono, bytes).expect("wav");
+        }
+        let mono_id = app
+            .data
+            .project
+            .add_audio_clip(0, mono.clone(), 4.0, 0.2)
+            .expect("clip");
+        app.arrange_view_state.audio_events.select_many([mono_id]);
+        let before = app.data.project.tracks[0].clips[1].clone();
+        app.flip_selected_events_stereo();
+        assert!(app.status_message.contains("cannot be stereo-flipped"));
+        assert_eq!(app.data.project.tracks[0].clips[1], before);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
