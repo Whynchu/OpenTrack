@@ -67,10 +67,12 @@ The current user-directed CPU/memory meter task T071 was accepted by the user. T
 
 ### Automation playback and editing
 
-17. **Specify automation data and gestures.** Initial track-volume contract recorded in [T078](tasks/T078-volume-automation.md); playback, editing and writing remain unimplemented.
-18. **Implement automation playback first.** Read-only track-volume curves are evaluated per sample in both engine paths and offline bounce using a bounded cached cursor. Source checks pass; lane editing, writing and live validation remain open.
+17. **Specify automation data and gestures.** Complete for the initial track-volume scope in [T078](tasks/T078-volume-automation.md); bus and non-volume targets remain outside the contract.
+18. **Implement automation playback first.** Complete in source: read-enabled track-volume curves are evaluated per sample in both engine paths and offline bounce using a bounded cached cursor. Live and hardware validation remains open.
 19. **Add automation editing and recording.** Track-volume curves support snapped point insertion, drag movement and right-click removal through bounded core commands and project history. Read playback is implemented. Write capture and gesture cancellation remain open; until then, all Write controls are disabled and labeled unavailable. Bus automation and desktop review remain open.
 20. **Verify automation.** Test persistence, undo, playback boundaries and recorded control movement; listen in the running app and document CPU behavior.
+
+Automation checkpoint (2026-11-01): Write controls are disabled until capture is implemented; Read controls are limited to supported Audio and Instrument tracks. Arrange background and track context menus reveal stored valid volume curves. Focused source tests and app compilation pass. Point-drag cancellation, fader following/manual override, Write capture, loop-boundary writing, desktop/audio review and the known baseline arrange snap failure remain open.
 
 ### Recording, stability and completion
 

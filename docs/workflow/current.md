@@ -1,5 +1,18 @@
 # Current assignment — roadmap activation (2026-11-01)
 
+## Paused checkpoint — 2026-11-01
+
+The active 32-step roadmap goal is paused at user request. Current `main` is `2271946` (`Reveal stored automation from arrange menus`), 17 commits ahead of the cached `origin/main` ref. The last push attempt failed because this machine could not connect to `github.com:443`; no remote update was confirmed. The Kubuntu CPU/memory-meter update has not appeared in this checkout. Preserve the untracked `recovery-20261028-204244/` and `stress-bench/` folders.
+
+Since the earlier checkpoint, local commits added atomic Split at Cursor, unified Crossfade, Move to Cursor with undo, disabled and documented unavailable automation Write controls, constrained Read controls to supported Audio/Instrument tracks, and enabled arrange context-menu discovery for stored volume curves. Focused tests and `cargo check -p opentrack --offline` pass for these latest slices; `git diff --check` passes. Runtime/audio review remains distinct and unaccepted.
+
+### Resume sequence
+
+1. Recheck Git/remote state and preserve any newly arrived Kubuntu meter work; push the existing local commits when GitHub is reachable.
+2. Resume T078 with cancellation semantics for automation point drags. The contract requires cancel to restore the original curve and keep undo atomic. The starting code is `crates/opentrack-app/src/automation.rs::draw_lane`; inspect its temporary drag index and frame-history integration before changing it. Then finish the open T078 gates: fader-follow/manual override, write capture through a bounded nonblocking handoff, loop-boundary handling, and desktop/audio review. Do not re-enable Write controls until capture exists.
+3. Verify read-all/context-menu visibility, track-volume playback and undo/save/reopen in the application when desktop review is available; separately investigate the known baseline arrange snap failure (beat 3.25 expected vs 3.5 actual).
+4. Continue roadmap steps 21–32: mixer integration, physical routing, recovery, VST3 reliability, remaining editing operations, selection consistency, a real preference consumer, CPR fixture-based interchange, and final architecture/inventory reconciliation. The full roadmap is not complete.
+
 ## T078 - Automation contract
 
 Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce. The arrange lane draws curves, inserts snapped points, supports left-drag movement and right-click removal using validated core commands, and clamps movement between neighboring points. Project history wraps gestures; command-level tests and the app check pass. Write capture, gesture cancellation, fader-follow/manual override and desktop playback review remain open. The existing expanded-lane snap test fails at beat 3.25 vs 3.5, reproduced at baseline `8b90b8a`. See [T078](tasks/T078-volume-automation.md).
