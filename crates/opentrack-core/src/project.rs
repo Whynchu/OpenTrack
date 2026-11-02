@@ -4869,6 +4869,12 @@ impl Project {
                 if track.input_routing.is_some() {
                     return Err("an FX channel cannot have an input route");
                 }
+                if track.automation_read
+                    || track.automation_write
+                    || !track.automation_lanes.is_empty()
+                {
+                    return Err("FX channel automation is not supported");
+                }
             }
             if track.automation_lanes.len() > MAX_AUTOMATION_LANES_PER_TRACK {
                 return Err("a track has too many automation lanes");
@@ -8917,6 +8923,13 @@ mod sample_edit_tests {
             Err("an FX channel cannot have an input route")
         );
         project.tracks[1].input_routing = None;
+
+        project.tracks[1].automation_read = true;
+        assert_eq!(
+            project.validate(),
+            Err("FX channel automation is not supported")
+        );
+        project.tracks[1].automation_read = false;
 
         project.add_track(TrackKind::Audio);
         project

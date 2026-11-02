@@ -8819,6 +8819,69 @@ mod hosted_processing_tests {
     }
 
     #[test]
+    fn fx_return_sums_two_sends_and_processes_its_insert_in_live_and_offline_render() {
+        let mut first = track(constant_source(0.125, 256), Vec::new());
+        first.output_route = PlaybackOutputRoute::Disconnected;
+        first.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(2),
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        let mut second = track(constant_source(0.0625, 256), Vec::new());
+        second.output_route = PlaybackOutputRoute::Disconnected;
+        second.sends.push(PlaybackSend {
+            destination: PlaybackOutputRoute::Group(2),
+            tap: opentrack_core::project::SendTap::PreFader,
+            gain: 1.0,
+            pan: 0.0,
+        });
+        // The FX return is the same bus shape the live and offline plans use for
+        // groups; its insert halves the summed sends.
+        let mut fx_return = track(
+            constant_source(0.0, 256),
+            vec![HostedInsert {
+                processor: GainProcessor::new(0.5, 0.0, 0, false),
+                enabled: true,
+            }],
+        );
+        fx_return.is_group = true;
+        fx_return.inserts = vec![opentrack_core::project::InsertEffect {
+            enabled: true,
+            bypassed: false,
+            kind: opentrack_core::project::InsertEffectKind::Vst3 {
+                class_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                module_path: std::path::PathBuf::from("test.vst3"),
+                name: "Test Gain".to_owned(),
+                vendor: String::new(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        }];
+        let tracks = vec![first, second, fx_return];
+        let plan = Arc::new(PlaybackPlan::new(120.0, tracks.clone(), 2, 48_000, None));
+        for sample in render(plan, 128) {
+            assert!((sample - 0.09375).abs() < 1.0e-6, "live got {sample}");
+        }
+
+        let mut offline = OfflineRenderer::new(
+            120.0,
+            tracks,
+            48_000,
+            0.0,
+            1.0,
+            &opentrack_core::project::BusChannel::output().strip,
+            Vec::new(),
+        )
+        .unwrap();
+        let mut output = vec![0.0; 256];
+        assert_eq!(offline.render_next(&mut output).unwrap(), 128);
+        for sample in output {
+            assert!((sample - 0.09375).abs() < 1.0e-6, "offline got {sample}");
+        }
+    }
+
+    #[test]
     fn volume_automation_matches_offline_render_and_keeps_base_gain() {
         let mut settings = track(constant_source(0.125, 256), Vec::new());
         settings.gain = 0.25;
