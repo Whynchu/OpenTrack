@@ -6789,6 +6789,85 @@ impl OpenTrackApp {
             "transport.play_selection_range" => {
                 self.run_transport_locate(TransportLocate::PlaySelection)
             }
+            "zoom.zoom_full" => self.run_zoom_command(ZoomCommand::ToProject),
+            "zoom.zoom_to_event" => self.run_zoom_command(ZoomCommand::ToSelection),
+            "editors.show_hide_info_view" => {
+                self.arrange_view_state.show_info_line = !self.arrange_view_state.show_info_line;
+            }
+            "editors.show_hide_inspector" => {
+                self.arrange_view_state.show_inspector = !self.arrange_view_state.show_inspector;
+            }
+            "project.show_hide_track_colors" => {
+                self.arrange_view_state.show_track_colors =
+                    !self.arrange_view_state.show_track_colors;
+            }
+            "automation.toggle_read_enable_all_tracks" => {
+                self.toggle_automation_for_all_tracks(false)
+            }
+            "automation.toggle_write_enable_all_tracks" => {
+                self.toggle_automation_for_all_tracks(true)
+            }
+            "edit.split_range" => self.split_audio_events_at_loop(),
+            "transport.auto_punch_in" => {
+                self.punch_enabled = true;
+                self.status_message =
+                    "Punch in/out is on: recording runs between the locators".to_owned();
+            }
+            "transport.auto_punch_out" => {
+                self.punch_enabled = false;
+                self.punch_armed = None;
+                self.status_message = "Punch in/out is off".to_owned();
+            }
+            "transport.exchange_time_formats" => {
+                self.arrange_view_state.ruler_format =
+                    (self.arrange_view_state.ruler_format + 1) % 5;
+                self.status_message = format!(
+                    "Ruler format {}",
+                    [
+                        "Bars+Beats",
+                        "Seconds",
+                        "Timecode",
+                        "Samples",
+                        "60 fps (User)"
+                    ][usize::from(self.arrange_view_state.ruler_format)]
+                );
+            }
+            "transport.forward" => {
+                let step = self
+                    .arrange_view_state
+                    .snap_grid_beats(self.data.project.beats_per_bar)
+                    .unwrap_or_else(|| f64::from(self.data.project.beats_per_bar.max(1)));
+                self.move_cursor_by(step);
+            }
+            "transport.rewind" => {
+                let step = self
+                    .arrange_view_state
+                    .snap_grid_beats(self.data.project.beats_per_bar)
+                    .unwrap_or_else(|| f64::from(self.data.project.beats_per_bar.max(1)));
+                self.move_cursor_by(-step);
+            }
+            "transport.fast_forward" => {
+                self.move_cursor_by(f64::from(self.data.project.beats_per_bar.max(1)))
+            }
+            "transport.fast_rewind" => {
+                self.move_cursor_by(-f64::from(self.data.project.beats_per_bar.max(1)))
+            }
+            "transport.nudge_cursor_right" => self.move_cursor_by(0.25),
+            "transport.nudge_cursor_left" => self.move_cursor_by(-0.25),
+            "transport.to_left_locator" => self.seek_to_beats(self.data.project.loop_start_beats),
+            "transport.to_right_locator" => self.seek_to_beats(self.data.project.loop_end_beats),
+            "navigate.up" => self.navigate_track(-1, false),
+            "navigate.down" => self.navigate_track(1, false),
+            "navigate.top" => self.navigate_track_edge(false, false),
+            "navigate.bottom" => self.navigate_track_edge(true, false),
+            "navigate.add_up" => self.navigate_track(-1, true),
+            "navigate.add_down" => self.navigate_track(1, true),
+            "transport.set_left_locator" => self.set_locator_at_playhead(true),
+            "transport.set_right_locator" => self.set_locator_at_playhead(false),
+            "project.open_browser" => {
+                self.data.selected_media = 0;
+                self.focus_tab(PanelTab::Media);
+            }
             "transport.insert_marker" => self.add_marker_at_playhead(),
             "transport.locate_next_marker" => self.locate_next_marker(),
             "transport.locate_previous_marker" => self.locate_previous_marker(),
@@ -7779,6 +7858,153 @@ impl OpenTrackApp {
             TransportLocate::PlaySelection => self.play_selection_range(),
             TransportLocate::LoopSelection => self.loop_selection(),
         }
+    }
+
+    /// Moves the transport cursor by `beats`, clamped at the project start.
+    fn move_cursor_by(&mut self, beats: f64) {
+        let target = (self.data.transport.position_beats + beats).max(0.0);
+        self.seek_to_beats(target);
+        self.status_message = format!("Cursor at beat {target:.3}");
+    }
+
+    /// Toggles one automation mode on every track as one undo step.
+    fn toggle_automation_for_all_tracks(&mut self, write: bool) {
+        let mut candidate = self.data.project.clone();
+        let enable = !candidate.tracks.iter().all(|track| {
+            if write {
+                track.automation_write
+            } else {
+                track.automation_read
+            }
+        });
+        let mut changed = 0;
+        for track in candidate.tracks.iter_mut() {
+            let flag = if write {
+                &mut track.automation_write
+            } else {
+                &mut track.automation_read
+            };
+            if *flag != enable {
+                *flag = enable;
+                changed += 1;
+            }
+        }
+        if changed == 0 {
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot change automation mode: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next(if write {
+            "Automation Write All"
+        } else {
+            "Automation Read All"
+        });
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Automation {} {} on {changed} track(s)",
+            if write { "write" } else { "read" },
+            if enable { "enabled" } else { "disabled" }
+        );
+    }
+
+    /// Selects one track index, optionally adding it to the current selection.
+    fn select_arrange_track(&mut self, index: usize, add: bool) {
+        let Some(track_id) = self.data.project.tracks.get(index).map(|track| track.id) else {
+            return;
+        };
+        self.data.project.selected_track = Some(index as u32);
+        self.data.project.selected_midi_part_id = None;
+        if !add {
+            self.arrange_view_state.selected_track_ids.clear();
+        }
+        self.arrange_view_state.selected_track_ids.insert(track_id);
+        self.arrange_view_state.selection_anchor_track_id = Some(track_id);
+        self.channel_settings_window.request_channel_settings(None);
+        let name = self.data.project.tracks[index].name.clone();
+        self.status_message = if add {
+            format!(
+                "Added {name}; {} track(s) selected",
+                self.arrange_view_state.selected_track_ids.len()
+            )
+        } else {
+            format!("Selected {name}")
+        };
+    }
+
+    /// Moves the track selection by `delta`, clamped to the project.
+    fn navigate_track(&mut self, delta: isize, add: bool) {
+        let count = self.data.project.tracks.len();
+        if count == 0 {
+            self.status_message = "This project has no tracks to navigate".to_owned();
+            return;
+        }
+        let current = self
+            .data
+            .project
+            .selected_track
+            .map_or(0, |index| (index as usize).min(count - 1));
+        let next = (current as isize + delta).clamp(0, count as isize - 1) as usize;
+        self.select_arrange_track(next, add);
+    }
+
+    /// Selects the first or last track.
+    fn navigate_track_edge(&mut self, bottom: bool, add: bool) {
+        let count = self.data.project.tracks.len();
+        if count == 0 {
+            self.status_message = "This project has no tracks to navigate".to_owned();
+            return;
+        }
+        self.select_arrange_track(if bottom { count - 1 } else { 0 }, add);
+    }
+
+    /// Sets one locator to the cursor as one undo step.
+    fn set_locator_at_playhead(&mut self, left: bool) {
+        let cursor = self.data.transport.position_beats.max(0.0);
+        let (start, end) = if left {
+            let end = self.data.project.loop_end_beats.max(cursor + 1.0);
+            (cursor, end)
+        } else {
+            let start = self
+                .data
+                .project
+                .loop_start_beats
+                .min(cursor - 1.0)
+                .max(0.0);
+            (start, cursor)
+        };
+        let mut candidate = self.data.project.clone();
+        candidate.set_loop_range(start, end);
+        if candidate.validate().is_err() {
+            self.status_message = "The cursor cannot become that locator".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot set the locator: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Set Locators");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Set the {} locator to beat {cursor:.3}",
+            if left { "left" } else { "right" }
+        );
     }
 
     /// The union of the selected audio events and the selected MIDI part, in beats.
@@ -25827,6 +26053,260 @@ mod outside_click_window_tests {
 }
 
 #[cfg(test)]
+mod shortcut_dispatch_tests {
+    use super::*;
+    use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+
+    fn app_with_track() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 8.0)
+            .unwrap();
+        app.arrange_view_state.last_view_width = 1000.0;
+        app.project_history.clear();
+        app
+    }
+
+    fn dispatch(app: &mut OpenTrackApp, id: &str, ctx: &egui::Context) {
+        app.dispatch_reference_command(
+            id,
+            id,
+            KeyChord::new(KeyCode::Letter('A'), KeyModifiers::default()),
+            ctx,
+        );
+    }
+
+    #[test]
+    fn zoom_and_view_shortcuts_reach_their_state() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.data.project.loop_start_beats = 0.0;
+        app.data.project.loop_end_beats = 16.0;
+        dispatch(&mut app, "zoom.zoom_full", &ctx);
+        assert!(app.status_message.contains("whole project"));
+
+        let selection_zoom = app.arrange_view_state.timeline_zoom;
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        dispatch(&mut app, "zoom.zoom_to_event", &ctx);
+        assert!(app.status_message.contains("selection"));
+        assert!(app.arrange_view_state.timeline_zoom != selection_zoom);
+
+        let inspector = app.arrange_view_state.show_inspector;
+        dispatch(&mut app, "editors.show_hide_inspector", &ctx);
+        assert_eq!(app.arrange_view_state.show_inspector, !inspector);
+        let info = app.arrange_view_state.show_info_line;
+        dispatch(&mut app, "editors.show_hide_info_view", &ctx);
+        assert_eq!(app.arrange_view_state.show_info_line, !info);
+        let colors = app.arrange_view_state.show_track_colors;
+        dispatch(&mut app, "project.show_hide_track_colors", &ctx);
+        assert_eq!(app.arrange_view_state.show_track_colors, !colors);
+    }
+
+    #[test]
+    fn automation_modes_toggle_on_every_track_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.data.project.add_track(TrackKind::Audio);
+        app.project_history.clear();
+
+        dispatch(&mut app, "automation.toggle_read_enable_all_tracks", &ctx);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .all(|track| track.automation_read)
+        );
+        assert!(
+            app.status_message
+                .contains("Automation read enabled on 2 track(s)")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Automation Read All");
+
+        dispatch(&mut app, "automation.toggle_read_enable_all_tracks", &ctx);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .all(|track| !track.automation_read)
+        );
+
+        dispatch(&mut app, "automation.toggle_write_enable_all_tracks", &ctx);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .all(|track| track.automation_write)
+        );
+    }
+
+    #[test]
+    fn cursor_movement_shortcuts_follow_the_grid_and_locators() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.arrange_view_state.snap_enabled = true;
+        app.arrange_view_state.grid_type = crate::timeline::GridType::UseQuantize;
+        app.arrange_view_state.quantize.note = crate::timeline::QuantizeNote::Quarter;
+        app.data.transport.position_beats = 0.0;
+
+        dispatch(&mut app, "transport.forward", &ctx);
+        assert!((app.data.transport.position_beats - 1.0).abs() < 1e-9);
+        dispatch(&mut app, "transport.rewind", &ctx);
+        assert!((app.data.transport.position_beats - 0.0).abs() < 1e-9);
+        // Rewinding at the project start clamps instead of going negative.
+        dispatch(&mut app, "transport.rewind", &ctx);
+        assert_eq!(app.data.transport.position_beats, 0.0);
+
+        dispatch(&mut app, "transport.fast_forward", &ctx);
+        assert!((app.data.transport.position_beats - 4.0).abs() < 1e-9);
+        dispatch(&mut app, "transport.nudge_cursor_right", &ctx);
+        assert!((app.data.transport.position_beats - 4.25).abs() < 1e-9);
+
+        app.data.project.set_loop_range(8.0, 12.0);
+        dispatch(&mut app, "transport.to_left_locator", &ctx);
+        assert_eq!(app.data.transport.position_beats, 8.0);
+        dispatch(&mut app, "transport.to_right_locator", &ctx);
+        assert_eq!(app.data.transport.position_beats, 12.0);
+    }
+
+    #[test]
+    fn punch_and_ruler_shortcuts_toggle_their_state() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.punch_enabled = false;
+        dispatch(&mut app, "transport.auto_punch_in", &ctx);
+        assert!(app.punch_enabled);
+        assert!(app.status_message.contains("Punch in/out is on"));
+        dispatch(&mut app, "transport.auto_punch_out", &ctx);
+        assert!(!app.punch_enabled);
+        assert!(app.status_message.contains("Punch in/out is off"));
+
+        let format = app.arrange_view_state.ruler_format;
+        dispatch(&mut app, "transport.exchange_time_formats", &ctx);
+        assert_eq!(app.arrange_view_state.ruler_format, (format + 1) % 5);
+        assert!(app.status_message.contains("Ruler format"));
+        for _ in 0..4 {
+            dispatch(&mut app, "transport.exchange_time_formats", &ctx);
+        }
+        assert_eq!(app.arrange_view_state.ruler_format, format, "cycles back");
+    }
+
+    #[test]
+    fn split_range_cuts_every_event_at_the_locators() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.data.project.set_loop_range(4.0, 8.0);
+        dispatch(&mut app, "edit.split_range", &ctx);
+        // The 8 s clip spans 16 beats, so the two locators make three pieces.
+        assert_eq!(app.data.project.tracks[0].clips.len(), 3);
+        assert!(app.status_message.contains("Split"));
+    }
+}
+
+#[cfg(test)]
+mod track_navigation_tests {
+    use super::*;
+
+    fn app_with_tracks(count: usize) -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        for _ in 0..count {
+            app.data.project.add_track(TrackKind::Audio);
+        }
+        app.data.project.selected_track = Some(0);
+        app
+    }
+
+    #[test]
+    fn up_and_down_move_the_track_selection_without_wrapping() {
+        let mut app = app_with_tracks(3);
+        app.navigate_track(1, false);
+        assert_eq!(app.data.project.selected_track, Some(1));
+        assert_eq!(app.arrange_view_state.selected_track_ids.len(), 1);
+        app.navigate_track(1, false);
+        assert_eq!(app.data.project.selected_track, Some(2));
+        // Clamped at the last track instead of wrapping to the first.
+        app.navigate_track(1, false);
+        assert_eq!(app.data.project.selected_track, Some(2));
+        app.navigate_track(-5, false);
+        assert_eq!(app.data.project.selected_track, Some(0));
+        assert!(app.status_message.contains("Selected"));
+    }
+
+    #[test]
+    fn top_and_bottom_select_the_edges() {
+        let mut app = app_with_tracks(4);
+        app.navigate_track_edge(true, false);
+        assert_eq!(app.data.project.selected_track, Some(3));
+        app.navigate_track_edge(false, false);
+        assert_eq!(app.data.project.selected_track, Some(0));
+
+        // No tracks is reported rather than panicking.
+        let mut empty = app_with_tracks(0);
+        empty.navigate_track(1, false);
+        assert!(empty.status_message.contains("no tracks"));
+        empty.navigate_track_edge(true, false);
+        assert!(empty.status_message.contains("no tracks"));
+    }
+
+    #[test]
+    fn adding_to_the_selection_keeps_the_previous_tracks() {
+        let mut app = app_with_tracks(3);
+        app.navigate_track(1, false);
+        app.navigate_track(1, true);
+        assert_eq!(app.arrange_view_state.selected_track_ids.len(), 2);
+        assert_eq!(app.data.project.selected_track, Some(2));
+        assert!(app.status_message.contains("2 track(s) selected"));
+        // The anchor is the track the selection moved to.
+        assert_eq!(
+            app.arrange_view_state.selection_anchor_track_id,
+            Some(app.data.project.tracks[2].id)
+        );
+    }
+
+    #[test]
+    fn setting_a_locator_at_the_cursor_is_one_undo_step() {
+        let mut app = app_with_tracks(1);
+        app.data.transport.position_beats = 8.0;
+        app.data.project.loop_start_beats = 0.0;
+        app.data.project.loop_end_beats = 16.0;
+        app.project_history.clear();
+
+        app.set_locator_at_playhead(true);
+        assert_eq!(app.data.project.loop_start_beats, 8.0);
+        assert_eq!(app.data.project.loop_end_beats, 16.0, "the right stays put");
+        assert!(app.status_message.contains("left locator"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Locators");
+
+        app.data.transport.position_beats = 12.0;
+        app.set_locator_at_playhead(false);
+        assert_eq!(app.data.project.loop_start_beats, 8.0);
+        assert_eq!(app.data.project.loop_end_beats, 12.0);
+        assert!(app.status_message.contains("right locator"));
+
+        // Setting the left past the right pushes the right forward.
+        app.data.transport.position_beats = 20.0;
+        app.set_locator_at_playhead(true);
+        assert_eq!(app.data.project.loop_start_beats, 20.0);
+        assert!(app.data.project.loop_end_beats > 20.0);
+        assert!(app.data.project.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
 mod transport_locate_tests {
     use super::*;
 
@@ -26110,6 +26590,19 @@ mod keyboard_coverage_tests {
             "transport.play_selection_range",
             "transport.return_to_zero",
             "transport.cycle",
+            "transport.forward",
+            "transport.rewind",
+            "transport.to_left_locator",
+            "transport.to_right_locator",
+            "transport.auto_punch_in",
+            "transport.auto_punch_out",
+            "navigate.up",
+            "navigate.down",
+            "navigate.top",
+            "navigate.bottom",
+            "zoom.zoom_full",
+            "zoom.zoom_to_event",
+            "edit.split_range",
             "midi.quantize",
             "nudge.left",
             "nudge.right",
