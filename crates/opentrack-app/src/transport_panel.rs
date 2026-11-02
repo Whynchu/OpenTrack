@@ -570,7 +570,7 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
                 .is_some_and(|position| tempo_rect.contains(position))
     });
     if tempo_pointer_down {
-        app.project_history.begin(&app.data.project);
+        app.project_history.begin(&app.data.project, app.modified);
     }
     let old_tempo = app.data.project.tempo_bpm;
     let tempo_response = ui.put(
@@ -581,7 +581,7 @@ pub(super) fn show(app: &mut OpenTrackApp, ui: &mut egui::Ui, embedded: bool) ->
             .fixed_decimals(2),
     );
     if tempo_response.changed() {
-        app.project_history.begin(&app.data.project);
+        app.project_history.begin(&app.data.project, app.modified);
         app.project_history.commit_after_frame = true;
         if app.data.project.tempo_bpm != old_tempo {
             app.project_timing_changed();
@@ -770,7 +770,7 @@ pub(super) fn tempo_signature_settings(app: &mut OpenTrackApp, ctx: &egui::Conte
         return;
     }
     if ctx.input(|input| input.pointer.primary_down()) {
-        app.project_history.begin(&app.data.project);
+        app.project_history.begin(&app.data.project, app.modified);
     }
     let mut open = true;
     let mut changed = false;

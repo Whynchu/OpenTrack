@@ -193,7 +193,10 @@ impl OpenTrackApp {
                 return;
             }
             self.project_history.finish_frame(&self.data.project, true);
-            if !self.project_history.begin(&self.data.project) {
+            if !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+            {
                 self.status_message = "Cannot delete: undo snapshot is unavailable".into();
                 return;
             }
@@ -221,7 +224,10 @@ impl OpenTrackApp {
             }
         };
         self.project_history.finish_frame(&self.data.project, true);
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             self.status_message = "Cannot delete: undo snapshot is unavailable".into();
             return;
         }
@@ -265,7 +271,10 @@ impl OpenTrackApp {
             }
         };
         self.project_history.finish_frame(&self.data.project, true);
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             return;
         }
         let index = self
@@ -306,7 +315,7 @@ mod tests {
     use super::*;
     fn apply(p: &mut Project, h: &mut ProjectHistory, id: u64, hard: bool, root: &Path) {
         let (candidate, files) = prepare(p, Target::Events(vec![id]), hard).unwrap();
-        assert!(h.begin(p));
+        assert!(h.begin(p, false));
         if !files.is_empty() {
             let mut recovery = recording_undo::RecordingUndo::new(files, root.to_path_buf());
             recovery.remove(&candidate).unwrap();
@@ -400,7 +409,7 @@ mod tests {
         h.saved(&p);
         apply(&mut p, &mut h, id, true, &root);
         for i in 0..40 {
-            h.begin(&p);
+            h.begin(&p, false);
             p.name = format!("edit {i}");
             h.finish_frame(&p, true);
         }

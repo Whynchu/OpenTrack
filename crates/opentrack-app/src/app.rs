@@ -1599,6 +1599,8 @@ struct ProjectHistory {
     unsaved_recordings: HashSet<PathBuf>,
     saved_recording_recovery: Vec<recording_undo::RecordingUndo>,
     pending: Option<Vec<u8>>,
+    /// Dirty flag captured with `pending`, restored when a gesture is cancelled.
+    pending_modified: Option<bool>,
     skip_next_commit: bool,
     commit_after_frame: bool,
 }
@@ -1648,7 +1650,7 @@ impl ProjectHistory {
     const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
     const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
 
-    fn begin(&mut self, project: &Project) -> bool {
+    fn begin(&mut self, project: &Project, modified: bool) -> bool {
         if self.pending.is_some() {
             return true;
         }
@@ -1659,12 +1661,23 @@ impl ProjectHistory {
             return false;
         }
         self.pending = Some(snapshot);
+        self.pending_modified = Some(modified);
         true
+    }
+
+    /// Drops the pending gesture and returns the project and dirty flag to
+    /// restore. No undo entry is created, so a cancelled gesture leaves no trace.
+    fn cancel_pending(&mut self) -> Option<(Project, bool)> {
+        let snapshot = self.pending.take()?;
+        let modified = self.pending_modified.take().unwrap_or(false);
+        let project = serde_json::from_slice(&snapshot).ok()?;
+        Some((project, modified))
     }
 
     fn finish_frame(&mut self, project: &Project, interaction_finished: bool) -> bool {
         if self.skip_next_commit {
             self.pending = None;
+            self.pending_modified = None;
             self.pending_recording = None;
             self.pending_deleted = None;
             self.skip_next_commit = false;
@@ -1678,6 +1691,7 @@ impl ProjectHistory {
         let Some(before) = self.pending.take() else {
             return false;
         };
+        self.pending_modified = None;
         let Ok(after) = serde_json::to_vec(project) else {
             return false;
         };
@@ -2917,7 +2931,10 @@ impl OpenTrackApp {
         };
         let streams_from_disk = source.is_streamed();
 
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             self.status_message = "Undo history is unavailable for this project size".to_owned();
         } else {
             self.project_history.commit_after_frame = true;
@@ -5333,7 +5350,10 @@ impl OpenTrackApp {
             egui_key_chords(ctx)
         };
         if !chords.is_empty() {
-            if !self.project_history.begin(&self.data.project) {
+            if !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+            {
                 self.status_message =
                     "Undo history is unavailable for this project size".to_owned();
             }
@@ -5376,7 +5396,10 @@ impl OpenTrackApp {
         {
             if self.midi_editor_open && !self.selected_midi_note_ids.is_empty() {
                 self.project_history.finish_frame(&self.data.project, true);
-                if !self.project_history.begin(&self.data.project) {
+                if !self
+                    .project_history
+                    .begin(&self.data.project, self.modified)
+                {
                     self.status_message =
                         "Cannot delete notes: undo snapshot is unavailable".into();
                     return;
@@ -6436,7 +6459,8 @@ impl OpenTrackApp {
             };
         }
 
-        self.project_history.begin(&self.data.project);
+        self.project_history
+            .begin(&self.data.project, self.modified);
         let mut midi_tracks = Vec::new();
         if self.midi_input_stream.is_some() {
             let part_duration = f64::from(self.data.project.beats_per_bar.max(1)) * 4.0;
@@ -8701,7 +8725,10 @@ impl OpenTrackApp {
         let (pointer_event, pointer_released, key_pressed, pointer_down) =
             viewport_interaction(ctx);
         if pointer_event || key_pressed {
-            if !self.project_history.begin(&self.data.project) {
+            if !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+            {
                 self.status_message =
                     "Undo history is unavailable for this project size".to_owned();
             }
@@ -10148,9 +10175,21 @@ impl OpenTrackApp {
         let mut live_mix_update = project_changes.live_mix;
         let defer_audio_plan = project_changes.defer_audio_plan;
         if let Some(action) = project_changes.automation_action {
-            match automation::apply_lane_action(&mut self.data.project, action) {
-                Ok(changed) => modified |= changed,
-                Err(error) => self.status_message = format!("Automation edit rejected: {error}"),
+            match action {
+                automation::LaneAction::CancelDrag { .. } => {
+                    if let Some((project, was_modified)) = self.project_history.cancel_pending() {
+                        self.data.project = project;
+                        self.modified = was_modified;
+                        self.rebuild_audio_plan();
+                        self.status_message = "Automation drag cancelled".to_owned();
+                    }
+                }
+                action => match automation::apply_lane_action(&mut self.data.project, action) {
+                    Ok(changed) => modified |= changed,
+                    Err(error) => {
+                        self.status_message = format!("Automation edit rejected: {error}")
+                    }
+                },
             }
         }
         if project_changes.crossfade_requested {
@@ -10248,7 +10287,8 @@ impl OpenTrackApp {
                 }
             }
             Some(project_controls::Action::ShowUsedAutomation(only_track)) => {
-                for id in project_controls::used_automation_track_ids(&self.data.project, only_track)
+                for id in
+                    project_controls::used_automation_track_ids(&self.data.project, only_track)
                 {
                     modified |= self.arrange_view_state.automation_visible.insert(id);
                 }
@@ -10406,124 +10446,122 @@ impl OpenTrackApp {
         let mut cancelled = false;
         let remaining_track_capacity = 1024usize.saturating_sub(self.data.project.tracks.len());
         let max_track_count = remaining_track_capacity.min(64).max(1);
-        let response = egui::Window::new(title)
-            .id(Id::new("add-track-configuration-dialog"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_pos(dialog_pos)
-            .fixed_size(dialog_size)
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(8.0, 1.0);
-                ui.spacing_mut().interact_size.y = 16.0;
-                ui.spacing_mut().button_padding.y = 1.0;
-                egui::Frame::group(ui.style())
-                    .inner_margin(egui::Margin::symmetric(4, 2))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 1.0);
-                        ui.spacing_mut().interact_size.y = 16.0;
-                        ui.spacing_mut().button_padding.y = 1.0;
-                        ui.vertical(|ui| {
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(configuration).size(12.0))
-                            });
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                let controls_width = match dialog.kind {
-                                    TrackKind::Audio if dialog.audio_channels == 1 => {
-                                        40.0 + 6.0 + 78.0 + 6.0 + 78.0
-                                    }
-                                    TrackKind::Audio => 40.0 + 6.0 + 78.0,
-                                    TrackKind::Group => 40.0 + 6.0 + 78.0,
-                                    TrackKind::Instrument => 40.0 + 6.0 + 160.0,
-                                    TrackKind::Midi => 40.0,
-                                };
-                                ui.add_space(
-                                    ((ui.available_width() - controls_width) * 0.5 - 18.0).max(0.0),
-                                );
-                                ui.vertical(|ui| {
-                                    ui.add_sized(
-                                        Vec2::new(40.0, 16.0),
-                                        egui::DragValue::new(&mut dialog.count)
-                                            .range(1..=max_track_count)
-                                            .speed(1),
-                                    );
-                                    ui.label(egui::RichText::new("count").size(10.0));
+        let response =
+            egui::Window::new(title)
+                .id(Id::new("add-track-configuration-dialog"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_pos(dialog_pos)
+                .fixed_size(dialog_size)
+                .show(ctx, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 1.0);
+                    ui.spacing_mut().interact_size.y = 16.0;
+                    ui.spacing_mut().button_padding.y = 1.0;
+                    egui::Frame::group(ui.style())
+                        .inner_margin(egui::Margin::symmetric(4, 2))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(6.0, 1.0);
+                            ui.spacing_mut().interact_size.y = 16.0;
+                            ui.spacing_mut().button_padding.y = 1.0;
+                            ui.vertical(|ui| {
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                    ui.label(egui::RichText::new(configuration).size(12.0))
                                 });
-                                match dialog.kind {
-                                    TrackKind::Audio => {
-                                        ui.vertical(|ui| {
-                                            egui::ComboBox::from_id_salt(
-                                                "add-audio-track-configuration",
-                                            )
-                                            .width(78.0)
-                                            .selected_text(if dialog.audio_channels == 1 {
-                                                "Mono"
-                                            } else {
-                                                "Stereo"
-                                            })
-                                            .show_ui(
-                                                ui,
-                                                |ui| {
-                                                    ui.selectable_value(
-                                                        &mut dialog.audio_channels,
-                                                        1,
-                                                        "Mono",
-                                                    );
-                                                    ui.selectable_value(
-                                                        &mut dialog.audio_channels,
-                                                        2,
-                                                        "Stereo",
-                                                    );
-                                                },
-                                            );
-                                            ui.label(
-                                                egui::RichText::new("configuration").size(10.0),
-                                            );
-                                        });
-                                        if dialog.audio_channels == 1 {
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    let controls_width = match dialog.kind {
+                                        TrackKind::Audio if dialog.audio_channels == 1 => {
+                                            40.0 + 6.0 + 78.0 + 6.0 + 78.0
+                                        }
+                                        TrackKind::Audio => 40.0 + 6.0 + 78.0,
+                                        TrackKind::Group => 40.0 + 6.0 + 78.0,
+                                        TrackKind::Instrument => 40.0 + 6.0 + 160.0,
+                                        TrackKind::Midi => 40.0,
+                                    };
+                                    ui.add_space(
+                                        ((ui.available_width() - controls_width) * 0.5 - 18.0)
+                                            .max(0.0),
+                                    );
+                                    ui.vertical(|ui| {
+                                        ui.add_sized(
+                                            Vec2::new(40.0, 16.0),
+                                            egui::DragValue::new(&mut dialog.count)
+                                                .range(1..=max_track_count)
+                                                .speed(1),
+                                        );
+                                        ui.label(egui::RichText::new("count").size(10.0));
+                                    });
+                                    match dialog.kind {
+                                        TrackKind::Audio => {
                                             ui.vertical(|ui| {
                                                 egui::ComboBox::from_id_salt(
-                                                    "add-mono-input-channel",
+                                                    "add-audio-track-configuration",
                                                 )
                                                 .width(78.0)
-                                                .selected_text(if dialog.mono_input_right {
-                                                    "Right In"
+                                                .selected_text(if dialog.audio_channels == 1 {
+                                                    "Mono"
                                                 } else {
-                                                    "Left In"
+                                                    "Stereo"
                                                 })
                                                 .show_ui(ui, |ui| {
                                                     ui.selectable_value(
-                                                        &mut dialog.mono_input_right,
-                                                        false,
-                                                        "Left In",
+                                                        &mut dialog.audio_channels,
+                                                        1,
+                                                        "Mono",
                                                     );
                                                     ui.selectable_value(
-                                                        &mut dialog.mono_input_right,
-                                                        true,
-                                                        "Right In",
+                                                        &mut dialog.audio_channels,
+                                                        2,
+                                                        "Stereo",
                                                     );
                                                 });
                                                 ui.label(
-                                                    egui::RichText::new("input channel").size(10.0),
+                                                    egui::RichText::new("configuration").size(10.0),
                                                 );
                                             });
+                                            if dialog.audio_channels == 1 {
+                                                ui.vertical(|ui| {
+                                                    egui::ComboBox::from_id_salt(
+                                                        "add-mono-input-channel",
+                                                    )
+                                                    .width(78.0)
+                                                    .selected_text(if dialog.mono_input_right {
+                                                        "Right In"
+                                                    } else {
+                                                        "Left In"
+                                                    })
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut dialog.mono_input_right,
+                                                            false,
+                                                            "Left In",
+                                                        );
+                                                        ui.selectable_value(
+                                                            &mut dialog.mono_input_right,
+                                                            true,
+                                                            "Right In",
+                                                        );
+                                                    });
+                                                    ui.label(
+                                                        egui::RichText::new("input channel")
+                                                            .size(10.0),
+                                                    );
+                                                });
+                                            }
                                         }
-                                    }
-                                    TrackKind::Group => {
-                                        ui.vertical(|ui| {
-                                            egui::ComboBox::from_id_salt(
-                                                "add-group-channel-configuration",
-                                            )
-                                            .width(78.0)
-                                            .selected_text(if dialog.audio_channels == 1 {
-                                                "Mono"
-                                            } else {
-                                                "Stereo"
-                                            })
-                                            .show_ui(
-                                                ui,
-                                                |ui| {
+                                        TrackKind::Group => {
+                                            ui.vertical(|ui| {
+                                                egui::ComboBox::from_id_salt(
+                                                    "add-group-channel-configuration",
+                                                )
+                                                .width(78.0)
+                                                .selected_text(if dialog.audio_channels == 1 {
+                                                    "Mono"
+                                                } else {
+                                                    "Stereo"
+                                                })
+                                                .show_ui(ui, |ui| {
                                                     ui.selectable_value(
                                                         &mut dialog.audio_channels,
                                                         1,
@@ -10534,63 +10572,67 @@ impl OpenTrackApp {
                                                         2,
                                                         "Stereo",
                                                     );
-                                                },
-                                            );
-                                            ui.label(
-                                                egui::RichText::new("configuration").size(10.0),
-                                            );
-                                        });
-                                    }
-                                    TrackKind::Instrument => {
-                                        ui.vertical(|ui| {
-                                            ui.add_enabled_ui(false, |ui| {
-                                                egui::Button::new("Instrument unavailable")
-                                                    .min_size(Vec2::new(160.0, 16.0))
+                                                });
+                                                ui.label(
+                                                    egui::RichText::new("configuration").size(10.0),
+                                                );
                                             });
-                                            ui.label(
-                                                egui::RichText::new("instrument selection unavailable")
+                                        }
+                                        TrackKind::Instrument => {
+                                            ui.vertical(|ui| {
+                                                ui.add_enabled_ui(false, |ui| {
+                                                    egui::Button::new("Instrument unavailable")
+                                                        .min_size(Vec2::new(160.0, 16.0))
+                                                });
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        "instrument selection unavailable",
+                                                    )
                                                     .size(10.0),
-                                            );
-                                        });
+                                                );
+                                            });
+                                        }
+                                        TrackKind::Midi => {}
                                     }
-                                    TrackKind::Midi => {}
+                                });
+                                ui.add_enabled(
+                                    false,
+                                    egui::RadioButton::new(
+                                        dialog.browse_presets,
+                                        "Browse Presets (unavailable)",
+                                    ),
+                                );
+                                if remaining_track_capacity == 0 {
+                                    ui.colored_label(
+                                        theme::WARNING,
+                                        "Project track limit reached (1024)",
+                                    );
                                 }
                             });
-                            ui.add_enabled(false, egui::RadioButton::new(
-                                dialog.browse_presets,
-                                "Browse Presets (unavailable)",
-                            ));
-                            if remaining_track_capacity == 0 {
-                                ui.colored_label(
-                                    theme::WARNING,
-                                    "Project track limit reached (1024)",
-                                );
-                            }
                         });
+                    ui.add_space(6.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        if ui
+                            .add_sized(
+                                Vec2::new(70.0, 22.0),
+                                egui::Button::new(egui::RichText::new("Cancel").size(12.0)),
+                            )
+                            .clicked()
+                        {
+                            cancelled = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                remaining_track_capacity > 0,
+                                egui::Button::new(egui::RichText::new("OK").size(12.0)),
+                            )
+                            .clicked()
+                        {
+                            accepted = true;
+                        }
                     });
-                ui.add_space(6.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(12.0);
-                    if ui
-                        .add_sized(
-                            Vec2::new(70.0, 22.0),
-                            egui::Button::new(egui::RichText::new("Cancel").size(12.0)),
-                        )
-                        .clicked()
-                    {
-                        cancelled = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            remaining_track_capacity > 0,
-                            egui::Button::new(egui::RichText::new("OK").size(12.0)),
-                        )
-                        .clicked()
-                    {
-                        accepted = true;
-                    }
                 });
-            });
         dismiss_window_on_outside_click(
             ctx,
             Id::new("add-track-configuration-dialog"),
@@ -10606,9 +10648,8 @@ impl OpenTrackApp {
                     .project
                     .insert_track_below_selection(dialog.kind, dialog.audio_channels);
                 if dialog.kind == TrackKind::Audio && dialog.audio_channels == 1 {
-                    self.data.project.tracks[index].input_routing = Some(
-                        mono_track_input_routing(dialog.mono_input_right).to_owned(),
-                    );
+                    self.data.project.tracks[index].input_routing =
+                        Some(mono_track_input_routing(dialog.mono_input_right).to_owned());
                 }
                 last_track_id = self.data.project.tracks.get(index).map(|track| track.id);
             }
@@ -11450,7 +11491,10 @@ impl eframe::App for OpenTrackApp {
         let (pointer_event, pointer_released, key_pressed, pointer_down) =
             viewport_interaction(&ctx);
         if pointer_event || key_pressed {
-            if !self.project_history.begin(&self.data.project) {
+            if !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+            {
                 self.status_message =
                     "Undo history is unavailable for this project size".to_owned();
             }
@@ -12996,11 +13040,7 @@ fn show_project(
                 ("M", "Unmute All", true),
                 ("S", "Deactivate All Solo", true),
                 ("R", "All Automation to Read Status", true),
-                (
-                    "W",
-                    "Automation writing is not implemented",
-                    false,
-                ),
+                ("W", "Automation writing is not implemented", false),
                 ("C", "Show/Hide Track Colors", true),
             ];
             for (index, (label, tooltip, enabled)) in track_toolbar.into_iter().enumerate() {
@@ -19554,11 +19594,28 @@ mod ruler_interaction_tests {
     }
 
     #[test]
+    fn cancelling_a_pending_gesture_restores_project_and_dirty_flag() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let original_name = project.tracks[0].name.clone();
+        let mut history = ProjectHistory::default();
+        assert!(history.begin(&project, false));
+        project.tracks[0].name = "changed by the gesture".to_owned();
+        let (restored, modified) = history.cancel_pending().expect("pending snapshot");
+        assert_eq!(restored.tracks[0].name, original_name);
+        assert!(!modified);
+        assert!(
+            history.undo(&restored).is_none(),
+            "a cancelled gesture must not leave an undo entry"
+        );
+    }
+
+    #[test]
     fn range_edit_is_undoable_and_escape_or_stationary_grab_does_not_edit() {
         let mut f = Fixture::new();
         f.frame(vec![]);
         let mut history = ProjectHistory::default();
-        history.begin(&f.project);
+        history.begin(&f.project, false);
         f.button(320.0, 3.0, true);
         f.frame(vec![egui::Event::PointerMoved(Pos2::new(500.0, 3.0))]);
         f.button(500.0, 3.0, false);
@@ -19603,7 +19660,7 @@ mod ruler_interaction_tests {
             assert_eq!(f.cursor, crate::timeline::move_cursor_icon(false));
             let before = serde_json::to_value(&f.project).unwrap();
             let mut history = ProjectHistory::default();
-            history.begin(&f.project);
+            history.begin(&f.project, false);
             f.button(320.0, 3.0, true);
             f.frame(vec![egui::Event::PointerMoved(Pos2::new(400.0, 80.0))]);
             assert_eq!(f.cursor, crate::timeline::move_cursor_icon(true));
@@ -19708,7 +19765,7 @@ mod ruler_interaction_tests {
                 assert_eq!(f.cursor, egui::CursorIcon::ResizeHorizontal);
                 let before = serde_json::to_value(&f.project).unwrap();
                 let mut history = ProjectHistory::default();
-                history.begin(&f.project);
+                history.begin(&f.project, false);
                 f.button(start_x, 3.0, true);
                 f.frame(vec![egui::Event::PointerMoved(Pos2::new(end_x, 80.0))]);
                 assert_eq!(f.cursor, egui::CursorIcon::ResizeHorizontal);
@@ -19789,7 +19846,7 @@ mod project_history_tests {
     fn project_history_undoes_and_redoes_a_track_edit() {
         let mut history = ProjectHistory::default();
         let mut project = Project::default();
-        assert!(history.begin(&project));
+        assert!(history.begin(&project, false));
         project.add_track(TrackKind::Audio);
         assert!(history.finish_frame(&project, true));
 
@@ -19803,13 +19860,13 @@ mod project_history_tests {
     fn a_new_project_edit_clears_the_redo_stack() {
         let mut history = ProjectHistory::default();
         let mut project = Project::default();
-        history.begin(&project);
+        history.begin(&project, false);
         project.add_track(TrackKind::Audio);
         history.finish_frame(&project, true);
         project = history.undo(&project).expect("undo snapshot should exist");
         assert!(history.can_redo());
 
-        history.begin(&project);
+        history.begin(&project, false);
         project.add_track(TrackKind::Midi);
         history.finish_frame(&project, true);
         assert!(!history.can_redo());
@@ -19860,7 +19917,7 @@ mod project_history_tests {
         project.add_audio_clip(0, PathBuf::from("missing/take.wav"), 0.0, 1.0);
         let mut history = ProjectHistory::default();
 
-        assert!(history.begin(&project));
+        assert!(history.begin(&project, false));
         assert_eq!(
             relink_audio_source_path(
                 &mut project,
@@ -19893,7 +19950,7 @@ mod bus_persistence_tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         let mut history = ProjectHistory::default();
-        assert!(history.begin(&project));
+        assert!(history.begin(&project, false));
         project.tracks[0].send_routing = vec![Some("Stereo Out".into())];
         project.tracks[0].send_parameters = vec![opentrack_core::project::SendParameters {
             enabled: true,
@@ -19999,7 +20056,7 @@ mod bus_persistence_tests {
             &project.tracks[0]
         ));
         let mut history = ProjectHistory::default();
-        history.begin(&project);
+        history.begin(&project, false);
         project.input_channel.strip.gain = 0.25;
         assert!(history.finish_frame(&project, true));
         project = history.undo(&project).expect("bus edit undo");
@@ -20243,7 +20300,7 @@ mod recording_history_tests {
                 .unwrap();
             let mut history = ProjectHistory::default();
             history.saved(&project);
-            history.begin(&project);
+            history.begin(&project, false);
             let paths = vec![root.join("recorded1.wav"), root.join("recorded2.wav")];
             for path in &paths {
                 std::fs::write(path, b"recorded audio").unwrap();
@@ -20287,7 +20344,7 @@ mod recording_history_tests {
             assert_eq!(std::fs::read(p).unwrap(), b"recorded audio");
         }
         f.project = f.history.undo(&f.project).unwrap();
-        f.history.begin(&f.project);
+        f.history.begin(&f.project, false);
         f.project.tracks[0].name = "new edit".into();
         assert!(f.history.finish_frame(&f.project, true));
         assert!(!f.history.can_redo());
@@ -20318,7 +20375,7 @@ mod recording_history_tests {
         let mut f = Fixture::new();
         f.history.saved(&f.project);
         f.project = f.history.undo(&f.project).unwrap();
-        f.history.begin(&f.project);
+        f.history.begin(&f.project, false);
         f.project.tracks[0].name = "branch".into();
         assert!(f.history.finish_frame(&f.project, true));
         assert!(!f.paths[0].exists());
@@ -20341,7 +20398,7 @@ mod recording_history_tests {
     fn discard_deletes_takes_even_after_their_recording_undo_step_is_trimmed() {
         let mut f = Fixture::new();
         for i in 0..40 {
-            f.history.begin(&f.project);
+            f.history.begin(&f.project, false);
             f.project.tracks[0].name = format!("edit {i}");
             assert!(f.history.finish_frame(&f.project, true));
         }
@@ -20363,7 +20420,7 @@ mod recording_history_tests {
     fn ordinary_event_removal_undo_does_not_delete_imported_audio() {
         let mut f = Fixture::new();
         f.history.clear();
-        f.history.begin(&f.project);
+        f.history.begin(&f.project, false);
         f.project.tracks[0].clips.clear();
         assert!(f.history.finish_frame(&f.project, true));
         f.project = f.history.undo(&f.project).unwrap();

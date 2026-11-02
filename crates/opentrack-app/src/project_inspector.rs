@@ -445,12 +445,7 @@ pub(super) fn show(
                 track.automation_read,
                 matches!(track.kind, TrackKind::Audio | TrackKind::Instrument),
             ),
-            (
-                "W",
-                "Automation writing is not implemented",
-                false,
-                false,
-            ),
+            ("W", "Automation writing is not implemented", false, false),
             ("▦", "Open Device Panels", false, false),
             ("×", "Auto Fades Settings...", false, false),
         ]

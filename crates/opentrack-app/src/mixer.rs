@@ -426,9 +426,9 @@ fn sidebar(
                     0 => t.muted = false,
                     1 => t.solo = false,
                     2 => t.listen = false,
-            3 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
-                t.automation_read = true
-            }
+                    3 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
+                        t.automation_read = true
+                    }
                     _ => {}
                 }
             }
@@ -1134,12 +1134,7 @@ fn strip(
                 "Read Automation (track volume only)",
                 183.0,
             ),
-            (
-                "W",
-                false,
-                "Automation writing is not implemented",
-                200.0,
-            ),
+            ("W", false, "Automation writing is not implemented", 200.0),
         ]
         .into_iter()
         .enumerate()
@@ -1872,7 +1867,15 @@ mod bus_tests {
                     events,
                     ..Default::default()
                 },
-                |ui| sidebar(ui, rect, &mut project, &mut MixerView::default(), &mut modified),
+                |ui| {
+                    sidebar(
+                        ui,
+                        rect,
+                        &mut project,
+                        &mut MixerView::default(),
+                        &mut modified,
+                    )
+                },
             );
             output.textures_delta.clear();
             modified

@@ -1369,7 +1369,7 @@ pub(super) mod tests {
                      project: &mut Project,
                      state: &mut State,
                      history: &mut ProjectHistory| {
-            history.begin(project);
+            history.begin(project, false);
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 500.0))),

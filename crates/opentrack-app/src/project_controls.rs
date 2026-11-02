@@ -594,7 +594,10 @@ mod tests {
             }],
         });
 
-        assert_eq!(used_automation_track_ids(&project, None), vec![project.tracks[0].id]);
+        assert_eq!(
+            used_automation_track_ids(&project, None),
+            vec![project.tracks[0].id]
+        );
         assert_eq!(
             used_automation_track_ids(&project, Some(project.tracks[0].id)),
             vec![project.tracks[0].id]

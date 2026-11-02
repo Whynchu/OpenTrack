@@ -158,7 +158,10 @@ impl super::OpenTrackApp {
                     );
                     return;
                 }
-                if !self.project_history.begin(&self.data.project) {
+                if !self
+                    .project_history
+                    .begin(&self.data.project, self.modified)
+                {
                     self.status_message =
                         "MIDI import could not be added to undo history".to_owned();
                     return;

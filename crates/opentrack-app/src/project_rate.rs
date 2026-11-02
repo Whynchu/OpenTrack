@@ -49,7 +49,10 @@ impl OpenTrackApp {
             return;
         }
         self.project_history.finish_frame(&self.data.project, true);
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             self.status_message = "Cannot change rate: undo snapshot unavailable".into();
             return;
         }
@@ -111,7 +114,7 @@ mod tests {
         assert_eq!(review.mismatched, vec![(path.clone(), 8000)]);
         assert!(review.unavailable.is_empty());
         let mut h = ProjectHistory::default();
-        h.begin(&p);
+        h.begin(&p, false);
         p.sample_rate_hz = 44100;
         h.finish_frame(&p, true);
         assert_eq!(p.tracks[0].clips, clips);

@@ -1293,7 +1293,7 @@ mod tests {
         body_project.add_audio_clip(0, clip.source_path.clone(), 0.0, 1.0);
         body_project.tracks[0].clips[0].pitch_time = Some(body_before.clone());
         let mut body_history = super::super::super::ProjectHistory::default();
-        body_history.begin(&body_project);
+        body_history.begin(&body_project, false);
         body_project.tracks[0].clips[0].pitch_time = Some(body_published);
         assert!(body_history.finish_frame(&body_project, true));
         let undone_body = body_history.undo(&body_project).unwrap();
@@ -1339,7 +1339,7 @@ mod tests {
         edge_project.add_audio_clip(0, edge_clip.source_path.clone(), 0.0, 1.0);
         edge_project.tracks[0].clips[0].pitch_time = Some(edge_before.clone());
         let mut edge_history = super::super::super::ProjectHistory::default();
-        edge_history.begin(&edge_project);
+        edge_history.begin(&edge_project, false);
         edge_project.tracks[0].clips[0].pitch_time = Some(edge_published);
         assert!(edge_history.finish_frame(&edge_project, true));
         let undone_edge = edge_history.undo(&edge_project).unwrap();
@@ -1691,7 +1691,7 @@ mod tests {
             .analysis
             .clone();
         let mut history = super::super::super::ProjectHistory::default();
-        history.begin(&project);
+        history.begin(&project, false);
         let selection = BTreeSet::from([1, 2]);
         assert!(reset_selected_notes(
             &mut project.tracks[0].clips[0]
@@ -1763,12 +1763,12 @@ mod tests {
         project.add_track(TrackKind::Audio);
         project.add_audio_clip(0, analyzed.source_path.clone(), 0.0, 1.0);
         let mut history = super::super::super::ProjectHistory::default();
-        history.begin(&project);
+        history.begin(&project, false);
         project.tracks[0].clips[0].pitch_time = analyzed.pitch_time.clone();
         history.retain_analysis(project.tracks[0].id, &project.tracks[0].clips[0]);
         assert!(!history.finish_frame(&project, true));
         assert!(!history.can_undo());
-        history.begin(&project);
+        history.begin(&project, false);
         project.tracks[0].clips[0]
             .pitch_time
             .as_mut()
@@ -1900,7 +1900,7 @@ mod tests {
         project.add_audio_clip(0, original.source_path.clone(), 0.0, 1.0);
         project.tracks[0].clips[0].pitch_time = original.pitch_time.clone();
         let mut history = super::super::super::ProjectHistory::default();
-        history.begin(&project);
+        history.begin(&project, false);
         project.tracks[0].clips[0]
             .pitch_time
             .as_mut()
@@ -2200,7 +2200,7 @@ mod tests {
         project.add_audio_clip(0, original.source_path.clone(), 0.0, 1.0);
         project.tracks[0].clips[0] = original.clone();
         let mut history = super::super::super::ProjectHistory::default();
-        history.begin(&project);
+        history.begin(&project, false);
         let edit = project.tracks[0].clips[0].pitch_time.as_mut().unwrap();
         edit.notes[0].shift = 3.0;
         edit.notes[0].end = 0.8;

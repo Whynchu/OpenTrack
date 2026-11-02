@@ -2641,12 +2641,7 @@ fn strip(
             "Read Automation (track volume only)",
             233.0,
         ),
-        (
-            "W",
-            false,
-            "Automation writing is not implemented",
-            250.0,
-        ),
+        ("W", false, "Automation writing is not implemented", 250.0),
     ]
     .into_iter()
     .enumerate()

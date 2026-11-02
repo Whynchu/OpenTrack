@@ -36,6 +36,11 @@ pub(super) enum LaneAction {
         track_id: u64,
         index: usize,
     },
+    /// Escape during a drag: the caller restores the curve captured when the
+    /// gesture began and drops the pending undo entry.
+    CancelDrag {
+        track_id: u64,
+    },
 }
 
 pub(super) fn apply_lane_action(
@@ -56,6 +61,8 @@ pub(super) fn apply_lane_action(
             value,
         } => move_volume_point(project, track_id, index, AutomationPoint { beat, value }),
         LaneAction::Remove { track_id, index } => remove_volume_point(project, track_id, index),
+        // Restoring the pre-gesture curve is the caller's job: it owns history.
+        LaneAction::CancelDrag { .. } => return Ok(false),
     };
     result.map_err(|error| error.to_string())
 }
@@ -101,6 +108,17 @@ pub(super) fn draw_lane(
             4.0,
             Color32::from_rgb(120, 225, 160),
         );
+    }
+    if ui.input(|input| input.key_pressed(egui::Key::Escape))
+        && ui
+            .memory(|memory| memory.data.get_temp::<usize>(id.with("dragging")))
+            .is_some()
+    {
+        ui.memory_mut(|memory| {
+            memory.data.remove::<usize>(id.with("dragging"));
+            memory.data.remove::<usize>(id.with("selected"));
+        });
+        return Some(LaneAction::CancelDrag { track_id });
     }
     let selected = ui.memory(|memory| memory.data.get_temp::<usize>(id.with("selected")));
     if let Some((beat, value)) = selected.and_then(|index| points.get(index)) {
@@ -295,6 +313,42 @@ mod tests {
     }
 
     #[test]
+    fn escape_cancels_an_active_point_drag() {
+        let ctx = egui::Context::default();
+        let track_id = 7;
+        let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), egui::vec2(300.0, 80.0));
+        let points = [(4.0_f64, 0.5_f32)];
+        let drag_id = Id::new(("volume-automation-lane", track_id)).with("dragging");
+        let mut action = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                events: vec![
+                    egui::Event::PointerMoved(Pos2::new(60.0, 60.0)),
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                ui.memory_mut(|memory| memory.data.insert_temp(drag_id, 0usize));
+                action = draw_lane(ui, rect, track_id, &points, 20.0, 10.0, Some(1.0));
+            },
+        );
+        output.textures_delta.clear();
+        assert_eq!(action, Some(LaneAction::CancelDrag { track_id }));
+        assert!(
+            ctx.memory(|memory| memory.data.get_temp::<usize>(drag_id).is_none()),
+            "the drag must stop after it is cancelled"
+        );
+    }
+
+    #[test]
     fn rejected_lane_edit_does_not_mutate_project() {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
@@ -376,7 +430,7 @@ mod tests {
         )
         .unwrap();
         let before_edit = project.clone();
-        assert!(history.begin(&project));
+        assert!(history.begin(&project, false));
         apply_lane_action(
             &mut project,
             LaneAction::Move {

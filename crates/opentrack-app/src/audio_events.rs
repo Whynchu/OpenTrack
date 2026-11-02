@@ -174,11 +174,7 @@ pub(super) struct Clipboard {
     items: Vec<ClipboardItem>,
 }
 
-fn split_selected_clips(
-    project: &mut Project,
-    selected: &HashSet<u64>,
-    beat: f64,
-) -> usize {
+fn split_selected_clips(project: &mut Project, selected: &HashSet<u64>, beat: f64) -> usize {
     let mut candidate = project.clone();
     let targets = candidate
         .tracks
@@ -285,18 +281,22 @@ impl OpenTrackApp {
             return;
         }
         self.project_history.finish_frame(&self.data.project, true);
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             self.status_message = "Cannot move: undo snapshot is unavailable".into();
             return;
         }
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
-        self.arrange_view_state.audio_events.select_many(
-            selected.into_iter().collect::<Vec<_>>(),
-        );
+        self.arrange_view_state
+            .audio_events
+            .select_many(selected.into_iter().collect::<Vec<_>>());
         self.rebuild_audio_plan();
         self.mark_modified();
-        self.status_message = format!("Moved {moved} audio event(s) to the cursor; Undo restores them");
+        self.status_message =
+            format!("Moved {moved} audio event(s) to the cursor; Undo restores them");
     }
 
     pub(super) fn crossfade_selected_audio_events(&mut self) {
@@ -347,7 +347,10 @@ impl OpenTrackApp {
             return;
         }
         self.project_history.finish_frame(&self.data.project, true);
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             self.status_message = "Cannot split: undo snapshot is unavailable".into();
             return;
         }
@@ -593,7 +596,10 @@ impl OpenTrackApp {
                 + (item.clip.start_beats - clipboard.anchor_beat);
             paste.push((track_index, clip));
         }
-        if !self.project_history.begin(&self.data.project) {
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
             self.status_message = "Undo history is unavailable for this project size".into();
             return;
         }
@@ -2844,7 +2850,7 @@ mod tests {
         f.select();
         let before = f.project.clone();
         let mut history = ProjectHistory::default();
-        history.begin(&before);
+        history.begin(&before, false);
         f.button(Pos2::new(997.0, 67.0), true);
         f.frame(vec![egui::Event::PointerMoved(Pos2::new(850.0, 67.0))]);
         f.button(Pos2::new(850.0, 67.0), false);
@@ -2965,7 +2971,10 @@ mod split_selection_tests {
             .add_audio_clip(0, PathBuf::from("event.wav"), 0.0, 1.0)
             .unwrap();
         let before = project.clone();
-        assert_eq!(split_selected_clips(&mut project, &HashSet::from([clip]), 4.0), 0);
+        assert_eq!(
+            split_selected_clips(&mut project, &HashSet::from([clip]), 4.0),
+            0
+        );
         assert_eq!(project, before);
     }
 

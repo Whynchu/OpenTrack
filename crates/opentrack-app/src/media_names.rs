@@ -76,7 +76,7 @@ mod tests {
         project.add_audio_clip(0, old.clone(), 0.0, 1.0);
         let mut history = ProjectHistory::default();
         history.saved(&project);
-        history.begin(&project);
+        history.begin(&project, false);
         history
             .names
             .rename(&old, &new, &history.saved_paths)
