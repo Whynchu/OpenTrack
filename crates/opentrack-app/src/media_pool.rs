@@ -177,6 +177,7 @@ pub(super) fn show(
     revealed: Option<&Path>,
     search: &mut String,
     focus_search: &mut bool,
+    selected: &mut Option<PathBuf>,
 ) -> Option<PathBuf> {
     let mut insert = None;
     ui.heading("Media Pool");
@@ -220,6 +221,7 @@ pub(super) fn show(
                         .filter(|c| c.source_path == path)
                         .count();
                     let is_revealed = revealed.is_some_and(|shown| shown == path);
+                    let is_selected = selected.as_deref() == Some(path.as_path());
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
                     let label = if is_revealed {
                         format!("▶ {name}")
@@ -235,6 +237,25 @@ pub(super) fn show(
                         // Bring the revealed source into view when the pool is
                         // longer than the window.
                         response.scroll_to_me(Some(egui::Align::Center));
+                    }
+                    // The whole row is clickable, so a pool entry can be chosen
+                    // without an "Add to Project" click.
+                    let row = ui.interact(
+                        response.rect,
+                        ui.id()
+                            .with(("pool-row", path.to_string_lossy().into_owned())),
+                        egui::Sense::click(),
+                    );
+                    if row.clicked() {
+                        *selected = Some(path.clone());
+                    }
+                    if is_selected {
+                        ui.painter().rect_stroke(
+                            response.rect.expand2(egui::Vec2::new(2.0, 1.0)),
+                            egui::CornerRadius::same(2),
+                            egui::Stroke::new(1.0, theme::palette(ui).accent),
+                            egui::StrokeKind::Outside,
+                        );
                     }
                     ui.label(if path.is_file() {
                         format!("{uses} event(s)")
@@ -861,6 +882,43 @@ impl OpenTrackApp {
             status.push_str(&format!("; {mono} mono event(s) were left alone"));
         }
         self.status_message = status;
+    }
+
+    /// Selects every event that uses the selected Media Pool source.
+    pub(super) fn select_pool_media_in_project(&mut self) {
+        let Some(path) = self.pool_selected.clone() else {
+            self.status_message =
+                "Choose a file in the Media Pool, then select it in the project".to_owned();
+            return;
+        };
+        let ids = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| clip.source_path == path)
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.status_message = format!(
+                "No event uses {}",
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
+            );
+            return;
+        }
+        self.arrange_view_state
+            .audio_events
+            .select_many(ids.clone());
+        self.status_message = format!(
+            "Selected {} event(s) using {}",
+            ids.len(),
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        );
     }
 
     /// Opens the normalize dialog with the default peak ceiling.
@@ -1936,6 +1994,7 @@ mod tests {
         for frame in 0..2 {
             let mut search = "kick".to_owned();
             let mut focus = false;
+            let mut selected = None;
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -1946,7 +2005,9 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    assert!(show(ui, &project, None, &mut search, &mut focus).is_none());
+                    assert!(
+                        show(ui, &project, None, &mut search, &mut focus, &mut selected).is_none()
+                    );
                 },
             );
             output.textures_delta.clear();
@@ -1999,13 +2060,15 @@ mod tests {
                 |ui| {
                     let mut search = String::new();
                     let mut focus = false;
+                    let mut selected = None;
                     assert!(
                         show(
                             ui,
                             &project,
                             Some(revealed.as_path()),
                             &mut search,
-                            &mut focus
+                            &mut focus,
+                            &mut selected
                         )
                         .is_none()
                     );
@@ -2063,6 +2126,156 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    fn pool_frame(
+        ctx: &egui::Context,
+        project: &Project,
+        selected: &mut Option<PathBuf>,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> Vec<(String, egui::Rect)> {
+        let mut search = String::new();
+        let mut focus = false;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(900.0, 600.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                assert!(show(ui, project, None, &mut search, &mut focus, selected).is_none());
+            },
+        );
+        output.textures_delta.clear();
+        let mut out = Vec::new();
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let size = text.galley.size();
+                    out.push((
+                        text.galley.text().to_owned(),
+                        egui::Rect::from_min_size(text.pos, size),
+                    ));
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn clicking_a_pool_row_selects_that_source() {
+        let mut project = Project::default();
+        project.media_pool.insert(PathBuf::from("/media/kick.wav"));
+        project.media_pool.insert(PathBuf::from("/media/snare.wav"));
+        let ctx = egui::Context::default();
+        let mut selected = None;
+
+        // A warm-up frame settles the layout before the click is aimed.
+        pool_frame(&ctx, &project, &mut selected, Vec::new(), 0.0);
+        let rows = pool_frame(&ctx, &project, &mut selected, Vec::new(), 0.05);
+        let kick = rows
+            .iter()
+            .find(|(text, _)| text == "kick.wav")
+            .map(|(_, rect)| *rect)
+            .expect("the kick row is drawn");
+        let point = kick.center();
+        pool_frame(
+            &ctx,
+            &project,
+            &mut selected,
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            0.1,
+        );
+        assert_eq!(selected, None, "a press alone does not select");
+        pool_frame(
+            &ctx,
+            &project,
+            &mut selected,
+            vec![egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            0.15,
+        );
+        assert_eq!(selected, Some(PathBuf::from("/media/kick.wav")));
+
+        // The chosen row is the one Select in Project uses.
+        let _ = pool_frame(&ctx, &project, &mut selected, Vec::new(), 0.2);
+        assert_eq!(selected, Some(PathBuf::from("/media/kick.wav")));
+    }
+
+    #[test]
+    fn select_in_project_selects_the_events_that_use_the_chosen_source() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        let shared = PathBuf::from("/media/kick.wav");
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, shared.clone(), 0.0, 1.0)
+            .expect("clip");
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, shared.clone(), 2.0, 1.0)
+            .expect("clip");
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("/media/other.wav"), 4.0, 1.0)
+            .expect("clip");
+
+        app.select_pool_media_in_project();
+        assert!(
+            app.status_message
+                .contains("Choose a file in the Media Pool")
+        );
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+        );
+
+        app.pool_selected = Some(PathBuf::from("/media/unused.wav"));
+        app.select_pool_media_in_project();
+        assert!(app.status_message.contains("No event uses unused.wav"));
+
+        app.pool_selected = Some(shared);
+        app.select_pool_media_in_project();
+        let mut ids = app.arrange_view_state.audio_events.selected_ids();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![first, second]);
+        assert!(
+            app.status_message
+                .contains("Selected 2 event(s) using kick.wav")
+        );
     }
 
     #[test]

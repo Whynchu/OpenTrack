@@ -415,5 +415,12 @@ still one commit with tests and refreshed counts.
    used in full are counted and reported instead of guessed at. 1 audio and 1 app
    tests. Disabled entries 92 -> 90.
 
+40. **Select in Project.** *Delivered.* Media Pool rows are now clickable and keep a
+   transient selection (highlighted with an accent outline); Find Selected in Pool
+   also sets it. Media > Select in Project selects every event that uses that
+   source and reports the count, refusing with a message when no row is chosen or
+   no event uses the file. 2 app tests (a simulated row click plus the command's
+   three outcomes). Disabled entries 90 -> 89.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

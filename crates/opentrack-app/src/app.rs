@@ -1205,6 +1205,8 @@ pub struct OpenTrackApp {
     auto_fades_settings_open: bool,
     /// Source the Media Pool should show and highlight, set by Find in Pool.
     pool_reveal: Option<PathBuf>,
+    /// Pool row the user clicked, used by Select in Project.
+    pool_selected: Option<PathBuf>,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2634,6 +2636,7 @@ impl OpenTrackApp {
                 .clamp(0.0, 10.0),
             auto_fades_settings_open: false,
             pool_reveal: None,
+            pool_selected: None,
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -3960,6 +3963,7 @@ impl OpenTrackApp {
         self.audio_event_clipboard = None;
         self.close_project_prompt = false;
         self.pool_reveal = None;
+        self.pool_selected = None;
         self.pool_search.clear();
         self.pool_search_focus = false;
         self.dock_state = default_dock_state();
@@ -4492,6 +4496,7 @@ impl OpenTrackApp {
             return;
         };
         self.focus_tab(PanelTab::Media);
+        self.pool_selected = Some(source.clone());
         self.pool_reveal = Some(source.clone());
         self.status_message = format!(
             "Showing {} in the Media Pool",
@@ -13719,7 +13724,10 @@ impl OpenTrackApp {
                         self.search_media();
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Select in Project", "")]);
+                    if menu_command(ui, "Select in Project", "", self.project_open).clicked() {
+                        self.select_pool_media_in_project();
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(
                         ui,
@@ -15346,6 +15354,7 @@ impl OpenTrackApp {
                         self.pool_reveal.as_deref(),
                         &mut self.pool_search,
                         &mut self.pool_search_focus,
+                        &mut self.pool_selected,
                     );
                 });
             });
@@ -30175,7 +30184,12 @@ mod find_in_pool_tests {
         app.arrange_view_state.audio_events.select_many([id]);
 
         app.find_selected_event_in_pool();
-        assert_eq!(app.pool_reveal, Some(path));
+        assert_eq!(app.pool_reveal, Some(path.clone()));
+        assert_eq!(
+            app.pool_selected,
+            Some(path),
+            "the revealed source is also the pool selection"
+        );
         assert!(app.media_window.open, "the Media window is opened");
         assert!(app.status_message.contains("Showing take-7.wav"));
     }
