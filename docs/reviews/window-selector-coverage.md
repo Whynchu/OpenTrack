@@ -12,7 +12,7 @@ Snapshot: HEAD `1b61c7a` plus existing modified `app.rs`, `channel_settings.rs`,
 | W06 | Preferences | `preferences.rs:175-226` | Partial: metering settings connected; remaining pages planned; preset buttons and direct monitoring disabled. |
 | W07 | Device Setup / Project Setup / VST Connections | `audio_configuration.rs:41,572,668` | Partial: device/rate selectors source-connected; Add Bus/presets disabled and several connection tabs unavailable. Dynamic devices vary. |
 | W08 | Plug-in Information / native and generic editors | `audio_configuration.rs:1044`, `app.rs:4509,4616`, `vst3_host.rs` | Partial audit: scan/editor paths exist; per-plug-in behavior and controls require runtime and compatibility review. |
-| W09 | Add Track | `app.rs:10243-10406` | Partial: channel count connected; speaker and instrument selectors disabled; Browse Presets requires further tracing. |
+| W09 | Add Track | `app.rs:10243-10406` | Partial: count and audio/group mono/stereo selection are connected. Speaker routing, instrument selection, and Browse Presets are explicitly unavailable; accepted Instrument tracks are created empty. |
 | W10 | Key Commands / assignment / conflict / Workspace Organizer | `app.rs:6935,7119,7178,7237` | Window creation and controls located; full command and per-control trace unknown. |
 | W11 | File/folder pickers and project folder setup | `app.rs:2693,2703,2727,2881,4282`, `audio_configuration.rs:1268` | Source paths located; project lifecycle and individual failure conditions need separate tracing. |
 | W12 | Track colors, rename, remove | `app.rs:4753,4846,4929`, `project_controls.rs:57` | Source paths located; remove gating and confirmation are conditional. |
@@ -29,7 +29,7 @@ Snapshot: HEAD `1b61c7a` plus existing modified `app.rs`, `channel_settings.rs`,
 | S08 | Track color / track selection / inspector | `project_controls.rs:57,430`, `project_inspector.rs:296`, `app.rs:10703` | Popup families located; individual choices, undo and persistence require tracing. |
 | S09 | Channel selection / inserts / sends | `channel_settings.rs:125`, `mixer.rs:1177,1214`, `app.rs:17136,17484` | Partial: plug-in catalog dynamic; sends DSP unavailable; inspect individual choices and rack state. |
 | S10 | Project/event/ruler/transport context menus | `project_controls.rs:189,207`, `app.rs:11081,12747,15716`, `transport_panel.rs:177` | Families located; menu/command pass still must enumerate each entry. |
-| S11 | Add Track choices | `app.rs:10287-10371` | Mono/stereo source-connected; speaker/instrument unavailable; presets uncertain. |
+| S11 | Add Track choices | `app.rs:10287-10371` | Mono/stereo source-connected; speaker routing, instrument selection, and Browse Presets visibly unavailable and not applied. |
 
 ## Remaining work
 

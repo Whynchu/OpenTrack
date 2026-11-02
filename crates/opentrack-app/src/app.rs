@@ -10414,14 +10414,11 @@ impl OpenTrackApp {
                                             );
                                         });
                                         ui.vertical(|ui| {
-                                            // Only the displayed default is recorded; speaker choices are unverified.
                                             ui.add_enabled_ui(false, |ui| {
-                                                egui::ComboBox::from_id_salt("add-audio-speakers")
-                                                    .width(78.0)
-                                                    .selected_text("M")
-                                                    .show_ui(ui, |_| {});
+                                                egui::Button::new("Speakers unavailable")
+                                                    .min_size(Vec2::new(120.0, 16.0))
                                             });
-                                            ui.label(egui::RichText::new("speakers").size(10.0));
+                                            ui.label(egui::RichText::new("routing").size(10.0));
                                         });
                                     }
                                     TrackKind::Group => {
@@ -10456,16 +10453,24 @@ impl OpenTrackApp {
                                         });
                                     }
                                     TrackKind::Instrument => {
-                                        ui.add_enabled_ui(false, |ui| {
-                                            egui::ComboBox::from_id_salt("add-instrument-choice")
-                                                .selected_text("No VST Instrument")
-                                                .show_ui(ui, |_| {});
+                                        ui.vertical(|ui| {
+                                            ui.add_enabled_ui(false, |ui| {
+                                                egui::Button::new("Instrument unavailable")
+                                                    .min_size(Vec2::new(160.0, 16.0))
+                                            });
+                                            ui.label(
+                                                egui::RichText::new("instrument selection unavailable")
+                                                    .size(10.0),
+                                            );
                                         });
                                     }
                                     TrackKind::Midi => {}
                                 }
                             });
-                            ui.radio_value(&mut dialog.browse_presets, true, "Browse Presets");
+                            ui.add_enabled(false, egui::RadioButton::new(
+                                dialog.browse_presets,
+                                "Browse Presets (unavailable)",
+                            ));
                         });
                     });
                 ui.add_space(6.0);

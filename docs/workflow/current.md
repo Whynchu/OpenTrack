@@ -2,7 +2,7 @@
 
 ## T078 - Automation contract
 
-Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce. The arrange lane draws stored curves and inserts snapped points using the shared fader taper; insertion uses validated core commands, and rejected edits surface through status messaging without mutation. Isolated egui and atomic rejection tests pass. Point dragging/deletion, undo integration, write capture, fader-follow/manual override and desktop playback review remain open. The existing expanded-lane snap test fails at beat 3.25 vs 3.5, reproduced at baseline `8b90b8a`. See [T078](tasks/T078-volume-automation.md).
+Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce. The arrange lane draws curves, inserts snapped points, supports left-drag movement and right-click removal using validated core commands, and clamps movement between neighboring points. Project history wraps gestures; command-level tests and the app check pass. Write capture, gesture cancellation, fader-follow/manual override and desktop playback review remain open. The existing expanded-lane snap test fails at beat 3.25 vs 3.5, reproduced at baseline `8b90b8a`. See [T078](tasks/T078-volume-automation.md).
 
 ## Routing boundary
 
