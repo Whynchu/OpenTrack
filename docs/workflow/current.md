@@ -14,7 +14,9 @@ Step 5 enabled Transport > Pre-roll to Selection Start/End (audio events plus th
 
 Step 6 enabled Post-roll from Selection Start/End with the same scheduler and independent post length. Both edges, late selections running into silence, interruption/seek cancellation and no-history behavior are tested. App suite: 512 passed, 9 ignored; inventory is 271 leaves with 91 unavailable. The step-4 per-frame stop limitation applies to both rolls. See [R4-06](tasks/R4-06-post-roll-commands.md).
 
-Next ready work: revision-4 step 7, MIDI Reset. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.---
+Step 7 enabled MIDI > Reset. It clears held on-screen keys and sends CC120/121/123 on all 16 channels through the bounded live-MIDI queue feeding the starter instrument. No external MIDI output exists, so hardware stuck-note listening is not possible; project notes/CC and history are untouched, and no-device/repeated/close cases are tested. App suite: 514 passed, 9 ignored; inventory is 271 leaves with 90 unavailable. See [R4-07](tasks/R4-07-midi-reset.md).
+
+Next ready work: revision-4 step 8, the drum-map model. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.---
 
 # Current assignment — roadmap activation (2026-11-01)
 

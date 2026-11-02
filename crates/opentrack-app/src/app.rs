@@ -11600,6 +11600,53 @@ impl OpenTrackApp {
         Some((waveform, gain))
     }
 
+    /// Releases live notes and sends the standard reset controllers.
+    ///
+    /// OpenTrack's live MIDI destination is the bounded monitor queue feeding the
+    /// starter instrument; there is no external MIDI output yet. Project notes and
+    /// CC are never touched. The on-screen keys are cleared first so their note
+    /// offs precede All Sound Off/Reset Controllers/All Notes Off.
+    fn reset_midi_destination(&mut self) {
+        let held: Vec<u8> = std::mem::take(&mut self.virtual_keyboard_held)
+            .into_iter()
+            .collect();
+        let mut dropped = false;
+        for key in held {
+            if !self.send_virtual_key_note(key, false) {
+                dropped = true;
+            }
+        }
+        let mut sent = 0usize;
+        if let Some(engine) = &self.audio_engine {
+            for channel in 0..16u8 {
+                for controller in [120u8, 121, 123] {
+                    let message = MidiInputMessage::ControlChange {
+                        channel,
+                        controller,
+                        value: 0,
+                    };
+                    if engine.send_live_midi_message(message) {
+                        sent += 1;
+                    } else {
+                        dropped = true;
+                    }
+                }
+            }
+        }
+        self.status_message = if self.audio_engine.is_none() {
+            "MIDI Reset cleared the on-screen keys; no audio output device is open, so no reset messages were sent"
+                .to_owned()
+        } else if dropped {
+            format!(
+                "MIDI Reset: {sent} reset message(s) queued, but the live MIDI queue was full; a reset may be incomplete"
+            )
+        } else {
+            format!(
+                "MIDI Reset: released the on-screen keys and sent All Sound Off, Reset Controllers and All Notes Off on 16 channels"
+            )
+        };
+    }
+
     fn handle_midi_input_events(&mut self, ctx: &egui::Context) {
         let Some(stream) = self.midi_input_stream.as_ref() else {
             if let Some(engine) = &self.audio_engine {
@@ -14157,9 +14204,12 @@ impl OpenTrackApp {
                             ("Drum Map Setup...", ""),
                             ("VST Expression", ""),
                             ("CC Automation Setup...", ""),
-                            ("Reset", ""),
                         ],
                     );
+                    if menu_command(ui, "Reset", "", true).clicked() {
+                        self.reset_midi_destination();
+                        ui.close();
+                    }
                     ui.separator();
                     ui.label("Input device");
                     let mut selected_midi_device = self.selected_midi_input_device.clone();
@@ -30521,6 +30571,26 @@ mod transport_locate_tests {
     }
 
     #[test]
+    fn midi_reset_uses_the_live_destination_when_one_is_open() {
+        let mut app = app_with_events();
+        let Some(_) = app.audio_engine.as_ref() else {
+            return;
+        };
+        app.virtual_keyboard_held.insert(60);
+        app.virtual_keyboard_held.insert(67);
+        let before = app.data.project.clone();
+        app.reset_midi_destination();
+        assert!(app.virtual_keyboard_held.is_empty());
+        assert!(
+            app.status_message.contains("16 channels")
+                || app.status_message.contains("queue was full"),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(app.data.project, before);
+    }
+
+    #[test]
     fn the_transport_menu_and_shortcut_share_the_selection_range_command() {
         let ctx = egui::Context::default();
         let ids_for = |app: &OpenTrackApp| {
@@ -31014,6 +31084,38 @@ mod virtual_keyboard_tests {
             MidiInputMessage::NoteOn { key, .. } => assert_eq!(key, 127),
             other => panic!("unexpected message {other:?}"),
         }
+    }
+
+    #[test]
+    fn midi_reset_clears_held_keys_without_touching_project_data() {
+        let mut app = app();
+        app.virtual_keyboard_held.insert(60);
+        app.virtual_keyboard_held.insert(64);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].midi_parts.clear();
+        let before = app.data.project.clone();
+        let history = app.project_history.counts();
+        app.reset_midi_destination();
+        assert!(app.virtual_keyboard_held.is_empty());
+        assert!(
+            app.status_message
+                .contains("no audio output device is open"),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(app.data.project, before);
+        assert_eq!(app.project_history.counts(), history);
+        // Repeated resets are safe and report again.
+        app.reset_midi_destination();
+        assert!(app.status_message.contains("MIDI Reset"));
+
+        // Closing the project drops held-key state rather than carrying it into
+        // the next project.
+        app.virtual_keyboard_held.insert(72);
+        app.close_project();
+        assert!(app.virtual_keyboard_held.is_empty());
+        app.reset_midi_destination();
+        assert!(app.status_message.contains("MIDI Reset"));
     }
 
     #[test]
