@@ -54,7 +54,9 @@ Step 25 added the arranger editor: sections from locators/regions, rename/resize
 
 Step 26 added the offline arranger sequence transformer in `opentrack-audio::arranger`: it copies audio clips, MIDI notes/controllers and volume automation into sequence order with source offsets and boundary clipping, refuses fades/envelopes rather than flattening them, bounds total length and feeds the existing `OfflineRenderer`. Generated-signal output has exact repeated length. Audio suite: 171 passed, 3 ignored. Audible preview and UI integration remain steps 27–28. See [R4-26](tasks/R4-26-arranger-offline-render.md).
 
-Next ready work: revision-4 step 27, connect audible arranger preview. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 27 connected a playback-only arranger preview through the existing engine plan path, with Project > Preview Arranger, sequence/source position readout, Cycle/recording refusal, stop-path plan restoration and content-edit cancellation. App suite: 540 passed, 9 ignored; inventory is 274 leaves with 84 unavailable. Audible block-boundary, rapid-stop, seek and MIDI-hang behavior remain runtime-pending because no audio device was opened. See [R4-27](tasks/R4-27-arranger-preview.md).
+
+Next ready work: revision-4 step 28, enable Add Arranger and review the complete path. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

@@ -497,6 +497,23 @@ struct TrackAddDialog {
     effect: Option<usize>,
 }
 
+struct ArrangerPreview {
+    total_beats: f64,
+    plays: Vec<ArrangerPreviewPlay>,
+}
+
+struct ArrangerPreviewPlay {
+    sequence_start: f64,
+    sequence_end: f64,
+    source_start: f64,
+}
+
+struct ArrangerPreviewSourcePlay {
+    source_start: f64,
+    source_end: f64,
+    repeats: u32,
+}
+
 #[derive(Clone)]
 struct TrackRenameDialog {
     track_id: u64,
@@ -1301,6 +1318,7 @@ pub struct OpenTrackApp {
     cc_automation_setup: Option<cc_automation::CcAutomationSetup>,
     region_editor: Option<region_editor::RegionEditor>,
     arranger_editor: Option<arranger_editor::ArrangerEditor>,
+    arranger_preview: Option<ArrangerPreview>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2796,6 +2814,7 @@ impl OpenTrackApp {
             cc_automation_setup: None,
             region_editor: None,
             arranger_editor: None,
+            arranger_preview: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -3117,6 +3136,9 @@ impl OpenTrackApp {
     }
 
     fn mark_modified(&mut self) {
+        if self.arranger_preview.is_some() {
+            self.stop_arranger_preview("Project content changed; arranger preview stopped");
+        }
         self.modified = true;
         self.status_message = "Modified".to_owned();
     }
@@ -3962,7 +3984,143 @@ impl OpenTrackApp {
             .store(stage as u32, std::sync::atomic::Ordering::Relaxed);
     }
 
+    fn start_arranger_preview(&mut self) {
+        if self.arranger_preview.is_some() {
+            self.stop_arranger_preview("Arranger preview stopped");
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before previewing the arranger".to_owned();
+            return;
+        }
+        if self.data.transport.cycle {
+            self.status_message =
+                "Turn Cycle off before previewing the arranger; preview is playback-only"
+                    .to_owned();
+            return;
+        }
+        let plays = self.arranger_preview_plays();
+        if plays.is_empty() {
+            self.status_message =
+                "The arranger sequence is empty; ordinary timeline playback remains active"
+                    .to_owned();
+            return;
+        }
+        let Some(snapshot) = self.offline_playback_settings.clone() else {
+            self.status_message =
+                "Prepare the playback plan before previewing the arranger".to_owned();
+            return;
+        };
+        let segments = plays
+            .iter()
+            .map(|play| opentrack_audio::arranger::ArrangerSequenceSegment {
+                start_beats: play.source_start,
+                end_beats: play.source_end,
+                repeats: play.repeats,
+            })
+            .collect::<Vec<_>>();
+        let sequence = match opentrack_audio::arranger::arrange_sequence(
+            snapshot.tempo_bpm,
+            &snapshot.tracks,
+            &segments,
+        ) {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                self.status_message = format!("Cannot preview the arranger: {error}");
+                return;
+            }
+        };
+        let output_hosted_inserts = self
+            .vst3_runtime
+            .hosted_inserts(&self.data.project.output_channel.strip);
+        let Some(engine) = self.audio_engine.as_mut() else {
+            self.status_message = "Open an audio output before previewing the arranger".to_owned();
+            return;
+        };
+        engine.set_playback_plan_with_hosted_output(
+            snapshot.tempo_bpm,
+            sequence.tracks,
+            None,
+            CycleMode::Loop,
+            &self.data.project.output_channel.strip,
+            opentrack_audio::MetronomeSettings::default(),
+            output_hosted_inserts,
+        );
+        self.data.transport.position_beats = 0.0;
+        engine.seek_seconds(0.0);
+        self.data.transport.playing = true;
+        engine.set_playing(true);
+        let mut cursor = 0.0;
+        let preview_plays = plays
+            .iter()
+            .map(|play| {
+                let length = (play.source_end - play.source_start) * f64::from(play.repeats);
+                let item = ArrangerPreviewPlay {
+                    sequence_start: cursor,
+                    sequence_end: cursor + length,
+                    source_start: play.source_start,
+                };
+                cursor += length;
+                item
+            })
+            .collect();
+        self.arranger_preview = Some(ArrangerPreview {
+            total_beats: cursor,
+            plays: preview_plays,
+        });
+        self.status_message =
+            "Arranger preview playing (playback only; Cycle and recording are unavailable)"
+                .to_owned();
+    }
+
+    fn stop_arranger_preview(&mut self, message: &str) {
+        if self.arranger_preview.is_none() {
+            return;
+        }
+        self.set_transport_playing(false);
+        self.status_message = message.to_owned();
+    }
+
+    fn arranger_preview_plays(&self) -> Vec<ArrangerPreviewSourcePlay> {
+        let arranger = &self.data.project.arranger;
+        arranger
+            .sequence
+            .iter()
+            .filter_map(|item| {
+                let section = arranger.section(item.section_id)?;
+                Some(ArrangerPreviewSourcePlay {
+                    source_start: section.start_beats,
+                    source_end: section.end_beats,
+                    repeats: item.repeats,
+                })
+            })
+            .collect()
+    }
+
+    fn arranger_preview_positions(&self) -> Option<(f64, f64)> {
+        let preview = self.arranger_preview.as_ref()?;
+        let sequence = self
+            .data
+            .transport
+            .position_beats
+            .clamp(0.0, preview.total_beats);
+        let play = preview
+            .plays
+            .iter()
+            .find(|play| sequence < play.sequence_end)
+            .or_else(|| preview.plays.last())?;
+        let source = play.source_start + (sequence - play.sequence_start);
+        Some((sequence, source))
+    }
+
     fn set_transport_playing(&mut self, playing: bool) {
+        if !playing && self.arranger_preview.take().is_some() {
+            self.data.transport.position_beats = 0.0;
+            if let Some(engine) = &self.audio_engine {
+                engine.seek_seconds(0.0);
+            }
+            self.rebuild_audio_plan();
+        }
         if playing && self.audio_engine.is_none() {
             self.reopen_audio();
             if self.audio_engine.is_none() {
@@ -4125,6 +4283,7 @@ impl OpenTrackApp {
         self.cc_automation_setup = None;
         self.region_editor = None;
         self.arranger_editor = None;
+        self.arranger_preview = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -14008,6 +14167,24 @@ impl OpenTrackApp {
                         self.open_region_editor();
                         ui.close();
                     }
+                    let preview_label = if self.arranger_preview.is_some() {
+                        "Stop Arranger Preview"
+                    } else {
+                        "Preview Arranger"
+                    };
+                    if menu_command(
+                        ui,
+                        preview_label,
+                        "",
+                        self.project_open
+                            && (self.arranger_preview.is_some()
+                                || !self.data.project.arranger.sequence.is_empty()),
+                    )
+                    .clicked()
+                    {
+                        self.start_arranger_preview();
+                        ui.close();
+                    }
                     if menu_command(ui, "Browser", "Ctrl+B", self.project_open).clicked() {
                         self.data.selected_media = 0;
                         self.focus_tab(PanelTab::Media);
@@ -17764,6 +17941,15 @@ impl OpenTrackApp {
             [band.left_bottom(), band.right_bottom()],
             Stroke::new(1.0, palette.grid),
         );
+        if let Some((sequence, source)) = self.arranger_preview_positions() {
+            ui.painter().text(
+                Pos2::new(band.right() - 10.0, band.center().y),
+                Align2::RIGHT_CENTER,
+                format!("ARR PREVIEW  seq {sequence:.2}  |  source {source:.2}"),
+                FontId::monospace(10.0),
+                palette.accent,
+            );
+        }
         let inner = Rect::from_min_max(
             Pos2::new(band.left(), band.top() + 2.0),
             Pos2::new(band.right(), band.bottom() - 2.0),
@@ -31545,6 +31731,44 @@ mod transport_locate_tests {
         app.apply_arranger_editor(&invalid);
         assert_eq!(app.data.project, before);
         assert!(app.status_message.contains("invalid"));
+    }
+
+    #[test]
+    fn arranger_preview_refuses_cycle_and_reports_source_sequence_positions() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.transport.cycle = true;
+        app.start_arranger_preview();
+        assert!(app.status_message.contains("Turn Cycle off"));
+        app.data.transport.cycle = false;
+        app.start_arranger_preview();
+        assert!(app.status_message.contains("sequence is empty"));
+
+        app.arranger_preview = Some(ArrangerPreview {
+            total_beats: 8.0,
+            plays: vec![
+                ArrangerPreviewPlay {
+                    sequence_start: 0.0,
+                    sequence_end: 4.0,
+                    source_start: 0.0,
+                },
+                ArrangerPreviewPlay {
+                    sequence_start: 4.0,
+                    sequence_end: 8.0,
+                    source_start: 16.0,
+                },
+            ],
+        });
+        app.data.transport.position_beats = 5.0;
+        let (sequence, source) = app.arranger_preview_positions().expect("positions");
+        assert!((sequence - 5.0).abs() < 1.0e-9);
+        assert!(
+            (source - 17.0).abs() < 1.0e-9,
+            "second section source offset"
+        );
+        app.arranger_preview = None;
     }
 
     #[test]
