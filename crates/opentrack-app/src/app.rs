@@ -10239,6 +10239,15 @@ impl OpenTrackApp {
                     live_mix_update = None;
                 }
             }
+            Some(project_controls::Action::ShowUsedAutomation(only_track)) => {
+                for id in project_controls::used_automation_track_ids(&self.data.project, only_track)
+                {
+                    modified |= self.arrange_view_state.automation_visible.insert(id);
+                }
+                if modified {
+                    live_mix_update = None;
+                }
+            }
             Some(project_controls::Action::HideAllAutomation) => {
                 if !self.arrange_view_state.automation_visible.is_empty() {
                     self.arrange_view_state.automation_visible.clear();
@@ -13086,7 +13095,11 @@ fn show_project(
                     Id::new("project-empty-track-list"),
                     Sense::click(),
                 );
-                project_controls::background_menu(&response, context_action);
+                project_controls::background_menu(
+                    &response,
+                    !project_controls::used_automation_track_ids(project, None).is_empty(),
+                    context_action,
+                );
             }
 
             // Paint header selection before the grid so lane fills never erase bar lines.
@@ -13569,6 +13582,7 @@ fn show_project(
                         &header_response,
                         track.id,
                         can_remove,
+                        project_controls::track_has_used_automation(track),
                         arrange_view_state.automation_visible.contains(&track.id),
                         !arrange_view_state.automation_visible.is_empty(),
                         context_action,
@@ -13577,6 +13591,7 @@ fn show_project(
                         &name_response,
                         track.id,
                         can_remove,
+                        project_controls::track_has_used_automation(track),
                         arrange_view_state.automation_visible.contains(&track.id),
                         !arrange_view_state.automation_visible.is_empty(),
                         context_action,
