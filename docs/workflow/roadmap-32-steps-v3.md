@@ -382,5 +382,13 @@ still one commit with tests and refreshed counts.
    other source processes; the status names the target and how many events were
    already level or silent. 1 audio and 1 app tests. Disabled entries 97 -> 96.
 
-Next candidates: the interchange adapters with explicit format/version scopes.
-Revision 4 should still start with the user-dependent reviews and CPR fixtures.
+36. **MusicXML import.** *Delivered.* File > Import > MusicXML... reads a partwise
+   score into one MIDI track per part. The new `opentrack_core::musicxml` parser is
+   bounded (8 MiB, 64 parts, 100k notes): it reads part names, divisions, notes,
+   rests, chords, backups/forwards, a tempo hint, and reports ties/slurs/
+   articulations/grace notes as unsupported instead of guessing. Each import is one
+   labelled "Import MusicXML" undo step; malformed or note-less files report and
+   add nothing. 3 core and 1 app tests. Disabled entries 96 -> 95.
+
+Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
+fixtures.

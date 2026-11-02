@@ -107,6 +107,123 @@ impl super::OpenTrackApp {
         self.status_message = "Importing MIDI file...".to_owned();
     }
 
+    /// Imports a partwise MusicXML score as MIDI tracks.
+    ///
+    /// The import runs synchronously because the document is bounded to 8 MiB and
+    /// parsing is a single linear pass; a larger file is refused before parsing.
+    pub(super) fn import_musicxml_file(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project before importing MusicXML".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before importing MusicXML".to_owned();
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("MusicXML", &["musicxml", "xml"])
+            .set_title("Import MusicXML")
+            .pick_file()
+        else {
+            return;
+        };
+        self.import_musicxml_from_path(&path);
+    }
+
+    /// Imports `path` as one undo step; split out so tests skip the dialog.
+    pub(super) fn import_musicxml_from_path(&mut self, path: &std::path::Path) {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.status_message = format!("Could not read the MusicXML file: {error}");
+                return;
+            }
+        };
+        let import = match opentrack_core::musicxml::import_musicxml(&bytes) {
+            Ok(import) => import,
+            Err(error) => {
+                self.status_message = format!("MusicXML import failed: {error}");
+                return;
+            }
+        };
+        let mut candidate = self.data.project.clone();
+        let first_track = candidate.tracks.len();
+        let mut first_part = None;
+        let mut imported_parts = 0;
+        let mut imported_notes = 0;
+        for part in &import.parts {
+            candidate.add_track(opentrack_core::project::TrackKind::Midi);
+            let index = candidate.tracks.len() - 1;
+            candidate.tracks[index].name = part.name.clone();
+            let Some(part_id) =
+                candidate.add_midi_part(index, part.start_beats, part.duration_beats)
+            else {
+                self.status_message = "The MusicXML parts could not be placed".to_owned();
+                return;
+            };
+            first_part.get_or_insert(part_id);
+            for note in &part.notes {
+                if candidate
+                    .add_midi_note_on_channel(
+                        index,
+                        part_id,
+                        note.start_beats,
+                        note.duration_beats,
+                        note.pitch,
+                        0,
+                        note.velocity,
+                    )
+                    .is_none()
+                {
+                    self.status_message =
+                        "A MusicXML note could not be placed in its part".to_owned();
+                    return;
+                }
+                imported_notes += 1;
+            }
+            imported_parts += 1;
+        }
+        if candidate.validate().is_err() {
+            self.status_message = "The imported score would not form a valid project".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot import MusicXML: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Import MusicXML");
+        self.data.project = candidate;
+        self.arrange_view_state.selected_track_ids.clear();
+        if let Some(index) = self.data.project.tracks.get(first_track) {
+            self.data.project.selected_track = Some(first_track as u32);
+            self.arrange_view_state.selected_track_ids.insert(index.id);
+            self.arrange_view_state.selection_anchor_track_id = Some(index.id);
+        }
+        self.data.project.selected_midi_part_id = first_part;
+        self.selected_midi_note_ids.clear();
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status =
+            format!("Imported {imported_parts} MusicXML part(s) with {imported_notes} note(s)");
+        if let Some(tempo) = import.tempo_bpm {
+            status.push_str(&format!(
+                "; the score names {tempo:.0} BPM, project tempo unchanged"
+            ));
+        }
+        if !import.unsupported.is_empty() {
+            status.push_str(&format!(
+                "; not imported: {}",
+                import.unsupported.join(", ")
+            ));
+        }
+        self.status_message = status;
+    }
+
     pub(super) fn export_midi_file(&mut self) {
         self.start_midi_export(MidiExportScope::default(), "MIDI file");
     }
@@ -367,6 +484,66 @@ fn ignored_summary(report: &MidiImportReport) -> String {
             report.unmatched_note_events,
             report.duplicate_controller_events,
         )
+    }
+}
+
+#[cfg(test)]
+mod musicxml_import_tests {
+    use super::*;
+    use crate::app::OpenTrackApp;
+
+    const SCORE: &str = r#"<score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Melody</part-name></score-part></part-list>
+      <part id="P1">
+        <measure>
+          <attributes><divisions>1</divisions></attributes>
+          <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+          <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note>
+        </measure>
+      </part>
+    </score-partwise>"#;
+
+    #[test]
+    fn importing_a_score_adds_midi_tracks_and_is_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-musicxml-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let path = root.join("score.musicxml");
+        std::fs::write(&path, SCORE).expect("score");
+
+        let ctx = eframe::egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_history.clear();
+
+        app.import_musicxml_from_path(&path);
+        assert_eq!(app.data.project.tracks.len(), 1);
+        assert_eq!(app.data.project.tracks[0].name, "Melody");
+        let part = &app.data.project.tracks[0].midi_parts[0];
+        assert_eq!(part.notes.len(), 2);
+        assert_eq!(part.notes[0].pitch, 60);
+        assert_eq!(part.notes[1].start_beats, 1.0);
+        assert_eq!(app.data.project.selected_track, Some(0));
+        assert!(app.data.project.selected_midi_part_id.is_some());
+        assert!(
+            app.status_message
+                .contains("1 MusicXML part(s) with 2 note(s)")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Import MusicXML");
+
+        // A malformed file reports and adds nothing.
+        let bad = root.join("bad.musicxml");
+        std::fs::write(&bad, b"<score-partwise><part id=\"P1\">").expect("bad");
+        let before = app.data.project.tracks.len();
+        let steps = app.project_history.counts().0;
+        app.import_musicxml_from_path(&bad);
+        assert!(app.status_message.contains("MusicXML import failed"));
+        assert_eq!(app.data.project.tracks.len(), before);
+        assert_eq!(app.project_history.counts().0, steps);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

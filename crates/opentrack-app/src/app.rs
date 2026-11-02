@@ -12528,10 +12528,13 @@ impl OpenTrackApp {
                                 ("Video File...", ""),
                                 ("Track Archive...", ""),
                                 ("Tempo Track...", ""),
-                                ("MusicXML...", ""),
                                 ("OMF...", ""),
                             ],
                         );
+                        if menu_command(ui, "MusicXML...", "", !self.is_recording()).clicked() {
+                            self.import_musicxml_file();
+                            ui.close();
+                        }
                         if menu_command(ui, "MIDI File...", "", self.midi_file_task.is_none())
                             .clicked()
                         {
