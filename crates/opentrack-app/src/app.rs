@@ -10389,7 +10389,10 @@ impl OpenTrackApp {
                             ui.separator();
                             ui.horizontal(|ui| {
                                 let controls_width = match dialog.kind {
-                                    TrackKind::Audio => 40.0 + 6.0 + 78.0 + 6.0 + 78.0,
+                                    TrackKind::Audio if dialog.audio_channels == 1 => {
+                                        40.0 + 6.0 + 78.0 + 6.0 + 78.0
+                                    }
+                                    TrackKind::Audio => 40.0 + 6.0 + 78.0,
                                     TrackKind::Group => 40.0 + 6.0 + 78.0,
                                     TrackKind::Instrument => 40.0 + 6.0 + 160.0,
                                     TrackKind::Midi => 40.0,
