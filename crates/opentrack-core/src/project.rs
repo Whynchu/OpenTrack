@@ -5458,6 +5458,68 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn unused_pool_entries_are_detected_and_removed_without_touching_files() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-unused-media-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let used = root.join("used.wav");
+        let unused = root.join("unused.wav");
+        let missing = root.join("missing.wav");
+        std::fs::write(&used, b"x").expect("used");
+        std::fs::write(&unused, b"y").expect("unused");
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, used.clone(), 0.0, 2.0)
+            .expect("clip");
+        // The event's source is referenced; the other two are only in the pool.
+        project.media_pool.insert(unused.clone());
+        project.media_pool.insert(missing.clone());
+
+        assert_eq!(project.referenced_media(), BTreeSet::from([used.clone()]));
+        assert_eq!(
+            project.unused_media(),
+            vec![missing.clone(), unused.clone()]
+        );
+        assert_eq!(
+            project.missing_unreferenced_media(),
+            vec![missing.clone()],
+            "an existing unused file is not missing"
+        );
+
+        assert_eq!(project.remove_unused_media(), vec![missing, unused.clone()]);
+        assert!(
+            project.media_pool.contains(&used),
+            "the referenced file stays"
+        );
+        assert_eq!(project.media_pool.len(), 1);
+        assert!(unused.exists(), "the file itself is untouched");
+        assert_eq!(project.remove_unused_media(), Vec::<PathBuf>::new());
+        assert!(project.validate().is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_missing_source_an_event_references_is_kept_for_relinking() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let gone = PathBuf::from("/nowhere/gone.wav");
+        project
+            .add_audio_clip(0, gone.clone(), 0.0, 2.0)
+            .expect("clip");
+        project.register_media();
+        assert!(project.media_pool.contains(&gone));
+        assert!(project.missing_unreferenced_media().is_empty());
+        assert!(project.remove_unused_media().is_empty());
+        assert!(
+            project.media_pool.contains(&gone),
+            "the event still needs it"
+        );
+    }
+
+    #[test]
     fn fades_apply_clamp_and_skip_locked_events() {
         let mut project = Project::default();
         project.tempo_bpm = 120.0;
@@ -6748,6 +6810,56 @@ impl Project {
             )
             .collect()
     }
+    /// Sources an event actually references, ignoring the pool.
+    pub fn referenced_media(&self) -> BTreeSet<PathBuf> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter().map(|clip| clip.source_path.clone()))
+            .collect()
+    }
+
+    /// Pool entries no event references, sorted.
+    ///
+    /// These are the files the pool keeps after their last event was removed;
+    /// removing them from the pool is reversible and never touches the file.
+    pub fn unused_media(&self) -> Vec<PathBuf> {
+        let referenced = self.referenced_media();
+        self.media_pool
+            .iter()
+            .filter(|path| !referenced.contains(*path))
+            .cloned()
+            .collect()
+    }
+
+    /// Drops the unused pool entries and returns them.
+    pub fn remove_unused_media(&mut self) -> Vec<PathBuf> {
+        let unused = self.unused_media();
+        for path in &unused {
+            self.media_pool.remove(path);
+        }
+        unused
+    }
+
+    /// Pool entries whose file is gone and that no event references, sorted.
+    ///
+    /// A missing file that an event still references is deliberately kept: the
+    /// event needs it for playback and the relink command resolves it.
+    pub fn missing_unreferenced_media(&self) -> Vec<PathBuf> {
+        self.unused_media()
+            .into_iter()
+            .filter(|path| !path.exists())
+            .collect()
+    }
+
+    /// Drops the missing, unreferenced pool entries and returns them.
+    pub fn remove_missing_unreferenced_media(&mut self) -> Vec<PathBuf> {
+        let missing = self.missing_unreferenced_media();
+        for path in &missing {
+            self.media_pool.remove(path);
+        }
+        missing
+    }
+
     pub fn register_media(&mut self) {
         self.media_pool = self.media_paths();
     }

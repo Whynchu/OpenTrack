@@ -259,6 +259,142 @@ impl OpenTrackApp {
         }
         .into();
     }
+    /// Drops pool entries no event references, keeping the files on disk.
+    pub(super) fn remove_unused_media_from_pool(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before changing the media pool".to_owned();
+            return;
+        }
+        let unused = self.data.project.unused_media();
+        if unused.is_empty() {
+            self.status_message = "The media pool has no unused entries".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot clean the pool: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Remove Unused Media");
+        let removed = self.data.project.remove_unused_media();
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "Removed {} unused pool entr{}; the files stay on disk. Undo restores the entries",
+            removed.len(),
+            if removed.len() == 1 { "y" } else { "ies" }
+        );
+    }
+
+    /// Drops pool entries whose file is gone and that no event references.
+    pub(super) fn remove_missing_media_from_pool(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before changing the media pool".to_owned();
+            return;
+        }
+        let missing = self.data.project.missing_unreferenced_media();
+        if missing.is_empty() {
+            self.status_message =
+                "The media pool has no missing entries that no event references".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot clean the pool: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Remove Missing Files");
+        let removed = self.data.project.remove_missing_unreferenced_media();
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "Removed {} missing pool entr{}. A missing file an event still uses is kept for relinking",
+            removed.len(),
+            if removed.len() == 1 { "y" } else { "ies" }
+        );
+    }
+
+    /// Deletes unused source files that live inside the project, recoverably.
+    ///
+    /// OpenTrack has no separate trash, so "Empty Trash" means: drop every unused
+    /// pool entry and delete the unused files that belong to this project. Files
+    /// outside the project folder may be shared, so they are left on disk. Undo
+    /// brings both the entries and the deleted files back.
+    pub(super) fn empty_media_trash(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before emptying unused media".to_owned();
+            return;
+        }
+        let unused = self.data.project.unused_media();
+        if unused.is_empty() {
+            self.status_message = "There are no unused sources to empty".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before deleting unused files".to_owned();
+            return;
+        };
+        let canonical_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        let files = unused
+            .iter()
+            .filter(|path| path.exists())
+            .filter(|path| {
+                fs::canonicalize(path)
+                    .unwrap_or_else(|_| (*path).clone())
+                    .starts_with(&canonical_root)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        candidate.remove_unused_media();
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot empty unused media: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Empty Trash");
+        if !files.is_empty() {
+            let mut recovery = recording_undo::RecordingUndo::new(
+                files.clone(),
+                root.join("Metadata").join("Undo"),
+            );
+            if let Err(error) = recovery.remove(&candidate) {
+                self.project_history.pending = None;
+                self.status_message = format!("Could not delete unused media: {error}");
+                return;
+            }
+            self.project_history.pending_deleted = Some(recovery);
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = if files.is_empty() {
+            format!(
+                "Removed {} unused pool entr{}; files outside the project were kept",
+                unused.len(),
+                if unused.len() == 1 { "y" } else { "ies" }
+            )
+        } else {
+            format!(
+                "Deleted {} unused file(s) from the project and removed {} pool entr{}; Undo restores both",
+                files.len(),
+                unused.len(),
+                if unused.len() == 1 { "y" } else { "ies" }
+            )
+        };
+    }
+
     /// Copies every referenced source into the project's own `Audio` folder.
     ///
     /// Consolidation makes the project self-contained: a file used from a shared
@@ -774,6 +910,137 @@ mod tests {
             PathBuf::from("/nowhere/missing.wav")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn removing_unused_pool_entries_is_one_undo_step_and_keeps_the_files() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-pool-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let used = root.join("Audio").join("Imports").join("used.wav");
+        let unused = root.join("Audio").join("Imports").join("unused.wav");
+        std::fs::write(&used, b"used").expect("used");
+        std::fs::write(&unused, b"unused").expect("unused");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, used.clone(), 0.0, 2.0)
+            .expect("clip");
+        app.data.project.media_pool.insert(unused.clone());
+        app.project_history.clear();
+
+        app.remove_unused_media_from_pool();
+        assert!(!app.data.project.media_pool.contains(&unused));
+        assert!(app.data.project.media_pool.contains(&used));
+        assert!(unused.exists(), "the file stays on disk");
+        assert!(app.status_message.contains("Removed 1 unused pool entry"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Remove Unused Media");
+
+        // Running it again reports there is nothing to do.
+        app.remove_unused_media_from_pool();
+        assert!(app.status_message.contains("no unused entries"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn removing_missing_pool_entries_keeps_the_ones_events_still_use() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-pool-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let absent_referenced = root.join("Audio").join("gone.wav");
+        let absent_unused = root.join("Audio").join("also-gone.wav");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, absent_referenced.clone(), 0.0, 2.0)
+            .expect("clip");
+        app.data.project.media_pool.insert(absent_unused.clone());
+        app.project_history.clear();
+
+        app.remove_missing_media_from_pool();
+        assert!(!app.data.project.media_pool.contains(&absent_unused));
+        assert!(
+            app.data.project.media_pool.contains(&absent_referenced),
+            "an event still needs it for relinking"
+        );
+        assert!(app.status_message.contains("Removed 1 missing pool entry"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Remove Missing Files");
+
+        app.remove_missing_media_from_pool();
+        assert!(app.status_message.contains("no missing entries"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn emptying_unused_media_deletes_only_project_files_and_undo_restores_them() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-pool-empty-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("opentrack-pool-outside-{}.wav", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let inside_unused = root.join("Audio").join("Imports").join("take.wav");
+        std::fs::write(&inside_unused, b"take").expect("inside");
+        std::fs::write(&outside, b"shared").expect("outside");
+        let used = root.join("Audio").join("Imports").join("used.wav");
+        std::fs::write(&used, b"used").expect("used");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, used.clone(), 0.0, 2.0)
+            .expect("clip");
+        app.data.project.media_pool.insert(inside_unused.clone());
+        app.data.project.media_pool.insert(outside.clone());
+        app.project_history.clear();
+
+        app.empty_media_trash();
+        assert!(!inside_unused.exists(), "the project's unused file is gone");
+        assert!(
+            outside.exists(),
+            "a file outside the project is never deleted"
+        );
+        assert!(!app.data.project.media_pool.contains(&inside_unused));
+        assert!(!app.data.project.media_pool.contains(&outside));
+        assert!(app.data.project.media_pool.contains(&used));
+        assert!(app.status_message.contains("Deleted 1 unused file(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Empty Trash");
+
+        // Undo brings the deleted file and the pool entries back.
+        let restored = app
+            .project_history
+            .undo(&app.data.project)
+            .expect("undo the cleanup");
+        assert!(inside_unused.exists(), "Undo restores the deleted file");
+        assert!(restored.media_pool.contains(&inside_unused));
+        assert!(restored.media_pool.contains(&outside));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
     }
 
     #[test]

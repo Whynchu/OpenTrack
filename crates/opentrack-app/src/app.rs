@@ -11611,6 +11611,41 @@ impl OpenTrackApp {
                         self.import_audio_file();
                         ui.close();
                     }
+                    let pool_available = self.project_open && !self.is_recording();
+                    if menu_command(
+                        ui,
+                        "Remove Unused Media",
+                        "",
+                        pool_available && !self.data.project.unused_media().is_empty(),
+                    )
+                    .clicked()
+                    {
+                        self.remove_unused_media_from_pool();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
+                        "Empty Trash",
+                        "",
+                        pool_available && !self.data.project.unused_media().is_empty(),
+                    )
+                    .clicked()
+                    {
+                        self.empty_media_trash();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
+                        "Remove Missing Files",
+                        "",
+                        pool_available
+                            && !self.data.project.missing_unreferenced_media().is_empty(),
+                    )
+                    .clicked()
+                    {
+                        self.remove_missing_media_from_pool();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -11618,15 +11653,12 @@ impl OpenTrackApp {
                             ("Import Pool...", ""),
                             ("Export Pool...", ""),
                             ("Find Missing Files...", ""),
-                            ("Remove Missing Files", ""),
                             ("Reconstruct", ""),
                             ("Convert Files...", ""),
                             ("Conform Files...", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
                             ("Create Folder", ""),
-                            ("Empty Trash", ""),
-                            ("Remove Unused Media", ""),
                             ("Prepare Archive...", ""),
                             ("Set Pool Record Folder", ""),
                             ("Minimize File", ""),

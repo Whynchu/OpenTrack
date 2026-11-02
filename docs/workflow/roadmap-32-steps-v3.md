@@ -50,9 +50,16 @@ work is named rather than approximated.
 
 ### C. Media pool
 
-4. **Pool cleanup commands.** Remove Unused Media, Empty Trash and Select in
-   Project over the existing pool model, each one undo step with a report of what
-   moved. Missing-file commands reuse the revision-2 relink/remove logic.
+4. **Pool cleanup commands.** *Delivered.* Media > Remove Unused Media, Empty
+   Trash and Remove Missing Files. Core gained `referenced_media`,
+   `unused_media`, `remove_unused_media`, `missing_unreferenced_media` and
+   `remove_missing_unreferenced_media`; a missing file an event still references
+   is deliberately kept so relink can resolve it. Remove Unused Media drops the
+   entries and never touches the files. Empty Trash drops every unused entry and
+   deletes the unused files that live inside the project folder through the
+   existing recoverable-deletion path, leaving files outside the project on disk
+   because they may be shared; Undo restores both the files and the entries. 2
+   core and 3 app tests. Disabled entries 133 -> 130.
 5. **Pool import/export.** Import Pool... and Export Pool... as a manifest of the
    project's media rather than a new format.
 
