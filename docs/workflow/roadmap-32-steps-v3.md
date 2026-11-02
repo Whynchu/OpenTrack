@@ -36,12 +36,21 @@ work is named rather than approximated.
    every track, each as one labelled undo step where it edits the project. Shortcut
    coverage rises 90 -> 109 of 152 commands. 4 app tests.
 
-### B. Media pool
+### B. Audio event processing
 
-3. **Pool cleanup commands.** Remove Unused Media, Empty Trash and Select in
+3. **Fade In, Fade Out and Silence.** *Delivered.* Audio > Process gains working
+   Fade In, Fade Out and Silence. `Project::fade_audio_clips` clamps the new fade
+   to the event and to whatever room the opposite fade leaves (the sum can never
+   exceed the event), and `silence_audio_clips` zeroes the event gain while keeping
+   the media in the pool. Both skip locked events and run as one labelled undo
+   step. 2 core and 1 app tests. Disabled entries 137 -> 134.
+
+### C. Media pool
+
+4. **Pool cleanup commands.** Remove Unused Media, Empty Trash and Select in
    Project over the existing pool model, each one undo step with a report of what
    moved. Missing-file commands reuse the revision-2 relink/remove logic.
-4. **Pool import/export.** Import Pool... and Export Pool... as a manifest of the
+5. **Pool import/export.** Import Pool... and Export Pool... as a manifest of the
    project's media rather than a new format.
 
 ### C. Audio event processing
@@ -51,7 +60,7 @@ work is named rather than approximated.
 6. **Normalize and Reverse through the offline renderer.** Render the selection
    like bounce, then replace it, so the commands reuse one verified path.
 
-### D. Track and project
+### E. Track and project
 
 7. **Create Folder from selected tracks.** Group the selected tracks under a new
    group track with correct routing, as one undo step.
@@ -61,13 +70,13 @@ work is named rather than approximated.
    VST Performance (F12) and the transport panel (F2) reach their existing panels
    from the reference keys.
 
-### E. MIDI
+### F. MIDI
 
 10. **Quantize Setup and Insert Velocities.** Both dialogs wire to existing MIDI
    commands; the setup dialog chooses grid, strength and swing defaults.
 11. **Tuplets.** Build N-Tuplet as one bounded MIDI note transform with tests.
 
-### F. Consolidation
+### G. Consolidation
 
 12. **Close revision 3.** Re-measure the menu inventory, the shortcut coverage and
     the suites; choose revision 4.

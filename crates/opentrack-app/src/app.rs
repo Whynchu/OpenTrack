@@ -11275,18 +11275,30 @@ impl OpenTrackApp {
                 });
                 ui.menu_button("Audio", |ui| {
                     ui.menu_button("Process", |ui| {
+                        let has_selection = self.project_open
+                            && !self.is_recording()
+                            && !self.arrange_view_state.audio_events.selected_ids().is_empty();
+                        if menu_command(ui, "Fade In", "", has_selection).clicked() {
+                            self.fade_selected_audio_events(true);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Fade Out", "", has_selection).clicked() {
+                            self.fade_selected_audio_events(false);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Silence", "", has_selection).clicked() {
+                            self.silence_selected_audio_events();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
-                                ("Fade In", ""),
-                                ("Fade Out", ""),
                                 ("Envelope...", ""),
                                 ("Gain...", ""),
                                 ("Merge Clipboard", ""),
                                 ("Normalize...", ""),
                                 ("Remove DC Offset", ""),
                                 ("Reverse", ""),
-                                ("Silence", ""),
                                 ("Stereo Flip", ""),
                                 ("Time Stretch...", ""),
                                 ("Resample...", ""),

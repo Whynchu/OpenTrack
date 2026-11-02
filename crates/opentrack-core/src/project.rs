@@ -2464,6 +2464,61 @@ impl Project {
         Some(keeper.id)
     }
 
+    /// Applies a fade to the selected events and reports how many changed.
+    ///
+    /// The fade is clamped to the event and to whatever room the opposite fade
+    /// leaves, so a short event never becomes invalid. A locked event is skipped.
+    pub fn fade_audio_clips(&mut self, ids: &[u64], fade_in: bool, seconds: f64) -> usize {
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return 0;
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut changed = 0;
+        for track in self.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if !selected.contains(&clip.id) || clip.locked {
+                    continue;
+                }
+                let other = if fade_in {
+                    clip.fade_out_seconds
+                } else {
+                    clip.fade_in_seconds
+                };
+                let next = seconds
+                    .min(clip.duration_seconds)
+                    .min((clip.duration_seconds - other).max(0.0));
+                let target = if fade_in {
+                    &mut clip.fade_in_seconds
+                } else {
+                    &mut clip.fade_out_seconds
+                };
+                if (*target - next).abs() > 1e-9 {
+                    *target = next;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Silences the selected events by setting their gain to zero.
+    ///
+    /// The media and the event stay, so Undo and the pool both keep the audio;
+    /// only the channel amplification changes.
+    pub fn silence_audio_clips(&mut self, ids: &[u64]) -> usize {
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut changed = 0;
+        for track in self.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if selected.contains(&clip.id) && !clip.locked && clip.gain != 0.0 {
+                    clip.gain = 0.0;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
     /// The earliest event start strictly after `beat`, across audio and MIDI.
     ///
     /// "Event" means the beginning of an audio event or a MIDI part, which is
@@ -5400,6 +5455,69 @@ mod sample_edit_tests {
         // An empty mapping is a no-op.
         assert_eq!(project.relink_media(&BTreeMap::new()), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fades_apply_clamp_and_skip_locked_events() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let long = project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 0.0, 4.0)
+            .unwrap();
+        let short = project
+            .add_audio_clip(0, PathBuf::from("short.wav"), 8.0, 0.5)
+            .unwrap();
+        let locked = project
+            .add_audio_clip(0, PathBuf::from("locked.wav"), 16.0, 4.0)
+            .unwrap();
+        project.set_audio_clips_locked(&[locked], true);
+
+        assert_eq!(
+            project.fade_audio_clips(&[long, short, locked], true, 0.25),
+            2
+        );
+        let clips = &project.tracks[0].clips;
+        assert_eq!(clips[0].fade_in_seconds, 0.25);
+        assert_eq!(clips[1].fade_in_seconds, 0.25, "clamped to the clip length");
+        assert_eq!(clips[2].fade_in_seconds, 0.0, "locked stays untouched");
+
+        assert_eq!(project.fade_audio_clips(&[long], false, 1.0), 1);
+        assert_eq!(project.tracks[0].clips[0].fade_out_seconds, 1.0);
+        // The sum can never exceed the event, so a long fade in gives way.
+        assert_eq!(project.fade_audio_clips(&[long], true, 10.0), 1);
+        assert_eq!(project.tracks[0].clips[0].fade_in_seconds, 3.0);
+        assert!(
+            (project.tracks[0].clips[0].fade_in_seconds
+                + project.tracks[0].clips[0].fade_out_seconds
+                - 4.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(project.validate().is_ok());
+        assert_eq!(project.fade_audio_clips(&[long], true, f64::NAN), 0);
+        assert_eq!(project.fade_audio_clips(&[long], true, 0.0), 0);
+    }
+
+    #[test]
+    fn silence_zeroes_gain_and_keeps_the_media() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let locked = project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 2.0)
+            .unwrap();
+        project.set_audio_clips_locked(&[locked], true);
+
+        assert_eq!(project.silence_audio_clips(&[clip, locked]), 1);
+        assert_eq!(project.tracks[0].clips[0].gain, 0.0);
+        assert_eq!(project.tracks[0].clips[1].gain, 1.0);
+        assert!(project.media_pool.contains(&PathBuf::from("a.wav")));
+        assert_eq!(project.silence_audio_clips(&[clip]), 0, "already silent");
+        assert!(project.validate().is_ok());
     }
 
     #[test]

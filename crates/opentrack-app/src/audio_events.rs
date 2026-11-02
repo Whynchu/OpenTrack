@@ -606,6 +606,79 @@ impl OpenTrackApp {
         self.status_message = "Glued the selected audio events; Undo splits them again".to_owned();
     }
 
+    /// Applies the default fade length to the selection's leading or trailing edge.
+    pub(super) fn fade_selected_audio_events(&mut self, fade_in: bool) {
+        const DEFAULT_FADE_SECONDS: f64 = 0.25;
+        if self.is_recording() {
+            self.status_message = "Stop recording before fading audio events".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to fade".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.fade_audio_clips(&ids, fade_in, DEFAULT_FADE_SECONDS);
+        if changed == 0 {
+            self.status_message =
+                "No event changed; locked events and the current fade are left alone".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot fade: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history
+            .label_next(if fade_in { "Fade In" } else { "Fade Out" });
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Applied a {DEFAULT_FADE_SECONDS:.2} s {} to {changed} event(s); Undo restores them",
+            if fade_in { "fade in" } else { "fade out" }
+        );
+    }
+
+    /// Silences the selected events by zeroing their gain, keeping the media.
+    pub(super) fn silence_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before silencing audio events".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to silence".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.silence_audio_clips(&ids);
+        if changed == 0 {
+            self.status_message =
+                "No event changed; locked and already silent events are left alone".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot silence: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Silence");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!("Silenced {changed} event(s); the media stays in the pool");
+    }
+
     /// Removes the loop range from the selected events, as one undo step.
     pub(super) fn delete_loop_range_from_selected_events(&mut self) {
         if self.is_recording() {
@@ -4287,6 +4360,68 @@ mod split_selection_tests {
         app.glue_selected_audio_events();
         assert!(app.status_message.contains("contiguous pieces"));
         assert_eq!(app.data.project.tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn fading_and_silencing_the_selection_are_labelled_undo_steps() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 4.0)
+            .unwrap();
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 8.0, 4.0)
+            .unwrap();
+        app.project_history.clear();
+        app.arrange_view_state
+            .audio_events
+            .select_many([first, second]);
+
+        app.fade_selected_audio_events(true);
+        assert_eq!(app.data.project.tracks[0].clips[0].fade_in_seconds, 0.25);
+        assert!(app.status_message.contains("fade in"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Fade In");
+
+        app.fade_selected_audio_events(false);
+        assert_eq!(app.data.project.tracks[0].clips[0].fade_out_seconds, 0.25);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Fade Out");
+
+        app.silence_selected_audio_events();
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.gain == 0.0)
+        );
+        assert!(app.status_message.contains("media stays in the pool"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Silence");
+        assert!(
+            app.data
+                .project
+                .media_pool
+                .contains(&PathBuf::from("a.wav"))
+        );
+
+        // Repeating silence changes nothing and does not write another step.
+        let steps = app.project_history.counts().0;
+        app.silence_selected_audio_events();
+        assert!(app.status_message.contains("No event changed"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // Nothing selected is reported too.
+        app.arrange_view_state.audio_events.clear_selection();
+        app.fade_selected_audio_events(true);
+        assert!(app.status_message.contains("Select audio events to fade"));
     }
 
     #[test]
