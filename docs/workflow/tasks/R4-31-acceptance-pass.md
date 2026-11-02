@@ -30,6 +30,7 @@
   - `cargo test --offline -p opentrack-audio` → 171 passed, 3 ignored.
   - `cargo test --offline -p opentrack --bin opentrack` → 544 passed, 9 ignored.
   - `build.ps1 -Architecture x64` → release compiled; staging succeeded; metadata hash step manually completed after `Get-FileHash` module failure.
+- Re-verification during step 32 (same model, source `aac3789`): re-ran `cargo fmt --all -- --check` and `git diff --check` (clean), core 164 passed, audio 171 passed/3 ignored, app 544 passed/9 ignored. `certutil -hashfile builds/x64/OpenTrack.exe SHA256` returned `7206dc24a44620e59d57828e6c6cbc7eeb0c0b849daa5545aa13b434af23a826`, matching `.build-cache/metadata/x64-build-info.json` (`architecture: x64`, `local_asio: true`). `Get-FileHash` remains unavailable in this shell; the artifact was not rebuilt.
 - Runtime environment and evidence paths: Windows x64 host; no desktop session, audio device or listening. `builds/x64/OpenTrack.exe`.
 - Ledger IDs updated; report command/result: README/current.md updated.
 - Review findings, rework, elapsed effort if available: self-review of diffs and packets; no independent review. The build script metadata failure is environmental (PowerShell Security module unavailable), not a compile failure; the binary was still staged.

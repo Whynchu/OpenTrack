@@ -45,7 +45,7 @@ Revision 4 (`roadmap-32-steps-v4.md`) was executed serially from step 1 through 
 
 ## Measured size
 
-`app.rs` grew from 31,512 lines at `12a01e0` to 34,262 lines (+2,750). New focused app modules total about 2,742 lines (`drum_editor`, `drum_map_setup`, `logical_presets`, `cc_automation`, `region_editor`, `arranger_editor`, `track_archive`), plus `opentrack-core::arranger` and `opentrack-audio::arranger`. Final inventory: 275 project-open leaves, 40 available, 145 state-dependent, 82 unavailable, 8 informational; 18 shell leaves; 147/152 bound command IDs dispatched.
+`app.rs` grew from 32,649 lines at `12a01e0` to 34,262 lines (+1,613; 31,512 → 33,067 non-empty). New focused app modules under `src/app/` total 2,854 lines (2,742 non-empty): `drum_editor`, `drum_map_setup`, `logical_presets`, `cc_automation`, `region_editor`, `arranger_editor`, `track_archive`, plus `opentrack-core::arranger` and `opentrack-audio::arranger`. Final inventory: 275 project-open leaves, 40 available, 145 state-dependent, 82 unavailable, 8 informational; 18 shell leaves; 147/152 bound command IDs dispatched.
 
 ## Next queue recommendation
 

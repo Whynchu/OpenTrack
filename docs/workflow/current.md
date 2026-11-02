@@ -1,4 +1,4 @@
-﻿# Active planning handoff - revision 4 complete (2026-11-02)
+# Active planning handoff - revision 4 complete (2026-11-02)
 
 Revision 4 is complete at step 32. Detailed delivered scope, verification, pending runtime work and the next-queue recommendation are in [the revision-4 delivery handoff](handoffs/revision-4-delivery.md). [Revision 4](roadmap-32-steps-v4.md) remains the active queue reference; [the OpenCode handoff](opencode-revision-4-handoff.md) records the runner contract.
 
