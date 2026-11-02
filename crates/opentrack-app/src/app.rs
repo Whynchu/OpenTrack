@@ -4734,6 +4734,52 @@ impl OpenTrackApp {
         }
     }
 
+    /// Saves a numbered copy beside the open project and keeps working in it.
+    fn save_new_project_version(&mut self) {
+        if !self.project_open {
+            self.status_message = "No project is open".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.set_transport_playing(false);
+        }
+        if !self.project_folder_managed {
+            if self.project_folder_setup.is_none() {
+                self.begin_project_folder_setup();
+            }
+            self.status_message =
+                "Choose or create a project folder before saving a new version".to_owned();
+            return;
+        }
+        let Some(current) = self.project_path.clone().filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("opr"))
+        }) else {
+            // A legacy project has no OPR path to version; Save As is the honest
+            // way to start one.
+            self.save_project_as();
+            return;
+        };
+        let Some(root) = current.parent() else {
+            self.status_message = "The open project has no folder to save into".to_owned();
+            return;
+        };
+        let stem = current
+            .file_stem()
+            .map(|stem| version_base_name(&stem.to_string_lossy()))
+            .unwrap_or_else(|| self.data.project.name.clone());
+        let Some(path) = unique_project_file_path(root, &stem) else {
+            self.status_message =
+                "No unused version name is available beside this project".to_owned();
+            return;
+        };
+        if self.write_project(path.clone()) {
+            // write_project already switched the open path and marked the file
+            // saved; name the version so the user sees what happened.
+            self.status_message = format!("Saved a new version: {}", path.display());
+        }
+    }
+
     fn save_project_as(&mut self) -> bool {
         if !self.project_open {
             self.status_message = "No project is open".to_owned();
@@ -6732,6 +6778,7 @@ impl OpenTrackApp {
                     ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                 }
             }
+            "file.save_new_version" => self.save_new_project_version(),
             "edit.select_all" => self.select_all_audio_events(),
             "edit.select_none" => self.select_no_audio_events(),
             "edit.delete" => self.delete_audio_selection(false),
@@ -10582,6 +10629,17 @@ impl OpenTrackApp {
                     }
                     menu_command(ui, "Open Library...", "", false);
                     menu_command(ui, "Close", "Ctrl+W", false);
+                    if menu_command(
+                        ui,
+                        "New Version",
+                        "Ctrl+Alt+S",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.save_new_project_version();
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(ui, "Save", "Ctrl+S", true).clicked() {
                         self.save_project();
@@ -11552,7 +11610,6 @@ impl OpenTrackApp {
                             ("Prepare Archive...", ""),
                             ("Set Pool Record Folder", ""),
                             ("Minimize File", ""),
-                            ("New Version", ""),
                         ],
                     );
                     ui.menu_button("Insert into Project", |ui| {
@@ -21961,6 +22018,19 @@ fn project_directory_layout_exists(project_file: &Path) -> bool {
         && root.join("Metadata").is_dir()
 }
 
+/// The name a version chain counts from: "Song (2)" and "Song" both give "Song".
+fn version_base_name(stem: &str) -> String {
+    let trimmed = stem.trim_end();
+    if let Some(open) = trimmed.rfind(" (")
+        && let Some(number) = trimmed[open + 2..].strip_suffix(')')
+        && !number.is_empty()
+        && number.chars().all(|character| character.is_ascii_digit())
+    {
+        return trimmed[..open].trim_end().to_owned();
+    }
+    trimmed.to_owned()
+}
+
 fn unique_project_file_path(root: &Path, project_name: &str) -> Option<PathBuf> {
     let file_name = safe_project_filename(project_name);
     let candidate = root.join(&file_name);
@@ -26467,6 +26537,46 @@ mod transport_locate_tests {
 }
 
 #[cfg(test)]
+mod new_version_tests {
+    use super::*;
+
+    #[test]
+    fn new_version_writes_a_numbered_copy_and_keeps_working_in_it() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-new-version-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("project layout");
+        let current = root.join("Song.opr");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(current.clone());
+        app.data.project.add_track(TrackKind::Audio);
+        assert!(app.write_project(current.clone()), "the first save works");
+        assert!(current.exists());
+
+        app.save_new_project_version();
+        let next = root.join("Song (2).opr");
+        assert!(next.exists(), "the version file exists");
+        assert_eq!(app.project_path, Some(next.clone()));
+        assert!(!app.modified, "the new version is the saved file");
+        assert!(app.status_message.contains("Saved a new version"));
+
+        // A second version takes the next number, not the same one.
+        app.save_new_project_version();
+        assert!(root.join("Song (3).opr").exists());
+        assert_eq!(app.project_path, Some(root.join("Song (3).opr")));
+
+        // The version chain counts from the base name: a project called
+        // "Song (2)" continues at Song (3), not Song (2) (2).
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
 mod keyboard_coverage_tests {
     use super::*;
     use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
@@ -26579,6 +26689,7 @@ mod keyboard_coverage_tests {
             "file.new",
             "file.open",
             "file.save",
+            "file.save_new_version",
             "edit.undo",
             "edit.redo",
             "edit.copy",

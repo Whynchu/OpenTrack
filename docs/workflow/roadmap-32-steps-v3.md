@@ -62,10 +62,14 @@ work is named rather than approximated.
 
 ### E. Track and project
 
-7. **Create Folder from selected tracks.** Group the selected tracks under a new
+7. **New Version.** *Delivered.* File > New Version (Ctrl+Alt+S) writes a numbered
+   copy beside the open project (`Song (2).opr`, then `Song (3).opr`) through the
+   ordinary save path and keeps working in the copy, marked saved. The version
+   chain counts from the base name, so "Song (2)" continues at "Song (3)". 1 app
+   test. Disabled entries 134 -> 133; shortcut coverage 109 -> 110.
+
+8. **Create Folder from selected tracks.** Group the selected tracks under a new
    group track with correct routing, as one undo step.
-8. **New Version.** Save a numbered copy of the project beside the current file
-   and keep working in it (Ctrl+Alt+S).
 9. **Browser and panel commands.** Open Browser (Ctrl+B), VST Instruments (F11),
    VST Performance (F12) and the transport panel (F2) reach their existing panels
    from the reference keys.
