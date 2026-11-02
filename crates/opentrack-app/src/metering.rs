@@ -7,6 +7,20 @@ pub(super) struct Preferences {
     pub slow_fallback: f32,
     pub fast_fallback: f32,
     pub spectrum_release_ms: u32,
+    /// Keeps a recovery copy of unsaved project changes while they are unsaved.
+    #[serde(default = "default_recovery_autosave")]
+    pub recovery_autosave: bool,
+    /// Seconds between recovery copies. Only used when `recovery_autosave` is on.
+    #[serde(default = "default_recovery_autosave_seconds")]
+    pub recovery_autosave_seconds: u32,
+}
+
+fn default_recovery_autosave() -> bool {
+    true
+}
+
+fn default_recovery_autosave_seconds() -> u32 {
+    20
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -15,6 +29,8 @@ impl Default for Preferences {
             slow_fallback: 20.0,
             fast_fallback: 40.0,
             spectrum_release_ms: 180,
+            recovery_autosave: default_recovery_autosave(),
+            recovery_autosave_seconds: default_recovery_autosave_seconds(),
         }
     }
 }
@@ -22,6 +38,9 @@ impl Preferences {
     pub fn sanitize(&mut self) {
         self.peak_hold_ms = self.peak_hold_ms.min(10000);
         self.spectrum_release_ms = self.spectrum_release_ms.min(2000);
+        // A shorter interval than this would rewrite the project during ordinary
+        // dragging; a longer one would leave too much unsaved work unprotected.
+        self.recovery_autosave_seconds = self.recovery_autosave_seconds.clamp(5, 300);
         for value in [&mut self.slow_fallback, &mut self.fast_fallback] {
             *value = if value.is_finite() {
                 value.clamp(1.0, 120.0)

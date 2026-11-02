@@ -1189,9 +1189,6 @@ pub struct OpenTrackApp {
     project_open_error: Option<String>,
 }
 
-/// How often unsaved changes are copied into the project's recovery folder.
-const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(20);
-
 /// Takes an interrupted recording left behind, awaiting a restore/discard choice.
 struct RecordingRecoveryPrompt {
     project_root: std::path::PathBuf,
@@ -4202,8 +4199,11 @@ impl OpenTrackApp {
     /// eframe does not deliver a reliable close hook, so a window close can end
     /// the session without any prompt. The copy is written through the same
     /// validated atomic save path as a normal save, at most every
-    /// [`AUTOSAVE_INTERVAL`], and only while the project has unsaved changes.
+    /// `recovery_autosave_seconds`, and only while the project has unsaved changes.
     fn maybe_autosave(&mut self) {
+        if !self.metering_preferences.recovery_autosave {
+            return;
+        }
         if !self.project_open
             || !self.project_folder_managed
             || !self.modified
@@ -4211,9 +4211,14 @@ impl OpenTrackApp {
         {
             return;
         }
+        let interval = Duration::from_secs(u64::from(
+            self.metering_preferences
+                .recovery_autosave_seconds
+                .clamp(5, 300),
+        ));
         if self.is_recording()
             || self.data.transport.recording
-            || self.last_autosave.elapsed() < AUTOSAVE_INTERVAL
+            || self.last_autosave.elapsed() < interval
         {
             return;
         }
@@ -21540,6 +21545,35 @@ mod project_recovery_tests {
             "recovering brings back the unsaved track"
         );
         assert_eq!(app.data.project.tracks[0].name, "Guitar");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_recovery_autosave_preference_decides_whether_and_when_a_copy_is_written() {
+        let (root, mut app) = autosave_fixture("preference");
+
+        // Off: nothing is written, even well past the interval.
+        app.metering_preferences.recovery_autosave = false;
+        app.last_autosave = Instant::now() - Duration::from_secs(600);
+        app.maybe_autosave();
+        assert!(project_recovery::pending(&root).is_none());
+
+        // On with the default interval: still waiting.
+        app.metering_preferences.recovery_autosave = true;
+        app.last_autosave = Instant::now() - Duration::from_secs(5);
+        app.maybe_autosave();
+        assert!(
+            project_recovery::pending(&root).is_none(),
+            "the default interval is 20 s, so 5 s is too early"
+        );
+
+        // A shorter interval makes the same amount of elapsed time enough.
+        app.metering_preferences.recovery_autosave_seconds = 5;
+        app.maybe_autosave();
+        assert!(
+            project_recovery::pending(&root).is_some(),
+            "the configured interval is what gates the copy"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

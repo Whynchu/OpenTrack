@@ -197,7 +197,18 @@ impl Window {
                     ui.painter().rect_filled(rect,0.0,theme::palette(ui).surface_raised);
                     ui.painter().text(rect.center(),Align2::CENTER_CENTER,title,FontId::proportional(14.0),theme::palette(ui).text);
                     ui.add_space(8.0);
-                    if *id=="vst-metering" {
+                    if *id=="general" {
+                        ui.add_enabled(true, egui::Checkbox::new(&mut self.draft.recovery_autosave, "Keep a recovery copy of unsaved changes"))
+                            .on_hover_text("Written to Metadata/Recovery/autosave.opr inside the project folder. A completed save removes it.");
+                        ui.add_enabled_ui(self.draft.recovery_autosave, |ui| {
+                            row(ui, &mut self.draft.recovery_autosave_seconds, 5..=300, " s", "Recovery autosave interval");
+                        });
+                        ui.label(egui::RichText::new("Recovery copies cover a window close or crash, which OpenTrack cannot prompt on. The interval is the most unsaved work that can be lost.").small().color(theme::palette(ui).muted));
+                        if self.help {
+                            ui.add_space(12.0);
+                            ui.label("The copy is written with the same validated save path as File > Save, so it is always a readable project. Opening that project after a crash offers Recover Unsaved Changes; declining removes the copy. Recording is never interrupted by an autosave.");
+                        }
+                    } else if *id=="vst-metering" {
                         ui.add_enabled(false,egui::Checkbox::new(&mut true,"Map Input Bus Metering to Audio Track (in Direct Monitoring)"))
                             .on_disabled_hover_text("Hardware Direct Monitoring is not implemented. Software-monitored track meters already follow their routed audio.");
                         ui.label(egui::RichText::new("Hardware Direct Monitoring is not implemented.").small().color(theme::palette(ui).muted));
@@ -382,6 +393,7 @@ mod tests {
             slow_fallback: 8.0,
             fast_fallback: 60.0,
             spectrum_release_ms: 240,
+            ..metering::Preferences::default()
         };
         let bytes = serde_json::to_string(&p).unwrap();
         let restored: metering::Preferences = serde_json::from_str(&bytes).unwrap();
@@ -391,5 +403,30 @@ mod tests {
         p.peak_hold_ms = u32::MAX;
         p.sanitize();
         assert!(p.slow_fallback.is_finite() && p.fast_fallback >= 1.0 && p.peak_hold_ms <= 10000);
+
+        // The recovery autosave settings persist and stay in a usable range.
+        let mut recovery = metering::Preferences {
+            recovery_autosave: false,
+            recovery_autosave_seconds: 300,
+            ..metering::Preferences::default()
+        };
+        let bytes = serde_json::to_string(&recovery).unwrap();
+        let restored: metering::Preferences = serde_json::from_str(&bytes).unwrap();
+        assert!(!restored.recovery_autosave);
+        assert_eq!(restored.recovery_autosave_seconds, 300);
+        recovery.recovery_autosave_seconds = 0;
+        recovery.sanitize();
+        assert_eq!(recovery.recovery_autosave_seconds, 5);
+        recovery.recovery_autosave_seconds = u32::MAX;
+        recovery.sanitize();
+        assert_eq!(recovery.recovery_autosave_seconds, 300);
+
+        // An older preference file without the fields keeps recovery on at 20 s.
+        let legacy: metering::Preferences = serde_json::from_str(
+            r#"{"peak_hold_ms":3000,"slow_fallback":20.0,"fast_fallback":40.0,"spectrum_release_ms":180}"#,
+        )
+        .unwrap();
+        assert!(legacy.recovery_autosave);
+        assert_eq!(legacy.recovery_autosave_seconds, 20);
     }
 }
