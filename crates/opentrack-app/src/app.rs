@@ -1228,6 +1228,8 @@ pub struct OpenTrackApp {
     convert_files_dialog: Option<u32>,
     /// Detect Silence dialog draft: threshold in dBFS and minimum silence in ms.
     detect_silence_dialog: Option<(f32, f64)>,
+    /// Conform Files dialog draft: the source's own tempo in BPM.
+    conform_files_dialog: Option<f64>,
     /// On-screen MIDI keyboard: open state, base octave and held keys.
     virtual_keyboard_open: bool,
     virtual_keyboard_octave: u8,
@@ -2680,6 +2682,7 @@ impl OpenTrackApp {
             envelope_dialog: None,
             convert_files_dialog: None,
             detect_silence_dialog: None,
+            conform_files_dialog: None,
             virtual_keyboard_open: false,
             virtual_keyboard_octave: 3,
             virtual_keyboard_held: std::collections::BTreeSet::new(),
@@ -4055,6 +4058,7 @@ impl OpenTrackApp {
         self.envelope_dialog = None;
         self.convert_files_dialog = None;
         self.detect_silence_dialog = None;
+        self.conform_files_dialog = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -14328,6 +14332,17 @@ impl OpenTrackApp {
                     }
                     if menu_command(
                         ui,
+                        "Conform Files...",
+                        "",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.open_conform_files_dialog();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
                         "Convert Files...",
                         "",
                         self.project_open && !self.is_recording(),
@@ -14368,7 +14383,6 @@ impl OpenTrackApp {
                         &[
                             ("Import Audio CD...", ""),
                             ("Reconstruct", ""),
-                            ("Conform Files...", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
                             ("Set Pool Record Folder", ""),
@@ -15434,6 +15448,7 @@ impl OpenTrackApp {
             || self.envelope_dialog.is_some()
             || self.convert_files_dialog.is_some()
             || self.detect_silence_dialog.is_some()
+            || self.conform_files_dialog.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -18223,6 +18238,7 @@ impl eframe::App for OpenTrackApp {
         self.show_envelope_dialog(&ctx);
         self.show_convert_files_dialog(&ctx);
         self.show_detect_silence_dialog(&ctx);
+        self.show_conform_files_dialog(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);

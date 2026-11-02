@@ -124,6 +124,37 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// Conforms a whole WAV file to a tempo ratio (2.0 doubles its length).
+///
+/// Used by the pool's Conform Files: the file is measured, then stretched with the
+/// tape-style resampler, so duration and pitch move together. Pitch-preserving
+/// conforming needs a phase vocoder and is not implemented.
+pub fn conform_wav_file(
+    source: &Path,
+    ratio: f64,
+    destination: &Path,
+) -> Result<StretchOutcome, String> {
+    if !ratio.is_finite() || !(0.25..=4.0).contains(&ratio) {
+        return Err("the conform ratio must be between 25% and 400%".to_owned());
+    }
+    if (ratio - 1.0).abs() <= 1e-6 {
+        return Err("the file already matches that tempo".to_owned());
+    }
+    let reader = hound::WavReader::open(source)
+        .map_err(|error| format!("could not open the source WAV: {error}"))?;
+    let spec = reader.spec();
+    if !(1..=2).contains(&spec.channels) || spec.sample_rate == 0 {
+        return Err("the source WAV must be mono or stereo with a valid rate".to_owned());
+    }
+    let frames = u64::from(reader.duration());
+    if frames == 0 {
+        return Err("the source WAV contains no audio frames".to_owned());
+    }
+    drop(reader);
+    let seconds = frames as f64 / f64::from(spec.sample_rate);
+    stretch_wav_range(source, 0.0, seconds, ratio, destination)
+}
+
 /// Bound on silent ranges one detection pass may return.
 pub const MAX_SILENT_RANGES: usize = 4_096;
 
@@ -837,6 +868,32 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn conforming_a_file_scales_it_to_the_tempo_ratio() {
+        let root = std::env::temp_dir().join(format!("opentrack-conform-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("ramp.wav");
+        write_ramp(&source, 48_000);
+
+        // 60 BPM source in a 120 BPM project halves the length.
+        let faster = root.join("faster.wav");
+        let outcome = conform_wav_file(&source, 0.5, &faster).expect("conform");
+        assert_eq!(outcome.frames, 24_000);
+        assert_eq!(outcome.sample_rate, 48_000);
+
+        // The opposite direction doubles it.
+        let slower = root.join("slower.wav");
+        let outcome = conform_wav_file(&source, 2.0, &slower).expect("conform");
+        assert_eq!(outcome.frames, 96_000);
+
+        // Matching tempo and out-of-range ratios are refused.
+        assert!(conform_wav_file(&source, 1.0, &root.join("same.wav")).is_err());
+        assert!(conform_wav_file(&source, 8.0, &root.join("far.wav")).is_err());
+        assert!(conform_wav_file(&root.join("missing.wav"), 0.5, &root.join("gap.wav")).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

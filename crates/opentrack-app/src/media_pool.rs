@@ -1428,6 +1428,235 @@ impl OpenTrackApp {
         }
     }
 
+    /// Opens the pool Conform Files dialog seeded from the project tempo.
+    pub(super) fn open_conform_files_dialog(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to conform its media".to_owned();
+            return;
+        }
+        self.conform_files_dialog = Some(self.data.project.tempo_bpm.clamp(1.0, 1000.0));
+    }
+
+    /// Conforms pool sources recorded at `source_bpm` to the project tempo.
+    ///
+    /// The audio is stretched tape-style, so pitch moves with duration; every
+    /// event using a conformed source has its source offset and length scaled by
+    /// the same ratio, keeping the material aligned to the timeline.
+    pub(super) fn apply_conform_files(&mut self, source_bpm: f64) {
+        if !source_bpm.is_finite() || !(1.0..=1000.0).contains(&source_bpm) {
+            self.status_message = "The file tempo must be between 1 and 1000 BPM".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before conforming media".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before conforming media".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before conforming media".to_owned();
+            return;
+        };
+        let project_bpm = self.data.project.tempo_bpm.max(1.0);
+        let ratio = source_bpm / project_bpm;
+        if (ratio - 1.0).abs() <= 1e-6 {
+            self.status_message = "The file tempo already matches the project tempo".to_owned();
+            return;
+        }
+        let targets = match self.pool_selected.clone() {
+            Some(path) => vec![path],
+            None => self.data.project.media_paths().into_iter().collect(),
+        };
+        if targets.is_empty() {
+            self.status_message = "This project has no media to conform".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let mut conversions = Vec::<(PathBuf, PathBuf, f64)>::new();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut conformed = 0;
+        let mut missing = 0;
+        for source in targets {
+            if !source.exists() {
+                missing += 1;
+                continue;
+            }
+            let name = source
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "conformed".to_owned());
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} conformed")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            if let Err(error) = opentrack_audio::conform_wav_file(&source, ratio, &destination) {
+                self.cleanup_created_files(&created);
+                self.status_message = format!("Could not conform {}: {error}", source.display());
+                return;
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the conformed audio: {error}");
+                    return;
+                }
+            }
+            for track in candidate.tracks.iter_mut() {
+                for clip in track.clips.iter_mut() {
+                    if clip.source_path == source {
+                        clip.source_path = destination.clone();
+                        clip.source_offset_seconds *= ratio;
+                        clip.duration_seconds *= ratio;
+                        clip.pitch_time = None;
+                        clip.source_fades.clear();
+                        clip.fade_in_seconds *= ratio;
+                        clip.fade_out_seconds *= ratio;
+                    }
+                }
+            }
+            conversions.push((source, destination, ratio));
+            conformed += 1;
+        }
+        if conformed == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = if missing > 0 {
+                format!("No media could be conformed; {missing} source(s) are missing")
+            } else {
+                "No media could be conformed".to_owned()
+            };
+            return;
+        }
+        for (source, destination, _) in &conversions {
+            candidate.media_pool.remove(source);
+            candidate.media_pool.insert(destination.clone());
+            if let Some(folder) = candidate.media_folders.assignments.remove(source) {
+                candidate
+                    .media_folders
+                    .assignments
+                    .insert(destination.clone(), folder);
+            }
+        }
+        candidate.register_media();
+        if candidate.validate().is_err() {
+            self.cleanup_created_files(&created);
+            self.status_message = "The conformed media would not form a valid project".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message =
+                "Cannot conform the media: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Conform Files");
+        self.data.project = candidate;
+        for (source, _, _) in &conversions {
+            self.data.audio_sources.remove(source);
+        }
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        if let Some(selected) = &self.pool_selected
+            && let Some((_, destination, _)) =
+                conversions.iter().find(|(source, _, _)| source == selected)
+        {
+            self.pool_selected = Some(destination.clone());
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Conformed {conformed} source(s) from {source_bpm:.1} BPM to the project tempo {project_bpm:.1} BPM; pitch moved with them and Undo restores the originals"
+        );
+        if missing > 0 {
+            status.push_str(&format!("; {missing} source(s) are missing"));
+        }
+        self.status_message = status;
+    }
+
+    pub(super) fn show_conform_files_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut bpm) = self.conform_files_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let project_bpm = self.data.project.tempo_bpm.max(1.0);
+        let scope = match &self.pool_selected {
+            Some(path) => format!(
+                "Conform only {}",
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
+            ),
+            None => "Conform every Media Pool source".to_owned(),
+        };
+        let response = egui::Window::new("Conform Files")
+            .id(Id::new("conform-files-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(340.0);
+                ui.label(scope.clone());
+                ui.horizontal(|ui| {
+                    ui.label("File tempo");
+                    ui.add(
+                        egui::DragValue::new(&mut bpm)
+                            .range(1.0..=1000.0)
+                            .speed(0.1)
+                            .suffix(" BPM"),
+                    );
+                    if ui.button("Project tempo").clicked() {
+                        bpm = project_bpm;
+                    }
+                });
+                ui.label(format!("Project tempo: {project_bpm:.1} BPM"));
+                ui.label(
+                    egui::RichText::new(
+                        "Tape-style conform: the file and its events stretch to the project tempo and pitch moves with them. Pitch-preserving conforming is not implemented.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Conform").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("conform-files-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_conform_files(bpm);
+        } else if !cancel && open {
+            self.conform_files_dialog = Some(bpm);
+        }
+    }
+
     /// Opens the pool Convert Files dialog seeded from the project rate.
     pub(super) fn open_convert_files_dialog(&mut self) {
         if !self.project_open {
@@ -3944,6 +4173,87 @@ mod tests {
         assert!(app.status_message.contains("Created"));
         app.project_history.finish_frame(&app.data.project, true);
         assert_eq!(app.project_history.steps()[0].label, "Create Regions");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn conforming_pool_files_scales_sources_and_their_events() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-conform-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let slow = root.join("Audio").join("Imports").join("slow.wav");
+        write_ramp_wav(&slow, 48_000);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, slow.clone(), 0.0, 0.5)
+            .expect("clip");
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, slow.clone(), 2.0, 0.5)
+            .expect("clip");
+        app.data.project.media_pool.insert(slow.clone());
+        app.project_history.clear();
+
+        // Matching tempo is a no-op and says so.
+        app.apply_conform_files(120.0);
+        assert!(
+            app.status_message
+                .contains("already matches the project tempo")
+        );
+        assert!(!app.status_message.contains("Conformed"));
+
+        // A 60 BPM source halves in a 120 BPM project.
+        app.open_conform_files_dialog();
+        assert_eq!(app.conform_files_dialog, Some(120.0));
+        app.apply_conform_files(60.0);
+        let converted = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == first)
+            .expect("first")
+            .clone();
+        let other = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == second)
+            .expect("second")
+            .clone();
+        assert_ne!(converted.source_path, slow);
+        assert!(converted.source_path.exists());
+        assert!((converted.duration_seconds - 0.25).abs() < 1e-6);
+        assert!((other.duration_seconds - 0.25).abs() < 1e-6);
+        assert_eq!(
+            converted.source_path, other.source_path,
+            "both events follow the same conformed file"
+        );
+        assert!(app.data.project.media_pool.contains(&converted.source_path));
+        assert!(!app.data.project.media_pool.contains(&slow));
+        assert!(
+            app.status_message
+                .contains("Conformed 1 source(s) from 60.0 BPM")
+        );
+        assert!(app.status_message.contains("pitch moved with them"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Conform Files");
+
+        // A missing source is counted, not dropped.
+        let missing = root.join("Audio").join("Imports").join("gone.wav");
+        app.data.project.media_pool.insert(missing);
+        app.pool_selected = None;
+        app.apply_conform_files(60.0);
+        assert!(app.status_message.contains("source(s) are missing"));
         let _ = std::fs::remove_dir_all(root);
     }
 

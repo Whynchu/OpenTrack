@@ -558,5 +558,15 @@ still one commit with tests and refreshed counts.
    still needs a device review. 3 app tests. Disabled entries 74 -> 73; shortcut
    coverage 146 -> 147 of 152.
 
+55. **Conform Files.** *Delivered, tape-style.* Media > Conform Files... asks for
+   the source's own tempo and rewrites the pool files to the project tempo through
+   the new `opentrack_audio::conform_wav_file`. Every event using a conformed
+   source has its source offset, length and fades scaled by the same ratio, so the
+   material stays aligned; the pool entry, folder assignment and decoded source
+   follow the new file. Tape-style again: pitch moves with duration, and the dialog
+   says so rather than implying pitch preservation. Matching tempo, missing files
+   and a clicked-row scope are handled, and the pass is one labelled "Conform
+   Files" undo step. 1 audio and 1 app tests. Disabled entries 73 -> 72.
+
 Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
 Archive, then the user-dependent reviews and CPR fixtures.

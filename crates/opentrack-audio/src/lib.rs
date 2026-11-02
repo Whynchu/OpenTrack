@@ -39,10 +39,10 @@ mod wasapi_backend;
 
 pub use audio_process::{
     MAX_ENVELOPE_GAIN, MAX_HITPOINTS, MAX_MERGE_LAYERS, MAX_SILENT_RANGES, MergeLayer,
-    NormalizeOutcome, StretchOutcome, TrimOutcome, apply_gain_envelope_wav_range, convert_wav_file,
-    detect_hitpoints_wav_range, detect_silent_ranges_wav_range, flip_stereo_wav_range,
-    merge_wav_range, normalize_wav_range, remove_dc_offset_wav_range, resample_wav_range,
-    reverse_wav_range, stretch_wav_range, trim_wav_range,
+    NormalizeOutcome, StretchOutcome, TrimOutcome, apply_gain_envelope_wav_range, conform_wav_file,
+    convert_wav_file, detect_hitpoints_wav_range, detect_silent_ranges_wav_range,
+    flip_stereo_wav_range, merge_wav_range, normalize_wav_range, remove_dc_offset_wav_range,
+    resample_wav_range, reverse_wav_range, stretch_wav_range, trim_wav_range,
 };
 pub use devices::{
     AudioDevice, AudioDeviceInventory, AudioOutputConfig, available_audio_devices,
