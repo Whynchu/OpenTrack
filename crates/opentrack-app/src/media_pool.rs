@@ -1346,6 +1346,177 @@ impl OpenTrackApp {
         self.status_message = status;
     }
 
+    /// Rewrites each source used by exactly one event to just that used range.
+    ///
+    /// This is the pool's "Minimize File": unused audio inside a file is dropped
+    /// and the event (and pool entry) move to the shorter file. A source used by
+    /// several events is left alone rather than guessed at, because trimming to
+    /// one of its ranges would cut another event's audio; a range that runs past
+    /// the end of its file is skipped for the same reason.
+    pub(super) fn minimize_media_files(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before minimizing media".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message =
+                "Choose or create this project's folder before minimizing media".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before minimizing media".to_owned();
+            return;
+        };
+        let mut usage = std::collections::BTreeMap::<PathBuf, Vec<(u64, f64, f64, String)>>::new();
+        for track in &self.data.project.tracks {
+            for clip in &track.clips {
+                usage.entry(clip.source_path.clone()).or_default().push((
+                    clip.id,
+                    clip.source_offset_seconds,
+                    clip.duration_seconds,
+                    clip.name.clone(),
+                ));
+            }
+        }
+        if usage.is_empty() {
+            self.status_message = "There is no media to minimize".to_owned();
+            return;
+        }
+
+        let mut candidate = self.data.project.clone();
+        let mut moved = std::collections::BTreeMap::<PathBuf, PathBuf>::new();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut trimmed = 0;
+        let mut already_minimal = 0;
+        let mut shared = 0;
+        let mut missing = 0;
+        let mut truncated = 0;
+        for (source, uses) in usage {
+            if uses.len() > 1 {
+                shared += 1;
+                continue;
+            }
+            if !source.exists() {
+                missing += 1;
+                continue;
+            }
+            let (clip_id, offset, duration, name) = uses[0].clone();
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} minimized")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            let outcome =
+                match opentrack_audio::trim_wav_range(&source, offset, duration, &destination) {
+                    Ok(outcome) => outcome,
+                    Err(error) if error.contains("past the end") => {
+                        truncated += 1;
+                        continue;
+                    }
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = format!("Could not minimize {name}: {error}");
+                        return;
+                    }
+                };
+            if !outcome.written {
+                already_minimal += 1;
+                continue;
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the minimized audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == clip_id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == clip_id)
+            {
+                clip.source_path = destination.clone();
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+            }
+            moved.insert(source, destination);
+            trimmed += 1;
+        }
+
+        let summary = |trimmed: usize,
+                       already_minimal: usize,
+                       shared: usize,
+                       missing: usize,
+                       truncated: usize| {
+            let mut status = format!("Minimized {trimmed} source(s)");
+            if already_minimal > 0 {
+                status.push_str(&format!("; {already_minimal} already used in full"));
+            }
+            if shared > 0 {
+                status.push_str(&format!("; {shared} shared by several events were kept"));
+            }
+            if truncated > 0 {
+                status.push_str(&format!(
+                    "; {truncated} extend past their file and were kept"
+                ));
+            }
+            if missing > 0 {
+                status.push_str(&format!("; {missing} source(s) are missing"));
+            }
+            status
+        };
+
+        if trimmed == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = summary(0, already_minimal, shared, missing, truncated);
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message = "Cannot minimize media: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Minimize File");
+        self.data.project = candidate;
+        self.data.project.media_pool = self
+            .data
+            .project
+            .media_pool
+            .iter()
+            .map(|path| moved.get(path).cloned().unwrap_or_else(|| path.clone()))
+            .collect();
+        for (source, destination) in &moved {
+            self.data.audio_sources.remove(source);
+        }
+        for (path, audio) in opened {
+            self.data.audio_sources.insert(path, audio);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = summary(trimmed, already_minimal, shared, missing, truncated);
+        status.push_str("; Undo restores the original sources");
+        self.status_message = status;
+    }
+
     /// Finds replacement files for the project's missing sources in `folder`.
     ///
     /// The search is bounded (depth and entry count) and matches by file name
@@ -1892,6 +2063,99 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn minimizing_keeps_only_used_audio_and_leaves_shared_sources_alone() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-minimize-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let imports = root.join("Audio").join("Imports");
+        let single = imports.join("single.wav");
+        let shared = imports.join("shared.wav");
+        let short = imports.join("short.wav");
+        // One second at 48 kHz, a tenth of a second, and a tenth of a second.
+        write_ramp_wav(&single, 48_000);
+        write_ramp_wav(&shared, 48_000);
+        write_ramp_wav(&short, 4_800);
+        let single_len = std::fs::metadata(&single).expect("meta").len();
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let once = app
+            .data
+            .project
+            .add_audio_clip(0, single.clone(), 0.0, 0.25)
+            .expect("clip");
+        app.data.project.tracks[0].clips[0].source_offset_seconds = 0.5;
+        let first_share = app
+            .data
+            .project
+            .add_audio_clip(0, shared.clone(), 1.0, 0.1)
+            .expect("clip");
+        let second_share = app
+            .data
+            .project
+            .add_audio_clip(0, shared.clone(), 2.0, 0.1)
+            .expect("clip");
+        // This event claims half a second from a file that only holds 0.1 s.
+        let past_the_end = app
+            .data
+            .project
+            .add_audio_clip(0, short.clone(), 3.0, 0.5)
+            .expect("clip");
+        app.project_history.clear();
+
+        app.minimize_media_files();
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(
+            clip.source_path, single,
+            "the event moved to a shorter file"
+        );
+        assert!(clip.source_path.exists());
+        assert!(clip.source_path.starts_with(imports.clone()));
+        assert_eq!(clip.source_offset_seconds, 0.0);
+        assert_eq!(clip.duration_seconds, 0.25);
+        assert!(
+            std::fs::metadata(&clip.source_path).expect("meta").len() < single_len,
+            "the minimized file is smaller than the original"
+        );
+        // The shared and past-the-end sources are untouched.
+        assert!(
+            app.data.project.tracks[0].clips.iter().any(|candidate| {
+                candidate.id == first_share && candidate.source_path == shared
+            })
+        );
+        assert!(
+            app.data.project.tracks[0].clips.iter().any(|candidate| {
+                candidate.id == second_share && candidate.source_path == shared
+            })
+        );
+        assert!(
+            app.data.project.tracks[0].clips.iter().any(|candidate| {
+                candidate.id == past_the_end && candidate.source_path == short
+            })
+        );
+        assert!(app.status_message.contains("Minimized 1 source(s)"));
+        assert!(app.status_message.contains("shared by several events"));
+        assert!(app.status_message.contains("extend past their file"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Minimize File");
+
+        // A second pass finds nothing left to shrink and writes no step.
+        let steps = app.project_history.counts().0;
+        app.minimize_media_files();
+        assert!(app.status_message.contains("Minimized 0 source(s)"));
+        assert!(app.status_message.contains("already used in full"));
+        assert_eq!(app.project_history.counts().0, steps);
+        let _ = once;
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

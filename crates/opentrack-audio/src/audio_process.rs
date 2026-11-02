@@ -23,7 +23,7 @@ pub fn reverse_wav_range(
     duration_seconds: f64,
     destination: &Path,
 ) -> Result<u64, String> {
-    let range = read_range(source, offset_seconds, duration_seconds)?;
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
     let mut samples = Vec::with_capacity(range.samples.len());
     for frame in (0..range.frames as usize).rev() {
         let base = frame * usize::from(range.channels);
@@ -33,6 +33,49 @@ pub fn reverse_wav_range(
     }
     write_float_wav(destination, range.channels, range.sample_rate, &samples)?;
     Ok(range.frames)
+}
+
+/// What one trimming pass did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrimOutcome {
+    /// Frames the used range covers.
+    pub frames: u64,
+    /// Frames the source file holds.
+    pub source_frames: u64,
+    /// False when the range already covers the whole file and nothing was written.
+    pub written: bool,
+}
+
+/// Writes only the frames the event uses, so unused audio can be dropped.
+///
+/// Refuses a range that runs past the end of the source, because a shorter file
+/// would silently truncate what the event plays. A range that already covers the
+/// whole file reports `written: false` and creates no file.
+pub fn trim_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    destination: &Path,
+) -> Result<TrimOutcome, String> {
+    let range = read_range(source, offset_seconds, duration_seconds, true)?;
+    if range.frames == range.source_frames {
+        return Ok(TrimOutcome {
+            frames: range.frames,
+            source_frames: range.source_frames,
+            written: false,
+        });
+    }
+    write_float_wav(
+        destination,
+        range.channels,
+        range.sample_rate,
+        &range.samples,
+    )?;
+    Ok(TrimOutcome {
+        frames: range.frames,
+        source_frames: range.source_frames,
+        written: true,
+    })
 }
 
 /// What one normalization did.
@@ -61,7 +104,7 @@ pub fn normalize_wav_range(
     if !target_peak.is_finite() || target_peak <= 0.0 || target_peak > 1.0 {
         return Err("the normalize target must be above 0 and at most 1.0".to_owned());
     }
-    let range = read_range(source, offset_seconds, duration_seconds)?;
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
     let peak = range
         .samples
         .iter()
@@ -102,7 +145,7 @@ pub fn flip_stereo_wav_range(
     duration_seconds: f64,
     destination: &Path,
 ) -> Result<u64, String> {
-    let range = read_range(source, offset_seconds, duration_seconds)?;
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
     if range.channels != 2 {
         return Err("Stereo Flip needs a stereo event; this source is mono".to_owned());
     }
@@ -126,7 +169,7 @@ pub fn remove_dc_offset_wav_range(
     duration_seconds: f64,
     destination: &Path,
 ) -> Result<(u64, [f32; 2]), String> {
-    let range = read_range(source, offset_seconds, duration_seconds)?;
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
     let channels = usize::from(range.channels);
     let mut sums = [0.0_f64; 2];
     for frame in range.samples.chunks_exact(channels) {
@@ -155,6 +198,7 @@ struct WavRange {
     channels: u16,
     sample_rate: u32,
     frames: u64,
+    source_frames: u64,
     samples: Vec<f32>,
 }
 
@@ -163,6 +207,7 @@ fn read_range(
     source: &Path,
     offset_seconds: f64,
     duration_seconds: f64,
+    require_exact: bool,
 ) -> Result<WavRange, String> {
     if !offset_seconds.is_finite()
         || offset_seconds < 0.0
@@ -181,9 +226,13 @@ fn read_range(
     let rate = f64::from(spec.sample_rate);
     let total_frames = u64::from(reader.duration());
     let start_frame = ((offset_seconds * rate).round() as u64).min(total_frames);
-    let frames = ((duration_seconds * rate).round() as u64).min(total_frames - start_frame);
+    let requested = (duration_seconds * rate).round() as u64;
+    let frames = requested.min(total_frames - start_frame);
     if frames == 0 {
         return Err("the event has no audio inside the source file".to_owned());
+    }
+    if require_exact && frames != requested {
+        return Err("the event extends past the end of the source file".to_owned());
     }
     let sample_count = frames
         .checked_mul(channels as u64)
@@ -226,6 +275,7 @@ fn read_range(
         channels: spec.channels,
         sample_rate: spec.sample_rate,
         frames,
+        source_frames: total_frames,
         samples,
     })
 }
@@ -354,6 +404,39 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trimming_keeps_only_the_used_frames() {
+        let root = std::env::temp_dir().join(format!("opentrack-trim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("full.wav");
+        let destination = root.join("trimmed.wav");
+        write_ramp(&source, 48_000);
+
+        // 0.1 s at 48 kHz is 4,800 frames.
+        let outcome = trim_wav_range(&source, 0.25, 0.1, &destination).expect("trim");
+        assert_eq!(outcome.frames, 4_800);
+        assert_eq!(outcome.source_frames, 48_000);
+        assert!(outcome.written);
+        let (channels, samples) = read(&destination);
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 4_800);
+        let (_, original) = read(&source);
+        assert!((samples[0] - original[12_000]).abs() < 1e-6);
+
+        // A range that covers the whole file is reported, not rewritten.
+        let whole = root.join("whole.wav");
+        let outcome = trim_wav_range(&source, 0.0, 1.0, &whole).expect("whole");
+        assert_eq!(outcome.frames, 48_000);
+        assert!(!outcome.written);
+        assert!(!whole.exists());
+
+        // A range that runs past the end is refused rather than truncated.
+        let too_long = trim_wav_range(&source, 0.9, 0.5, &root.join("no.wav"));
+        assert!(too_long.is_err(), "the source would be truncated");
         let _ = std::fs::remove_dir_all(root);
     }
 

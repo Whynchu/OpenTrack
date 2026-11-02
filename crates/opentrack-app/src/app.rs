@@ -13661,20 +13661,39 @@ impl OpenTrackApp {
                         self.remove_missing_media_from_pool();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Prepare Archive...",
+                        "",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.consolidate_project_media();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
+                        "Minimize File",
+                        "",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.minimize_media_files();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Import Audio CD...", ""),
-
                             ("Reconstruct", ""),
                             ("Convert Files...", ""),
                             ("Conform Files...", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
                             ("Create Folder", ""),
-                            ("Prepare Archive...", ""),
                             ("Set Pool Record Folder", ""),
-                            ("Minimize File", ""),
                         ],
                     );
                     ui.menu_button("Insert into Project", |ui| {

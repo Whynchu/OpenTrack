@@ -405,5 +405,15 @@ still one commit with tests and refreshed counts.
    entry points, status text, round trip and the legacy default). Disabled entries
    93 -> 92.
 
+39. **Prepare Archive and Minimize File.** *Delivered.* Media > Prepare Archive...
+   calls the existing, tested `consolidate_project_media`, so external sources are
+   gathered into the project folder without a second implementation. Media >
+   Minimize File rewrites every source used by exactly one event to just that used
+   range through the new `opentrack_audio::trim_wav_range`, repointing the event
+   and pool entry in one labelled "Minimize File" undo step; sources shared by
+   several events, ranges that run past their file, missing files and files already
+   used in full are counted and reported instead of guessed at. 1 audio and 1 app
+   tests. Disabled entries 92 -> 90.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.
