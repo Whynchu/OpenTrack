@@ -180,6 +180,13 @@ and measured numbers.
    Editor for audio, MIDI editor for parts). 1 core and 1 app tests. Disabled
    entries 122 -> 119.
 
+22. **Auto Fades Settings and Play from Selection.** *Delivered.* Project > Auto
+   Fades Settings... sets the default fade length used by Fade In/Out (0-10 s,
+   persisted as an application preference; existing fades keep their length).
+   Transport > Play from Selection Start/End seek to the selection edge and start
+   playback, reporting when nothing is selected. 2 app tests. Disabled entries
+   119 -> 116.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

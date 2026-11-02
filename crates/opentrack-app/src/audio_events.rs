@@ -702,7 +702,7 @@ impl OpenTrackApp {
 
     /// Applies the default fade length to the selection's leading or trailing edge.
     pub(super) fn fade_selected_audio_events(&mut self, fade_in: bool) {
-        const DEFAULT_FADE_SECONDS: f64 = 0.25;
+        let default_fade_seconds = self.default_fade_seconds.clamp(0.0, 10.0);
         if self.is_recording() {
             self.status_message = "Stop recording before fading audio events".to_owned();
             return;
@@ -713,7 +713,7 @@ impl OpenTrackApp {
             return;
         }
         let mut candidate = self.data.project.clone();
-        let changed = candidate.fade_audio_clips(&ids, fade_in, DEFAULT_FADE_SECONDS);
+        let changed = candidate.fade_audio_clips(&ids, fade_in, default_fade_seconds);
         if changed == 0 {
             self.status_message =
                 "No event changed; locked events and the current fade are left alone".to_owned();
@@ -734,7 +734,7 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = format!(
-            "Applied a {DEFAULT_FADE_SECONDS:.2} s {} to {changed} event(s); Undo restores them",
+            "Applied a {default_fade_seconds:.2} s {} to {changed} event(s); Undo restores them",
             if fade_in { "fade in" } else { "fade out" }
         );
     }

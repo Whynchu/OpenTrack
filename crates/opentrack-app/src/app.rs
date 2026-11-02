@@ -1186,6 +1186,9 @@ pub struct OpenTrackApp {
     close_project_prompt: bool,
     /// Event-gain dialog draft, in decibels.
     gain_dialog: Option<f64>,
+    /// Default fade length used by Fade In/Out, in seconds.
+    default_fade_seconds: f64,
+    auto_fades_settings_open: bool,
     /// Source the Media Pool should show and highlight, set by Find in Pool.
     pool_reveal: Option<PathBuf>,
     /// Where the overview strip was drawn last frame, for click tests.
@@ -2601,6 +2604,13 @@ impl OpenTrackApp {
             project_statistics_open: false,
             close_project_prompt: false,
             gain_dialog: None,
+            default_fade_seconds: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<f64>(storage, "default-fade-seconds"))
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.25)
+                .clamp(0.0, 10.0),
+            auto_fades_settings_open: false,
             pool_reveal: None,
             #[cfg(test)]
             last_overview_rect: None,
@@ -4136,6 +4146,68 @@ impl OpenTrackApp {
             self.seek_to_beats(beat);
             self.status_message = format!("Located to beat {beat:.3} from the overview");
         }
+    }
+
+    /// Draws the Auto Fades settings window.
+    fn show_auto_fades_settings(&mut self, ctx: &egui::Context) {
+        if !self.auto_fades_settings_open {
+            return;
+        }
+        let mut open = true;
+        let response = egui::Window::new("Auto Fades Settings")
+            .id(Id::new("auto-fades-settings"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.label("Default fade length for Fade In and Fade Out");
+                let mut seconds = self.default_fade_seconds;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(0.0..=10.0)
+                            .speed(0.01)
+                            .suffix(" s"),
+                    )
+                    .changed()
+                {
+                    self.default_fade_seconds = seconds.clamp(0.0, 10.0);
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Applies to newly applied fades; existing fades keep their length.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                if ui.button("Close").clicked() {
+                    self.auto_fades_settings_open = false;
+                }
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("auto-fades-settings"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.auto_fades_settings_open = open && self.auto_fades_settings_open;
+    }
+
+    /// Plays from the start or end of the selected events or MIDI part.
+    fn play_from_selection_edge(&mut self, end: bool) {
+        let Some((start, selection_end)) = self.selected_event_span() else {
+            self.status_message = "Select an event or a MIDI part to play from its edge".to_owned();
+            return;
+        };
+        let beat = if end { selection_end } else { start };
+        self.seek_to_beats(beat);
+        self.set_transport_playing(true);
+        self.status_message = format!(
+            "Playing from the selection {} at beat {beat:.3}",
+            if end { "end" } else { "start" }
+        );
     }
 
     /// Opens the event-gain dialog with the selection's current gain.
@@ -12444,13 +12516,16 @@ impl OpenTrackApp {
                         self.open_notepad();
                         ui.close();
                     }
+                    if menu_command(ui, "Auto Fades Settings...", "", true).clicked() {
+                        self.auto_fades_settings_open = true;
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Tempo Track", "Ctrl+T"),
                             ("Automation Panel", ""),
                             ("Set Timecode at Cursor", ""),
-                            ("Auto Fades Settings...", ""),
                         ],
                     );
                     ui.separator();
@@ -12886,6 +12961,17 @@ impl OpenTrackApp {
                             ui.close();
                         }
                     }
+                    if menu_command(ui, "Play from Selection Start", "", self.project_open)
+                        .clicked()
+                    {
+                        self.play_from_selection_edge(false);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Play from Selection End", "", self.project_open).clicked()
+                    {
+                        self.play_from_selection_edge(true);
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -12893,8 +12979,6 @@ impl OpenTrackApp {
                             ("Post-roll from Selection End", ""),
                             ("Pre-roll to Selection Start", ""),
                             ("Pre-roll to Selection End", ""),
-                            ("Play from Selection Start", ""),
-                            ("Play from Selection End", ""),
                             ("Play until Selection Start", ""),
                             ("Play until Selection End", ""),
                             ("Play until Next Marker", ""),
@@ -13781,6 +13865,7 @@ impl OpenTrackApp {
             || self.numeric_input.is_some()
             || self.close_project_prompt
             || self.gain_dialog.is_some()
+            || self.auto_fades_settings_open
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -16182,6 +16267,7 @@ impl eframe::App for OpenTrackApp {
         self.show_close_project_prompt(&ctx);
         self.show_project_overview(&ctx);
         self.show_gain_dialog(&ctx);
+        self.show_auto_fades_settings(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -16278,6 +16364,7 @@ impl eframe::App for OpenTrackApp {
         );
         eframe::set_value(storage, "midi-thru-enabled", &self.midi_thru_enabled);
         eframe::set_value(storage, "metronome-enabled", &self.metronome_enabled);
+        eframe::set_value(storage, "default-fade-seconds", &self.default_fade_seconds);
         eframe::set_value(
             storage,
             "metronome-accent-mask",
@@ -28163,6 +28250,66 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod auto_fades_and_play_tests {
+    use super::*;
+
+    fn app_with_event() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 4.0, 4.0)
+            .expect("clip");
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn auto_fades_settings_drive_the_fade_commands() {
+        let mut app = app_with_event();
+        assert!((app.default_fade_seconds - 0.25).abs() < 1e-9);
+        app.default_fade_seconds = 1.0;
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.fade_selected_audio_events(true);
+        assert!((app.data.project.tracks[0].clips[0].fade_in_seconds - 1.0).abs() < 1e-9);
+        assert!(app.status_message.contains("1.00 s fade in"));
+
+        // The dialog surfaces its own open state and can be dismissed.
+        app.auto_fades_settings_open = true;
+        app.auto_fades_settings_open = false;
+    }
+
+    #[test]
+    fn playing_from_a_selection_edge_seeks_then_plays() {
+        let mut app = app_with_event();
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.position_beats = 0.0;
+
+        app.play_from_selection_edge(false);
+        assert_eq!(app.data.transport.position_beats, 4.0);
+        assert!(app.status_message.contains("selection start"));
+
+        app.play_from_selection_edge(true);
+        // The event is 4 s at 120 BPM, so it ends at 12 beats.
+        assert_eq!(app.data.transport.position_beats, 12.0);
+        assert!(app.status_message.contains("selection end"));
+
+        app.arrange_view_state.audio_events.clear_selection();
+        let before = app.data.transport.position_beats;
+        app.play_from_selection_edge(false);
+        assert!(app.status_message.contains("Select an event"));
+        assert_eq!(app.data.transport.position_beats, before);
     }
 }
 
