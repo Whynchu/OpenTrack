@@ -66,6 +66,7 @@ pub use crate::automation::{
     MAX_AUTOMATION_LANES_PER_TRACK, MAX_AUTOMATION_POINTS_PER_LANE,
     MAX_AUTOMATION_POINTS_PER_PROJECT,
 };
+pub use crate::drum_map::{DrumMap, DrumMapRow, MAX_DRUM_MAP_NAME_CHARS, MAX_DRUM_MAP_ROWS};
 pub use crate::media_folders::{MAX_MEDIA_FOLDER_NAME_CHARS, MAX_MEDIA_FOLDERS, MediaFolders};
 
 /// Reuses the existing channel-strip settings and editor without adding an arrange lane.
@@ -984,6 +985,10 @@ pub struct Project {
     /// Named pool folders. Organisation only: the pool still lists the sources.
     #[serde(default, skip_serializing_if = "MediaFolders::is_empty")]
     pub media_folders: MediaFolders,
+    /// Presentation-only drum naming for MIDI/Instrument tracks. Empty is the
+    /// identity map: pitches display as their own MIDI numbers.
+    #[serde(default, skip_serializing_if = "DrumMap::is_empty")]
+    pub drum_map: DrumMap,
     /// Project-relative folder where new pool files are written. `None` means the
     /// default `Audio/Imports`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1222,6 +1227,7 @@ impl Default for Project {
             tracks: Vec::new(),
             media_pool: BTreeSet::new(),
             media_folders: MediaFolders::default(),
+            drum_map: DrumMap::default(),
             pool_record_folder: None,
             input_channel: BusChannel::input(),
             output_channel: BusChannel::output(),
@@ -4590,6 +4596,9 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.drum_map.validate().is_err() {
+            return Err("drum map is invalid");
+        }
         if self.media_pool.iter().any(|p| p.as_os_str().is_empty()) {
             return Err("media pool contains an empty source path");
         }
@@ -7136,6 +7145,30 @@ mod sample_edit_tests {
             None
         );
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn the_drum_map_round_trips_and_legacy_projects_default_to_identity() {
+        let mut project = Project::default();
+        project
+            .drum_map
+            .set_rows(&[(36, "Kick".to_owned()), (38, "Snare".to_owned())])
+            .expect("map");
+        let encoded = serde_json::to_value(&project).expect("encode");
+        let decoded: Project = serde_json::from_value(encoded.clone()).expect("decode");
+        assert_eq!(decoded.drum_map, project.drum_map);
+
+        let mut legacy = encoded;
+        legacy.as_object_mut().expect("object").remove("drum_map");
+        let legacy: Project = serde_json::from_value(legacy).expect("legacy");
+        assert!(legacy.drum_map.is_empty());
+        assert!(legacy.validate().is_ok());
+
+        project.drum_map = serde_json::from_str(
+            r#"{"rows":[{"pitch":36,"name":"Kick"},{"pitch":36,"name":"Snare"}]}"#,
+        )
+        .expect("decode malformed");
+        assert!(project.validate().is_err());
     }
 
     #[test]

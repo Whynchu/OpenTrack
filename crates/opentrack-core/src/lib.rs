@@ -5,6 +5,7 @@
 pub mod automation;
 pub mod commands;
 pub mod cpr;
+pub mod drum_map;
 pub mod event_query;
 pub mod media_folders;
 pub mod midi_file;

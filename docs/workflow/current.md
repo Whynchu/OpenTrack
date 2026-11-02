@@ -16,7 +16,11 @@ Step 6 enabled Post-roll from Selection Start/End with the same scheduler and in
 
 Step 7 enabled MIDI > Reset. It clears held on-screen keys and sends CC120/121/123 on all 16 channels through the bounded live-MIDI queue feeding the starter instrument. No external MIDI output exists, so hardware stuck-note listening is not possible; project notes/CC and history are untouched, and no-device/repeated/close cases are tested. App suite: 514 passed, 9 ignored; inventory is 271 leaves with 90 unavailable. See [R4-07](tasks/R4-07-midi-reset.md).
 
-Next ready work: revision-4 step 8, the drum-map model. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.---
+Step 8 added the project-owned drum-map model in `opentrack-core::drum_map` (unique pitches, ordered rows, bounded names, identity when empty), serialized with a default, validated, and OPR bumped to 34. This is presentation-only groundwork; no editor or GM naming is claimed. Core 152 passed; app 514 passed, 9 ignored. See [R4-08](tasks/R4-08-drum-map-model.md).
+
+Next ready work: revision-4 step 9, enable Drum Map Setup. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+
+---
 
 # Current assignment — roadmap activation (2026-11-01)
 
