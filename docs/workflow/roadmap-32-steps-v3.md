@@ -390,5 +390,13 @@ still one commit with tests and refreshed counts.
    labelled "Import MusicXML" undo step; malformed or note-less files report and
    add nothing. 3 core and 1 app tests. Disabled entries 96 -> 95.
 
+37. **Transport displays.** *Delivered.* Window > Time Display and Remaining
+   Record Time Display are checkable and persist as view-state flags. The project
+   readout strip now builds one line from `recording_readout_line`: the recording
+   rate and format, `Max` (total recordable time from the free space), and
+   optionally `Time` (transport position as H:MM:SS.mmm) and `Rem` (what is still
+   recordable from that position). Missing capacity reports "unavailable" instead
+   of a guess. 2 app and 1 view-state tests. Disabled entries 95 -> 93.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

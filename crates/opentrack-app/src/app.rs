@@ -8047,6 +8047,27 @@ impl OpenTrackApp {
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
     }
 
+    /// Shows or hides the transport time in the project readout strip.
+    fn toggle_time_display(&mut self) {
+        self.arrange_view_state.show_time_display = !self.arrange_view_state.show_time_display;
+        self.status_message = if self.arrange_view_state.show_time_display {
+            "Time display shown in the project readout".to_owned()
+        } else {
+            "Time display hidden".to_owned()
+        };
+    }
+
+    /// Shows or hides the remaining record time in the project readout strip.
+    fn toggle_remaining_record_time_display(&mut self) {
+        self.arrange_view_state.show_remaining_record_time =
+            !self.arrange_view_state.show_remaining_record_time;
+        self.status_message = if self.arrange_view_state.show_remaining_record_time {
+            "Remaining record time shown in the project readout".to_owned()
+        } else {
+            "Remaining record time hidden".to_owned()
+        };
+    }
+
     /// Shows or hides one track's automation lane in the arrange.
     fn toggle_automation_lane_visibility(&mut self, track_id: u64) -> bool {
         if self.arrange_view_state.automation_visible.remove(&track_id) {
@@ -13832,13 +13853,31 @@ impl OpenTrackApp {
                         self.mixer_window.focus_requested = true;
                         ui.close();
                     }
+                    if ui
+                        .selectable_label(
+                            self.arrange_view_state.show_remaining_record_time,
+                            "Remaining Record Time Display",
+                        )
+                        .clicked()
+                    {
+                        self.toggle_remaining_record_time_display();
+                        ui.close();
+                    }
+                    if ui
+                        .selectable_label(
+                            self.arrange_view_state.show_time_display,
+                            "Time Display",
+                        )
+                        .clicked()
+                    {
+                        self.toggle_time_display();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Mixer 2", ""),
                             ("Mixer 3", ""),
-                            ("Remaining Record Time Display", ""),
-                            ("Time Display", ""),
                             ("Video Window", "F8"),
                             ("Virtual Keyboard", "Alt+K"),
                             ("Show Panel", ""),
@@ -15398,7 +15437,7 @@ impl OpenTrackApp {
             159.0
         } else {
             0.0
-        }) + 260.0;
+        }) + 430.0;
         let readout_width =
             header_readout_width.min((panel_rect.width() - zoom_width - 8.0).max(0.0));
         let readout = Rect::from_min_size(
@@ -15466,7 +15505,7 @@ impl OpenTrackApp {
                     .clamp(1, 2),
             );
         }
-        let maximum = recording_directory
+        let capacity_seconds = recording_directory
             .as_deref()
             .and_then(|directory| available_disk_space_bytes(directory))
             .and_then(|available| {
@@ -15475,12 +15514,8 @@ impl OpenTrackApp {
                         self.data.project.recording_format.bits_per_sample() / 8,
                     ))?
                     .checked_mul(output_channels)?;
-                (bytes_per_second > 0).then(|| {
-                    let seconds = available / bytes_per_second;
-                    format!("{:03}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
-                })
-            })
-            .unwrap_or_else(|| "unavailable".to_owned());
+                (bytes_per_second > 0).then(|| available / bytes_per_second)
+            });
         let recording_format_label = match self.data.project.recording_format {
             RecordingFormat::Pcm16 => "16 Bit PCM",
             RecordingFormat::Pcm24 => "24 Bit PCM",
@@ -15488,6 +15523,14 @@ impl OpenTrackApp {
         };
         let beats_per_bar = self.data.project.beats_per_bar;
         let position_before = self.data.transport.position_beats;
+        let readout_line = recording_readout_line(
+            &rate,
+            recording_format_label,
+            capacity_seconds,
+            position_before.max(0.0) * 60.0 / self.data.project.tempo_bpm.max(1.0),
+            self.arrange_view_state.show_time_display,
+            self.arrange_view_state.show_remaining_record_time,
+        );
         let sample_rate = self.data.project.sample_rate_hz;
         let mut context_action = None;
         let can_remove = !self.is_recording();
@@ -15577,7 +15620,7 @@ impl OpenTrackApp {
         ui.painter().with_clip_rect(readout).text(
             readout.left_center() + Vec2::new(3.0, 0.0),
             Align2::LEFT_CENTER,
-            format!("Rec: {rate} - {recording_format_label} - Max: {maximum}"),
+            readout_line.clone(),
             FontId::proportional(9.0),
             palette.text,
         );
@@ -20733,6 +20776,60 @@ fn show_project(
         automation_action: pending_automation_action,
         crossfade_requested: audio_events_crossfade_requested,
     }
+}
+
+/// Formats a duration as `NNNh NNm`, used for the recording readout.
+fn format_readout_duration(seconds: u64) -> String {
+    format!("{:03}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
+}
+
+/// Formats a timeline position as `H:MM:SS.mmm` for the readout strip.
+fn format_readout_time(seconds: f64) -> String {
+    let ms = (seconds.max(0.0) * 1000.0).round() as u64;
+    format!(
+        "{}:{:02}:{:02}.{:03}",
+        ms / 3_600_000,
+        ms / 60_000 % 60,
+        ms / 1000 % 60,
+        ms % 1000
+    )
+}
+
+/// The project readout strip under the arrange.
+///
+/// The recording rate and format are always named. "Max" is the total
+/// recordable time the free space allows, "Time" is the transport position and
+/// "Rem" is what is still recordable from that position, so the three answer
+/// different questions rather than repeating one number.
+fn recording_readout_line(
+    rate: &str,
+    format_label: &str,
+    capacity_seconds: Option<u64>,
+    cursor_seconds: f64,
+    show_time: bool,
+    show_remaining: bool,
+) -> String {
+    let mut line = format!(
+        "Rec: {rate} - {format_label} - Max: {}",
+        capacity_seconds
+            .map(format_readout_duration)
+            .unwrap_or_else(|| "unavailable".to_owned())
+    );
+    if show_time {
+        line.push_str(" - Time: ");
+        line.push_str(&format_readout_time(cursor_seconds));
+    }
+    if show_remaining {
+        line.push_str(" - Rem: ");
+        match capacity_seconds {
+            Some(capacity) => {
+                let spent = cursor_seconds.max(0.0).round() as u64;
+                line.push_str(&format_readout_duration(capacity.saturating_sub(spent)));
+            }
+            None => line.push_str("unavailable"),
+        }
+    }
+    line
 }
 
 fn ruler_label(
@@ -29035,6 +29132,108 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod transport_readout_tests {
+    use super::*;
+
+    #[test]
+    fn the_readout_names_capacity_position_and_remaining_separately() {
+        // Both displays off keeps the recording summary only.
+        assert_eq!(
+            recording_readout_line(
+                "48000 Hz",
+                "24 Bit PCM",
+                Some(8 * 3600 + 45 * 60),
+                3.5,
+                false,
+                false
+            ),
+            "Rec: 48000 Hz - 24 Bit PCM - Max: 008h 45m"
+        );
+
+        // Time is the transport position in H:MM:SS.mmm.
+        let with_time =
+            recording_readout_line("48000 Hz", "24 Bit PCM", Some(4 * 3600), 3.5, true, false);
+        assert!(with_time.ends_with(" - Time: 0:00:03.500"), "{with_time}");
+
+        // Remaining counts down from the cursor, not from zero.
+        let with_remaining =
+            recording_readout_line("48000 Hz", "24 Bit PCM", Some(4 * 3600), 600.0, false, true);
+        assert!(
+            with_remaining.ends_with(" - Rem: 003h 50m"),
+            "{with_remaining}"
+        );
+
+        // Both segments can be shown together.
+        let both =
+            recording_readout_line("48000 Hz", "32 Bit Float", Some(3_600), 120.0, true, true);
+        assert!(both.contains("- Time: 0:02:00.000"), "{both}");
+        assert!(both.contains("- Rem: 000h 58m"), "{both}");
+
+        // Past the capacity there is no negative remaining time.
+        let past = recording_readout_line("48000 Hz", "24 Bit PCM", Some(60), 120.0, false, true);
+        assert!(past.ends_with(" - Rem: 000h 00m"), "{past}");
+
+        // No usable recording folder reports instead of guessing.
+        let unavailable = recording_readout_line("48000 Hz", "24 Bit PCM", None, 0.0, true, true);
+        assert!(unavailable.contains("Max: unavailable"), "{unavailable}");
+        assert!(unavailable.contains("Rem: unavailable"), "{unavailable}");
+    }
+
+    #[test]
+    fn the_display_toggles_change_the_readout_the_user_sees() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.transport.position_beats = 4.0;
+        assert!(!app.arrange_view_state.show_time_display);
+        assert!(!app.arrange_view_state.show_remaining_record_time);
+
+        let plain = recording_readout_line(
+            "48000 Hz",
+            "24 Bit PCM",
+            Some(600),
+            2.0,
+            app.arrange_view_state.show_time_display,
+            app.arrange_view_state.show_remaining_record_time,
+        );
+        assert!(!plain.contains("Time:"), "{plain}");
+
+        app.toggle_time_display();
+        assert!(app.arrange_view_state.show_time_display);
+        assert!(app.status_message.contains("Time display shown"));
+        let with_time = recording_readout_line(
+            "48000 Hz",
+            "24 Bit PCM",
+            Some(600),
+            2.0,
+            app.arrange_view_state.show_time_display,
+            app.arrange_view_state.show_remaining_record_time,
+        );
+        assert!(with_time.contains("Time: 0:00:02.000"), "{with_time}");
+
+        app.toggle_remaining_record_time_display();
+        assert!(app.arrange_view_state.show_remaining_record_time);
+        assert!(app.status_message.contains("Remaining record time shown"));
+
+        // Turning each back off restores the shorter line.
+        app.toggle_time_display();
+        app.toggle_remaining_record_time_display();
+        assert!(app.status_message.contains("Remaining record time hidden"));
+        let plain_again = recording_readout_line(
+            "48000 Hz",
+            "24 Bit PCM",
+            Some(600),
+            2.0,
+            app.arrange_view_state.show_time_display,
+            app.arrange_view_state.show_remaining_record_time,
+        );
+        assert_eq!(plain, plain_again);
     }
 }
 

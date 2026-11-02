@@ -115,6 +115,12 @@ pub(crate) struct ArrangeViewState {
     /// Show the compact whole-project overview strip.
     #[serde(default)]
     pub(crate) show_overview: bool,
+    /// Show the transport time in the project readout strip.
+    #[serde(default)]
+    pub(crate) show_time_display: bool,
+    /// Show remaining recordable time in the project readout strip.
+    #[serde(default)]
+    pub(crate) show_remaining_record_time: bool,
     #[serde(default)]
     pub(crate) selected_event_color: Option<u8>,
     #[serde(default = "default_event_colors")]
@@ -175,6 +181,8 @@ impl Default for ArrangeViewState {
             snap_type: SnapType::Grid,
             auto_grid: false,
             show_overview: false,
+            show_time_display: false,
+            show_remaining_record_time: false,
             selected_event_color: None,
             event_colors: DEFAULT_EVENT_COLORS,
             ruler_format: 0,
@@ -1619,6 +1627,28 @@ mod tests {
         legacy.as_object_mut().expect("object").remove("auto_grid");
         let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
         assert!(!legacy.auto_grid);
+    }
+
+    #[test]
+    fn the_transport_display_flags_persist_and_default_off_for_older_projects() {
+        let mut view = ArrangeViewState::default();
+        assert!(!view.show_time_display);
+        assert!(!view.show_remaining_record_time);
+        view.show_time_display = true;
+        view.show_remaining_record_time = true;
+        let encoded = serde_json::to_string(&view).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert!(restored.show_time_display);
+        assert!(restored.show_remaining_record_time);
+
+        // A stored state from before the flags existed keeps them off.
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        let object = legacy.as_object_mut().expect("object");
+        object.remove("show_time_display");
+        object.remove("show_remaining_record_time");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
+        assert!(!legacy.show_time_display);
+        assert!(!legacy.show_remaining_record_time);
     }
 
     #[test]
