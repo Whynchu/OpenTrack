@@ -359,4 +359,38 @@ mod tests {
             vec![1.0, 3.0]
         );
     }
+
+    #[test]
+    fn automation_point_edit_round_trips_through_project_undo_history() {
+        let mut history = super::super::ProjectHistory::default();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        apply_lane_action(
+            &mut project,
+            LaneAction::Set {
+                track_id,
+                beat: 1.0,
+                value: 0.4,
+            },
+        )
+        .unwrap();
+        let before_edit = project.clone();
+        assert!(history.begin(&project));
+        apply_lane_action(
+            &mut project,
+            LaneAction::Move {
+                track_id,
+                index: 0,
+                beat: 2.0,
+                value: 0.8,
+            },
+        )
+        .unwrap();
+        assert!(history.finish_frame(&project, true));
+        let undone = history.undo(&project).expect("automation edit should undo");
+        assert_eq!(undone, before_edit);
+        let redone = history.redo(&undone).expect("automation edit should redo");
+        assert_eq!(redone, project);
+    }
 }
