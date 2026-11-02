@@ -60,7 +60,9 @@ Step 28 enabled Add Arranger from the main and context menus to open the existin
 
 Step 29 added OpenTrack Track Archive v1 export: a documented directory package with manifest/version, selected tracks plus owning hierarchy, deduplicated copied media, external route/plug-in reports, staging/rename publication and a background task. Existing destinations and missing media refuse without publishing. App suite: 543 passed, 9 ignored; inventory is 275 leaves with 83 unavailable. Import and a real round trip remain step 30. See [R4-29](tasks/R4-29-track-archive-export.md).
 
-Next ready work: revision-4 step 30, enable Import Track Archive with a real round trip. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 30 enabled Import Track Archive (OpenTrack v1) with manifest/version validation, canonical path containment, contained media copy, fresh track/clip/MIDI IDs, hierarchy/route remapping, external-route disconnection reports and one atomic history step. Malformed/traversal/missing-media packages change nothing. App suite: 544 passed, 9 ignored; inventory is 275 leaves with 83 unavailable. Import is synchronous (may briefly block on large packages); desktop/fresh-process review remains pending. See [R4-30](tasks/R4-30-import-track-archive.md).
+
+Next ready work: revision-4 step 31, revision acceptance and compatibility pass. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

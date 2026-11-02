@@ -13540,11 +13540,21 @@ impl OpenTrackApp {
                             &[
                                 ("Audio CD...", ""),
                                 ("Video File...", ""),
-                                ("Track Archive...", ""),
                                 ("Tempo Track...", ""),
                                 ("OMF...", ""),
                             ],
                         );
+                        if menu_command(
+                            ui,
+                            "Track Archive (OpenTrack v1)...",
+                            "",
+                            self.project_open && !self.is_recording(),
+                        )
+                        .clicked()
+                        {
+                            self.import_track_archive();
+                            ui.close();
+                        }
                         if menu_command(ui, "MusicXML...", "", !self.is_recording()).clicked() {
                             self.import_musicxml_file();
                             ui.close();
