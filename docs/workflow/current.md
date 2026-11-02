@@ -16,7 +16,9 @@ R5-14 delivered the staged chain renderer: each processor reads the previous sta
 
 R5-15 delivered the Direct Offline Processing window (draft editing, Save as one "Edit Offline Chain" step, Apply bakes with its own step).
 
-Next ready step: R5-16, scoping Add/Remove Plug-in to the built-in chain. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+R5-16 scoped Add Plug-in (a built-in processor submenu) and Remove Plug-in to the offline chain, both through the same validated save path.
+
+Next ready step: R5-17, the offline processing acceptance pass. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 

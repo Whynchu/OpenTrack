@@ -14457,10 +14457,36 @@ impl OpenTrackApp {
                             self.open_offline_processing();
                             ui.close();
                         }
-                        disabled_menu_commands(
-                            ui,
-                            &[("Add Plug-in", ""), ("Remove Plug-in", "")],
-                        );
+                        let has_event =
+                            !self.arrange_view_state.audio_events.selected_ids().is_empty();
+                        ui.add_enabled_ui(has_event, |ui| {
+                            ui.menu_button("Add Plug-in", |ui| {
+                                for process in [
+                                    opentrack_core::project::OfflineProcess::GainDb { db: -3.0 },
+                                    opentrack_core::project::OfflineProcess::Normalize {
+                                        target_dbfs: -0.1,
+                                    },
+                                    opentrack_core::project::OfflineProcess::Reverse,
+                                    opentrack_core::project::OfflineProcess::RemoveDcOffset,
+                                    opentrack_core::project::OfflineProcess::StereoFlip,
+                                    opentrack_core::project::OfflineProcess::Resample {
+                                        target_rate: 48_000,
+                                    },
+                                    opentrack_core::project::OfflineProcess::TimeStretch {
+                                        percent: 100.0,
+                                    },
+                                ] {
+                                    if ui.button(process.label()).clicked() {
+                                        self.append_offline_processor(process);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
+                        if menu_command(ui, "Remove Plug-in", "", has_event).clicked() {
+                            self.remove_last_offline_processor();
+                            ui.close();
+                        }
                     });
                     ui.menu_button("Advanced", |ui| {
                         let has_event =

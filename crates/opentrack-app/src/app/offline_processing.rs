@@ -306,6 +306,75 @@ impl OpenTrackApp {
         true
     }
 
+    /// Appends one built-in processor to the selected event's chain.
+    pub(super) fn append_offline_processor(&mut self, process: OfflineProcess) {
+        if !self.project_open {
+            self.status_message = "Open a project to process events offline".to_owned();
+            return;
+        }
+        let Some(clip_id) = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .first()
+            .copied()
+        else {
+            self.status_message = "Select an audio event before adding a processor".to_owned();
+            return;
+        };
+        let Some(chain) = self.data.project.offline_chain_of(clip_id) else {
+            self.status_message = "The selected event is no longer in the project".to_owned();
+            return;
+        };
+        if chain.len() >= opentrack_core::project::MAX_OFFLINE_CHAIN {
+            self.status_message = format!(
+                "An offline chain holds at most {} processors",
+                opentrack_core::project::MAX_OFFLINE_CHAIN
+            );
+            return;
+        }
+        let mut next = chain.to_vec();
+        next.push(process);
+        let draft = ChainDraft {
+            clip_id,
+            chain: next,
+        };
+        if self.save_offline_chain_draft(&draft) {
+            self.status_message = format!("Added {} to the offline chain", process.label());
+        }
+    }
+
+    /// Removes the last processor from the selected event's chain.
+    pub(super) fn remove_last_offline_processor(&mut self) {
+        let Some(clip_id) = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .first()
+            .copied()
+        else {
+            self.status_message = "Select an audio event before removing a processor".to_owned();
+            return;
+        };
+        let Some(chain) = self.data.project.offline_chain_of(clip_id) else {
+            self.status_message = "The selected event is no longer in the project".to_owned();
+            return;
+        };
+        if chain.is_empty() {
+            self.status_message = "The selected event has no offline processors".to_owned();
+            return;
+        }
+        let mut next = chain.to_vec();
+        let removed = next.pop().expect("the chain is not empty");
+        let draft = ChainDraft {
+            clip_id,
+            chain: next,
+        };
+        if self.save_offline_chain_draft(&draft) {
+            self.status_message = format!("Removed {} from the offline chain", removed.label());
+        }
+    }
+
     pub(super) fn show_offline_processing(&mut self, ctx: &egui::Context) {
         let Some(mut draft) = self.offline_chain_draft.take() else {
             return;
@@ -523,6 +592,67 @@ mod tests {
             .expect("clip");
         app.project_history.clear();
         (app, clip, root)
+    }
+
+    #[test]
+    fn the_menu_adds_and_removes_built_in_processors_undoably() {
+        let source_root =
+            std::env::temp_dir().join(format!("opentrack-offline-src4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&source_root);
+        std::fs::create_dir_all(&source_root).expect("src");
+        let source = source_root.join("flat.wav");
+        write_flat_wav(&source, 24_000, 0.25);
+        let (mut app, clip, root) = app_with_clip(&source, 0.5, "menu");
+
+        // No selection: nothing is added.
+        app.append_offline_processor(OfflineProcess::Reverse);
+        assert!(app.status_message.contains("Select an audio event"));
+
+        app.arrange_view_state.audio_events.select_many([clip]);
+        app.append_offline_processor(OfflineProcess::GainDb { db: -6.0 });
+        app.append_offline_processor(OfflineProcess::Normalize { target_dbfs: -0.1 });
+        let chain = app
+            .data
+            .project
+            .offline_chain_of(clip)
+            .expect("clip")
+            .to_vec();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].label(), "Gain");
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Edit Offline Chain");
+
+        // Removing drops the last processor.
+        app.remove_last_offline_processor();
+        let chain = app
+            .data
+            .project
+            .offline_chain_of(clip)
+            .expect("clip")
+            .to_vec();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].label(), "Gain");
+        assert!(app.status_message.contains("Removed Normalize"));
+
+        // An empty chain reports instead of writing another step.
+        app.remove_last_offline_processor();
+        let steps = app.project_history.counts().0;
+        app.remove_last_offline_processor();
+        assert!(app.status_message.contains("no offline processors"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // The eight-entry bound is enforced.
+        for _ in 0..opentrack_core::project::MAX_OFFLINE_CHAIN {
+            app.append_offline_processor(OfflineProcess::Reverse);
+        }
+        app.append_offline_processor(OfflineProcess::Reverse);
+        assert!(app.status_message.contains("at most"));
+        assert_eq!(
+            app.data.project.offline_chain_of(clip).expect("clip").len(),
+            opentrack_core::project::MAX_OFFLINE_CHAIN
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(source_root);
     }
 
     #[test]
