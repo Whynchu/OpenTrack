@@ -1255,6 +1255,15 @@ fn default_loop_end_beats() -> f64 {
 
 const MAX_LOOP_BEATS: f64 = 1_000_000.0;
 
+/// Smallest and largest project tempo in beats per minute.
+pub const MIN_TEMPO_BPM: f64 = 1.0;
+pub const MAX_TEMPO_BPM: f64 = 1_000.0;
+/// Accepted time-signature numerator range.
+pub const MIN_BEATS_PER_BAR: u8 = 1;
+pub const MAX_BEATS_PER_BAR: u8 = 32;
+/// Accepted time-signature denominators (the beat unit).
+pub const BEAT_UNITS: [u8; 6] = [1, 2, 4, 8, 16, 32];
+
 impl Default for Project {
     fn default() -> Self {
         Self {
@@ -1326,6 +1335,36 @@ impl Project {
         }
     }
     /// Sets the persisted cycle locator range in quarter-note beats.
+    /// Sets the project tempo, validating the supported range.
+    pub fn set_tempo(&mut self, bpm: f64) -> Result<(), &'static str> {
+        if !bpm.is_finite() || !(MIN_TEMPO_BPM..=MAX_TEMPO_BPM).contains(&bpm) {
+            return Err("tempo must be between 1 and 1000 BPM");
+        }
+        self.tempo_bpm = bpm;
+        Ok(())
+    }
+
+    /// Sets the project time signature, validating numerator and beat unit.
+    ///
+    /// One tempo and one signature describe the whole project: multiple tempo or
+    /// signature events are a different feature and are not flattened into these
+    /// fields.
+    pub fn set_time_signature(
+        &mut self,
+        beats_per_bar: u8,
+        beat_unit: u8,
+    ) -> Result<(), &'static str> {
+        if !(MIN_BEATS_PER_BAR..=MAX_BEATS_PER_BAR).contains(&beats_per_bar) {
+            return Err("beats per bar must be between 1 and 32");
+        }
+        if !BEAT_UNITS.contains(&beat_unit) {
+            return Err("the beat unit must be 1, 2, 4, 8, 16 or 32");
+        }
+        self.beats_per_bar = beats_per_bar;
+        self.beat_unit = beat_unit;
+        Ok(())
+    }
+
     pub fn set_loop_range(&mut self, start_beats: f64, end_beats: f64) -> bool {
         if !start_beats.is_finite()
             || start_beats < 0.0
@@ -4848,7 +4887,8 @@ impl Project {
         if self.name.trim().is_empty() {
             return Err("project name is empty");
         }
-        if !self.tempo_bpm.is_finite() || !(1.0..=1000.0).contains(&self.tempo_bpm) {
+        if !self.tempo_bpm.is_finite() || !(MIN_TEMPO_BPM..=MAX_TEMPO_BPM).contains(&self.tempo_bpm)
+        {
             return Err("tempo must be between 1 and 1000 BPM");
         }
         if ![
@@ -4858,11 +4898,11 @@ impl Project {
         {
             return Err("project sample rate is not one of the supported standard rates");
         }
-        if !(1..=32).contains(&self.beats_per_bar) {
+        if !(MIN_BEATS_PER_BAR..=MAX_BEATS_PER_BAR).contains(&self.beats_per_bar) {
             return Err("beats per bar must be between 1 and 32");
         }
-        if !(1..=32).contains(&self.beat_unit) || !self.beat_unit.is_power_of_two() {
-            return Err("beat unit must be a power of two between 1 and 32");
+        if !BEAT_UNITS.contains(&self.beat_unit) {
+            return Err("the beat unit must be 1, 2, 4, 8, 16 or 32");
         }
         if !self.timecode_offset_seconds.is_finite()
             || self.timecode_offset_seconds.abs() > MAX_TIMECODE_OFFSET_SECONDS
@@ -7465,6 +7505,55 @@ mod sample_edit_tests {
         )
         .expect("decode malformed");
         assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn tempo_and_time_signature_have_one_validated_contract() {
+        use crate::project::{BEAT_UNITS, MAX_TEMPO_BPM, MIN_TEMPO_BPM};
+
+        let mut project = Project::default();
+        assert_eq!(project.tempo_bpm, 120.0, "the default tempo is unchanged");
+        assert_eq!((project.beats_per_bar, project.beat_unit), (4, 4));
+
+        assert!(project.set_tempo(90.5).is_ok());
+        assert_eq!(project.tempo_bpm, 90.5);
+        assert!(project.set_time_signature(7, 8).is_ok());
+        assert_eq!((project.beats_per_bar, project.beat_unit), (7, 8));
+        assert!(project.validate().is_ok());
+
+        // Out-of-range values are refused and leave the project untouched.
+        for bad in [0.0, -1.0, MAX_TEMPO_BPM + 1.0, f64::NAN, f64::INFINITY] {
+            assert!(project.set_tempo(bad).is_err(), "{bad} should be refused");
+        }
+        assert_eq!(project.tempo_bpm, 90.5);
+        assert!(project.set_tempo(MIN_TEMPO_BPM).is_ok());
+        assert!(project.set_tempo(MAX_TEMPO_BPM).is_ok());
+        assert!(project.set_time_signature(0, 4).is_err());
+        for unit in [0, 3, 5, 7, 64] {
+            assert!(
+                project.set_time_signature(4, unit).is_err(),
+                "{unit} is not a supported beat unit"
+            );
+        }
+        assert_eq!((project.beats_per_bar, project.beat_unit), (7, 8));
+        for unit in BEAT_UNITS {
+            assert!(project.set_time_signature(4, unit).is_ok(), "{unit}");
+        }
+
+        // A file with an unsupported beat unit is rejected rather than rendered.
+        project.beat_unit = 3;
+        assert!(project.validate().is_err());
+        project.beat_unit = 4;
+        assert!(project.validate().is_ok());
+
+        // Tempo and signature round trip with the project.
+        let encoded = serde_json::to_string(&project).expect("encode");
+        let decoded: Project = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded.tempo_bpm, project.tempo_bpm);
+        assert_eq!(
+            (decoded.beats_per_bar, decoded.beat_unit),
+            (project.beats_per_bar, project.beat_unit)
+        );
     }
 
     #[test]
