@@ -143,6 +143,15 @@ and measured numbers.
    Fades to Range (A) is one labelled undo step. 1 core and 1 app tests. Shortcut
    coverage 135 -> 136.
 
+17. **Marker slots.** *Delivered.* `Project::Marker` gained an optional `slot`
+   (1-9); `set_marker_slot` creates or moves the marker in a slot without changing
+   its identity, `marker_in_slot` addresses it, and validation rejects duplicate or
+   out-of-range slots. Set Marker 1/2/3-9 (Ctrl+digit), To Marker 1/2/3-9
+   (Shift+digit) and Recall Cycle Marker 1-9 (Shift+Numpad) decode the digit from
+   the chord. OPR moved to version 29 so older builds refuse a file with slots
+   instead of dropping them; a v28 file loads with no slots. 1 core, 2 app and 1
+   migration tests. Shortcut coverage 136 -> 143.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

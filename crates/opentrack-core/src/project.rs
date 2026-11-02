@@ -1033,7 +1033,14 @@ pub struct Marker {
     pub id: u64,
     pub beat: f64,
     pub name: String,
+    /// Fixed marker slot 1-9 used by the numeric shortcuts, if this marker has
+    /// one. Older projects and ordinary markers leave it empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u8>,
 }
+
+/// The marker slots reachable from the numeric shortcuts.
+pub const MARKER_SLOTS: std::ops::RangeInclusive<u8> = 1..=9;
 
 /// Bound on the project notepad, in characters.
 pub const MAX_NOTEPAD_CHARS: usize = 100_000;
@@ -2304,6 +2311,7 @@ impl Project {
             id,
             beat,
             name: bounded_marker_name(name.into()),
+            slot: None,
         });
         self.markers
             .sort_by(|left, right| left.beat.total_cmp(&right.beat));
@@ -2345,6 +2353,49 @@ impl Project {
         let before = self.markers.len();
         self.markers.retain(|marker| marker.id != id);
         self.markers.len() != before
+    }
+
+    /// Sets the marker in a fixed 1-9 slot, creating or moving it.
+    ///
+    /// Slots are how the numeric shortcuts address markers, so a slot always
+    /// names at most one marker and the marker keeps its identity when the slot
+    /// moves. Returns the marker id, or `None` for a slot outside 1-9.
+    pub fn set_marker_slot(&mut self, slot: u8, beat: f64, name: impl Into<String>) -> Option<u64> {
+        if !MARKER_SLOTS.contains(&slot) || !beat.is_finite() || beat < 0.0 || beat > MAX_LOOP_BEATS
+        {
+            return None;
+        }
+        if let Some(marker) = self
+            .markers
+            .iter_mut()
+            .find(|marker| marker.slot == Some(slot))
+        {
+            marker.beat = beat;
+            marker.name = bounded_marker_name(name.into());
+            let id = marker.id;
+            self.markers
+                .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+            return Some(id);
+        }
+        if self.markers.len() >= MAX_MARKERS || self.next_marker_id == u64::MAX {
+            return None;
+        }
+        let id = self.next_marker_id;
+        self.next_marker_id += 1;
+        self.markers.push(Marker {
+            id,
+            beat,
+            name: bounded_marker_name(name.into()),
+            slot: Some(slot),
+        });
+        self.markers
+            .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+        Some(id)
+    }
+
+    /// The marker in a fixed slot, if one is set.
+    pub fn marker_in_slot(&self, slot: u8) -> Option<&Marker> {
+        self.markers.iter().find(|marker| marker.slot == Some(slot))
     }
 
     /// The next marker strictly after `beat`, or the first one when wrapping.
@@ -4087,6 +4138,16 @@ impl Project {
         }
         if self.notepad.chars().count() > MAX_NOTEPAD_CHARS {
             return Err("project notepad is too long");
+        }
+        {
+            let mut slots = BTreeSet::new();
+            for marker in &self.markers {
+                if let Some(slot) = marker.slot
+                    && (!MARKER_SLOTS.contains(&slot) || !slots.insert(slot))
+                {
+                    return Err("marker slots must be unique and between 1 and 9");
+                }
+            }
         }
         if !self.loop_start_beats.is_finite()
             || self.loop_start_beats < 0.0
@@ -7209,6 +7270,57 @@ mod sample_edit_tests {
         assert!(!project.remove_marker(verse));
         assert_eq!(project.markers.len(), 2);
         assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn marker_slots_create_move_and_stay_unique() {
+        let mut project = Project::default();
+        let first = project.set_marker_slot(3, 8.0, "Marker 3").expect("slot 3");
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .find(|marker| marker.id == first)
+                .and_then(|marker| marker.slot),
+            Some(3)
+        );
+        assert_eq!(
+            project.marker_in_slot(3).map(|marker| marker.name.as_str()),
+            Some("Marker 3")
+        );
+        assert!(project.marker_in_slot(1).is_none());
+
+        // Moving the slot keeps the marker's identity.
+        let moved = project.set_marker_slot(3, 16.0, "Marker 3").expect("moved");
+        assert_eq!(moved, first);
+        assert_eq!(project.markers.len(), 1);
+        assert_eq!(
+            project.marker_in_slot(3).map(|marker| marker.beat),
+            Some(16.0)
+        );
+
+        // A plain marker has no slot and can coexist.
+        let plain = project.add_marker(4.0, "Intro").expect("plain");
+        assert!(
+            project
+                .markers
+                .iter()
+                .find(|marker| marker.id == plain)
+                .is_some_and(|marker| marker.slot.is_none())
+        );
+
+        // Slots outside 1-9 are refused.
+        assert!(project.set_marker_slot(0, 1.0, "bad").is_none());
+        assert!(project.set_marker_slot(10, 1.0, "bad").is_none());
+
+        // Duplicate slots are invalid, so decoding rejects such a file.
+        project.markers[0].slot = Some(4);
+        project.markers[1].slot = Some(4);
+        assert_eq!(
+            project.validate(),
+            Err("marker slots must be unique and between 1 and 9")
+        );
+        assert!(project.validate().is_err());
     }
 
     #[test]

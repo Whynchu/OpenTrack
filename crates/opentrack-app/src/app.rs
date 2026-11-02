@@ -7173,6 +7173,13 @@ impl OpenTrackApp {
                 self.data.selected_media = 0;
                 self.focus_tab(PanelTab::Media);
             }
+            "transport.set_marker_1" => self.marker_slot_command(chord, true),
+            "transport.set_marker_2" => self.marker_slot_command(chord, true),
+            "transport.set_marker_3_to_9" => self.marker_slot_command(chord, true),
+            "transport.to_marker_1" => self.marker_slot_command(chord, false),
+            "transport.to_marker_2" => self.marker_slot_command(chord, false),
+            "transport.to_marker_3_to_9" => self.marker_slot_command(chord, false),
+            "transport.recall_cycle_marker_1_to_9" => self.marker_slot_command(chord, false),
             "transport.insert_marker" => self.add_marker_at_playhead(),
             "transport.locate_next_marker" => self.locate_next_marker(),
             "transport.locate_previous_marker" => self.locate_previous_marker(),
@@ -7289,6 +7296,63 @@ impl OpenTrackApp {
                 self.status_message = format!("Not implemented yet: {label}");
             }
         }
+    }
+
+    /// The marker slot named by a numeric shortcut, if the chord names one.
+    fn marker_slot_from_chord(chord: KeyChord) -> Option<u8> {
+        let digit = match chord.key() {
+            KeyCode::Digit(digit) | KeyCode::NumpadDigit(digit) => digit,
+            _ => return None,
+        };
+        (opentrack_core::project::MARKER_SLOTS.contains(&digit)).then_some(digit)
+    }
+
+    /// Runs a numeric marker shortcut: set the slot or locate to it.
+    fn marker_slot_command(&mut self, chord: KeyChord, set: bool) {
+        let Some(slot) = Self::marker_slot_from_chord(chord) else {
+            return;
+        };
+        if set {
+            self.set_marker_slot(slot);
+        } else {
+            self.locate_marker_slot(slot);
+        }
+    }
+
+    /// Sets or moves the marker in a fixed slot at the transport position.
+    fn set_marker_slot(&mut self, slot: u8) {
+        let beat = self.data.transport.position_beats.max(0.0);
+        let mut candidate = self.data.project.clone();
+        let Some(id) = candidate.set_marker_slot(slot, beat, format!("Marker {slot}")) else {
+            self.status_message = format!("Slot {slot} cannot hold a marker here");
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot set the marker: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Set Marker");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!("Set marker {slot} (id {id}) at beat {beat:.3}");
+    }
+
+    /// Locates to the marker in a fixed slot.
+    fn locate_marker_slot(&mut self, slot: u8) {
+        let Some(marker) = self.data.project.marker_in_slot(slot).cloned() else {
+            self.status_message = format!("No marker is set in slot {slot}");
+            return;
+        };
+        self.seek_to_beats(marker.beat);
+        self.status_message = format!(
+            "Located to marker {slot} ({}) at beat {:.3}",
+            marker.name, marker.beat
+        );
     }
 
     /// Adds a marker at the transport position as one undo step.
@@ -27627,6 +27691,112 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod marker_slot_tests {
+    use super::*;
+    use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.set_loop_range(0.0, 16.0);
+        app.project_history.clear();
+        app
+    }
+
+    fn dispatch(app: &mut OpenTrackApp, id: &str, key: KeyCode, modifiers: KeyModifiers) {
+        let ctx = egui::Context::default();
+        app.dispatch_reference_command(id, id, KeyChord::new(key, modifiers), &ctx);
+    }
+
+    #[test]
+    fn ctrl_digits_set_and_move_a_slot_and_shift_digits_locate_it() {
+        let mut app = app();
+        let ctrl = KeyModifiers {
+            control: true,
+            ..KeyModifiers::default()
+        };
+        app.data.transport.position_beats = 8.0;
+        dispatch(
+            &mut app,
+            "transport.set_marker_3_to_9",
+            KeyCode::Digit(3),
+            ctrl,
+        );
+        let marker = app.data.project.marker_in_slot(3).expect("slot 3");
+        assert_eq!(marker.beat, 8.0);
+        assert_eq!(marker.name, "Marker 3");
+        assert!(app.status_message.contains("Set marker 3"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Marker");
+
+        // The same key at another position moves the same marker.
+        app.data.transport.position_beats = 12.0;
+        let id = app.data.project.marker_in_slot(3).expect("slot").id;
+        dispatch(
+            &mut app,
+            "transport.set_marker_3_to_9",
+            KeyCode::Digit(3),
+            ctrl,
+        );
+        assert_eq!(app.data.project.marker_in_slot(3).expect("slot").id, id);
+        assert_eq!(app.data.project.marker_in_slot(3).expect("slot").beat, 12.0);
+
+        // Shift+digit locates; the transport comes back to the marker.
+        app.data.transport.position_beats = 0.0;
+        let shift = KeyModifiers {
+            shift: true,
+            ..KeyModifiers::default()
+        };
+        dispatch(
+            &mut app,
+            "transport.to_marker_3_to_9",
+            KeyCode::Digit(3),
+            shift,
+        );
+        assert_eq!(app.data.transport.position_beats, 12.0);
+        assert!(app.status_message.contains("Located to marker 3"));
+
+        // Recall Cycle Marker uses the numpad and locates to the same slot.
+        app.data.transport.position_beats = 0.0;
+        dispatch(
+            &mut app,
+            "transport.recall_cycle_marker_1_to_9",
+            KeyCode::NumpadDigit(3),
+            shift,
+        );
+        assert_eq!(app.data.transport.position_beats, 12.0);
+    }
+
+    #[test]
+    fn an_empty_slot_reports_and_ctrl_one_uses_slot_one() {
+        let mut app = app();
+        let shift = KeyModifiers {
+            shift: true,
+            ..KeyModifiers::default()
+        };
+        dispatch(
+            &mut app,
+            "transport.to_marker_3_to_9",
+            KeyCode::Digit(3),
+            shift,
+        );
+        assert!(app.status_message.contains("No marker is set in slot 3"));
+
+        // Ctrl+1 is the single-digit command, so slot 1 still works.
+        let ctrl = KeyModifiers {
+            control: true,
+            ..KeyModifiers::default()
+        };
+        app.data.transport.position_beats = 4.0;
+        dispatch(&mut app, "transport.set_marker_1", KeyCode::Digit(1), ctrl);
+        assert!(app.data.project.marker_in_slot(1).is_some());
+        assert!(app.data.project.validate().is_ok());
     }
 }
 

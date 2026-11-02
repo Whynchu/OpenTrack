@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 28;
+const FORMAT_VERSION: u32 = 29;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn a_version_27_file_migrates_to_28_and_defaults_the_new_fields() {
+    fn a_version_27_file_migrates_and_defaults_newer_fields() {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.add_track(TrackKind::Group);
@@ -1165,6 +1165,44 @@ mod tests {
         assert!(loaded.project.tracks[0].clips[0].take_active);
         // Fields the version did have are preserved.
         assert!(loaded.project.tracks[1].group_collapsed);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_28_file_without_marker_slots_loads_with_none() {
+        let mut project = Project::default();
+        project.set_marker_slot(3, 8.0, "Marker 3").expect("slot");
+        project.add_marker(4.0, "Intro").expect("marker");
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 28.into();
+        for marker in legacy["project"]["markers"]
+            .as_array_mut()
+            .expect("markers")
+        {
+            marker.as_object_mut().expect("marker").remove("slot");
+        }
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v28-slots-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert_eq!(loaded.project.markers.len(), 2);
+        assert!(
+            loaded
+                .project
+                .markers
+                .iter()
+                .all(|marker| marker.slot.is_none())
+        );
+        // The slot can be assigned again after the upgrade.
+        let _ = loaded.project.marker_in_slot(3);
         fs::remove_file(path).unwrap();
     }
 
