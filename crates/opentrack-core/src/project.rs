@@ -941,6 +941,9 @@ pub struct Project {
     /// Next loop-recording take group id.
     #[serde(default = "first_marker_id")]
     pub next_take_group: u64,
+    /// Free-form project notes, kept with the project.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notepad: String,
     /// Timeline markers, ordered by beat. Older projects have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
@@ -955,6 +958,9 @@ pub struct Marker {
     pub beat: f64,
     pub name: String,
 }
+
+/// Bound on the project notepad, in characters.
+pub const MAX_NOTEPAD_CHARS: usize = 100_000;
 
 /// Bound on markers per project, so a runaway script cannot grow the file.
 pub const MAX_MARKERS: usize = 1024;
@@ -1048,6 +1054,7 @@ impl Default for Project {
             loop_start_beats: default_loop_start_beats(),
             loop_end_beats: default_loop_end_beats(),
             cycle_mode: CycleMode::Loop,
+            notepad: String::new(),
             markers: Vec::new(),
             next_marker_id: first_marker_id(),
             next_take_group: 1,
@@ -3653,6 +3660,9 @@ impl Project {
         if !(1..=32).contains(&self.beat_unit) || !self.beat_unit.is_power_of_two() {
             return Err("beat unit must be a power of two between 1 and 32");
         }
+        if self.notepad.chars().count() > MAX_NOTEPAD_CHARS {
+            return Err("project notepad is too long");
+        }
         if !self.loop_start_beats.is_finite()
             || self.loop_start_beats < 0.0
             || !self.loop_end_beats.is_finite()
@@ -5458,6 +5468,34 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn the_notepad_round_trips_is_bounded_and_defaults_empty() {
+        use crate::project::MAX_NOTEPAD_CHARS;
+
+        let mut project = Project::default();
+        assert!(project.notepad.is_empty());
+        assert!(project.set_notepad("Mix notes: vocal bright at 3k"));
+        assert!(
+            !project.set_notepad("Mix notes: vocal bright at 3k"),
+            "no change"
+        );
+
+        let encoded = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.notepad, "Mix notes: vocal bright at 3k");
+
+        // An older project has no notepad field and reads as empty.
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        legacy.as_object_mut().expect("object").remove("notepad");
+        let legacy: Project = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.notepad.is_empty());
+
+        // The text is bounded rather than refused.
+        assert!(project.set_notepad("x".repeat(MAX_NOTEPAD_CHARS * 2)));
+        assert_eq!(project.notepad.chars().count(), MAX_NOTEPAD_CHARS);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
     fn unused_pool_entries_are_detected_and_removed_without_touching_files() {
         let root =
             std::env::temp_dir().join(format!("opentrack-unused-media-{}", std::process::id()));
@@ -6810,6 +6848,19 @@ impl Project {
             )
             .collect()
     }
+    /// Replaces the project notepad, bounded to [`MAX_NOTEPAD_CHARS`].
+    pub fn set_notepad(&mut self, text: impl Into<String>) -> bool {
+        let mut text = text.into();
+        if text.chars().count() > MAX_NOTEPAD_CHARS {
+            text = text.chars().take(MAX_NOTEPAD_CHARS).collect();
+        }
+        if self.notepad == text {
+            return false;
+        }
+        self.notepad = text;
+        true
+    }
+
     /// Sources an event actually references, ignoring the pool.
     pub fn referenced_media(&self) -> BTreeSet<PathBuf> {
         self.tracks

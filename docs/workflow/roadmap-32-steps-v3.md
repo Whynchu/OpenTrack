@@ -70,7 +70,15 @@ work is named rather than approximated.
    matching the shortcut that already worked. 3 module and 2 app tests. Disabled
    entries 126 -> 123.
 
-### E. Media pool
+### E. Project tools (continued)
+
+7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
+   to 100,000 characters, left out of the file when empty, and read as empty by
+   older projects. Project > Notepad opens a multiline editor; closing it applies
+   the text as one undo step labelled "Notepad" when it changed. 1 core and 2 app
+   tests. Disabled entries 123 -> 122.
+
+### F. Media pool
 
 4. **Pool cleanup commands.** *Delivered.* Media > Remove Unused Media, Empty
    Trash and Remove Missing Files. Core gained `referenced_media`,

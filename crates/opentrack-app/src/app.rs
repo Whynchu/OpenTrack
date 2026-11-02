@@ -1150,6 +1150,8 @@ pub struct OpenTrackApp {
     session_health_open: bool,
     project_statistics_open: bool,
     beat_calculator: Option<project_tools::BeatCalculator>,
+    /// Draft while the notepad is open; committed when the window closes.
+    notepad_draft: Option<String>,
     /// Open MIDI quantize dialog settings.
     midi_quantize_dialog: Option<opentrack_core::midi_quantize::QuantizeOptions>,
     /// Open MIDI transpose/velocity dialog: semitones and velocity delta.
@@ -2551,6 +2553,7 @@ impl OpenTrackApp {
             session_health_open: false,
             project_statistics_open: false,
             beat_calculator: None,
+            notepad_draft: None,
             midi_quantize_dialog: None,
             midi_transform_dialog: None,
             punch_enabled: creation
@@ -7523,6 +7526,80 @@ impl OpenTrackApp {
         }
     }
 
+    /// Opens the notepad with the project's current text.
+    fn open_notepad(&mut self) {
+        self.notepad_draft = Some(self.data.project.notepad.clone());
+    }
+
+    /// Applies the notepad draft as one undo step when it changed.
+    fn apply_notepad(&mut self) {
+        let Some(draft) = self.notepad_draft.take() else {
+            return;
+        };
+        if draft == self.data.project.notepad {
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        if !candidate.set_notepad(draft) {
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot save the notepad: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Notepad");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = "Saved the project notepad".to_owned();
+    }
+
+    fn show_notepad(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.notepad_draft.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut close = false;
+        let response = egui::Window::new("Notepad")
+            .id(Id::new("project-notepad"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(420.0, 260.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut draft)
+                        .desired_rows(10)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Notes for this project"),
+                );
+                ui.label(
+                    egui::RichText::new("Saved with the project; Undo restores the previous text.")
+                        .small()
+                        .color(theme::palette(ui).muted),
+                );
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-notepad"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.notepad_draft = Some(draft);
+        if close || !open {
+            self.apply_notepad();
+        }
+    }
+
     fn show_project_statistics(&mut self, ctx: &egui::Context) {
         if !self.project_statistics_open {
             return;
@@ -11460,13 +11537,16 @@ impl OpenTrackApp {
                         self.beat_calculator = Some(calculator);
                         ui.close();
                     }
+                    if menu_command(ui, "Notepad", "", self.project_open).clicked() {
+                        self.open_notepad();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Tempo Track", "Ctrl+T"),
                             ("Automation Panel", ""),
                             ("Set Timecode at Cursor", ""),
-                            ("Notepad", ""),
                             ("Auto Fades Settings...", ""),
                         ],
                     );
@@ -12757,6 +12837,7 @@ impl OpenTrackApp {
             || self.session_health_open
             || self.project_statistics_open
             || self.beat_calculator.is_some()
+            || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
             || self.project_open_error.is_some()
@@ -15153,6 +15234,7 @@ impl eframe::App for OpenTrackApp {
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
         self.show_beat_calculator(&ctx);
+        self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
         self.show_about_window(&ctx);
@@ -26815,6 +26897,84 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod notepad_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn applying_the_notepad_is_one_labelled_undo_step() {
+        let mut app = app();
+        app.open_notepad();
+        assert_eq!(app.notepad_draft.as_deref(), Some(""));
+        app.notepad_draft = Some("Chorus needs a brighter vocal".to_owned());
+        app.apply_notepad();
+        assert_eq!(app.data.project.notepad, "Chorus needs a brighter vocal");
+        assert!(app.notepad_draft.is_none(), "the window closed");
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Notepad");
+        assert!(app.status_message.contains("Saved the project notepad"));
+
+        // Reopening and closing without a change writes nothing.
+        let steps = app.project_history.counts().0;
+        app.open_notepad();
+        app.apply_notepad();
+        assert_eq!(app.project_history.counts().0, steps);
+        assert_eq!(app.data.project.notepad, "Chorus needs a brighter vocal");
+    }
+
+    #[test]
+    fn the_notepad_window_renders_the_project_text() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.set_notepad("Session notes");
+        app.open_notepad();
+
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_notepad(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let text = texts.join("\n");
+        assert!(text.contains("Notepad"), "{text}");
+        assert!(text.contains("Saved with the project"), "{text}");
     }
 }
 
