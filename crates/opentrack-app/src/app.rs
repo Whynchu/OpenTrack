@@ -13919,6 +13919,16 @@ impl OpenTrackApp {
                             }
                         }
                     });
+                    if menu_command(ui, "Show Marker Lane", "", self.project_open).clicked() {
+                        self.arrange_view_state.show_marker_lane =
+                            !self.arrange_view_state.show_marker_lane;
+                        self.status_message = if self.arrange_view_state.show_marker_lane {
+                            "Marker lane shown".to_owned()
+                        } else {
+                            "Marker lane hidden".to_owned()
+                        };
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(ui, "Pool", "Ctrl+P", true).clicked() {
                         self.focus_tab(PanelTab::Media);
@@ -17013,6 +17023,14 @@ impl OpenTrackApp {
         let mut modified = project_changes.modified;
         let mut live_mix_update = project_changes.live_mix;
         let defer_audio_plan = project_changes.defer_audio_plan;
+        if project_changes.marker_edit_cancelled {
+            if let Some((project, was_modified)) = self.project_history.cancel_pending() {
+                self.data.project = project;
+                self.modified = was_modified;
+                self.rebuild_audio_plan();
+                self.status_message = "Marker move cancelled".to_owned();
+            }
+        }
         if let Some(action) = project_changes.automation_action {
             match action {
                 automation::LaneAction::CancelDrag { .. } => {
@@ -19120,6 +19138,7 @@ struct ProjectViewChanges {
     defer_audio_plan: bool,
     automation_action: Option<automation::LaneAction>,
     crossfade_requested: bool,
+    marker_edit_cancelled: bool,
 }
 
 const PANEL_HEADER_HEIGHT: f32 = 29.0;
@@ -19300,6 +19319,22 @@ fn project_track_folder_depth(project: &Project, track_id: u64) -> usize {
         parent_id = parent.parent_folder_id;
     }
     depth
+}
+
+fn marker_at_pointer(
+    markers: &[opentrack_core::project::Marker],
+    pointer: Pos2,
+    grid_left: f32,
+    bar_width: f32,
+    beats_per_bar: f64,
+) -> Option<(u64, f64, f32)> {
+    markers
+        .iter()
+        .filter_map(|marker| {
+            let x = grid_left + (marker.beat / beats_per_bar) as f32 * bar_width;
+            ((pointer.x - x).abs() <= 6.0).then_some((marker.id, marker.beat, x))
+        })
+        .min_by(|a, b| (pointer.x - a.2).abs().total_cmp(&(pointer.x - b.2).abs()))
 }
 
 fn project_track_group_depth(project: &Project, track_id: u64) -> usize {
@@ -19546,6 +19581,7 @@ fn show_project(
     let mut pending_midi_part_split = None;
     let mut pending_automation_action = None;
     let mut audio_events_crossfade_requested = false;
+    let mut marker_edit_cancelled = false;
     if *edit_tool != EditTool::Draw {
         *midi_part_draw = None;
     }
@@ -19737,7 +19773,12 @@ fn show_project(
         })
         .collect::<Vec<_>>();
     let mut row_offsets = Vec::with_capacity(visible_rows);
-    let mut tracks_height = 0.0;
+    let marker_lane_height = if arrange_view_state.show_marker_lane {
+        22.0
+    } else {
+        0.0
+    };
+    let mut tracks_height = marker_lane_height;
     for height in &row_heights {
         row_offsets.push(tracks_height);
         tracks_height += height;
@@ -20650,6 +20691,169 @@ fn show_project(
                 ));
             }
 
+            if marker_lane_height > 0.0 {
+                let lane_top = canvas.top() + ruler_height;
+                let marker_lane = Rect::from_min_size(
+                    Pos2::new(grid_left, lane_top),
+                    Vec2::new(
+                        (total_size.x - lane_header_width).max(0.0),
+                        marker_lane_height,
+                    ),
+                );
+                let marker_header = Rect::from_min_size(
+                    Pos2::new(canvas.min.x, lane_top),
+                    Vec2::new(lane_header_width, marker_lane_height),
+                );
+                let lane_painter = ui.painter_at(Rect::from_min_max(
+                    Pos2::new(canvas.min.x, lane_top),
+                    Pos2::new(canvas.min.x + total_size.x, lane_top + marker_lane_height),
+                ));
+                lane_painter.rect_filled(marker_header, 0.0, palette.surface_raised);
+                lane_painter.rect_filled(marker_lane, 0.0, palette.canvas_alternate);
+                lane_painter.line_segment(
+                    [marker_lane.left_bottom(), marker_lane.right_bottom()],
+                    Stroke::new(1.0, palette.grid),
+                );
+                lane_painter.text(
+                    Pos2::new(marker_header.left() + 8.0, marker_header.center().y),
+                    Align2::LEFT_CENTER,
+                    "Markers",
+                    FontId::proportional(theme::type_size::SMALL),
+                    palette.muted,
+                );
+                let marker_x =
+                    |beat: f64| grid_left + (beat / beats_per_bar_f64) as f32 * bar_width;
+
+                for marker in &project.markers {
+                    let x = marker_x(marker.beat);
+                    if x < marker_lane.left() - 8.0 || x > marker_lane.right() + 8.0 {
+                        continue;
+                    }
+                    let flag = Rect::from_min_size(
+                        Pos2::new(x, marker_lane.top() + 2.0),
+                        Vec2::new(5.0, marker_lane_height - 4.0),
+                    );
+                    lane_painter.rect_filled(flag, 0.0, palette.accent);
+                    lane_painter.text(
+                        Pos2::new(x + 7.0, marker_lane.center().y),
+                        Align2::LEFT_CENTER,
+                        &marker.name,
+                        FontId::proportional(theme::type_size::SMALL),
+                        palette.text,
+                    );
+                }
+                let validate_marker_beat = |beat: f64| {
+                    let snapped = snap_grid_beats.map_or(beat, |grid| {
+                        if grid > 0.0 {
+                            (beat / grid).round() * grid
+                        } else {
+                            beat
+                        }
+                    });
+                    snapped.clamp(0.0, 1_000_000.0)
+                };
+                let response = ui.interact(
+                    marker_lane,
+                    Id::new("project-marker-lane"),
+                    Sense::click_and_drag(),
+                );
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(
+                        if marker_at_pointer(
+                            &project.markers,
+                            ui.input(|i| i.pointer.hover_pos())
+                                .unwrap_or(marker_lane.center()),
+                            grid_left,
+                            bar_width,
+                            beats_per_bar_f64,
+                        )
+                        .is_some()
+                        {
+                            egui::CursorIcon::PointingHand
+                        } else {
+                            egui::CursorIcon::Default
+                        },
+                    );
+                }
+                if response.drag_started_by(egui::PointerButton::Primary)
+                    && let Some(pointer) = ui.input(|i| i.pointer.press_origin())
+                    && let Some((id, beat, _)) = marker_at_pointer(
+                        &project.markers,
+                        pointer,
+                        grid_left,
+                        bar_width,
+                        beats_per_bar_f64,
+                    )
+                {
+                    arrange_view_state.marker_drag = Some((id, beat));
+                }
+                if let Some((id, _)) = arrange_view_state.marker_drag
+                    && response.dragged_by(egui::PointerButton::Primary)
+                    && let Some(pointer) = response.interact_pointer_pos()
+                    && marker_lane.contains(pointer)
+                {
+                    let beat = validate_marker_beat(
+                        f64::from((pointer.x - grid_left) / bar_width) * beats_per_bar_f64,
+                    );
+                    if let Some(marker) = project.markers.iter_mut().find(|marker| marker.id == id)
+                        && (marker.beat - beat).abs() > 1.0e-9
+                    {
+                        marker.beat = beat;
+                        modified = true;
+                    }
+                }
+                if response.drag_stopped() {
+                    arrange_view_state.marker_drag = None;
+                }
+                if ui.input(|input| input.key_pressed(egui::Key::Escape))
+                    && let Some((id, original)) = arrange_view_state.marker_drag.take()
+                {
+                    if let Some(marker) = project.markers.iter_mut().find(|marker| marker.id == id)
+                    {
+                        marker.beat = original;
+                        modified = true;
+                    }
+                    marker_edit_cancelled = true;
+                }
+                if let Some(pointer) = response.interact_pointer_pos()
+                    && marker_lane.contains(pointer)
+                    && response.clicked_by(egui::PointerButton::Primary)
+                {
+                    if let Some((_, beat, _)) = marker_at_pointer(
+                        &project.markers,
+                        pointer,
+                        grid_left,
+                        bar_width,
+                        beats_per_bar_f64,
+                    ) {
+                        *position_beats = beat;
+                    } else {
+                        let number = project.markers.len() + 1;
+                        let beat = validate_marker_beat(
+                            f64::from((pointer.x - grid_left) / bar_width) * beats_per_bar_f64,
+                        );
+                        if project
+                            .add_marker(beat, format!("Marker {number}"))
+                            .is_some()
+                        {
+                            modified = true;
+                        }
+                    }
+                }
+                if response.secondary_clicked()
+                    && let Some(pointer) = response.interact_pointer_pos()
+                    && let Some((id, _, _)) = marker_at_pointer(
+                        &project.markers,
+                        pointer,
+                        grid_left,
+                        bar_width,
+                        beats_per_bar_f64,
+                    )
+                    && project.remove_marker(id)
+                {
+                    modified = true;
+                }
+            }
             let folder_options = project
                 .tracks
                 .iter()
@@ -22441,6 +22645,7 @@ fn show_project(
         defer_audio_plan: arrange_view_state.audio_events.edit_drag_active(),
         automation_action: pending_automation_action,
         crossfade_requested: audio_events_crossfade_requested,
+        marker_edit_cancelled,
     }
 }
 
@@ -31088,6 +31293,49 @@ mod transport_locate_tests {
         app.navigate_track_edge(false, false);
         assert_eq!(app.data.project.selected_track, Some(0));
         assert_eq!(app.data.project.tracks.len(), 3, "hidden rows still exist");
+    }
+
+    #[test]
+    fn marker_lane_hit_testing_uses_the_shared_bar_geometry() {
+        let mut project = Project::default();
+        let first = project.add_marker(0.0, "Start").expect("marker");
+        let second = project.add_marker(4.0, "Verse").expect("marker");
+        let grid_left = 264.0;
+        let bar_width = 100.0;
+        let first_x = grid_left + (0.0 / 4.0) as f32 * bar_width;
+        let second_x = grid_left + (4.0 / 4.0) as f32 * bar_width;
+        assert_eq!(
+            marker_at_pointer(
+                &project.markers,
+                Pos2::new(first_x + 2.0, 0.0),
+                grid_left,
+                bar_width,
+                4.0
+            )
+            .map(|hit| hit.0),
+            Some(first)
+        );
+        assert_eq!(
+            marker_at_pointer(
+                &project.markers,
+                Pos2::new(second_x - 3.0, 0.0),
+                grid_left,
+                bar_width,
+                4.0
+            )
+            .map(|hit| hit.0),
+            Some(second)
+        );
+        assert!(
+            marker_at_pointer(
+                &project.markers,
+                Pos2::new(grid_left + 50.0, 0.0),
+                grid_left,
+                bar_width,
+                4.0
+            )
+            .is_none()
+        );
     }
 
     #[test]

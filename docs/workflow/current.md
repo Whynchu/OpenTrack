@@ -42,7 +42,9 @@ Step 19 added folder indentation, per-folder `▤F` folding, persisted `folder_c
 
 Step 20 aligned folder identity across views: Mixer strips omit folders, Inspector shows an organizational notice instead of channel controls, and keyboard Up/Down/Home/End skip rows hidden by collapsed folders/groups without deleting the hidden selection. Folder subtree reorder/duplicate and the audio/recording plan are unchanged. App suite: 533 passed, 9 ignored; core 159 passed; inventory remains 271 leaves with 84 unavailable. Desktop visual/scroll and save/reopen review remain pending. See [R4-20](tasks/R4-20-hierarchy-cross-view-review.md).
 
-Next ready work: revision-4 step 21, enable a real Marker lane. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 21 added an optional real Marker lane backed by `Project.markers`: snapped add, drag move, right-click delete, click-to-seek, shared hit/bar geometry, one undo step per gesture and Escape rollback. Visibility is workspace state and defaults off to keep existing row geometry unchanged; Project > Show Marker Lane enables it. App suite: 536 passed, 9 ignored; inventory is 272 leaves with 84 unavailable. Rename stays in the existing Markers window; desktop lane review remains pending. See [R4-21](tasks/R4-21-marker-lane.md).
+
+Next ready work: revision-4 step 22, expose regions as editable ranges. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

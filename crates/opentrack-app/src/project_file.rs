@@ -145,6 +145,13 @@ pub(crate) struct ArrangeViewState {
     pub(crate) take_lanes_visible: std::collections::BTreeSet<u64>,
     #[serde(default = "default_true")]
     pub(crate) show_inspector: bool,
+    /// Show the dedicated marker lane above the track rows. Off by default so
+    /// existing row geometry is unchanged until the user enables it.
+    #[serde(default)]
+    pub(crate) show_marker_lane: bool,
+    /// Marker drag gesture: marker id and its beat when the drag started.
+    #[serde(skip)]
+    pub(crate) marker_drag: Option<(u64, f64)>,
     #[serde(default = "default_true")]
     pub(crate) show_track_colors: bool,
     #[serde(default)]
@@ -199,6 +206,8 @@ impl Default for ArrangeViewState {
             automation_visible: Default::default(),
             take_lanes_visible: Default::default(),
             show_inspector: true,
+            show_marker_lane: false,
+            marker_drag: None,
             show_track_colors: true,
             selected_track_ids: Default::default(),
             selection_anchor_track_id: None,
@@ -1866,6 +1875,23 @@ mod tests {
         assert_eq!(restored.project.validate_routing(), Ok(()));
         assert_eq!(restored.project.validate(), Ok(()));
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn marker_lane_visibility_round_trips_and_defaults_on() {
+        let mut view = ArrangeViewState::default();
+        assert!(!view.show_marker_lane);
+        view.show_marker_lane = true;
+        let encoded = serde_json::to_string(&view).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert!(restored.show_marker_lane);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("show_marker_lane");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
+        assert!(!legacy.show_marker_lane);
     }
 
     #[test]
