@@ -132,8 +132,14 @@ Still open from revision 1:
 
 ### D. MIDI depth
 
-15. **Quantize with strength and swing**, as one bounded core command plus a
-    dialog, with preview.
+15. **Quantize with strength and swing.** *Delivered.*
+   `opentrack_core::midi_quantize` quantizes the selected notes (or the whole part)
+   to a beat grid with a strength fraction, a swing offset on every second line,
+   and optional length snapping, clamping every note inside its part and leaving
+   already-quantized notes alone. The Edit menu's "Quantize MIDI..." dialog starts
+   from the toolbar's quantize grid and applies as one undo step labelled
+   "Quantize Notes". A live preview is not part of this slice. 7 core and 4 app
+   tests.
 16. **Transpose and velocity tools** over the selected notes.
 17. **MIDI part editing**: split a part at the cursor and merge adjacent parts.
 

@@ -1127,6 +1127,8 @@ pub struct OpenTrackApp {
     /// Name being typed in the Save as Template dialog.
     template_name_draft: Option<String>,
     session_health_open: bool,
+    /// Open MIDI quantize dialog settings.
+    midi_quantize_dialog: Option<opentrack_core::midi_quantize::QuantizeOptions>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2503,6 +2505,7 @@ impl OpenTrackApp {
             undo_history_open: false,
             template_name_draft: None,
             session_health_open: false,
+            midi_quantize_dialog: None,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -6812,6 +6815,135 @@ impl OpenTrackApp {
         self.status_message = "Removed the marker; Undo restores it".to_owned();
     }
 
+    /// Quantizes the selected notes (or the whole part) as one undo step.
+    fn quantize_selected_notes(&mut self, options: opentrack_core::midi_quantize::QuantizeOptions) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before quantizing".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let changed = opentrack_core::midi_quantize::quantize_notes(part, &ids, options);
+        if changed == 0 {
+            self.status_message = if options.strength > 0.0 && ids.is_empty() {
+                "Every note in the part is already on this grid".to_owned()
+            } else {
+                "No note moved; check the selection and the quantize settings".to_owned()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot quantize: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Quantize Notes");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Quantized {changed} note(s) to {:.2} beat grid at {:.0}% strength{}; Undo restores them",
+            options.grid_beats,
+            options.strength * 100.0,
+            if options.swing > 0.0 {
+                format!(" with {:.0}% swing", options.swing * 100.0)
+            } else {
+                String::new()
+            }
+        );
+    }
+
+    fn show_midi_quantize_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut options) = self.midi_quantize_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let selection = self.selected_midi_note_ids.len();
+        let response = egui::Window::new("Quantize MIDI")
+            .id(Id::new("midi-quantize"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(330.0);
+                ui.label(if selection > 0 {
+                    format!("{selection} selected note(s)")
+                } else {
+                    "Every note in the selected part".to_owned()
+                });
+                ui.separator();
+                egui::Grid::new("midi-quantize-grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Grid (beats)");
+                        ui.add(
+                            egui::DragValue::new(&mut options.grid_beats)
+                                .range(0.0625..=8.0)
+                                .speed(0.0625),
+                        );
+                        ui.end_row();
+
+                        ui.label("Strength");
+                        ui.add(
+                            egui::Slider::new(&mut options.strength, 0.0..=1.0)
+                                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                        );
+                        ui.end_row();
+
+                        ui.label("Swing");
+                        ui.add(
+                            egui::Slider::new(&mut options.swing, 0.0..=1.0)
+                                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                        );
+                        ui.end_row();
+
+                        ui.label("Note lengths");
+                        ui.checkbox(&mut options.quantize_lengths, "Snap lengths too");
+                        ui.end_row();
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Quantize").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("midi-quantize"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.quantize_selected_notes(options);
+        } else if !cancel && open {
+            self.midi_quantize_dialog = Some(options);
+        }
+    }
+
     /// Collects the session's issues for the health window.
     fn session_health_issues(&self) -> Vec<session_health::HealthIssue> {
         let failures = self
@@ -9683,6 +9815,26 @@ impl OpenTrackApp {
                         self.move_selected_audio_events_to_cursor();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Quantize MIDI...",
+                        "",
+                        self.project_open
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        let defaults =
+                            opentrack_core::midi_quantize::QuantizeOptions::default();
+                        self.midi_quantize_dialog = Some(opentrack_core::midi_quantize::QuantizeOptions {
+                            grid_beats: self
+                                .arrange_view_state
+                                .quantize
+                                .step_beats(),
+                            ..defaults
+                        });
+                        ui.close();
+                    }
                     if menu_command(ui, "Split Loop", "", self.project_open).clicked() {
                         self.split_audio_events_at_loop();
                         ui.close();
@@ -10137,7 +10289,6 @@ impl OpenTrackApp {
                                 ("Calculate Hitpoints", ""),
                                 ("Create Markers", ""),
                                 ("Create Regions", ""),
-                                ("Quantize", ""),
                             ],
                         );
                     });
@@ -11260,6 +11411,7 @@ impl OpenTrackApp {
             || self.undo_history_open
             || self.template_name_draft.is_some()
             || self.session_health_open
+            || self.midi_quantize_dialog.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -13647,6 +13799,7 @@ impl eframe::App for OpenTrackApp {
         self.show_undo_history(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
+        self.show_midi_quantize_dialog(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -22837,6 +22990,151 @@ mod snap_type_tests {
         view.snap_type = SnapType::GridAndCursor;
         assert_eq!(view.snap_type.label(), "Grid + Cursor");
         assert_eq!(SnapType::ALL.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod midi_quantize_tests {
+    use super::*;
+    use opentrack_core::midi_quantize::QuantizeOptions;
+    use opentrack_core::project::{MidiNote, MidiPart};
+
+    fn app_with_part() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.next_midi_part_id = 2;
+        app.data.project.next_midi_note_id = 3;
+        app.data.project.tracks[0].midi_parts.push(MidiPart {
+            id: 1,
+            name: "Part".to_owned(),
+            start_beats: 0.0,
+            duration_beats: 8.0,
+            notes: vec![
+                MidiNote {
+                    id: 1,
+                    start_beats: 0.02,
+                    duration_beats: 0.5,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                },
+                MidiNote {
+                    id: 2,
+                    start_beats: 1.24,
+                    duration_beats: 0.5,
+                    pitch: 62,
+                    channel: 0,
+                    velocity: 100,
+                },
+            ],
+            controller_events: Vec::new(),
+        });
+        app.data.project.selected_midi_part_id = Some(1);
+        app.project_history.clear();
+        app
+    }
+
+    fn starts(app: &OpenTrackApp) -> Vec<f64> {
+        app.data.project.tracks[0].midi_parts[0]
+            .notes
+            .iter()
+            .map(|note| note.start_beats)
+            .collect()
+    }
+
+    #[test]
+    fn quantizing_the_part_is_one_labelled_undo_step() {
+        let mut app = app_with_part();
+        app.quantize_selected_notes(QuantizeOptions {
+            grid_beats: 0.25,
+            ..QuantizeOptions::default()
+        });
+        assert_eq!(starts(&app), vec![0.0, 1.25]);
+        assert!(app.modified);
+        assert!(app.status_message.contains("Quantized 2 note(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Quantize Notes");
+
+        // Running it again changes nothing and says so.
+        app.quantize_selected_notes(QuantizeOptions {
+            grid_beats: 0.25,
+            ..QuantizeOptions::default()
+        });
+        assert!(app.status_message.contains("already on this grid"));
+    }
+
+    #[test]
+    fn only_selected_notes_are_quantized_and_swing_is_named() {
+        let mut app = app_with_part();
+        app.selected_midi_note_ids = [2].into_iter().collect();
+        app.quantize_selected_notes(QuantizeOptions {
+            grid_beats: 0.25,
+            swing: 0.5,
+            ..QuantizeOptions::default()
+        });
+        let starts = starts(&app);
+        assert!((starts[0] - 0.02).abs() < 1e-9, "the unselected note stays");
+        assert!(starts[1] > 1.25, "the swung note lands after the grid");
+        assert!(app.status_message.contains("swing"));
+    }
+
+    #[test]
+    fn quantizing_without_a_part_reports_instead_of_editing() {
+        let mut app = app_with_part();
+        app.data.project.selected_midi_part_id = None;
+        let before = app.data.project.clone();
+        app.quantize_selected_notes(QuantizeOptions::default());
+        assert!(app.status_message.contains("Select a MIDI part"));
+        assert_eq!(app.data.project, before);
+    }
+
+    #[test]
+    fn the_quantize_dialog_renders_its_settings() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = app_with_part();
+        app.midi_quantize_dialog = Some(QuantizeOptions::default());
+
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_midi_quantize_dialog(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Quantize MIDI"), "{joined}");
+        assert!(joined.contains("Strength"), "{joined}");
+        assert!(joined.contains("Swing"), "{joined}");
+        assert!(
+            joined.contains("Every note in the selected part"),
+            "{joined}"
+        );
     }
 }
 
