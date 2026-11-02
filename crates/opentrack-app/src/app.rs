@@ -502,6 +502,20 @@ struct HistoryStep {
     redo: bool,
 }
 
+/// One Transport locate command, shared by the menu and the reference keymap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportLocate {
+    LocatorsToSelection,
+    SelectionStart,
+    SelectionEnd,
+    NextMarker,
+    PreviousMarker,
+    NextEvent,
+    PreviousEvent,
+    PlaySelection,
+    LoopSelection,
+}
+
 /// One Zoom-menu command, shared by the menu and the reference keymap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ZoomCommand {
@@ -6761,6 +6775,20 @@ impl OpenTrackApp {
             "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
             "nudge.left" => self.nudge_selected_audio_events(false),
             "nudge.right" => self.nudge_selected_audio_events(true),
+            "transport.locate_next_event" => self.run_transport_locate(TransportLocate::NextEvent),
+            "transport.locate_previous_event" => {
+                self.run_transport_locate(TransportLocate::PreviousEvent)
+            }
+            "transport.locate_selection" => {
+                self.run_transport_locate(TransportLocate::SelectionStart)
+            }
+            "transport.locators_to_selection" => {
+                self.run_transport_locate(TransportLocate::LocatorsToSelection)
+            }
+            "transport.loop_selection" => self.run_transport_locate(TransportLocate::LoopSelection),
+            "transport.play_selection_range" => {
+                self.run_transport_locate(TransportLocate::PlaySelection)
+            }
             "transport.insert_marker" => self.add_marker_at_playhead(),
             "transport.locate_next_marker" => self.locate_next_marker(),
             "transport.locate_previous_marker" => self.locate_previous_marker(),
@@ -7737,6 +7765,191 @@ impl OpenTrackApp {
         {
             self.status_message = format!("Located to {}", marker.name);
         }
+    }
+
+    fn run_transport_locate(&mut self, action: TransportLocate) {
+        match action {
+            TransportLocate::LocatorsToSelection => self.locators_to_selection(),
+            TransportLocate::SelectionStart => self.locate_selection_start(),
+            TransportLocate::SelectionEnd => self.locate_selection_end(),
+            TransportLocate::NextMarker => self.locate_next_marker(),
+            TransportLocate::PreviousMarker => self.locate_previous_marker(),
+            TransportLocate::NextEvent => self.locate_next_event(),
+            TransportLocate::PreviousEvent => self.locate_previous_event(),
+            TransportLocate::PlaySelection => self.play_selection_range(),
+            TransportLocate::LoopSelection => self.loop_selection(),
+        }
+    }
+
+    /// The union of the selected audio events and the selected MIDI part, in beats.
+    fn selected_event_span(&self) -> Option<(f64, f64)> {
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let midi_part = self.data.project.selected_midi_part_id;
+        let mut start = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        for track in &self.data.project.tracks {
+            for clip in &track.clips {
+                if selected.contains(&clip.id) {
+                    start = start.min(clip.start_beats);
+                    end = end.max(clip.start_beats + clip.duration_seconds * tempo / 60.0);
+                }
+            }
+            for part in &track.midi_parts {
+                if midi_part == Some(part.id) {
+                    start = start.min(part.start_beats);
+                    end = end.max(part.start_beats + part.duration_beats);
+                }
+            }
+        }
+        (start.is_finite() && end.is_finite() && end > start).then_some((start, end))
+    }
+
+    fn locate_next_event(&mut self) {
+        let beat = self.data.transport.position_beats;
+        match self.data.project.next_event_start_after(beat) {
+            Some(next) => {
+                self.seek_to_beats(next);
+                self.status_message = format!("Located to the next event at beat {next:.3}");
+            }
+            None => self.status_message = "There is no event after the cursor".to_owned(),
+        }
+    }
+
+    fn locate_previous_event(&mut self) {
+        let beat = self.data.transport.position_beats;
+        match self.data.project.previous_event_start_before(beat) {
+            Some(previous) => {
+                self.seek_to_beats(previous);
+                self.status_message =
+                    format!("Located to the previous event at beat {previous:.3}");
+            }
+            None => self.status_message = "There is no event before the cursor".to_owned(),
+        }
+    }
+
+    fn locate_selection_start(&mut self) {
+        match self.selected_event_span() {
+            Some((start, _)) => {
+                self.seek_to_beats(start);
+                self.status_message = format!("Located to the selection start at beat {start:.3}");
+            }
+            None => {
+                self.status_message =
+                    "Select an event or a MIDI part to locate the selection".to_owned()
+            }
+        }
+    }
+
+    fn locate_selection_end(&mut self) {
+        match self.selected_event_span() {
+            Some((_, end)) => {
+                self.seek_to_beats(end);
+                self.status_message = format!("Located to the selection end at beat {end:.3}");
+            }
+            None => {
+                self.status_message =
+                    "Select an event or a MIDI part to locate the selection end".to_owned()
+            }
+        }
+    }
+
+    /// Sets the locators to the selection span as one undo step.
+    fn locators_to_selection(&mut self) {
+        let Some((start, end)) = self.selected_event_span() else {
+            self.status_message = "Select an event or a MIDI part to set the locators".to_owned();
+            return;
+        };
+        self.apply_loop_range(start, end, "Set the locators to the selection");
+    }
+
+    /// Sets the locators to the selection and turns Cycle on.
+    fn loop_selection(&mut self) {
+        let Some((start, end)) = self.selected_event_span() else {
+            self.status_message = "Select an event or a MIDI part to loop the selection".to_owned();
+            return;
+        };
+        self.data.transport.cycle = true;
+        self.apply_loop_range(start, end, "Looping the selection");
+    }
+
+    /// Locators to the selection, Cycle on, then playback from the loop start.
+    fn play_selection_range(&mut self) {
+        let Some((start, end)) = self.selected_event_span() else {
+            self.status_message = "Select an event or a MIDI part to play its range".to_owned();
+            return;
+        };
+        self.data.transport.cycle = true;
+        self.apply_loop_range(start, end, "Playing the selection range");
+        self.set_transport_playing(true);
+        // `set_transport_playing` reports playback; the range is what matters
+        // after this command, so it is named last.
+        self.status_message = format!("Playing the selection range {start:.3} to {end:.3} (cycle)");
+    }
+
+    fn apply_loop_range(&mut self, start: f64, end: f64, what: &str) {
+        let mut candidate = self.data.project.clone();
+        candidate.set_loop_range(start, end);
+        if candidate.validate().is_err() {
+            self.status_message = "That range cannot become the locators".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = format!("Cannot {what}: undo snapshot is unavailable");
+            return;
+        }
+        self.project_history.label_next("Set Locators");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "{what}: {start:.3} to {end:.3}{}",
+            if self.data.transport.cycle {
+                " (cycle)"
+            } else {
+                ""
+            }
+        );
+    }
+
+    /// Expands or collapses every group track as one undo step.
+    fn set_all_groups_collapsed(&mut self, collapsed: bool) {
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.set_all_groups_collapsed(collapsed);
+        if changed == 0 {
+            self.status_message = if collapsed {
+                "Every group is already collapsed".to_owned()
+            } else {
+                "Every group is already expanded".to_owned()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot fold the groups: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Fold Groups");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "{} {changed} group track(s)",
+            if collapsed { "Collapsed" } else { "Expanded" }
+        );
     }
 
     fn locate_next_marker(&mut self) {
@@ -10711,7 +10924,12 @@ impl OpenTrackApp {
                     }
                     menu_command(ui, "Remove Empty Tracks", "", false);
                     ui.menu_button("Track Folding", |ui| {
-                        disabled_menu_commands(ui, &[("Expand All", ""), ("Collapse All", "")]);
+                        for (label, collapsed) in [("Expand All", false), ("Collapse All", true)] {
+                            if menu_command(ui, label, "", self.project_open).clicked() {
+                                self.set_all_groups_collapsed(collapsed);
+                                ui.close();
+                            }
+                        }
                     });
                     ui.separator();
                     if menu_command(ui, "Pool", "Ctrl+P", true).clicked() {
@@ -11134,16 +11352,25 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.separator();
+                    for (label, shortcut, action) in [
+                        ("Locators to Selection", "P", TransportLocate::LocatorsToSelection),
+                        ("Locate Selection", "L", TransportLocate::SelectionStart),
+                        ("Locate Selection End", "", TransportLocate::SelectionEnd),
+                        ("Locate Next Marker", "Shift+N", TransportLocate::NextMarker),
+                        ("Locate Previous Marker", "Shift+B", TransportLocate::PreviousMarker),
+                        ("Locate Next Event", "N", TransportLocate::NextEvent),
+                        ("Locate Previous Event", "B", TransportLocate::PreviousEvent),
+                        ("Play Selection Range", "Alt+Space", TransportLocate::PlaySelection),
+                        ("Loop Selection", "Shift+G", TransportLocate::LoopSelection),
+                    ] {
+                        if menu_command(ui, label, shortcut, self.project_open).clicked() {
+                            self.run_transport_locate(action);
+                            ui.close();
+                        }
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Locators to Selection", "P"),
-                            ("Locate Selection", "L"),
-                            ("Locate Selection End", ""),
-                            ("Locate Next Marker", "Shift+N"),
-                            ("Locate Previous Marker", "Shift+B"),
-                            ("Locate Next Event", "N"),
-                            ("Locate Previous Event", "B"),
                             ("Post-roll from Selection Start", ""),
                             ("Post-roll from Selection End", ""),
                             ("Pre-roll to Selection Start", ""),
@@ -11153,8 +11380,6 @@ impl OpenTrackApp {
                             ("Play until Selection Start", ""),
                             ("Play until Selection End", ""),
                             ("Play until Next Marker", ""),
-                            ("Play Selection Range", "Alt+Space"),
-                            ("Loop Selection", "Shift+G"),
                         ],
                     );
                     menu_command(ui, "Use Pre-roll", "", false);
@@ -11171,10 +11396,29 @@ impl OpenTrackApp {
                         self.toggle_metronome();
                         ui.close();
                     }
+                    if checked_menu_command(
+                        ui,
+                        "Precount On",
+                        "",
+                        self.metronome_count_in_bars > 0,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        // One bar is the smallest count-in; the setup dialog
+                        // chooses 0-4.
+                        self.metronome_count_in_bars =
+                            if self.metronome_count_in_bars > 0 { 0 } else { 1 };
+                        self.status_message = if self.metronome_count_in_bars > 0 {
+                            "Precount is on: one bar before recording".to_owned()
+                        } else {
+                            "Precount is off".to_owned()
+                        };
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Precount On", ""),
                             ("Project Synchronization Setup...", ""),
                             ("Use External Sync", "T"),
                             ("Retrospective Record", "Shift+Num *"),
@@ -25583,6 +25827,154 @@ mod outside_click_window_tests {
 }
 
 #[cfg(test)]
+mod transport_locate_tests {
+    use super::*;
+
+    fn app_with_events() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Midi);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 4.0, 2.0)
+            .unwrap();
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 12.0, 2.0)
+            .unwrap();
+        app.data.project.add_midi_part(1, 8.0, 4.0).unwrap();
+        // A newly added part becomes the MIDI selection; these tests choose
+        // their own selection.
+        app.data.project.selected_midi_part_id = None;
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn locating_events_moves_strictly_forward_and_back() {
+        let mut app = app_with_events();
+        app.data.transport.position_beats = 0.0;
+        app.locate_next_event();
+        assert_eq!(app.data.transport.position_beats, 4.0);
+        app.locate_next_event();
+        assert_eq!(app.data.transport.position_beats, 8.0);
+        app.locate_next_event();
+        assert_eq!(app.data.transport.position_beats, 12.0);
+        assert!(app.status_message.contains("next event at beat 12.000"));
+        // Past the last event it reports instead of jumping.
+        app.locate_next_event();
+        assert_eq!(app.data.transport.position_beats, 12.0);
+        assert!(app.status_message.contains("no event after"));
+
+        app.locate_previous_event();
+        assert_eq!(app.data.transport.position_beats, 8.0);
+        app.locate_previous_event();
+        assert_eq!(app.data.transport.position_beats, 4.0);
+        app.locate_previous_event();
+        assert_eq!(app.data.transport.position_beats, 4.0);
+        assert!(app.status_message.contains("no event before"));
+    }
+
+    #[test]
+    fn locating_the_selection_uses_the_selected_span() {
+        let mut app = app_with_events();
+        let id = app.data.project.tracks[0].clips[1].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.locate_selection_start();
+        assert_eq!(app.data.transport.position_beats, 12.0);
+        app.locate_selection_end();
+        // The second event is 2 beats long at 120 BPM.
+        assert!((app.data.transport.position_beats - 16.0).abs() < 1e-9);
+        assert!(app.status_message.contains("selection end"));
+
+        // A MIDI part selection works the same way.
+        let part = app.data.project.tracks[1].midi_parts[0].id;
+        app.arrange_view_state.audio_events.clear_selection();
+        app.data.project.selected_midi_part_id = Some(part);
+        app.locate_selection_start();
+        assert_eq!(app.data.transport.position_beats, 8.0);
+    }
+
+    #[test]
+    fn locators_loop_and_play_use_the_selection_as_one_undo_step() {
+        let mut app = app_with_events();
+        app.arrange_view_state.audio_events.select_many([
+            app.data.project.tracks[0].clips[0].id,
+            app.data.project.tracks[0].clips[1].id,
+        ]);
+        app.locators_to_selection();
+        assert_eq!(app.data.project.loop_start_beats, 4.0);
+        assert_eq!(app.data.project.loop_end_beats, 16.0);
+        assert!(!app.data.transport.cycle, "locators alone do not loop");
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Locators");
+
+        app.loop_selection();
+        assert!(app.data.transport.cycle);
+        assert!(app.status_message.contains("Looping the selection"));
+
+        app.play_selection_range();
+        assert!(app.data.transport.cycle);
+        assert!(app.status_message.contains("Playing the selection range"));
+    }
+
+    #[test]
+    fn the_commands_refuse_without_a_selection() {
+        let mut app = app_with_events();
+        app.arrange_view_state.audio_events.clear_selection();
+        app.data.project.selected_midi_part_id = None;
+        let before = app.data.project.clone();
+        app.locators_to_selection();
+        assert!(app.status_message.contains("Select an event"));
+        app.loop_selection();
+        assert!(app.status_message.contains("Select an event"));
+        app.play_selection_range();
+        assert!(app.status_message.contains("Select an event"));
+        assert_eq!(app.data.project, before);
+        assert!(!app.data.transport.cycle);
+    }
+
+    #[test]
+    fn folding_every_group_is_one_labelled_undo_step() {
+        let mut app = app_with_events();
+        app.data.project.add_track(TrackKind::Group);
+        app.data.project.add_track(TrackKind::Group);
+        app.project_history.clear();
+
+        app.set_all_groups_collapsed(true);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::Group)
+                .all(|track| track.group_collapsed)
+        );
+        assert!(app.status_message.contains("Collapsed 2 group track(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Fold Groups");
+
+        app.set_all_groups_collapsed(true);
+        assert!(app.status_message.contains("already collapsed"));
+
+        app.set_all_groups_collapsed(false);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::Group)
+                .all(|track| !track.group_collapsed)
+        );
+        assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
 mod keyboard_coverage_tests {
     use super::*;
     use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
@@ -25710,6 +26102,14 @@ mod keyboard_coverage_tests {
             "transport.stop",
             "transport.record",
             "transport.insert_marker",
+            "transport.locate_next_event",
+            "transport.locate_previous_event",
+            "transport.locate_selection",
+            "transport.locators_to_selection",
+            "transport.loop_selection",
+            "transport.play_selection_range",
+            "transport.return_to_zero",
+            "transport.cycle",
             "midi.quantize",
             "nudge.left",
             "nudge.right",

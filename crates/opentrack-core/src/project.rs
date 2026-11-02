@@ -2464,6 +2464,58 @@ impl Project {
         Some(keeper.id)
     }
 
+    /// The earliest event start strictly after `beat`, across audio and MIDI.
+    ///
+    /// "Event" means the beginning of an audio event or a MIDI part, which is
+    /// what a locate command moves to. The search is strict, so pressing the key
+    /// twice always advances instead of landing on the same place.
+    pub fn next_event_start_after(&self, beat: f64) -> Option<f64> {
+        if !beat.is_finite() {
+            return None;
+        }
+        self.tracks
+            .iter()
+            .flat_map(|track| {
+                track
+                    .clips
+                    .iter()
+                    .map(|clip| clip.start_beats)
+                    .chain(track.midi_parts.iter().map(|part| part.start_beats))
+            })
+            .filter(|start| start.is_finite() && *start > beat + 1e-9)
+            .min_by(f64::total_cmp)
+    }
+
+    /// The latest event start strictly before `beat`, across audio and MIDI.
+    pub fn previous_event_start_before(&self, beat: f64) -> Option<f64> {
+        if !beat.is_finite() {
+            return None;
+        }
+        self.tracks
+            .iter()
+            .flat_map(|track| {
+                track
+                    .clips
+                    .iter()
+                    .map(|clip| clip.start_beats)
+                    .chain(track.midi_parts.iter().map(|part| part.start_beats))
+            })
+            .filter(|start| start.is_finite() && *start < beat - 1e-9)
+            .max_by(f64::total_cmp)
+    }
+
+    /// Expands or collapses every group track and reports how many changed.
+    pub fn set_all_groups_collapsed(&mut self, collapsed: bool) -> usize {
+        let mut changed = 0;
+        for track in self.tracks.iter_mut() {
+            if track.kind == TrackKind::Group && track.group_collapsed != collapsed {
+                track.group_collapsed = collapsed;
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     /// Replaces events on one track with a single rendered event.
     ///
     /// Bounce in place renders a range of a track through its own chain, so the
@@ -5348,6 +5400,58 @@ mod sample_edit_tests {
         // An empty mapping is a no-op.
         assert_eq!(project.relink_media(&BTreeMap::new()), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn event_navigation_is_strict_and_spans_audio_and_midi() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Midi);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 4.0, 2.0)
+            .unwrap();
+        project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 12.0, 2.0)
+            .unwrap();
+        project.add_midi_part(1, 8.0, 4.0).unwrap();
+
+        assert_eq!(project.next_event_start_after(0.0), Some(4.0));
+        assert_eq!(project.next_event_start_after(4.0), Some(8.0), "strict");
+        assert_eq!(project.next_event_start_after(9.5), Some(12.0));
+        assert_eq!(project.next_event_start_after(12.0), None);
+
+        assert_eq!(project.previous_event_start_before(12.0), Some(8.0));
+        assert_eq!(project.previous_event_start_before(8.0), Some(4.0));
+        assert_eq!(project.previous_event_start_before(4.0), None);
+        assert_eq!(project.previous_event_start_before(0.0), None);
+        assert_eq!(project.next_event_start_after(f64::NAN), None);
+    }
+
+    #[test]
+    fn folding_groups_expands_or_collapses_only_group_tracks() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Audio);
+        assert_eq!(project.set_all_groups_collapsed(true), 2);
+        assert!(project.tracks[0].group_collapsed && project.tracks[1].group_collapsed);
+        assert!(
+            !project.tracks[2].group_collapsed,
+            "audio tracks do not fold"
+        );
+        assert_eq!(
+            project.set_all_groups_collapsed(true),
+            0,
+            "already collapsed"
+        );
+        assert_eq!(project.set_all_groups_collapsed(false), 2);
+        assert!(
+            project.tracks[..2]
+                .iter()
+                .all(|track| !track.group_collapsed)
+        );
+        assert!(project.validate().is_ok());
     }
 
     #[test]

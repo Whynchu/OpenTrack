@@ -1,33 +1,34 @@
 # Accessibility and keyboard coverage (2026-11-02)
 
-Scope: revision-2 task 31. This records what was measured in the running
-application's own code and theme, not a claim about assistive-technology
-conformance.
+Scope: revision-2 task 31 and the revision-3 menu/keyboard slices. This records
+what was measured in the application's own code and theme, not a claim about
+assistive-technology conformance.
 
 ## What changed
 
-- Disabled and secondary text now meets the 3:1 WCAG contrast ratio for
-  non-text UI in both themes. The theme's weak colour is kept and moved
-  only as far toward the body text colour as needed
-  (`theme::readable_muted`). Before this change the dark theme measured
-  2.27:1.
+- Disabled and secondary text meets the 3:1 WCAG contrast ratio for non-text
+  UI in both themes (`theme::readable_muted`). The dark theme measured
+  2.27:1 before the change.
 
-- Seven reference shortcuts that previously did nothing now reach real
-  commands: Select All (Ctrl+A), Select None (Ctrl+Shift+A), Delete
-  (Delete/Backspace), Snap On/Off (J), Autoscroll (F), Quantize (Q) and
-  VST Connections (F4).
+- Fifteen reference shortcuts that did nothing now reach real commands:
+  Select All, Select None, Delete, Snap On/Off, Autoscroll, Quantize, VST
+  Connections, Locate Next/Previous Event, Locate Selection, Locators to
+  Selection, Loop Selection and Play Selection Range.
 
-- A test audits the bundled keymap against the dispatch table on every
-  run, asserts twenty essential commands stay handled, and prints the
-  coverage counts used below. A second test asserts the contrast ratios
-  for both themes.
+- Twelve Transport and Track Folding menu entries moved from disabled to
+  working: the nine locate/loop commands above in the Transport menu, plus
+  Track Folding > Expand All / Collapse All and a checked Precount On.
+
+- A test audits the bundled keymap against the dispatch table on every run and
+  asserts a growing set of essential commands stays handled. A second test
+  asserts contrast ratios in both themes.
 
 ## Coverage
 
-The bundled Windows reference keymap binds **152** distinct commands across **198**
-chords. **75** commands have a dispatch arm; **77** still do not, so their chord
-does nothing yet. Counted as chords, 121 of 198 reach an arm. The menus remain
-the way to reach the uncovered features.
+The bundled Windows reference keymap declares **152** distinct commands, which the
+runtime profile expands to **198** key bindings. **81** commands have a dispatch
+arm; **71** still do not, so their shortcut does nothing yet. The menus remain the
+way to reach the uncovered features.
 
 ## Bound commands without a dispatch arm
 
@@ -113,14 +114,8 @@ the way to reach the uncovered features.
 - Input Position (`Shift+P`) — `transport.input_position`
 - Input Right Locator (`Shift+R`) — `transport.input_right_locator`
 - Input Tempo (`Shift+T`) — `transport.input_tempo`
-- Locate Next Event (`N`) — `transport.locate_next_event`
-- Locate Previous Event (`B`) — `transport.locate_previous_event`
-- Locate Selection (`L`) — `transport.locate_selection`
-- Locators to Selection (`P`) — `transport.locators_to_selection`
-- Loop Selection (`Shift+G`) — `transport.loop_selection`
 - Nudge Cursor left (`Ctrl+NumpadAdd`) — `transport.nudge_cursor_left`
 - Nudge Cursor right (`Ctrl+NumpadSubtract`) — `transport.nudge_cursor_right`
-- Play Selection Range (`Alt+Space`) — `transport.play_selection_range`
 - Recall Cycle Marker 1 to 9 (`Shift+Numpad1..9`) — `transport.recall_cycle_marker_1_to_9`
 - Retrospective Record (`Shift+NumpadMultiply`) — `transport.retrospective_record`
 - Rewind (`NumpadSubtract`) — `transport.rewind`
@@ -146,19 +141,24 @@ the way to reach the uncovered features.
 - egui moves keyboard focus with Tab between interactive widgets in layout
   order, and menu buttons are ordinary widgets, so the menu bar is reachable
   without a mouse.
-- Icons and colour-only controls carry hover text that names the command
-  (for example the MON control names Off/Auto/On and the next state).
-- Every dialog added in revision 2 has a title, a labelled primary action
-  and a Cancel; destructive actions name what they remove.
+
+- Shortcut dispatch is skipped while a text field has keyboard focus, so typing
+  in a name field does not trigger editor commands.
+
+- Icons and colour-only controls carry hover text that names the command and,
+  where it cycles, the next state.
+
+- Every dialog added in revision 2 has a title, a labelled primary action and a
+  Cancel; destructive actions name what they remove.
 
 ## Known gaps
 
-- The 77 shortcuts listed above are declared by the reference keymap but not
-  dispatched. They are the next accessibility work, not a finished claim.
+- The 71 shortcuts listed above are declared by the reference keymap
+  but not dispatched. They are the next keyboard work, not a finished claim.
 
-- There is no screen-reader narration beyond egui's own widget metadata, and
-  no high-contrast theme selection yet.
+- There is no screen-reader narration beyond egui's own widget metadata, and no
+  high-contrast theme selection yet.
 
-- Keyboard-only use was audited by source and tests, not by a manual pass in
-  the running application; that review remains.
+- Keyboard-only use is audited by source and tests, not by a manual pass in the
+  running application; that review remains.
 
