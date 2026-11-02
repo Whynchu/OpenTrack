@@ -12957,6 +12957,14 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     let pool_available = self.project_open && !self.is_recording();
+                    if menu_command(ui, "Import Pool...", "", self.project_open).clicked() {
+                        self.import_media_pool();
+                        ui.close();
+                    }
+                    if menu_command(ui, "Export Pool...", "", self.project_open).clicked() {
+                        self.export_media_pool();
+                        ui.close();
+                    }
                     if menu_command(
                         ui,
                         "Remove Unused Media",
@@ -13006,8 +13014,7 @@ impl OpenTrackApp {
                         ui,
                         &[
                             ("Import Audio CD...", ""),
-                            ("Import Pool...", ""),
-                            ("Export Pool...", ""),
+
                             ("Reconstruct", ""),
                             ("Convert Files...", ""),
                             ("Conform Files...", ""),

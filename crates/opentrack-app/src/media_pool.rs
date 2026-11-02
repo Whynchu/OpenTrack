@@ -97,6 +97,65 @@ pub(super) fn prepare(
     candidate.validate().map_err(str::to_owned)?;
     Ok((candidate, files))
 }
+/// One manifest import's result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ManifestImport {
+    pub added: usize,
+    pub already_present: usize,
+    pub missing: Vec<PathBuf>,
+}
+
+/// A media manifest: a comment header, then one `path<TAB>event count` per source.
+///
+/// It is deliberately plain text so it can be read, diffed and edited by hand.
+/// The event count is informational; import only uses the path.
+pub(super) fn manifest_text(project: &Project) -> String {
+    let mut text = String::from("# OpenTrack media manifest v1\n");
+    for path in project.media_paths() {
+        let uses = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| clip.source_path == path)
+            .count();
+        text.push_str(&path.to_string_lossy());
+        text.push('\t');
+        text.push_str(&uses.to_string());
+        text.push('\n');
+    }
+    text
+}
+
+/// Adds the manifest's existing files to the pool and reports what happened.
+///
+/// Lines starting with `#` and blank lines are skipped; the second column is
+/// ignored so hand-written one-path-per-line lists also work. Missing files are
+/// reported and never added, and the pool is not copied into the project.
+pub(super) fn import_manifest(project: &mut Project, text: &str) -> ManifestImport {
+    let mut report = ManifestImport::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let path = PathBuf::from(trimmed.split('\t').next().unwrap_or(trimmed));
+        if path.as_os_str().is_empty() || !seen.insert(path.clone()) {
+            continue;
+        }
+        if !path.exists() {
+            report.missing.push(path);
+        } else if project.media_pool.contains(&path) {
+            report.already_present += 1;
+        } else {
+            project.media_pool.insert(path);
+            report.added += 1;
+        }
+    }
+    report
+}
+
 /// True when `path` matches a Media Pool search term.
 ///
 /// A term matches the file name or any part of the full path, case-insensitively,
@@ -321,6 +380,100 @@ impl OpenTrackApp {
         }
         .into();
     }
+    /// Writes the project's media manifest to a file the user chooses.
+    pub(super) fn export_media_pool(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to export its media pool".to_owned();
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Media manifest", &["txt"])
+            .set_file_name(format!("{} media.txt", self.data.project.name))
+            .set_title("Export Media Pool")
+            .save_file()
+        else {
+            return;
+        };
+        self.export_media_pool_to(&path);
+    }
+
+    /// Writes the manifest to `path`; split out so tests do not need a dialog.
+    pub(super) fn export_media_pool_to(&mut self, path: &Path) {
+        let text = manifest_text(&self.data.project);
+        match std::fs::write(path, text) {
+            Ok(()) => {
+                self.status_message = format!(
+                    "Exported {} media path(s) to {}",
+                    self.data.project.media_paths().len(),
+                    path.display()
+                )
+            }
+            Err(error) => self.status_message = format!("Could not export the media pool: {error}"),
+        }
+    }
+
+    /// Adds the files named in a manifest the user chooses.
+    pub(super) fn import_media_pool(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to import a media pool".to_owned();
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Media manifest", &["txt"])
+            .set_title("Import Media Pool")
+            .pick_file()
+        else {
+            return;
+        };
+        self.import_media_pool_from(&path);
+    }
+
+    /// Imports the manifest at `path` as one undo step; split out for tests.
+    pub(super) fn import_media_pool_from(&mut self, path: &Path) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before importing a media pool".to_owned();
+            return;
+        }
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status_message = format!("Could not read the manifest: {error}");
+                return;
+            }
+        };
+        let mut candidate = self.data.project.clone();
+        let report = import_manifest(&mut candidate, &text);
+        if report.added == 0 {
+            self.status_message = format!(
+                "Nothing to import: {} already in the pool, {} missing",
+                report.already_present,
+                report.missing.len()
+            );
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot import the media pool: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Import Pool");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        let mut status = format!(
+            "Added {} media path(s) to the pool ({} already there)",
+            report.added, report.already_present
+        );
+        if !report.missing.is_empty() {
+            status.push_str(&format!("; {} file(s) are missing", report.missing.len()));
+        }
+        self.status_message = status;
+    }
+
     /// Drops pool entries no event references, keeping the files on disk.
     pub(super) fn remove_unused_media_from_pool(&mut self) {
         if self.is_recording() {
@@ -1102,6 +1255,106 @@ mod tests {
             joined.contains("snare.wav"),
             "the other file is still listed"
         );
+    }
+
+    #[test]
+    fn the_manifest_lists_paths_with_usage_and_imports_them_back() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-manifest-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let used = root.join("used.wav");
+        let spare = root.join("spare.wav");
+        let absent = root.join("absent.wav");
+        std::fs::write(&used, b"a").expect("used");
+        std::fs::write(&spare, b"b").expect("spare");
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, used.clone(), 0.0, 2.0)
+            .expect("clip");
+        project
+            .add_audio_clip(0, used.clone(), 4.0, 2.0)
+            .expect("clip");
+        project.media_pool.insert(used.clone());
+        project.media_pool.insert(spare.clone());
+
+        let text = manifest_text(&project);
+        assert!(text.starts_with("# OpenTrack media manifest v1"));
+        assert!(text.contains(&format!("{}\t2", used.display())), "{text}");
+        assert!(text.contains(&format!("{}\t0", spare.display())), "{text}");
+
+        // Importing the exported manifest into a project with an empty pool
+        // restores both existing paths and reports the absent one.
+        let mut target = Project::default();
+        let text = format!("{text}{}\t0\n", absent.display());
+        let report = import_manifest(&mut target, &text);
+        assert_eq!(report.added, 2);
+        assert_eq!(report.already_present, 0);
+        assert_eq!(report.missing, vec![absent.clone()]);
+        assert!(target.media_pool.contains(&used));
+        assert!(target.media_pool.contains(&spare));
+        assert!(!target.media_pool.contains(&absent));
+
+        // Comments, blank lines, duplicates and one-path-per-line lists are fine.
+        let report = import_manifest(
+            &mut target,
+            &format!(
+                "# comment\n\n{}\n{}\nnot-real.wav\n",
+                used.display(),
+                used.display()
+            ),
+        );
+        assert_eq!(report.added, 0);
+        assert_eq!(report.already_present, 1);
+        assert_eq!(report.missing.len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exporting_and_importing_the_pool_are_files_and_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-manifest-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let media = root.join("Audio").join("Imports").join("take.wav");
+        std::fs::write(&media, b"take").expect("media");
+        let manifest = root.join("pool media.txt");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, media.clone(), 0.0, 2.0)
+            .expect("clip");
+        app.project_history.clear();
+
+        app.export_media_pool_to(&manifest);
+        assert!(manifest.exists());
+        let exported = std::fs::read_to_string(&manifest).expect("manifest");
+        assert!(exported.contains("take.wav"));
+        assert!(app.status_message.contains("Exported 1 media path(s)"));
+
+        // Import into a pool that has been emptied first.
+        app.data.project.media_pool.clear();
+        app.import_media_pool_from(&manifest);
+        assert!(app.data.project.media_pool.contains(&media));
+        assert!(app.status_message.contains("Added 1 media path(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Import Pool");
+
+        // A second import adds nothing and writes no step.
+        let steps = app.project_history.counts().0;
+        app.import_media_pool_from(&manifest);
+        assert!(app.status_message.contains("Nothing to import"));
+        assert_eq!(app.project_history.counts().0, steps);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

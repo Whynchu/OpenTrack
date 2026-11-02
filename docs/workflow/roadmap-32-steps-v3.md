@@ -207,6 +207,13 @@ and measured numbers.
    is transient and cleared when a project closes. 3 media-pool/app tests.
    Disabled entries 108 -> 107.
 
+26. **Import and Export Pool.** *Delivered.* Media > Export Pool... writes a
+   plain-text manifest (comment header, then `path<TAB>event count`); Media >
+   Import Pool... adds the manifest's existing files to the pool as one labelled
+   "Import Pool" undo step, reports already-present and missing files, and never
+   copies media. Hand-written one-path-per-line lists, comments and duplicates
+   are handled. 2 module/app tests. Disabled entries 107 -> 105.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
