@@ -141,6 +141,7 @@ pub(super) enum Action {
     Add(TrackKind),
     Duplicate(u64),
     Remove(u64),
+    OpenArranger,
     MoveToFolder { folder_id: u64, track_id: u64 },
     RemoveFromFolder(u64),
     ShowAutomation(u64),
@@ -187,8 +188,16 @@ fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
         }
     }
     ui.separator();
+    let arranger_label = if flat {
+        "Add Arranger".to_owned()
+    } else {
+        "Arranger".to_owned()
+    };
+    if ui.button(arranger_label).clicked() {
+        *action = Some(Action::OpenArranger);
+        ui.close();
+    }
     for name in [
-        "Arranger",
         "Marker",
         "Ruler",
         "Signature",

@@ -1922,6 +1922,35 @@ mod tests {
     }
 
     #[test]
+    fn arranger_sections_and_sequence_round_trip_through_the_native_document() {
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let mut project = Project::default();
+        let section = project
+            .arranger
+            .add_section("Verse", 4.0, 12.0)
+            .expect("section");
+        project.arranger.append_sequence(section, 3);
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-arranger-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        document.write(&path).unwrap();
+        let restored = ProjectFile::read(&path).unwrap();
+        assert_eq!(restored.version, FORMAT_VERSION);
+        assert_eq!(restored.project.arranger.sections.len(), 1);
+        assert_eq!(restored.project.arranger.sequence[0].repeats, 3);
+        assert_eq!(
+            restored.project.arranger.expanded_duration_beats(),
+            Some(24.0)
+        );
+        assert_eq!(restored.project.validate(), Ok(()));
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn legacy_mono_input_migrates_and_existing_project_format_is_editable_and_persistent() {
         let mut project = Project::default();
         project.add_track_with_audio_channels(TrackKind::Audio, 1);

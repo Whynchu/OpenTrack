@@ -14043,10 +14043,13 @@ impl OpenTrackApp {
                             }
                         }
                         ui.separator();
+                        if menu_command(ui, "Arranger", "", self.project_open).clicked() {
+                            self.open_arranger_editor();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
-                                ("Arranger", ""),
                                 ("Marker", ""),
                                 ("Ruler", ""),
                                 ("Signature", ""),
@@ -17323,6 +17326,9 @@ impl OpenTrackApp {
                 if can_remove {
                     self.pending_track_delete_id = Some(id);
                 }
+            }
+            Some(project_controls::Action::OpenArranger) => {
+                self.open_arranger_editor();
             }
             Some(project_controls::Action::MoveToFolder {
                 folder_id,

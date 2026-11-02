@@ -56,7 +56,9 @@ Step 26 added the offline arranger sequence transformer in `opentrack-audio::arr
 
 Step 27 connected a playback-only arranger preview through the existing engine plan path, with Project > Preview Arranger, sequence/source position readout, Cycle/recording refusal, stop-path plan restoration and content-edit cancellation. App suite: 540 passed, 9 ignored; inventory is 274 leaves with 84 unavailable. Audible block-boundary, rapid-stop, seek and MIDI-hang behavior remain runtime-pending because no audio device was opened. See [R4-27](tasks/R4-27-arranger-preview.md).
 
-Next ready work: revision-4 step 28, enable Add Arranger and review the complete path. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 28 enabled Add Arranger from the main and context menus to open the existing single editor (no fake track). Arranger OPR save/reopen shares the same sections/sequence used by preview and the offline transformer. App suite: 541 passed, 9 ignored; inventory is 274 leaves with 83 unavailable. Live sequence playback, export comparison and listening remain runtime-pending. See [R4-28](tasks/R4-28-add-arranger.md).
+
+Next ready work: revision-4 step 29, specify and export OpenTrack Track Archive v1. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 
