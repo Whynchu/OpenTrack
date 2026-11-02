@@ -62,7 +62,9 @@ Step 29 added OpenTrack Track Archive v1 export: a documented directory package 
 
 Step 30 enabled Import Track Archive (OpenTrack v1) with manifest/version validation, canonical path containment, contained media copy, fresh track/clip/MIDI IDs, hierarchy/route remapping, external-route disconnection reports and one atomic history step. Malformed/traversal/missing-media packages change nothing. App suite: 544 passed, 9 ignored; inventory is 275 leaves with 83 unavailable. Import is synchronous (may briefly block on large packages); desktop/fresh-process review remains pending. See [R4-30](tasks/R4-30-import-track-archive.md).
 
-Next ready work: revision-4 step 31, revision acceptance and compatibility pass. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 31 ran the phase acceptance pass: core 164 passed; audio 171 passed, 3 ignored; app 544 passed, 9 ignored; formatting and diff checks clean. The x64 release build compiled and staged `builds/x64/OpenTrack.exe` with local ASIO retained (SHA-256 `7206DC24A44620E59D57828E6C6CBC7EEB0C0B849DAA5545AA13B434AF23A826`). The build script's `Get-FileHash` metadata step failed in this shell and the metadata file was completed with `certutil`. No desktop, listening or hardware acceptance was performed. See [R4-31](tasks/R4-31-acceptance-pass.md).
+
+Next ready work: revision-4 step 32, consolidate and prepare the next queue. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 
