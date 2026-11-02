@@ -124,6 +124,74 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// Largest linear gain an envelope point may hold (about +12 dB).
+pub const MAX_ENVELOPE_GAIN: f32 = 4.0;
+
+/// Multiplies the used range by a piecewise-linear gain envelope.
+///
+/// Points are `(position, gain)` where position runs from 0 at the range start to
+/// 1 at its end, so the shape survives a later trim or stretch of the event. The
+/// envelope must hold at least two points, be sorted by position, and span the
+/// whole range; a missing end point is filled with the nearest gain rather than
+/// guessing a curve.
+pub fn apply_gain_envelope_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    points: &[(f32, f32)],
+    destination: &Path,
+) -> Result<u64, String> {
+    if points.len() < 2 {
+        return Err("an envelope needs at least two points".to_owned());
+    }
+    let mut sorted = points.to_vec();
+    if sorted
+        .iter()
+        .any(|(position, gain)| !position.is_finite() || !gain.is_finite())
+    {
+        return Err("envelope points must be finite".to_owned());
+    }
+    sorted.sort_by(|left, right| left.0.total_cmp(&right.0));
+    if sorted.iter().any(|(position, gain)| {
+        !(0.0..=1.0).contains(position) || *gain < 0.0 || *gain > MAX_ENVELOPE_GAIN
+    }) {
+        return Err(format!(
+            "envelope points must sit between 0 and 1 with a gain of 0 to {MAX_ENVELOPE_GAIN}"
+        ));
+    }
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
+    let channels = usize::from(range.channels);
+    let frames = range.frames as usize;
+    let gain_at = |fraction: f32| -> f32 {
+        if fraction <= sorted[0].0 {
+            return sorted[0].1;
+        }
+        for pair in sorted.windows(2) {
+            let (start, start_gain) = pair[0];
+            let (end, end_gain) = pair[1];
+            if fraction <= end {
+                if (end - start).abs() <= f32::EPSILON {
+                    return end_gain;
+                }
+                let amount = (fraction - start) / (end - start);
+                return start_gain + (end_gain - start_gain) * amount;
+            }
+        }
+        sorted.last().map(|(_, gain)| *gain).unwrap_or(1.0)
+    };
+    let mut samples = Vec::with_capacity(range.samples.len());
+    let denominator = frames.saturating_sub(1).max(1) as f32;
+    for frame in 0..frames {
+        let gain = gain_at(frame as f32 / denominator);
+        for channel in 0..channels {
+            let value = range.samples[frame * channels + channel] * gain;
+            samples.push(value.clamp(-1.0, 1.0));
+        }
+    }
+    write_float_wav(destination, range.channels, range.sample_rate, &samples)?;
+    Ok(range.frames)
+}
+
 /// What one time-stretch pass produced.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StretchOutcome {
@@ -668,6 +736,82 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_gain_envelope_shapes_the_used_range() {
+        let root = std::env::temp_dir().join(format!("opentrack-envelope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("flat.wav");
+        // One second of a steady 0.5 amplitude.
+        write_wav(&source, 1, 48_000, |_, _| 0.5);
+        let destination = root.join("shaped.wav");
+
+        // Half gain throughout.
+        let frames = apply_gain_envelope_wav_range(
+            &source,
+            0.0,
+            1.0,
+            &[(0.0, 0.5), (1.0, 0.5)],
+            &destination,
+        )
+        .expect("envelope");
+        assert_eq!(frames, 48_000);
+        let (_, samples) = read(&destination);
+        assert!((samples[0] - 0.25).abs() < 1e-6);
+        assert!((samples[47_999] - 0.25).abs() < 1e-6);
+
+        // A ramp from silence to unity, mid-point at half gain.
+        let ramp = root.join("ramp.wav");
+        apply_gain_envelope_wav_range(&source, 0.0, 1.0, &[(0.0, 0.0), (1.0, 1.0)], &ramp)
+            .expect("ramp");
+        let (_, samples) = read(&ramp);
+        assert!(samples[0].abs() < 1e-6);
+        assert!((samples[24_000] - 0.25).abs() < 2e-3, "{}", samples[24_000]);
+        assert!((samples[47_999] - 0.5).abs() < 1e-3);
+
+        // An interior point bends the line, and unsorted input still works.
+        let bent = root.join("bent.wav");
+        apply_gain_envelope_wav_range(
+            &source,
+            0.0,
+            1.0,
+            &[(1.0, 1.0), (0.5, 0.0), (0.0, 1.0)],
+            &bent,
+        )
+        .expect("bent");
+        let (_, samples) = read(&bent);
+        assert!((samples[0] - 0.5).abs() < 1e-6);
+        assert!(samples[24_000].abs() < 1e-3, "silent in the middle");
+        assert!((samples[47_999] - 0.5).abs() < 1e-3);
+
+        // Bad envelopes are refused.
+        assert!(
+            apply_gain_envelope_wav_range(&source, 0.0, 1.0, &[(0.0, 1.0)], &root.join("a.wav"))
+                .is_err()
+        );
+        assert!(
+            apply_gain_envelope_wav_range(
+                &source,
+                0.0,
+                1.0,
+                &[(0.0, 1.0), (1.0, 9.0)],
+                &root.join("b.wav")
+            )
+            .is_err()
+        );
+        assert!(
+            apply_gain_envelope_wav_range(
+                &source,
+                0.0,
+                1.0,
+                &[(f32::NAN, 1.0), (1.0, 1.0)],
+                &root.join("c.wav")
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

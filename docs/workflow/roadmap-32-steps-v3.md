@@ -483,5 +483,16 @@ still one commit with tests and refreshed counts.
    implied. 25-400% only, 100% and non-finite values refused, one labelled "Time
    Stretch" undo step. 1 audio and 1 app tests. Disabled entries 82 -> 81.
 
+48. **Envelope.** *Delivered (destructive).* Audio > Process > Envelope... opens a
+   gain-envelope editor for the selected events: click to add a point, drag to move
+   one, Remove Point, Reset, and Apply. `opentrack_audio::apply_gain_envelope_wav_range`
+   multiplies the used range by a piecewise-linear envelope (points are positions
+   0-1 with a 0-4 linear gain, validated) and writes new media, so playback and
+   render need no new state. This was deliberately destructive rather than a
+   persisted per-event curve: applying baked gain needs no audio-engine change,
+   while a live curve would. One labelled "Envelope" undo step; failures clean up.
+   1 audio and 2 app tests. Disabled entries 81 -> 80. No OPR bump was needed
+   because the envelope is baked into the audio rather than stored on the event.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

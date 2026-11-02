@@ -171,6 +171,42 @@ pub(super) fn media_matches(path: &Path, search: &str) -> bool {
         || path.to_string_lossy().to_lowercase().contains(&search)
 }
 
+/// Index of the envelope point nearest `pointer`, if one is within reach.
+fn nearest_envelope_point(points: &[(f32, f32)], canvas: Rect, pointer: Pos2) -> Option<usize> {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, (position, gain))| {
+            let point = Pos2::new(
+                canvas.left() + position * canvas.width(),
+                canvas.bottom() - (gain / 2.0) * canvas.height(),
+            );
+            (index, point.distance(pointer))
+        })
+        .filter(|(_, distance)| *distance <= 12.0)
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index)
+}
+
+/// Gain-envelope editor state: points from 0 to 1 with a linear gain, plus what
+/// the pointer is doing.
+#[derive(Clone, Debug)]
+pub(super) struct EnvelopeDraft {
+    pub points: Vec<(f32, f32)>,
+    pub selected: Option<usize>,
+    dragging: Option<usize>,
+}
+
+impl Default for EnvelopeDraft {
+    fn default() -> Self {
+        Self {
+            points: vec![(0.0, 1.0), (1.0, 1.0)],
+            selected: None,
+            dragging: None,
+        }
+    }
+}
+
 /// One-shot state the pool's folder controls report back to the app.
 pub(super) struct PoolFolders<'a> {
     /// Folder shown, or `None` for every folder.
@@ -1165,6 +1201,317 @@ impl OpenTrackApp {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string())
         );
+    }
+
+    /// Opens the event gain-envelope editor.
+    pub(super) fn open_envelope_dialog(&mut self) {
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .is_empty()
+        {
+            self.envelope_dialog = None;
+            self.status_message = "Select audio events to shape their envelope".to_owned();
+            return;
+        }
+        self.envelope_dialog = Some(EnvelopeDraft::default());
+    }
+
+    /// Bakes a gain envelope into the selected events' used audio.
+    ///
+    /// The envelope is destructive, like the other source processes: the event
+    /// points at new media whose samples already carry the shape, so playback and
+    /// render need no extra state.
+    pub(super) fn apply_gain_envelope(&mut self, points: &[(f32, f32)]) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before shaping an envelope".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to shape their envelope".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Envelope is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message =
+                "Set up this project's folder before shaping an envelope".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before shaping an envelope".to_owned();
+            return;
+        };
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut shaped = 0;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} enveloped")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            if let Err(error) = opentrack_audio::apply_gain_envelope_wav_range(
+                &source,
+                offset,
+                duration,
+                points,
+                &destination,
+            ) {
+                self.cleanup_created_files(&created);
+                self.status_message = format!("Could not apply the envelope to {name}: {error}");
+                return;
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the shaped audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                shaped += 1;
+            }
+        }
+        if shaped == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = "No event could be shaped".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message =
+                "Cannot apply the envelope: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Envelope");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Applied a gain envelope to {shaped} event(s); Undo restores the originals");
+    }
+
+    pub(super) fn show_envelope_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.envelope_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Envelope")
+            .id(Id::new("event-envelope"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label("Gain envelope for the selected events. Click to add a point, drag to move one.");
+                let (canvas, canvas_response) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width().max(240.0), 160.0),
+                    egui::Sense::click_and_drag(),
+                );
+                let palette = theme::palette(ui);
+                let painter = ui.painter_at(canvas);
+                painter.rect_filled(canvas, egui::CornerRadius::same(2), palette.canvas);
+                for fraction in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+                    let x = canvas.left() + fraction * canvas.width();
+                    painter.line_segment(
+                        [Pos2::new(x, canvas.top()), Pos2::new(x, canvas.bottom())],
+                        egui::Stroke::new(1.0, palette.grid.gamma_multiply(0.6)),
+                    );
+                }
+                for gain in [0.0_f32, 0.5, 1.0] {
+                    let y = canvas.bottom() - (gain / 2.0) * canvas.height();
+                    painter.line_segment(
+                        [Pos2::new(canvas.left(), y), Pos2::new(canvas.right(), y)],
+                        egui::Stroke::new(
+                            1.0,
+                            if (gain - 1.0).abs() < 1e-6 {
+                                palette.muted
+                            } else {
+                                palette.grid.gamma_multiply(0.6)
+                            },
+                        ),
+                    );
+                }
+                let to_canvas = |position: f32, gain: f32| {
+                    Pos2::new(
+                        canvas.left() + position * canvas.width(),
+                        canvas.bottom() - (gain / 2.0) * canvas.height(),
+                    )
+                };
+                for pair in draft.points.windows(2) {
+                    painter.line_segment(
+                        [to_canvas(pair[0].0, pair[0].1), to_canvas(pair[1].0, pair[1].1)],
+                        egui::Stroke::new(1.5, palette.accent),
+                    );
+                }
+                for (index, (position, gain)) in draft.points.iter().enumerate() {
+                    let selected = draft.selected == Some(index);
+                    painter.circle_filled(
+                        to_canvas(*position, *gain),
+                        if selected { 5.0 } else { 3.5 },
+                        if selected { palette.text } else { palette.accent },
+                    );
+                }
+
+                if canvas_response.drag_started() {
+                    draft.dragging = canvas_response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| {
+                            nearest_envelope_point(&draft.points, canvas, pointer)
+                        });
+                }
+                if canvas_response.dragged()
+                    && let Some(index) = draft.dragging
+                    && let Some(pointer) = canvas_response.interact_pointer_pos()
+                {
+                    let position = ((pointer.x - canvas.left()) / canvas.width()).clamp(0.0, 1.0);
+                    let gain =
+                        (((canvas.bottom() - pointer.y) / canvas.height()) * 2.0).clamp(0.0, 2.0);
+                    let is_endpoint = index == 0 || index + 1 == draft.points.len();
+                    let point = &mut draft.points[index];
+                    if !is_endpoint {
+                        point.0 = position;
+                    }
+                    point.1 = gain;
+                    draft.selected = Some(index);
+                    let mut points = draft.points.clone();
+                    points.sort_by(|left, right| left.0.total_cmp(&right.0));
+                    draft.points = points;
+                }
+                if canvas_response.drag_stopped() {
+                    draft.dragging = None;
+                }
+                if canvas_response.clicked()
+                    && let Some(pointer) = canvas_response.interact_pointer_pos()
+                {
+                    match nearest_envelope_point(&draft.points, canvas, pointer) {
+                        Some(index) => draft.selected = Some(index),
+                        None => {
+                            let position =
+                                ((pointer.x - canvas.left()) / canvas.width()).clamp(0.0, 1.0);
+                            let gain = (((canvas.bottom() - pointer.y) / canvas.height()) * 2.0)
+                                .clamp(0.0, 2.0);
+                            draft.points.push((position, gain));
+                            draft.points.sort_by(|left, right| left.0.total_cmp(&right.0));
+                            draft.selected = draft
+                                .points
+                                .iter()
+                                .position(|point| point.0 == position && point.1 == gain);
+                        }
+                    }
+                }
+                ui.horizontal(|ui| {
+                    let removable = draft
+                        .selected
+                        .is_some_and(|index| index > 0 && index + 1 < draft.points.len());
+                    if ui
+                        .add_enabled(removable, egui::Button::new("Remove Point"))
+                        .clicked()
+                        && let Some(index) = draft.selected
+                        && index > 0
+                        && index + 1 < draft.points.len()
+                    {
+                        draft.points.remove(index);
+                        draft.selected = None;
+                    }
+                    if ui.button("Reset").clicked() {
+                        draft = EnvelopeDraft::default();
+                    }
+                    ui.label(
+                        egui::RichText::new("Top is +6 dB, the middle line is unity.")
+                            .small()
+                            .color(palette.muted),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("event-envelope"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            let points = draft.points.clone();
+            self.apply_gain_envelope(&points);
+            return;
+        }
+        if cancel || !open {
+            return;
+        }
+        // Keep the endpoints on both edges so the envelope always spans the range.
+        draft
+            .points
+            .sort_by(|left, right| left.0.total_cmp(&right.0));
+        if let Some(first) = draft.points.first_mut() {
+            first.0 = 0.0;
+        }
+        if let Some(last) = draft.points.last_mut() {
+            last.0 = 1.0;
+        }
+        self.envelope_dialog = Some(draft);
     }
 
     /// Opens the Time Stretch dialog at 100%.
@@ -2962,6 +3309,105 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn applying_an_envelope_repoints_events_and_is_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-envelope-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("flat.wav");
+        write_flat_wav(&source, 24_000, 0.5);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 0.5)
+            .expect("clip");
+        app.project_history.clear();
+
+        // Without a selection the editor does not open.
+        app.open_envelope_dialog();
+        assert!(app.envelope_dialog.is_none());
+        assert!(app.status_message.contains("Select audio events"));
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.open_envelope_dialog();
+        let draft = app.envelope_dialog.as_ref().expect("draft");
+        assert_eq!(draft.points, vec![(0.0, 1.0), (1.0, 1.0)]);
+
+        app.apply_gain_envelope(&[(0.0, 0.5), (1.0, 0.5)]);
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, source);
+        assert!(clip.source_path.exists());
+        assert_eq!(clip.duration_seconds, 0.5, "the event keeps its length");
+        assert!(
+            app.status_message
+                .contains("Applied a gain envelope to 1 event(s)")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Envelope");
+
+        // A one-point envelope is refused by the audio layer.
+        let steps = app.project_history.counts().0;
+        app.apply_gain_envelope(&[(0.0, 1.0)]);
+        assert!(app.status_message.contains("at least two points"));
+        assert_eq!(app.project_history.counts().0, steps);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_envelope_editor_window_draws_its_canvas() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.envelope_dialog = Some(EnvelopeDraft::default());
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_envelope_dialog(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Envelope"), "{joined}");
+        assert!(joined.contains("Click to add a point"), "{joined}");
+        assert!(
+            joined.contains("Apply") && joined.contains("Cancel"),
+            "{joined}"
+        );
+        assert!(app.envelope_dialog.is_some(), "the editor stays open");
     }
 
     #[test]
