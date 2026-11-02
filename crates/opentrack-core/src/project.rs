@@ -2863,6 +2863,66 @@ impl Project {
         Some(changed)
     }
 
+    /// Replaces one event with the given uses of its source.
+    ///
+    /// Ranges are `(start, end)` in seconds inside the event, so the caller can
+    /// keep the audible parts and drop silent ones without touching the file. The
+    /// new events keep the source, gain and channel width; fades are cleared
+    /// because their source positions no longer line up.
+    pub fn split_audio_clip_into_ranges(
+        &mut self,
+        track_id: u64,
+        clip_id: u64,
+        ranges_seconds: &[(f64, f64)],
+    ) -> Option<usize> {
+        if ranges_seconds.is_empty() || ranges_seconds.len() > 4_096 {
+            return None;
+        }
+        let track_index = self.tracks.iter().position(|track| track.id == track_id)?;
+        let clip = self.tracks[track_index]
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)?
+            .clone();
+        let mut previous_end = 0.0;
+        for (start, end) in ranges_seconds {
+            if !start.is_finite()
+                || !end.is_finite()
+                || *start < previous_end - 1e-9
+                || *end <= *start + 1e-6
+                || *end > clip.duration_seconds + 1e-6
+            {
+                return None;
+            }
+            previous_end = *end;
+        }
+        let count = ranges_seconds.len() as u64;
+        if self.next_clip_id.checked_add(count).is_none() {
+            return None;
+        }
+        let tempo = self.tempo_bpm.max(1.0);
+        let mut created = Vec::with_capacity(ranges_seconds.len());
+        for (start, end) in ranges_seconds {
+            let mut split = clip.clone();
+            split.id = self.next_clip_id;
+            self.next_clip_id += 1;
+            split.start_beats = clip.start_beats + start * tempo / 60.0;
+            split.source_offset_seconds = clip.source_offset_seconds + start;
+            split.duration_seconds = end - start;
+            split.fade_in_seconds = 0.0;
+            split.fade_out_seconds = 0.0;
+            split.source_fades.clear();
+            created.push(split);
+        }
+        let track = &mut self.tracks[track_index];
+        track.clips.retain(|clip| clip.id != clip_id);
+        track.clips.extend(created);
+        track
+            .clips
+            .sort_by(|left, right| left.start_beats.total_cmp(&right.start_beats));
+        Some(ranges_seconds.len())
+    }
+
     /// Fits the selected events' fades to the locator range.
     ///
     /// An event crossing the range keeps its material inside the range at full
@@ -6959,6 +7019,52 @@ mod sample_edit_tests {
                 .explode_midi_part_by_channel(track_id, part, 3)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn an_event_can_be_replaced_by_ranges_of_its_source() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 4.0, 2.0)
+            .expect("clip");
+        project.tracks[0].clips[0].source_offset_seconds = 0.5;
+        let track_id = project.tracks[0].id;
+
+        // Keep 0-0.5 s and 1.5-2.0 s, dropping the silent middle.
+        assert_eq!(
+            project.split_audio_clip_into_ranges(track_id, clip, &[(0.0, 0.5), (1.5, 2.0)]),
+            Some(2)
+        );
+        let clips = &project.tracks[0].clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0].start_beats, 4.0);
+        assert_eq!(clips[0].duration_seconds, 0.5);
+        assert_eq!(clips[0].source_offset_seconds, 0.5);
+        // 1.5 s at 120 BPM is three beats after the event start.
+        assert!((clips[1].start_beats - 7.0).abs() < 1e-9);
+        assert_eq!(clips[1].duration_seconds, 0.5);
+        assert!((clips[1].source_offset_seconds - 2.0).abs() < 1e-9);
+        assert!(clips.iter().all(|clip| clip.fade_in_seconds == 0.0));
+        assert!(project.validate().is_ok());
+
+        // Invalid ranges are refused and leave the project alone.
+        let first = clips[0].id;
+        let before = project.clone();
+        assert_eq!(
+            project.split_audio_clip_into_ranges(track_id, first, &[]),
+            None
+        );
+        assert_eq!(
+            project.split_audio_clip_into_ranges(track_id, first, &[(0.4, 0.1)]),
+            None
+        );
+        assert_eq!(
+            project.split_audio_clip_into_ranges(track_id, first, &[(0.0, 5.0)]),
+            None
+        );
+        assert_eq!(project, before);
     }
 
     #[test]

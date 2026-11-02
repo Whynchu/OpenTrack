@@ -1215,6 +1215,219 @@ impl OpenTrackApp {
         );
     }
 
+    /// Opens the Detect Silence dialog with practical defaults.
+    pub(super) fn open_detect_silence_dialog(&mut self) {
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .is_empty()
+        {
+            self.detect_silence_dialog = None;
+            self.status_message = "Select audio events to detect their silence".to_owned();
+            return;
+        }
+        self.detect_silence_dialog = Some((-60.0, 200.0));
+    }
+
+    /// Splits the selected events around their silent passages.
+    ///
+    /// The audible parts become separate events; silent spans are dropped from the
+    /// arrangement but stay in the source file, so Undo restores them.
+    pub(super) fn apply_detect_silence(&mut self, threshold_dbfs: f32, min_silence_ms: f64) {
+        if !threshold_dbfs.is_finite() || !(-120.0..=0.0).contains(&threshold_dbfs) {
+            self.status_message =
+                "The silence threshold must be between -120 and 0 dBFS".to_owned();
+            return;
+        }
+        if !min_silence_ms.is_finite() || !(10.0..=10_000.0).contains(&min_silence_ms) {
+            self.status_message = "The minimum silence must be between 10 ms and 10 s".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before detecting silence".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to detect their silence".to_owned();
+            return;
+        }
+        if ids.len() > 16 {
+            self.status_message = "Detect Silence is limited to 16 events at a time".to_owned();
+            return;
+        }
+        let min_silence_seconds = min_silence_ms / 1000.0;
+        let mut candidate = self.data.project.clone();
+        let mut split_events = 0;
+        let mut silent_spans = 0;
+        let mut untouched = 0;
+        let mut all_silent = 0;
+        for id in ids {
+            let Some((track_id, source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter().map(move |clip| (track.id, clip)))
+                .find(|(_, clip)| clip.id == id)
+                .map(|(track_id, clip)| {
+                    (
+                        track_id,
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let silent = match opentrack_audio::detect_silent_ranges_wav_range(
+                &source,
+                offset,
+                duration,
+                threshold_dbfs,
+                min_silence_seconds,
+            ) {
+                Ok(silent) => silent,
+                Err(error) => {
+                    self.status_message = format!("Could not analyse {name}: {error}");
+                    return;
+                }
+            };
+            if silent.is_empty() {
+                untouched += 1;
+                continue;
+            }
+            // Audible ranges are the complement of the silent spans.
+            let mut audible = Vec::new();
+            let mut cursor = 0.0_f64;
+            for (start, end) in &silent {
+                if *start > cursor + 1e-6 {
+                    audible.push((cursor, *start));
+                }
+                cursor = cursor.max(*end);
+            }
+            if cursor < duration - 1e-6 {
+                audible.push((cursor, duration));
+            }
+            if audible.is_empty() {
+                all_silent += 1;
+                continue;
+            }
+            let spans = silent.len();
+            match candidate.split_audio_clip_into_ranges(track_id, id, &audible) {
+                Some(_) => {
+                    split_events += 1;
+                    silent_spans += spans;
+                }
+                None => {
+                    self.status_message =
+                        format!("Could not split {name} around its silent passages");
+                    return;
+                }
+            }
+        }
+        if split_events == 0 {
+            let mut status = "No silent passages were found".to_owned();
+            if all_silent > 0 {
+                status.push_str(&format!("; {all_silent} event(s) are entirely silent"));
+            }
+            self.status_message = status;
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot split the events: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Detect Silence");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Split {split_events} event(s) at {silent_spans} silent passage(s); Undo restores them"
+        );
+        if untouched > 0 {
+            status.push_str(&format!("; {untouched} had no silence"));
+        }
+        if all_silent > 0 {
+            status.push_str(&format!("; {all_silent} are entirely silent and were kept"));
+        }
+        self.status_message = status;
+    }
+
+    pub(super) fn show_detect_silence_dialog(&mut self, ctx: &egui::Context) {
+        let Some((mut threshold, mut minimum)) = self.detect_silence_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Detect Silence")
+            .id(Id::new("detect-silence-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label("Splits the selected events around their silent passages.");
+                egui::Grid::new("detect-silence-grid")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Threshold");
+                        ui.add(
+                            egui::DragValue::new(&mut threshold)
+                                .range(-120.0..=0.0)
+                                .speed(0.5)
+                                .suffix(" dBFS"),
+                        );
+                        ui.end_row();
+                        ui.label("Minimum silence");
+                        ui.add(
+                            egui::DragValue::new(&mut minimum)
+                                .range(10.0..=10_000.0)
+                                .speed(5.0)
+                                .suffix(" ms"),
+                        );
+                        ui.end_row();
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "The audible parts become separate events; silent spans leave the arrangement but stay in the file.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Split").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("detect-silence-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_detect_silence(threshold, minimum);
+        } else if !cancel && open {
+            self.detect_silence_dialog = Some((threshold, minimum));
+        }
+    }
+
     /// Opens the pool Convert Files dialog seeded from the project rate.
     pub(super) fn open_convert_files_dialog(&mut self) {
         if !self.project_open {
@@ -3571,6 +3784,110 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    fn write_tone_gap_tone(path: &std::path::Path) {
+        let mut bytes = Vec::new();
+        let frames: u32 = 48_000;
+        let data_bytes = frames * 2;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        for frame in 0..frames {
+            // Tone, silence between 0.25 s and 0.75 s, then tone again.
+            let sample: i16 = if (12_000..36_000).contains(&frame) {
+                0
+            } else {
+                13_000
+            };
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn detecting_silence_splits_events_around_the_gaps_as_one_undo_step() {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-detect-silence-app-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("gaps.wav");
+        write_tone_gap_tone(&source);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 4.0, 1.0)
+            .expect("clip");
+        app.project_history.clear();
+
+        // The dialog needs a selection, and an unselected run reports.
+        app.apply_detect_silence(-40.0, 100.0);
+        assert!(app.status_message.contains("Select audio events"));
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.open_detect_silence_dialog();
+        assert_eq!(app.detect_silence_dialog, Some((-60.0, 200.0)));
+
+        app.apply_detect_silence(-40.0, 100.0);
+        let clips = &app.data.project.tracks[0].clips;
+        assert_eq!(clips.len(), 2, "the gap became a break between events");
+        assert_eq!(clips[0].start_beats, 4.0);
+        assert!(
+            (clips[0].duration_seconds - 0.25).abs() < 0.03,
+            "{}",
+            clips[0].duration_seconds
+        );
+        assert_eq!(clips[0].source_offset_seconds, 0.0);
+        // 0.75 s at 120 BPM is 1.5 beats after the event start.
+        assert!(
+            (clips[1].start_beats - 5.5).abs() < 0.06,
+            "{}",
+            clips[1].start_beats
+        );
+        assert!(
+            (clips[1].source_offset_seconds - 0.75).abs() < 0.03,
+            "{}",
+            clips[1].source_offset_seconds
+        );
+        assert!(
+            app.status_message
+                .contains("Split 1 event(s) at 1 silent passage(s)")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Detect Silence");
+
+        // A solid tone reports that nothing was found.
+        let solid = root.join("Audio").join("Imports").join("solid.wav");
+        write_flat_wav(&solid, 24_000, 0.5);
+        let solid_id = app
+            .data
+            .project
+            .add_audio_clip(0, solid, 8.0, 0.5)
+            .expect("clip");
+        app.arrange_view_state.audio_events.select_many([solid_id]);
+        let steps = app.project_history.counts().0;
+        app.apply_detect_silence(-40.0, 100.0);
+        assert!(app.status_message.contains("No silent passages"));
+        assert_eq!(app.project_history.counts().0, steps);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

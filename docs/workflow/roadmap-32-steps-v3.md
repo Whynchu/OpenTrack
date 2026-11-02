@@ -512,5 +512,16 @@ still one commit with tests and refreshed counts.
    rename/remove available on the model. 1 core model, 1 migration and 1 app tests.
    Disabled entries 79 -> 78.
 
-Next candidates: the Arranger, then OMF / Track Archive, then the user-dependent
-reviews and CPR fixtures.
+51. **Detect Silence.** *Delivered.* `opentrack_audio::detect_silent_ranges_wav_range`
+   finds silent spans in an event's used range with 10 ms RMS windows, a dBFS
+   threshold and a minimum silence, reporting edge silence too so audible ranges
+   are the complement. New `Project::split_audio_clip_into_ranges` replaces one
+   event with uses of its source (positions, offsets and fades accounted for).
+   Media > Advanced > Detect Silence... opens a threshold/minimum dialog and turns
+   each event into its audible parts as one labelled "Detect Silence" undo step;
+   silent spans leave the arrangement but stay in the file, and events with no
+   silence or that are entirely silent are counted and reported. 1 audio, 1 core
+   and 1 app tests. Disabled entries 78 -> 77.
+
+Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
+Archive, then the user-dependent reviews and CPR fixtures.

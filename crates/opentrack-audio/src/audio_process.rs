@@ -124,6 +124,77 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// Bound on silent ranges one detection pass may return.
+pub const MAX_SILENT_RANGES: usize = 4_096;
+
+/// Finds silent spans inside an event's used range, in seconds from its start.
+///
+/// The detector uses 10 ms RMS windows and reports spans at or below
+/// `threshold_dbfs` that last at least `min_silence_seconds`. Silence at the edges
+/// is reported too, so the caller can derive the audible ranges by complement
+/// rather than guessing where the audio starts.
+pub fn detect_silent_ranges_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    threshold_dbfs: f32,
+    min_silence_seconds: f64,
+) -> Result<Vec<(f64, f64)>, String> {
+    if !threshold_dbfs.is_finite() || !(-120.0..=0.0).contains(&threshold_dbfs) {
+        return Err("the silence threshold must be between -120 and 0 dBFS".to_owned());
+    }
+    if !min_silence_seconds.is_finite() || !(0.01..=10.0).contains(&min_silence_seconds) {
+        return Err("the minimum silence must be between 0.01 and 10 seconds".to_owned());
+    }
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
+    let channels = usize::from(range.channels);
+    let rate = f64::from(range.sample_rate);
+    let frames = range.frames as usize;
+    let window = ((range.sample_rate / 100).max(32)) as usize;
+    if frames < window {
+        return Err("the event is too short to analyse for silence".to_owned());
+    }
+    let threshold = 10.0_f64.powf(f64::from(threshold_dbfs) / 20.0);
+    let threshold_squared = threshold * threshold;
+    let mut silent = Vec::<(f64, f64)>::new();
+    let mut open: Option<f64> = None;
+    let mut start = 0;
+    while start + window <= frames {
+        let mut sum = 0.0_f64;
+        for frame in start..start + window {
+            let base = frame * channels;
+            let value = if channels == 1 {
+                f64::from(range.samples[base])
+            } else {
+                (0..channels)
+                    .map(|channel| f64::from(range.samples[base + channel]))
+                    .sum::<f64>()
+                    / channels as f64
+            };
+            sum += value * value;
+        }
+        let quiet = sum / window as f64 <= threshold_squared;
+        let time = start as f64 / rate;
+        match (quiet, open) {
+            (true, None) => open = Some(time),
+            (false, Some(begin)) => {
+                silent.push((begin, time));
+                open = None;
+            }
+            _ => {}
+        }
+        start += window;
+    }
+    if let Some(begin) = open {
+        silent.push((begin, frames as f64 / rate));
+    }
+    Ok(silent
+        .into_iter()
+        .filter(|(begin, end)| end - begin >= min_silence_seconds)
+        .take(MAX_SILENT_RANGES)
+        .collect())
+}
+
 /// Converts a whole WAV file to `target_rate`, keeping its duration.
 ///
 /// Used by the pool's Convert Files, which works on sources rather than event
@@ -766,6 +837,59 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn silent_spans_are_found_and_filtered_by_length() {
+        let root = std::env::temp_dir().join(format!("opentrack-silence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("tone-gap-tone.wav");
+        // 0-0.25 s tone, 0.25-0.75 s silence, then tone again.
+        write_wav(&source, 1, 48_000, |frame, _| {
+            if (12_000..36_000).contains(&frame) {
+                0.0
+            } else {
+                0.4
+            }
+        });
+        let silent = detect_silent_ranges_wav_range(&source, 0.0, 1.0, -40.0, 0.1).expect("detect");
+        assert_eq!(silent.len(), 1, "{silent:?}");
+        assert!((silent[0].0 - 0.25).abs() < 0.02, "{silent:?}");
+        assert!((silent[0].1 - 0.75).abs() < 0.02, "{silent:?}");
+
+        // A longer minimum hides the gap; a permissive one keeps it.
+        assert!(
+            detect_silent_ranges_wav_range(&source, 0.0, 1.0, -40.0, 1.0)
+                .expect("detect")
+                .is_empty()
+        );
+        // The threshold drives it: at 0 dBFS even the tone counts as quiet, so
+        // the whole range is one silent span rather than a gap.
+        let whole = detect_silent_ranges_wav_range(&source, 0.0, 1.0, 0.0, 0.1).expect("detect");
+        assert_eq!(whole.len(), 1, "{whole:?}");
+        assert!(whole[0].0.abs() < 1e-6);
+        assert!((whole[0].1 - 1.0).abs() < 1e-6);
+        // Leading silence is reported, so the caller can derive audible ranges.
+        let leading = root.join("leading.wav");
+        write_wav(
+            &leading,
+            1,
+            48_000,
+            |frame, _| {
+                if frame < 24_000 { 0.0 } else { 0.4 }
+            },
+        );
+        let silent =
+            detect_silent_ranges_wav_range(&leading, 0.0, 1.0, -40.0, 0.1).expect("detect");
+        assert_eq!(silent.len(), 1);
+        assert!(silent[0].0.abs() < 1e-6);
+        assert!((silent[0].1 - 0.5).abs() < 0.02);
+
+        // Bad settings are refused.
+        assert!(detect_silent_ranges_wav_range(&source, 0.0, 1.0, -200.0, 0.1).is_err());
+        assert!(detect_silent_ranges_wav_range(&source, 0.0, 1.0, -40.0, 0.0).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

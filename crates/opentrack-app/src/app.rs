@@ -1226,6 +1226,8 @@ pub struct OpenTrackApp {
     envelope_dialog: Option<media_pool::EnvelopeDraft>,
     /// Convert Files dialog draft, target rate in Hz.
     convert_files_dialog: Option<u32>,
+    /// Detect Silence dialog draft: threshold in dBFS and minimum silence in ms.
+    detect_silence_dialog: Option<(f32, f64)>,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2667,6 +2669,7 @@ impl OpenTrackApp {
             time_stretch_dialog: None,
             envelope_dialog: None,
             convert_files_dialog: None,
+            detect_silence_dialog: None,
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -4004,6 +4007,7 @@ impl OpenTrackApp {
         self.time_stretch_dialog = None;
         self.envelope_dialog = None;
         self.convert_files_dialog = None;
+        self.detect_silence_dialog = None;
         self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
@@ -13873,13 +13877,20 @@ impl OpenTrackApp {
                         );
                     });
                     ui.menu_button("Advanced", |ui| {
-                        disabled_menu_commands(
+                        let has_event =
+                            !self.arrange_view_state.audio_events.selected_ids().is_empty();
+                        if menu_command(
                             ui,
-                            &[
-                                ("Detect Silence...", ""),
-                                ("Spectrum Analyzer...", ""),
-                            ],
-                        );
+                            "Detect Silence...",
+                            "",
+                            self.project_open && !self.is_recording() && has_event,
+                        )
+                        .clicked()
+                        {
+                            self.open_detect_silence_dialog();
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Spectrum Analyzer...", "")]);
                     });
                 });
                 ui.menu_button("MIDI", |ui| {
@@ -15301,6 +15312,7 @@ impl OpenTrackApp {
             || self.time_stretch_dialog.is_some()
             || self.envelope_dialog.is_some()
             || self.convert_files_dialog.is_some()
+            || self.detect_silence_dialog.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -17738,6 +17750,7 @@ impl eframe::App for OpenTrackApp {
         self.show_time_stretch_dialog(&ctx);
         self.show_envelope_dialog(&ctx);
         self.show_convert_files_dialog(&ctx);
+        self.show_detect_silence_dialog(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
