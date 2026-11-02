@@ -38,7 +38,9 @@ Step 17 added the organizational folder kind and `parent_folder_id` hierarchy, b
 
 Step 18 enabled Add Folder in the main and context Add Track menus and added context Move to Folder / Remove from Folder commands using the current track selection. Assignment/removal are atomic candidate-validated commands; folder-aware reorder keeps descendants contiguous and folder duplication remaps parent IDs. Core suite: 159 passed; app suite: 532 passed, 9 ignored; inventory is 271 leaves with 84 unavailable. Folder indentation/collapse and cross-view review remain steps 19–20. See [R4-18](tasks/R4-18-folder-commands.md).
 
-Next ready work: revision-4 step 19, render and fold folders. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 19 added folder indentation, per-folder `▤F` folding, persisted `folder_collapsed`, and folder participation in Expand/Collapse All. Collapsed folder children get zero row/lane height but remain in the project and audio/recording plan; group folding behavior is unchanged. Core suite: 159 passed; app suite: 532 passed, 9 ignored; inventory remains 271 leaves with 84 unavailable. Desktop visual/scroll review and cross-view consistency remain step 20. See [R4-19](tasks/R4-19-render-fold-folders.md).
+
+Next ready work: revision-4 step 20, review hierarchy across views. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

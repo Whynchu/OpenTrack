@@ -10811,9 +10811,9 @@ impl OpenTrackApp {
         let changed = candidate.set_all_groups_collapsed(collapsed);
         if changed == 0 {
             self.status_message = if collapsed {
-                "Every group is already collapsed".to_owned()
+                "Every group and folder is already collapsed".to_owned()
             } else {
-                "Every group is already expanded".to_owned()
+                "Every group and folder is already expanded".to_owned()
             };
             return;
         }
@@ -19225,6 +19225,43 @@ fn track_hidden_by_collapsed_group(project: &Project, track_id: u64) -> bool {
     false
 }
 
+fn track_hidden_by_collapsed_folder(project: &Project, track_id: u64) -> bool {
+    let mut parent_id = project
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_folder_id);
+    for _ in 0..8 {
+        let Some(id) = parent_id else { return false };
+        let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
+            return false;
+        };
+        if parent.folder_collapsed {
+            return true;
+        }
+        parent_id = parent.parent_folder_id;
+    }
+    false
+}
+
+fn project_track_folder_depth(project: &Project, track_id: u64) -> usize {
+    let mut depth = 0;
+    let mut parent_id = project
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .and_then(|track| track.parent_folder_id);
+    for _ in 0..8 {
+        let Some(id) = parent_id else { break };
+        let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
+            break;
+        };
+        depth += 1;
+        parent_id = parent.parent_folder_id;
+    }
+    depth
+}
+
 fn project_track_group_depth(project: &Project, track_id: u64) -> usize {
     let mut depth = 0;
     let mut parent_id = project
@@ -19631,7 +19668,9 @@ fn show_project(
     let visible_rows = project.tracks.len();
     let row_heights = (0..visible_rows)
         .map(|row| {
-            if track_hidden_by_collapsed_group(project, track_ids[row]) {
+            if track_hidden_by_collapsed_group(project, track_ids[row])
+                || track_hidden_by_collapsed_folder(project, track_ids[row])
+            {
                 return 0.0;
             }
             let take_lane_count = project
@@ -20599,7 +20638,8 @@ fn show_project(
                     };
                 let top = canvas.min.y + ruler_height + row_offsets[row];
                 let row_track_id = track_ids[row];
-                let header_indent = project_track_group_depth(project, row_track_id) as f32 * 24.0;
+                let header_indent = project_track_group_depth(project, row_track_id) as f32 * 24.0
+                    + project_track_folder_depth(project, row_track_id) as f32 * 16.0;
                 // Child header controls stay inside the inset panel while the
                 // arrangement grid remains aligned with the rest of the tracks.
                 let row_header_width = lane_header_width - header_indent;
@@ -21184,13 +21224,19 @@ fn show_project(
                     }
                     let take_lanes_supported = track.kind == TrackKind::Audio;
                     let group_collapse_control = track.kind == TrackKind::Group;
-                    let lane_control_label = if group_collapse_control {
+                    let folder_collapse_control = track.kind == TrackKind::Folder;
+                    let tree_collapse_control = group_collapse_control || folder_collapse_control;
+                    let lane_control_label = if folder_collapse_control {
+                        "▤F"
+                    } else if group_collapse_control {
                         "▤G"
                     } else {
                         "▤"
                     };
                     let lane_control_active = if group_collapse_control {
                         !track.group_collapsed
+                    } else if folder_collapse_control {
+                        !track.folder_collapsed
                     } else {
                         arrange_view_state.take_lanes_visible.contains(&track.id)
                     };
@@ -21245,7 +21291,13 @@ fn show_project(
                             lane_control_label,
                             lane_control_active,
                             theme::palette(ui).surface_raised,
-                            if group_collapse_control {
+                            if folder_collapse_control {
+                                if track.folder_collapsed {
+                                    "Expand Folder Tracks"
+                                } else {
+                                    "Collapse Folder Tracks"
+                                }
+                            } else if group_collapse_control {
                                 if track.group_collapsed {
                                     "Expand Group Tracks"
                                 } else {
@@ -21282,7 +21334,7 @@ fn show_project(
                             label,
                             tooltip,
                             active,
-                            button_index != 5 || take_lanes_supported || group_collapse_control,
+                            button_index != 5 || take_lanes_supported || tree_collapse_control,
                             button_index == 2,
                         );
                         if response.clicked() {
@@ -21332,6 +21384,8 @@ fn show_project(
                                 5 => {
                                     if group_collapse_control {
                                         track.group_collapsed = !track.group_collapsed;
+                                    } else if folder_collapse_control {
+                                        track.folder_collapsed = !track.folder_collapsed;
                                     } else if !arrange_view_state
                                         .take_lanes_visible
                                         .remove(&track.id)
@@ -21683,7 +21737,8 @@ fn show_project(
                         audio_events::take_lane_layout(t, project.tempo_bpm);
                     let take_lanes_visible = arrange_view_state.take_lanes_visible.contains(&t.id);
                     let base_height = arrange_view_state.track_height(t.id);
-                    let hidden_by_group = track_hidden_by_collapsed_group(project, t.id);
+                    let hidden_by_tree = track_hidden_by_collapsed_group(project, t.id)
+                        || track_hidden_by_collapsed_folder(project, t.id);
                     let media_height = base_height
                         * if take_lanes_visible {
                             take_lane_count as f32
@@ -21693,15 +21748,13 @@ fn show_project(
                     audio_events::Lane {
                         id: t.id,
                         channels: t.audio_channels,
-                        audio: (t.kind == TrackKind::Audio && !hidden_by_group)
-                            || (t.kind == TrackKind::Group
-                                && t.group_collapsed
-                                && !hidden_by_group),
+                        audio: (t.kind == TrackKind::Audio && !hidden_by_tree)
+                            || (t.kind == TrackKind::Group && t.group_collapsed && !hidden_by_tree),
                         rect: Rect::from_min_size(
                             Pos2::new(grid_left, canvas.top() + ruler_height + row_offsets[row]),
                             Vec2::new(
                                 grid_clip.width(),
-                                if hidden_by_group { 0.0 } else { media_height },
+                                if hidden_by_tree { 0.0 } else { media_height },
                             ),
                         ),
                         take_lanes_visible,
@@ -30944,6 +30997,32 @@ mod transport_locate_tests {
         assert_eq!(app.data.project.tracks[1].parent_folder_id, None);
         app.redo_project();
         assert_eq!(app.data.project.tracks[1].parent_folder_id, Some(folder));
+    }
+
+    #[test]
+    fn folder_collapse_hides_children_without_removing_them() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Folder);
+        app.data.project.add_track(TrackKind::Audio);
+        let folder = app.data.project.tracks[0].id;
+        let child = app.data.project.tracks[1].id;
+        app.data.project.tracks[1].parent_folder_id = Some(folder);
+        assert!(!track_hidden_by_collapsed_folder(&app.data.project, child));
+        app.data.project.tracks[0].folder_collapsed = true;
+        assert!(track_hidden_by_collapsed_folder(&app.data.project, child));
+        assert_eq!(project_track_folder_depth(&app.data.project, child), 1);
+        assert!(
+            app.data
+                .project
+                .tracks
+                .iter()
+                .any(|track| track.id == child && track.kind == TrackKind::Audio)
+        );
+        assert_eq!(app.data.project.set_all_groups_collapsed(false), 1);
+        assert!(!track_hidden_by_collapsed_folder(&app.data.project, child));
     }
 
     #[test]

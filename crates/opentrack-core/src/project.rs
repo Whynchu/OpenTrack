@@ -113,6 +113,7 @@ impl BusChannel {
             parent_group_id: None,
             parent_folder_id: None,
             group_collapsed: false,
+            folder_collapsed: false,
             group_cut_beats: Vec::new(),
             color_index: None,
             audio_channels: 2,
@@ -163,6 +164,9 @@ pub struct Track {
     /// Whether Project hides a group's child rows. Persisted with the group.
     #[serde(default)]
     pub group_collapsed: bool,
+    /// Whether Project hides a folder's child rows. Persisted with the folder.
+    #[serde(default)]
+    pub folder_collapsed: bool,
     /// Shared edit boundaries for the virtual event shown by a collapsed group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_cut_beats: Vec<f64>,
@@ -1403,6 +1407,7 @@ impl Project {
             parent_group_id: None,
             parent_folder_id: None,
             group_collapsed: false,
+            folder_collapsed: false,
             group_cut_beats: Vec::new(),
             color_index: None,
             audio_channels,
@@ -3717,6 +3722,10 @@ impl Project {
         for track in self.tracks.iter_mut() {
             if track.kind == TrackKind::Group && track.group_collapsed != collapsed {
                 track.group_collapsed = collapsed;
+                changed += 1;
+            }
+            if track.kind == TrackKind::Folder && track.folder_collapsed != collapsed {
+                track.folder_collapsed = collapsed;
                 changed += 1;
             }
         }
@@ -9281,16 +9290,24 @@ mod sample_edit_tests {
         project.tracks[0].inserts.clear();
 
         // The persisted field defaults to none for older projects.
+        project.tracks[0].folder_collapsed = true;
         let encoded = serde_json::to_string(&project).expect("encode");
         let restored: Project = serde_json::from_str(&encoded).expect("decode");
         assert_eq!(restored.tracks[1].parent_folder_id, Some(first));
+        assert!(restored.tracks[0].folder_collapsed);
+        project.tracks[0].folder_collapsed = false;
         let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
         legacy["tracks"][1]
             .as_object_mut()
             .expect("track")
             .remove("parent_folder_id");
+        legacy["tracks"][0]
+            .as_object_mut()
+            .expect("track")
+            .remove("folder_collapsed");
         let legacy: Project = serde_json::from_value(legacy).expect("legacy");
         assert_eq!(legacy.tracks[1].parent_folder_id, None);
+        assert!(!legacy.tracks[0].folder_collapsed);
     }
 
     #[test]
