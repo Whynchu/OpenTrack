@@ -24,7 +24,7 @@ Step 10 enabled MIDI > Open Drum Editor over the selected MIDI part: map-ordered
 
 Step 11 enabled MIDI > Logical Presets with three bounded operations: select by pitch range, select by velocity range and set selected-note MIDI channel. Selection presets leave project/history untouched; Set Channel is one labelled atomic step and preserves other notes and CC. App suite: 524 passed, 9 ignored; inventory is 271 leaves with 87 unavailable. See [R4-11](tasks/R4-11-logical-presets.md).
 
-Next ready work: revision-4 step 12, CC Automation Setup. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+Next ready work: revision-4 step 12, CC Automation Setup. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

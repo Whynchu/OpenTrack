@@ -18,4 +18,15 @@ Begin by reporting the actual source/model identity, Git status, measured remain
 
 ---
 
-Publication authorization can be added by the user to the launch prompt if desired. The current instruction to pull changes did not authorize pushing future work.
+Publication is authorized for the remaining revision-4 run: push each completed, verified feature to origin/main, as confirmed in the user decisions below.
+
+## User decisions for the remaining run (2026-11-02)
+
+- The user authorized publication after each completed feature in this run. Commit and push each verified feature slice to `origin/main`; stop and report if a push fails.
+- Any project-content adjustment should be undoable by default. Selection and view-only state should not create project-content history.
+- CC Automation Setup shows one selected controller lane at a time, persists the lane-view choice in the project, and makes CC data edits undoable.
+- FX channels are shared effect returns that accept sends from multiple tracks; reject feedback cycles.
+- Arranger section and sequence edits are undoable; preview is playback-only, with recording and punch unavailable during preview.
+- Folders are organizational only; collapsing a folder does not change playback or recording.
+- If a proposed change would alter already implemented behavior, hold that change and ask the user to review it before implementation.
+- The user accepted the recommendations above; continue the queue and ask only when a concrete unresolved choice or existing-behavior conflict requires input.

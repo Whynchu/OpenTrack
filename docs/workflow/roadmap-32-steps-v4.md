@@ -57,13 +57,17 @@ Goal: complete bounded musical workflows behind selected disabled entries, estab
 
 11. **Enable bounded Logical Presets.** Ship a small explicitly named set: select by pitch range, select by velocity range and set selected-note MIDI channel. Show the matched scope and apply through existing selection/transform commands; no executable scripting engine. Content transforms are atomic, selection-only presets leave dirty state unchanged. Check no match, all/selected notes, channel limits, locks where supported, undo and non-target CC preservation.
 
-12. **Enable CC Automation Setup.** Scope this entry to configuring visible/editable MIDI controller lanes, not VST parameter automation. Reuse the existing CC editing/playback path; choose CC 0-127, label the lane and persist the intended view policy in the proper owner. Check selecting a lane does not invent controller data, existing CC remains visible, edits survive save/reopen and engine/MIDI export preserve values. If the current editor cannot consume multiple lanes, implement that consumer before enabling the entry.
+12. **Enable CC Automation Setup.** Scope this entry to configuring visible/editable MIDI controller lanes, not VST parameter automation. Reuse the existing CC editing/playback path; choose CC 0-127, label the lane and persist the intended view policy in the proper owner. Check selecting a lane does not invent controller data, existing CC remains visible, edits survive save/reopen and engine/MIDI export preserve values. The selected lane must have a working editing and playback consumer before enabling the entry; one visible lane at a time is the user-approved scope.
+
+**User decisions (2026-11-02):** Show one selected CC lane at a time; persist its view choice in the project. Controller data edits must be undoable. Treat project-content adjustments across this roadmap as undoable by default; selection/view-only changes do not create project history.
 
 ### D. FX channels as real signal destinations
 
 13. **Define and persist FX-channel identity.** Introduce a distinct FX channel kind with no audio/MIDI events, normal insert chain and fader. Reuse group DSP where semantically valid but retain distinct type/labels and validation. Audit every TrackKind match, duplication, deletion, history, presets and legacy loading. Check migration and that invalid clip content is rejected rather than silently dropped.
 
 14. **Route sends to FX channels.** Extend typed destinations and graph preparation, sharing group feedback/cycle/latency handling. Preserve the existing routing spelling compatibility and refuse dangling or cyclic targets. Check pre/post sends, bypass, gain, dry plus wet sum, feedback refusal and both engine paths plus offline export using generated signals.
+
+**User decision (2026-11-02):** FX channels are shared effect returns and may accept sends from multiple tracks; reject feedback cycles. Preserve already implemented behavior: if an implementation choice would change existing behavior, hold that change for user review before proceeding.
 
 15. **Enable Add FX Channel throughout the UI.** Main and context menus create the same channel through one command; support count/name and optional existing-catalog VST3 selection. Show the FX channel in Mixer/Inspector with compatible routing controls; unavailable catalog entries stay unavailable. Check add/delete/undo, send-target removal, loading a missing plug-in and save/reopen.
 
@@ -96,6 +100,8 @@ Goal: complete bounded musical workflows behind selected disabled entries, estab
 27. **Connect audible arranger preview.** Share the prepared plan and boundary policy with live transport, with bounded callback behavior and an explicit source/sequence position display. First version is playback-only; refuse recording/punch and conflicting cycle mode during preview. Stop/cancel returns cleanly to ordinary timeline playback with no hanging MIDI notes. Check block boundaries, seeking between items, rapid stop, project close and offline/live scheduling agreement.
 
 28. **Enable Add Arranger and review the complete path.** Main/context entries create or reveal the single arranger lane/editor; no fake ordinary track. Exercise sections, repeats, sequence playback, undo, save/reopen and export using the same sequence choice. If live preview cannot meet step 27, retain the relevant disabled entry and report the exact blocker; the offline renderer alone does not fulfill this step. Record listening/runtime evidence separately.
+
+**User decision (2026-11-02):** Arranger section/sequence edits are undoable project changes. Preview is playback-only; recording and punch remain unavailable during preview.
 
 ### G. Portable track packages and close-out
 
