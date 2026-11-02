@@ -1167,6 +1167,213 @@ impl OpenTrackApp {
         );
     }
 
+    /// Opens the Time Stretch dialog at 100%.
+    pub(super) fn open_time_stretch_dialog(&mut self) {
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .is_empty()
+        {
+            self.time_stretch_dialog = None;
+            self.status_message = "Select audio events to time-stretch".to_owned();
+            return;
+        }
+        self.time_stretch_dialog = Some(100.0);
+    }
+
+    /// Stretches the selected events' used audio by `percent`.
+    ///
+    /// The event length scales with the audio, so it still plays exactly the
+    /// stretched file. This is a tape-style stretch: pitch moves with duration.
+    pub(super) fn apply_time_stretch(&mut self, percent: f64) {
+        if !percent.is_finite() || !(25.0..=400.0).contains(&percent) {
+            self.status_message = "The stretch must be between 25% and 400%".to_owned();
+            return;
+        }
+        if (percent - 100.0).abs() <= 1e-6 {
+            self.status_message = "The stretch is already 100%".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before stretching audio".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to time-stretch".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Time Stretch is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before stretching audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before stretching audio".to_owned();
+            return;
+        };
+        let ratio = percent / 100.0;
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut stretched = 0;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination = match super::audio_export::unique_wav_path(
+                &root,
+                &format!("{name} {}pct", percent.round() as i64),
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = error;
+                    return;
+                }
+            };
+            let outcome = match opentrack_audio::stretch_wav_range(
+                &source,
+                offset,
+                duration,
+                ratio,
+                &destination,
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not stretch {name}: {error}");
+                    return;
+                }
+            };
+            let new_duration = outcome.frames as f64 / f64::from(outcome.sample_rate.max(1));
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the stretched audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.duration_seconds = new_duration;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                stretched += 1;
+            }
+        }
+        if stretched == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = "No event could be time-stretched".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message = "Cannot time-stretch: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Time Stretch");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Stretched {stretched} event(s) to {percent:.0}% of their length; pitch moved with them and Undo restores the originals"
+        );
+    }
+
+    pub(super) fn show_time_stretch_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut percent) = self.time_stretch_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Time Stretch")
+            .id(Id::new("time-stretch-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label("New length of the selected events");
+                ui.add(
+                    egui::DragValue::new(&mut percent)
+                        .range(25.0..=400.0)
+                        .speed(0.5)
+                        .suffix(" %"),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Tape-style stretch: the event length follows the audio and pitch moves with it. Pitch-preserving time stretch is not implemented.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("time-stretch-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_time_stretch(percent);
+        } else if !cancel && open {
+            self.time_stretch_dialog = Some(percent);
+        }
+    }
+
     /// Opens the Resample dialog seeded from the project rate.
     pub(super) fn open_resample_dialog(&mut self) {
         if self
@@ -2755,6 +2962,65 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn time_stretching_scales_the_event_length_as_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-stretch-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("ramp.wav");
+        write_ramp_wav(&source, 48_000);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 1.0)
+            .expect("clip");
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.open_time_stretch_dialog();
+        assert_eq!(app.time_stretch_dialog, Some(100.0));
+        app.apply_time_stretch(200.0);
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, source);
+        assert!(clip.source_path.exists());
+        assert!(
+            (clip.duration_seconds - 2.0).abs() < 1e-6,
+            "{}",
+            clip.duration_seconds
+        );
+        assert_eq!(clip.source_offset_seconds, 0.0);
+        assert!(
+            app.status_message
+                .contains("Stretched 1 event(s) to 200% of their length")
+        );
+        assert!(app.status_message.contains("pitch moved with them"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Time Stretch");
+
+        // 100%, out-of-range values and an empty selection report.
+        let steps = app.project_history.counts().0;
+        app.apply_time_stretch(100.0);
+        assert!(app.status_message.contains("already 100%"));
+        app.apply_time_stretch(10.0);
+        assert!(app.status_message.contains("between 25% and 400%"));
+        assert_eq!(app.project_history.counts().0, steps);
+        app.arrange_view_state.audio_events.clear_selection();
+        app.apply_time_stretch(150.0);
+        assert!(app.status_message.contains("Select audio events"));
+        app.open_time_stretch_dialog();
+        assert!(app.time_stretch_dialog.is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

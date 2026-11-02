@@ -124,6 +124,56 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// What one time-stretch pass produced.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StretchOutcome {
+    pub frames: u64,
+    pub sample_rate: u32,
+}
+
+/// Stretches or shortens the used range by `ratio` (2.0 is twice as long).
+///
+/// This is a tape-style stretch: the time axis is resampled with linear
+/// interpolation at the source's own rate, so duration and pitch move together.
+/// Pitch-preserving time stretching needs a phase vocoder and is not implemented;
+/// callers must say so rather than implying it.
+pub fn stretch_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    ratio: f64,
+    destination: &Path,
+) -> Result<StretchOutcome, String> {
+    if !ratio.is_finite() || !(0.25..=4.0).contains(&ratio) {
+        return Err("the stretch must be between 25% and 400%".to_owned());
+    }
+    if (ratio - 1.0).abs() <= 1e-6 {
+        return Err("the stretch is already 100%".to_owned());
+    }
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
+    let channels = usize::from(range.channels);
+    let output_frames = ((range.frames as f64) * ratio).round().max(1.0) as u64;
+    let mut samples = Vec::with_capacity(output_frames as usize * channels);
+    let last_frame = range.frames.saturating_sub(1);
+    for frame in 0..output_frames {
+        let position = frame as f64 / ratio;
+        let base = position.floor() as u64;
+        let fraction = position - base as f64;
+        let left = base.min(last_frame) as usize;
+        let right = (base + 1).min(last_frame) as usize;
+        for channel in 0..channels {
+            let a = f64::from(range.samples[left * channels + channel]);
+            let b = f64::from(range.samples[right * channels + channel]);
+            samples.push((a + (b - a) * fraction).clamp(-1.0, 1.0) as f32);
+        }
+    }
+    write_float_wav(destination, range.channels, range.sample_rate, &samples)?;
+    Ok(StretchOutcome {
+        frames: output_frames,
+        sample_rate: range.sample_rate,
+    })
+}
+
 /// Rewrites the used range at `target_rate`, keeping its duration and pitch.
 ///
 /// Conversion is linear interpolation, which is honest about being a straightforward
@@ -618,6 +668,37 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stretching_scales_the_time_axis_at_the_source_rate() {
+        let root = std::env::temp_dir().join(format!("opentrack-stretch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("ramp.wav");
+        write_ramp(&source, 48_000);
+        let destination = root.join("double.wav");
+
+        let outcome = stretch_wav_range(&source, 0.0, 1.0, 2.0, &destination).expect("stretch");
+        assert_eq!(outcome.frames, 96_000);
+        assert_eq!(outcome.sample_rate, 48_000);
+        let (channels, samples) = read(&destination);
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 96_000);
+        // The ramp still rises from 0 to 1 across the longer file.
+        assert!(samples[0].abs() < 1e-6);
+        assert!((samples[95_999] - 1.0).abs() < 1e-3);
+        assert!((samples[48_000] - 0.5).abs() < 1e-3, "{}", samples[48_000]);
+
+        // Halving keeps the original rate and halves the frames.
+        let shorter = root.join("half.wav");
+        let outcome = stretch_wav_range(&source, 0.0, 1.0, 0.5, &shorter).expect("stretch down");
+        assert_eq!(outcome.frames, 24_000);
+        // 100% and out-of-range ratios are refused.
+        assert!(stretch_wav_range(&source, 0.0, 1.0, 1.0, &root.join("same.wav")).is_err());
+        assert!(stretch_wav_range(&source, 0.0, 1.0, 8.0, &root.join("far.wav")).is_err());
+        assert!(stretch_wav_range(&source, 0.0, 1.0, f64::NAN, &root.join("nan.wav")).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

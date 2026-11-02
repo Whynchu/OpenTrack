@@ -475,5 +475,13 @@ still one commit with tests and refreshed counts.
    "Resample" undo step; failures clean up their files. 1 audio and 1 app tests.
    Disabled entries 83 -> 82.
 
+47. **Time Stretch.** *Delivered, tape-style.* Audio > Process > Time Stretch...
+   opens a percentage dialog; `opentrack_audio::stretch_wav_range` resamples the
+   time axis at the source rate, so the event length scales with the audio and
+   pitch moves with it. The dialog and the status say that plainly, and
+   pitch-preserving time stretch is recorded as not implemented rather than
+   implied. 25-400% only, 100% and non-finite values refused, one labelled "Time
+   Stretch" undo step. 1 audio and 1 app tests. Disabled entries 82 -> 81.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

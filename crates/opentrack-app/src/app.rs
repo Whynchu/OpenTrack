@@ -1220,6 +1220,8 @@ pub struct OpenTrackApp {
     hitpoints_clip: Option<u64>,
     /// Resample dialog draft, target rate in Hz.
     resample_dialog: Option<u32>,
+    /// Time Stretch dialog draft, in percent of the original length.
+    time_stretch_dialog: Option<f64>,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2658,6 +2660,7 @@ impl OpenTrackApp {
             hitpoints: Vec::new(),
             hitpoints_clip: None,
             resample_dialog: None,
+            time_stretch_dialog: None,
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -3992,6 +3995,7 @@ impl OpenTrackApp {
         self.hitpoints.clear();
         self.hitpoints_clip = None;
         self.resample_dialog = None;
+        self.time_stretch_dialog = None;
         self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
@@ -13712,10 +13716,11 @@ impl OpenTrackApp {
                             self.open_resample_dialog();
                             ui.close();
                         }
-                        disabled_menu_commands(
-                            ui,
-                            &[("Envelope...", ""), ("Time Stretch...", "")],
-                        );
+                        if menu_command(ui, "Time Stretch...", "", has_selection).clicked() {
+                            self.open_time_stretch_dialog();
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Envelope...", "")]);
                     });
                     ui.menu_button("Plug-ins", |ui| {
                         disabled_menu_commands(
@@ -15191,6 +15196,7 @@ impl OpenTrackApp {
             || self.list_editor_open
             || self.media_folder_dialog.is_some()
             || self.resample_dialog.is_some()
+            || self.time_stretch_dialog.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -17625,6 +17631,7 @@ impl eframe::App for OpenTrackApp {
         self.show_list_editor(&ctx);
         self.show_media_folder_dialog(&ctx);
         self.show_resample_dialog(&ctx);
+        self.show_time_stretch_dialog(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
