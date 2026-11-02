@@ -89,8 +89,12 @@ Still open from revision 1:
    locked events are skipped, and the gap is not closed (this is not a ripple
    edit). Edit > Range > Delete Range runs it as one undo step. Trim-to-range is
    the existing Crop command; nothing further is needed there.
-9. **Undo history window.** List recent undo steps, jump to one, persisted per
-   session; the truncation limit stays bounded.
+9. **Undo history window.** *Delivered.* Every history entry now carries a label,
+   set by the command that made the change (Split at Cursor, Duplicate, Nudge,
+   Glue, Process Logical Editor, …) and falling back to "Edit". Edit > Undo
+   History... lists the steps newest-first with the undone ones marked, their
+   snapshot size on hover, and jumps to any step by applying the undos or redos in
+   order; the bounded history limit is unchanged. 5 tests.
 
 ### C. Project and media robustness
 

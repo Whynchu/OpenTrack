@@ -484,6 +484,15 @@ struct TrackRenameDialog {
     draft: String,
 }
 
+/// One row in the undo-history window.
+#[derive(Clone, Debug, PartialEq)]
+struct HistoryStep {
+    label: String,
+    bytes: usize,
+    /// True for a step that is currently undone and can be redone.
+    redo: bool,
+}
+
 /// One Zoom-menu command, shared by the menu and the reference keymap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ZoomCommand {
@@ -1110,6 +1119,7 @@ pub struct OpenTrackApp {
     project_logical_editor: ProjectLogicalEditor,
     project_logical_editor_open: bool,
     markers_window_open: bool,
+    undo_history_open: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -1680,9 +1690,13 @@ struct ProjectHistory {
     pending_modified: Option<bool>,
     skip_next_commit: bool,
     commit_after_frame: bool,
+    /// Label attached to the next committed step.
+    next_label: Option<String>,
 }
 
 struct HistoryEntry {
+    /// What the change was, shown in the undo-history list.
+    label: String,
     snapshot: Vec<u8>,
     recording: Option<recording_undo::RecordingUndo>,
     deleted: Option<recording_undo::RecordingUndo>,
@@ -1779,6 +1793,7 @@ impl ProjectHistory {
             self.dispose_entry(entry);
         }
         self.undo.push_back(HistoryEntry {
+            label: self.next_label.take().unwrap_or_else(|| "Edit".to_owned()),
             snapshot: before,
             recording: self.pending_recording.take(),
             deleted: self.pending_deleted.take(),
@@ -1829,6 +1844,7 @@ impl ProjectHistory {
             return None;
         }
         self.redo.push_back(HistoryEntry {
+            label: previous.label,
             snapshot: current,
             recording: previous.recording.take(),
             deleted: previous.deleted.take(),
@@ -1874,12 +1890,75 @@ impl ProjectHistory {
             return None;
         }
         self.undo.push_back(HistoryEntry {
+            label: next.label,
             snapshot: current,
             recording: next.recording.take(),
             deleted: next.deleted.take(),
         });
         self.trim();
         Some(restored)
+    }
+
+    /// Labels the step the next commit will push.
+    ///
+    /// A gesture labels itself once, so the undo list reads as the user's actions
+    /// rather than as anonymous snapshots.
+    fn label_next(&mut self, label: &str) {
+        if self.pending.is_some() {
+            self.next_label = Some(label.to_owned());
+        }
+    }
+
+    /// The undo history, most recent step first, then the steps that are undone.
+    fn steps(&self) -> Vec<HistoryStep> {
+        let mut steps = self
+            .undo
+            .iter()
+            .rev()
+            .map(|entry| HistoryStep {
+                label: entry.label.clone(),
+                bytes: entry.len(),
+                redo: false,
+            })
+            .collect::<Vec<_>>();
+        steps.extend(self.redo.iter().map(|entry| HistoryStep {
+            label: entry.label.clone(),
+            bytes: entry.len(),
+            redo: true,
+        }));
+        steps
+    }
+
+    fn counts(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
+    }
+
+    /// Applies `steps` undos in one go and returns the restored project.
+    fn jump_back(&mut self, project: &Project, steps: usize) -> Option<Project> {
+        let mut current = project.clone();
+        let mut moved = 0;
+        for _ in 0..steps {
+            let Some(restored) = self.undo(&current) else {
+                break;
+            };
+            current = restored;
+            moved += 1;
+        }
+        (moved > 0).then_some(current)
+    }
+
+    /// Applies `steps` redos in one go and returns the restored project.
+    fn jump_forward(&mut self, project: &Project, steps: usize) -> Option<Project> {
+        let mut current = project.clone();
+        let mut moved = 0;
+        for _ in 0..steps {
+            let Some(restored) = self.redo(&current) else {
+                break;
+            };
+            current = restored;
+            moved += 1;
+        }
+        (moved > 0).then_some(current)
     }
 
     fn dispose_entry(&mut self, mut entry: HistoryEntry) {
@@ -2408,6 +2487,7 @@ impl OpenTrackApp {
                 .unwrap_or_default(),
             project_logical_editor_open: false,
             markers_window_open: false,
+            undo_history_open: false,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -5352,6 +5432,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot process: undo snapshot is unavailable".to_owned();
             return;
         }
+        self.project_history.label_next("Process Logical Editor");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
@@ -6628,6 +6709,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot add a marker: undo snapshot is unavailable".to_owned();
             return;
         }
+        self.project_history.label_next("Insert Marker");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.mark_modified();
@@ -6672,6 +6754,111 @@ impl OpenTrackApp {
         self.project_history.commit_after_frame = true;
         self.mark_modified();
         self.status_message = "Removed the marker; Undo restores it".to_owned();
+    }
+
+    fn show_undo_history(&mut self, ctx: &egui::Context) {
+        if !self.undo_history_open {
+            return;
+        }
+        let steps = self.project_history.steps();
+        let (undo_count, redo_count) = self.project_history.counts();
+        let mut open = true;
+        let mut jump_back = None;
+        let mut jump_forward = None;
+        let response = egui::Window::new("Undo History")
+            .id(Id::new("project-undo-history"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(360.0, 320.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{undo_count} undo step(s)"));
+                    if redo_count > 0 {
+                        ui.label(format!("· {redo_count} to redo"));
+                    }
+                });
+                ui.separator();
+                if steps.is_empty() {
+                    ui.label("Nothing to undo yet.");
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("project-undo-history-list")
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        for (index, step) in steps.iter().enumerate() {
+                            let text = if step.redo {
+                                format!("↷ {}", step.label)
+                            } else {
+                                step.label.clone()
+                            };
+                            let hover = format!(
+                                "{} · {:.1} KB{}",
+                                step.label,
+                                step.bytes as f64 / 1024.0,
+                                if step.redo { " · undone" } else { "" }
+                            );
+                            if ui
+                                .add(egui::Button::new(text).min_size(Vec2::new(300.0, 18.0)))
+                                .on_hover_text(hover)
+                                .clicked()
+                            {
+                                if step.redo {
+                                    jump_forward = Some(redo_count - (index - undo_count));
+                                } else {
+                                    jump_back = Some(index + 1);
+                                }
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "Click a step to go back to it; undone steps stay available for redo.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-undo-history"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.undo_history_open = open;
+        if let Some(steps) = jump_back {
+            self.jump_history(steps, false);
+        }
+        if let Some(steps) = jump_forward {
+            self.jump_history(steps, true);
+        }
+    }
+
+    /// Moves the project through the history and rebuilds everything it touches.
+    fn jump_history(&mut self, steps: usize, forward: bool) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before moving through the history".to_owned();
+            return;
+        }
+        let restored = if forward {
+            self.project_history.jump_forward(&self.data.project, steps)
+        } else {
+            self.project_history.jump_back(&self.data.project, steps)
+        };
+        let Some(project) = restored else {
+            self.status_message = "The history could not move that far".to_owned();
+            return;
+        };
+        self.data.project = project;
+        self.arrange_view_state.audio_events.clear_selection();
+        self.rebuild_audio_plan();
+        self.refresh_modified_from_saved();
+        self.status_message = format!(
+            "{} {steps} history step(s)",
+            if forward { "Redid" } else { "Undid" }
+        );
     }
 
     /// Keeps the playhead visible while the transport plays.
@@ -10768,6 +10955,7 @@ impl OpenTrackApp {
             || self.repeat_dialog.is_some()
             || self.project_logical_editor_open
             || self.markers_window_open
+            || self.undo_history_open
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -13152,6 +13340,7 @@ impl eframe::App for OpenTrackApp {
         self.show_repeat_dialog(&ctx);
         self.show_project_logical_editor(&ctx);
         self.show_markers_window(&ctx);
+        self.show_undo_history(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -22342,6 +22531,172 @@ mod snap_type_tests {
         view.snap_type = SnapType::GridAndCursor;
         assert_eq!(view.snap_type.label(), "Grid + Cursor");
         assert_eq!(SnapType::ALL.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod undo_history_tests {
+    use super::*;
+
+    fn app_with_steps() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.project_history.clear();
+
+        // Three labelled steps through the ordinary command path.
+        for (index, name) in ["One", "Two", "Three"].iter().enumerate() {
+            app.project_history.begin(&app.data.project, app.modified);
+            app.project_history.label_next(name);
+            app.data
+                .project
+                .add_audio_clip(
+                    0,
+                    PathBuf::from(format!("{name}.wav")),
+                    index as f64 * 4.0,
+                    2.0,
+                )
+                .unwrap();
+            app.project_history.commit_after_frame = true;
+            app.project_history.finish_frame(&app.data.project, true);
+        }
+        app
+    }
+
+    #[test]
+    fn the_history_lists_labels_most_recent_first() {
+        let app = app_with_steps();
+        let steps = app.project_history.steps();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| step.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Three", "Two", "One"],
+            "the most recent step is first"
+        );
+        assert!(steps.iter().all(|step| !step.redo && step.bytes > 0));
+        assert_eq!(app.project_history.counts(), (3, 0));
+    }
+
+    #[test]
+    fn jumping_back_and_forward_moves_the_whole_history() {
+        let mut app = app_with_steps();
+
+        // Two steps back leaves one event.
+        let restored = app
+            .project_history
+            .jump_back(&app.data.project, 2)
+            .expect("two steps back");
+        assert_eq!(restored.tracks[0].clips.len(), 1);
+        let (undo, redo) = app.project_history.counts();
+        assert_eq!((undo, redo), (1, 2));
+
+        // The undone steps are listed as redo entries.
+        let steps = app.project_history.steps();
+        assert_eq!(steps.len(), 3);
+        assert!(!steps[0].redo, "the remaining undo step comes first");
+        assert!(
+            steps[1].redo && steps[2].redo,
+            "then the undone steps, newest first"
+        );
+        assert_eq!(steps[1].label, "Three");
+
+        // Forward again returns to three events.
+        let restored = app
+            .project_history
+            .jump_forward(&restored, 2)
+            .expect("two steps forward");
+        assert_eq!(restored.tracks[0].clips.len(), 3);
+        assert_eq!(app.project_history.counts(), (3, 0));
+
+        // Asking for more steps than exist moves only what is available, and
+        // asking when nothing is available reports failure.
+        assert!(app.project_history.jump_back(&restored, 99).is_some());
+        assert_eq!(app.project_history.counts(), (0, 3));
+        assert!(app.project_history.jump_back(&restored, 1).is_none());
+    }
+
+    #[test]
+    fn a_step_without_a_label_is_listed_as_a_generic_edit() {
+        let mut app = app_with_steps();
+        app.project_history.begin(&app.data.project, app.modified);
+        app.data.project.tracks[0].name = "Renamed".to_owned();
+        app.project_history.commit_after_frame = true;
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Edit");
+    }
+
+    #[test]
+    fn a_real_command_labels_its_own_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.set_selected_audio_events_muted(true);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Mute Events");
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.nudge_selected_audio_events(true);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Nudge");
+    }
+
+    #[test]
+    fn the_history_window_renders_its_steps() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = app_with_steps();
+        app.undo_history_open = true;
+
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_undo_history(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Undo History"), "{joined}");
+        assert!(joined.contains("3 undo step(s)"), "{joined}");
+        assert!(joined.contains("Three"), "{joined}");
+        assert!(joined.contains("One"), "{joined}");
     }
 }
 

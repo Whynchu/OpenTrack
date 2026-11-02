@@ -319,6 +319,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot move: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Move to Cursor");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.arrange_view_state
@@ -355,6 +356,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot duplicate: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Duplicate");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.arrange_view_state
@@ -397,6 +399,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot change mute: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Mute Events");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
@@ -435,6 +438,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot repeat: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Repeat");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.arrange_view_state
@@ -479,6 +483,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot fill the loop: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Fill Loop");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.arrange_view_state
@@ -521,6 +526,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot crop: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Crop to Loop");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
@@ -554,6 +560,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot glue: undo snapshot is unavailable".to_owned();
             return;
         }
+        self.project_history.label_next("Glue");
         self.data.project = candidate;
         self.arrange_view_state.audio_events.select_many([merged]);
         self.project_history.commit_after_frame = true;
@@ -591,6 +598,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot delete the range: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Delete Range");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
@@ -672,6 +680,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot nudge: undo snapshot is unavailable".to_owned();
             return;
         }
+        self.project_history.label_next("Nudge");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
@@ -703,6 +712,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot split: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Split Loop");
         self.data.project = candidate;
         self.arrange_view_state.audio_events.clear_selection();
         self.project_history.commit_after_frame = true;
@@ -898,6 +908,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot change the lock: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Lock Events");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.mark_modified();
@@ -927,6 +938,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot group: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Group Events");
         let members = candidate.expand_selection_to_groups(&ids);
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
@@ -957,6 +969,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot ungroup: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Ungroup Events");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.mark_modified();
@@ -1030,6 +1043,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot move: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Move to Locator");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.arrange_view_state
@@ -1163,6 +1177,7 @@ impl OpenTrackApp {
                 self.status_message = "Cannot split: undo snapshot is unavailable".into();
                 return;
             }
+            self.project_history.label_next("Split at Cursor");
             self.data.project = candidate;
             self.project_history.commit_after_frame = true;
             self.rebuild_audio_plan();
@@ -1196,6 +1211,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot split: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Split at Cursor");
         self.data.project = candidate;
         self.arrange_view_state.audio_events.clear_selection();
         self.project_history.finish_frame(&self.data.project, true);
@@ -1300,6 +1316,7 @@ impl OpenTrackApp {
             self.status_message = "Cannot move the locator: undo snapshot is unavailable".into();
             return;
         }
+        self.project_history.label_next("Set Locator");
         self.data.project = candidate;
         self.project_history.commit_after_frame = true;
         self.mark_modified();
