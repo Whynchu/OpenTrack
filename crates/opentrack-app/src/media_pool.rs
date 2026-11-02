@@ -171,6 +171,18 @@ pub(super) fn media_matches(path: &Path, search: &str) -> bool {
         || path.to_string_lossy().to_lowercase().contains(&search)
 }
 
+/// "Converted N source(s)" plus whatever was skipped.
+fn conversion_summary(converted: usize, already: usize, missing: usize) -> String {
+    let mut status = format!("Converted {converted} source(s)");
+    if already > 0 {
+        status.push_str(&format!("; {already} were already at the target rate"));
+    }
+    if missing > 0 {
+        status.push_str(&format!("; {missing} source(s) are missing"));
+    }
+    status
+}
+
 /// Index of the envelope point nearest `pointer`, if one is within reach.
 fn nearest_envelope_point(points: &[(f32, f32)], canvas: Rect, pointer: Pos2) -> Option<usize> {
     points
@@ -1201,6 +1213,229 @@ impl OpenTrackApp {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string())
         );
+    }
+
+    /// Opens the pool Convert Files dialog seeded from the project rate.
+    pub(super) fn open_convert_files_dialog(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to convert its media".to_owned();
+            return;
+        }
+        self.convert_files_dialog = Some(self.data.project.sample_rate_hz.clamp(8_000, 192_000));
+    }
+
+    /// Rewrites pool sources at `target_rate` and repoints everything using them.
+    ///
+    /// The clicked pool entry is converted on its own; with no row clicked every
+    /// pool source is converted. Sources already at the target rate and missing
+    /// files are counted rather than rewritten or dropped.
+    pub(super) fn apply_convert_files(&mut self, target_rate: u32) {
+        if !(8_000..=192_000).contains(&target_rate) {
+            self.status_message = "The target rate must be between 8 kHz and 192 kHz".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before converting media".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before converting media".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before converting media".to_owned();
+            return;
+        };
+        let targets = match self.pool_selected.clone() {
+            Some(path) => vec![path],
+            None => self.data.project.media_paths().into_iter().collect(),
+        };
+        if targets.is_empty() {
+            self.status_message = "This project has no media to convert".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let mut conversions = Vec::<(PathBuf, PathBuf)>::new();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut converted = 0;
+        let mut already = 0;
+        let mut missing = 0;
+        for source in targets {
+            if !source.exists() {
+                missing += 1;
+                continue;
+            }
+            match opentrack_audio::audio_file_metadata(&source) {
+                Ok(metadata) if metadata.sample_rate == target_rate => {
+                    already += 1;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not read {}: {error}", source.display());
+                    return;
+                }
+            }
+            let name = source
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "converted".to_owned());
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} {target_rate}"))
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            if let Err(error) =
+                opentrack_audio::convert_wav_file(&source, target_rate, &destination)
+            {
+                self.cleanup_created_files(&created);
+                self.status_message = format!("Could not convert {}: {error}", source.display());
+                return;
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the converted audio: {error}");
+                    return;
+                }
+            }
+            for track in candidate.tracks.iter_mut() {
+                for clip in track.clips.iter_mut() {
+                    if clip.source_path == source {
+                        clip.source_path = destination.clone();
+                    }
+                }
+            }
+            conversions.push((source, destination));
+            converted += 1;
+        }
+        if converted == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = conversion_summary(0, already, missing);
+            return;
+        }
+        for (source, destination) in &conversions {
+            candidate.media_pool.remove(source);
+            candidate.media_pool.insert(destination.clone());
+            if let Some(folder) = candidate.media_folders.assignments.remove(source) {
+                candidate
+                    .media_folders
+                    .assignments
+                    .insert(destination.clone(), folder);
+            }
+        }
+        candidate.register_media();
+        if candidate.validate().is_err() {
+            self.cleanup_created_files(&created);
+            self.status_message = "The converted media would not form a valid project".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message =
+                "Cannot convert the media: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Convert Files");
+        self.data.project = candidate;
+        for (source, _) in &conversions {
+            self.data.audio_sources.remove(source);
+        }
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        if let Some(selected) = &self.pool_selected
+            && let Some((_, destination)) =
+                conversions.iter().find(|(source, _)| source == selected)
+        {
+            self.pool_selected = Some(destination.clone());
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = conversion_summary(converted, already, missing);
+        status.push_str("; Undo restores the original sources");
+        self.status_message = status;
+    }
+
+    pub(super) fn show_convert_files_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut rate) = self.convert_files_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let scope = match &self.pool_selected {
+            Some(path) => format!(
+                "Convert only {}",
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
+            ),
+            None => "Convert every Media Pool source".to_owned(),
+        };
+        let response = egui::Window::new("Convert Files")
+            .id(Id::new("convert-files-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label(scope.clone());
+                ui.horizontal(|ui| {
+                    ui.label("New rate");
+                    ui.add(
+                        egui::DragValue::new(&mut rate)
+                            .range(8_000..=192_000)
+                            .speed(100.0)
+                            .suffix(" Hz"),
+                    );
+                    if ui.button("Project rate").clicked() {
+                        rate = self.data.project.sample_rate_hz.clamp(8_000, 192_000);
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "Whole files are converted, so events using them keep their timing. Files already at the target rate are left alone.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Convert").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("convert-files-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_convert_files(rate);
+        } else if !cancel && open {
+            self.convert_files_dialog = Some(rate);
+        }
     }
 
     /// Opens the event gain-envelope editor.
@@ -3309,6 +3544,116 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    fn write_rate_wav(path: &std::path::Path, rate: u32, frames: u32) {
+        let mut bytes = Vec::with_capacity(44 + (frames as usize) * 2);
+        let data_bytes = frames * 2;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        for frame in 0..frames {
+            let sample = if (frame / 220) % 2 == 0 {
+                8_000_i16
+            } else {
+                -8_000
+            };
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn converting_pool_files_repoints_media_as_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-convert-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let imports = root.join("Audio").join("Imports");
+        let slow = imports.join("slow.wav");
+        let project_rate_file = imports.join("ready.wav");
+        write_rate_wav(&slow, 44_100, 44_100);
+        write_rate_wav(&project_rate_file, 48_000, 48_000);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let slow_clip = app
+            .data
+            .project
+            .add_audio_clip(0, slow.clone(), 0.0, 0.5)
+            .expect("clip");
+        let ready_clip = app
+            .data
+            .project
+            .add_audio_clip(0, project_rate_file.clone(), 1.0, 0.5)
+            .expect("clip");
+        app.data.project.media_pool.insert(slow.clone());
+        app.data
+            .project
+            .media_pool
+            .insert(project_rate_file.clone());
+        app.project_history.clear();
+
+        app.open_convert_files_dialog();
+        assert_eq!(app.convert_files_dialog, Some(48_000));
+        app.apply_convert_files(48_000);
+        let converted_path = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == slow_clip)
+            .expect("slow")
+            .source_path
+            .clone();
+        let untouched_path = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == ready_clip)
+            .expect("ready")
+            .source_path
+            .clone();
+        assert_ne!(converted_path, slow);
+        assert!(converted_path.exists());
+        assert_eq!(untouched_path, project_rate_file);
+        assert!(app.data.project.media_pool.contains(&converted_path));
+        assert!(!app.data.project.media_pool.contains(&slow));
+        assert!(app.status_message.contains("Converted 1 source(s)"));
+        assert!(app.status_message.contains("already at the target rate"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Convert Files");
+
+        // A second pass has nothing left to convert and writes no step.
+        let steps = app.project_history.counts().0;
+        app.apply_convert_files(48_000);
+        assert!(app.status_message.contains("Converted 0 source(s)"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // With a clicked pool row only that file is considered.
+        app.pool_selected = Some(converted_path.clone());
+        app.apply_convert_files(48_000);
+        assert!(app.status_message.contains("Converted 0 source(s)"));
+
+        // A missing source is counted, not dropped.
+        let missing = imports.join("gone.wav");
+        app.data.project.media_pool.insert(missing);
+        app.pool_selected = None;
+        app.apply_convert_files(96_000);
+        assert!(app.status_message.contains("1 source(s) are missing"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

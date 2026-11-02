@@ -1224,6 +1224,8 @@ pub struct OpenTrackApp {
     time_stretch_dialog: Option<f64>,
     /// Gain-envelope editor state.
     envelope_dialog: Option<media_pool::EnvelopeDraft>,
+    /// Convert Files dialog draft, target rate in Hz.
+    convert_files_dialog: Option<u32>,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2664,6 +2666,7 @@ impl OpenTrackApp {
             resample_dialog: None,
             time_stretch_dialog: None,
             envelope_dialog: None,
+            convert_files_dialog: None,
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -4000,6 +4003,7 @@ impl OpenTrackApp {
         self.resample_dialog = None;
         self.time_stretch_dialog = None;
         self.envelope_dialog = None;
+        self.convert_files_dialog = None;
         self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
@@ -14149,6 +14153,17 @@ impl OpenTrackApp {
                         self.remove_missing_media_from_pool();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Convert Files...",
+                        "",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.open_convert_files_dialog();
+                        ui.close();
+                    }
                     if menu_command(ui, "Create Folder", "", self.project_open).clicked() {
                         self.open_media_folder_dialog();
                         ui.close();
@@ -14180,7 +14195,6 @@ impl OpenTrackApp {
                         &[
                             ("Import Audio CD...", ""),
                             ("Reconstruct", ""),
-                            ("Convert Files...", ""),
                             ("Conform Files...", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
@@ -15205,6 +15219,7 @@ impl OpenTrackApp {
             || self.resample_dialog.is_some()
             || self.time_stretch_dialog.is_some()
             || self.envelope_dialog.is_some()
+            || self.convert_files_dialog.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -17641,6 +17656,7 @@ impl eframe::App for OpenTrackApp {
         self.show_resample_dialog(&ctx);
         self.show_time_stretch_dialog(&ctx);
         self.show_envelope_dialog(&ctx);
+        self.show_convert_files_dialog(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);

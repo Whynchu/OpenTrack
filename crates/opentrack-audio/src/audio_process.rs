@@ -124,6 +124,36 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// Converts a whole WAV file to `target_rate`, keeping its duration.
+///
+/// Used by the pool's Convert Files, which works on sources rather than event
+/// ranges, so it measures the file itself instead of taking a range.
+pub fn convert_wav_file(
+    source: &Path,
+    target_rate: u32,
+    destination: &Path,
+) -> Result<u64, String> {
+    if !(8_000..=192_000).contains(&target_rate) {
+        return Err("the target sample rate must be between 8 kHz and 192 kHz".to_owned());
+    }
+    let reader = hound::WavReader::open(source)
+        .map_err(|error| format!("could not open the source WAV: {error}"))?;
+    let spec = reader.spec();
+    if !(1..=2).contains(&spec.channels) || spec.sample_rate == 0 {
+        return Err("the source WAV must be mono or stereo with a valid rate".to_owned());
+    }
+    if spec.sample_rate == target_rate {
+        return Err(format!("the file is already at {target_rate} Hz"));
+    }
+    let frames = u64::from(reader.duration());
+    if frames == 0 {
+        return Err("the source WAV contains no audio frames".to_owned());
+    }
+    drop(reader);
+    let seconds = frames as f64 / f64::from(spec.sample_rate);
+    resample_wav_range(source, 0.0, seconds, target_rate, destination)
+}
+
 /// Largest linear gain an envelope point may hold (about +12 dB).
 pub const MAX_ENVELOPE_GAIN: f32 = 4.0;
 
@@ -736,6 +766,46 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn converting_a_whole_file_keeps_its_duration() {
+        let root = std::env::temp_dir().join(format!("opentrack-convert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("44k.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&source, spec).expect("writer");
+            for frame in 0..44_100 {
+                let value = if (frame / 220) % 2 == 0 {
+                    8_000_i16
+                } else {
+                    -8_000
+                };
+                writer.write_sample(value).expect("left");
+                writer.write_sample(-value).expect("right");
+            }
+            writer.finalize().expect("finalize");
+        }
+        let destination = root.join("48k.wav");
+        let frames = convert_wav_file(&source, 48_000, &destination).expect("convert");
+        assert_eq!(frames, 48_000);
+        let reader = hound::WavReader::open(&destination).expect("reader");
+        assert_eq!(reader.spec().sample_rate, 48_000);
+        assert_eq!(reader.spec().channels, 2, "the channel width is kept");
+        assert_eq!(u64::from(reader.duration()), 48_000);
+
+        // A matching rate, an out-of-range target and a missing file are refused.
+        assert!(convert_wav_file(&destination, 48_000, &root.join("a.wav")).is_err());
+        assert!(convert_wav_file(&source, 500, &root.join("b.wav")).is_err());
+        assert!(convert_wav_file(&root.join("missing.wav"), 48_000, &root.join("c.wav")).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

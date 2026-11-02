@@ -494,5 +494,14 @@ still one commit with tests and refreshed counts.
    1 audio and 2 app tests. Disabled entries 81 -> 80. No OPR bump was needed
    because the envelope is baked into the audio rather than stored on the event.
 
+49. **Convert Files.** *Delivered.* Media > Convert Files... opens a rate dialog and
+   rewrites whole pool sources through the new `opentrack_audio::convert_wav_file`
+   (measuring each file itself, reusing the range resampler). With a pool row
+   clicked only that source is converted, otherwise every pool source is. Events,
+   pool entries, folder assignments and decoded sources follow the new file; files
+   already at the target rate and missing files are counted rather than touched,
+   and the whole pass is one labelled "Convert Files" undo step. 1 audio and 1 app
+   tests. Disabled entries 80 -> 79.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.
