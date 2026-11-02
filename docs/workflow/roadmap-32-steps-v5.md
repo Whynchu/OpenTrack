@@ -79,7 +79,7 @@ Goal: close the highest-value gaps that have a workable contract - tempo/signatu
 
 20. **Accept the archive round trip.** Export a project with folders, FX returns and mixed media, import into a nonempty project, and verify IDs, hierarchy, routing and media deduplication against recorded expectations. Check: external route report, missing-module report, one history step, no source overwrite.
 
-21. **Record the CPR/OMF fixture blocker precisely.** Write down exactly which files and versions are needed, what would be inspected, and what the adapter scope would be. Do not implement an adapter, converter or alias without real fixtures. Check: the blocker statement is actionable and referenced from the remaining menu rows.
+21. **Record the interchange decision.** *User decision (2026-11-02):* compatibility with other project file formats (CPR, OMF and similar) begins only once OpenTrack has full feature support for the content those formats carry; until then no adapter, converter, alias or placeholder dispatch is written. Keep the entries unavailable with that reason recorded and referenced from the remaining menu rows, so a future adapter starts from a known feature baseline rather than mapping incomplete concepts. Check: the decision is stated once, the rows stay honestly unavailable, and nothing is claimed about Cubase compatibility.
 
 ### F. Timeline surfaces
 
@@ -112,7 +112,7 @@ Goal: close the highest-value gaps that have a workable contract - tempo/signatu
 ## Decisions needed from the user
 
 - **Video:** approve or reject a decoder dependency after step 28's comparison. No video work proceeds without that decision.
-- **CPR/OMF:** supply real named-version files (or state that these formats stay unsupported). Step 21 records the exact requirement.
+- **CPR/OMF:** decided 2026-11-02 - compatibility with other project formats waits for full feature support, so no fixtures or adapter work is needed now. Nothing about those formats is claimed in the product or the docs.
 - **External sync / MMC:** provide a device and a clock source for verification, or keep both features unavailable with the recorded reason.
 - **Control Room and score engraving:** these need product design before planning; they are not in this queue.
 - **Windows x64:** the local-ASIO deliverable needs a Windows host for build and runtime verification.

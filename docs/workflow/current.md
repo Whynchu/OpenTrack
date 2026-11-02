@@ -4,7 +4,11 @@ Revision 4 is complete (steps 1-32); its [delivery handoff](handoffs/revision-4-
 
 [Revision 5](roadmap-32-steps-v5.md) is the active queue: tempo/signature editing (OPR bump), transpose dialog, retrospective MIDI capture, a per-event offline processing chain, cue-sheet Audio CD import, Track Archive background import, timeline-surface reviews, and decision records for MMC, external sync and video. It also opens with a baseline reconciliation (step 1), the runtime review checklist for the fixes above (step 2) and an export/delivery contract review (step 3).
 
-Next ready step: R5-01, reconcile the inventory and QA baseline. Create its packet from `tasks/TEMPLATE.md` before editing. Do not append post-close slices to revision 4.
+Delivered so far: R5-01 (baseline reconciliation, `tasks/R5-01-baseline-reconciliation.md`) and R5-03 (export/delivery contract review, `tasks/R5-03-export-contract-review.md`). R5-02 is the user's runtime checklist for the manual-review fixes.
+
+Next ready step: R5-04, the tempo/signature contract (schema step, OPR bump from 37). Create its packet from `tasks/TEMPLATE.md` before editing. Two export observations await a user decision: stems currently include group and FX channels, and the arranger has no export entry.
+
+Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 
 Measured baseline at `9a5e7dd` (rerun in step 1): 275 project-open menu leaves - 40 available, 145 state-dependent, 82 unavailable, 8 informational; 147/152 command IDs dispatched; app 549 passed / 4 failed / 9 ignored, core 164, audio 170 / 3 ignored; OPR 37. The four app failures are `transport_locate_tests` roll cases that fail identically on the pristine revision-4 checkpoint here because no audio output device is available. No desktop, listening, hardware, VST3 or user acceptance is claimed. Actual model: DeepSeek V4.1 Flash (opencode-go/deepseek-v4.1-flash); no independent reviewer.
 
