@@ -192,8 +192,15 @@ Still open from revision 1:
 
 ### F. Delivery and interchange
 
-22. **Stem export.** Render every track (or the selected ones) to its own WAV
-    with the existing offline renderer, sharing the mixdown dialog's settings.
+22. **Stem export.** *Delivered.* File > Export > Selected Tracks (Stems)... opens
+   the mixdown dialog with a stems checkbox and a folder picker instead of a file
+   picker. Each audible track is rendered through the same `OfflineRenderer` and
+   the same format/range/sample rate as a mixdown, with only that track's channel
+   in the graph: sends are dropped (they belong to the mix) and the output is
+   forced to the stereo master, while EQ, inserts, hosted inserts, gain and
+   automation stay. Files are numbered and name-sanitized (`001 Drums.wav`), a
+   track with no audio writes nothing and the status reports the shortfall. 5
+   tests, one of which renders two real WAVs end to end.
 23. **Bounce selection in place.** Render the selected range through the track
     chain into a new event on that track.
 24. **MIDI export of a selection** in addition to the whole project.

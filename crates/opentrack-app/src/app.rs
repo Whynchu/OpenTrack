@@ -10161,10 +10161,19 @@ impl OpenTrackApp {
                             self.open_audio_export_dialog();
                             ui.close();
                         }
-                        disabled_menu_commands(
+                        if menu_command(
                             ui,
-                            &[("Selected Tracks...", ""), ("Tempo Track...", "")],
-                        );
+                            "Selected Tracks (Stems)...",
+                            "",
+                            self.audio_export_task.is_none() && self.project_open,
+                        )
+                        .clicked()
+                        {
+                            self.audio_export_dialog =
+                                Some(audio_export::Dialog::for_stems(&self.data.project));
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Tempo Track...", "")]);
                         if menu_command(ui, "MIDI File...", "", self.midi_file_task.is_none())
                             .clicked()
                         {
