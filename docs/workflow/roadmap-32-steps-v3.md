@@ -129,6 +129,12 @@ and measured numbers.
    locator range by a step as one labelled "Set Locators" undo step, stopping at
    the project start. 1 app test. Shortcut coverage 130 -> 134.
 
+15. **Find Selected in Pool.** *Delivered.* Ctrl+F reveals the selected audio
+   event's source in the Media window: the pool marks the row with "▶ " in the
+   accent colour and scrolls it into view. A MIDI-part selection and an empty
+   selection report instead. The reveal path is transient and cleared when a
+   project closes. 3 app and 1 module tests. Shortcut coverage 134 -> 135.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

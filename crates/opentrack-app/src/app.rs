@@ -1184,6 +1184,8 @@ pub struct OpenTrackApp {
     project_statistics_open: bool,
     /// Save / Discard / Cancel prompt for closing an unsaved project.
     close_project_prompt: bool,
+    /// Source the Media Pool should show and highlight, set by Find in Pool.
+    pool_reveal: Option<PathBuf>,
     beat_calculator: Option<project_tools::BeatCalculator>,
     /// Open numeric input dialog: what it edits and the value being typed.
     numeric_input: Option<NumericInput>,
@@ -2590,6 +2592,7 @@ impl OpenTrackApp {
             session_health_open: false,
             project_statistics_open: false,
             close_project_prompt: false,
+            pool_reveal: None,
             beat_calculator: None,
             numeric_input: None,
             notepad_draft: None,
@@ -3910,6 +3913,7 @@ impl OpenTrackApp {
         self.data = AppData::default();
         self.audio_event_clipboard = None;
         self.close_project_prompt = false;
+        self.pool_reveal = None;
         self.dock_state = default_dock_state();
         self.workspace_state = initial_workspace_state(&self.dock_state)
             .expect("the built-in dock layout must be serializable");
@@ -3960,6 +3964,39 @@ impl OpenTrackApp {
         } else {
             format!("New project with {instantiated} global workspace preset(s)")
         };
+    }
+
+    /// Reveals the selected event's source in the Media Pool.
+    fn find_selected_event_in_pool(&mut self) {
+        let selected = self.arrange_view_state.audio_events.selected_ids();
+        let source = selected.iter().find_map(|id| {
+            self.data
+                .project
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == *id)
+                .map(|clip| clip.source_path.clone())
+        });
+        let Some(source) = source else {
+            if self.data.project.selected_midi_part_id.is_some() {
+                self.status_message =
+                    "A MIDI part has no audio source to show in the Media Pool".to_owned();
+            } else {
+                self.status_message =
+                    "Select an audio event to show its source in the Media Pool".to_owned();
+            }
+            return;
+        };
+        self.focus_tab(PanelTab::Media);
+        self.pool_reveal = Some(source.clone());
+        self.status_message = format!(
+            "Showing {} in the Media Pool",
+            source
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| source.display().to_string())
+        );
     }
 
     /// Asks to close the project, prompting when it has unsaved changes.
@@ -6926,6 +6963,7 @@ impl OpenTrackApp {
             "file.save_new_version" => self.save_new_project_version(),
             "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
             "edit.paste_time" => self.paste_time(),
+            "audio.find_selected_in_pool" => self.find_selected_event_in_pool(),
             "devices.vst_instruments" => {
                 self.track_add_dialog = Some(TrackAddDialog {
                     kind: TrackKind::Instrument,
@@ -13923,7 +13961,7 @@ impl OpenTrackApp {
             egui::CentralPanel::default().show(window_ctx, |ui| {
                 let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                 blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
-                    insert = media_pool::show(ui, &self.data.project);
+                    insert = media_pool::show(ui, &self.data.project, self.pool_reveal.as_deref());
                 });
             });
             self.media_window.popup_active = popup_behavior::close_when_pointer_leaves(window_ctx);
@@ -27592,6 +27630,78 @@ mod transport_locate_tests {
 }
 
 #[cfg(test)]
+mod find_in_pool_tests {
+    use super::*;
+
+    fn app_with_event(path: PathBuf) -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, path, 0.0, 2.0)
+            .expect("clip");
+        app
+    }
+
+    #[test]
+    fn finding_an_event_selects_its_source_in_the_media_window() {
+        let path = PathBuf::from("/media/take-7.wav");
+        let mut app = app_with_event(path.clone());
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.find_selected_event_in_pool();
+        assert_eq!(app.pool_reveal, Some(path));
+        assert!(app.media_window.open, "the Media window is opened");
+        assert!(app.status_message.contains("Showing take-7.wav"));
+    }
+
+    #[test]
+    fn finding_a_source_without_a_selection_or_for_midi_reports() {
+        let mut app = app_with_event(PathBuf::from("/media/take.wav"));
+        app.arrange_view_state.audio_events.clear_selection();
+        app.find_selected_event_in_pool();
+        assert!(app.status_message.contains("Select an audio event"));
+        assert!(app.pool_reveal.is_none());
+
+        // A selected MIDI part has no source file.
+        app.data.project.add_track(TrackKind::Midi);
+        let part = app.data.project.add_midi_part(1, 0.0, 4.0).expect("part");
+        app.data.project.selected_midi_part_id = Some(part);
+        app.find_selected_event_in_pool();
+        assert!(app.status_message.contains("MIDI part has no audio source"));
+        assert!(app.pool_reveal.is_none());
+    }
+
+    #[test]
+    fn the_shortcut_reaches_the_pool_reveal() {
+        use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("/media/hit.wav");
+        let mut app = app_with_event(path.clone());
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.dispatch_reference_command(
+            "audio.find_selected_in_pool",
+            "Find Selected in Pool",
+            KeyChord::new(
+                KeyCode::Letter('F'),
+                KeyModifiers {
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            &ctx,
+        );
+        assert_eq!(app.pool_reveal, Some(path));
+    }
+}
+
+#[cfg(test)]
 mod close_project_tests {
     use super::*;
 
@@ -28155,6 +28265,7 @@ mod keyboard_coverage_tests {
             "edit.split_range",
             "edit.paste_at_origin",
             "edit.paste_time",
+            "audio.find_selected_in_pool",
             "edit.insert_silence",
             "edit.cut_time",
             "edit.delete_time",

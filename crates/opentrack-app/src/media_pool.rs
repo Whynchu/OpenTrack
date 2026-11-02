@@ -97,7 +97,11 @@ pub(super) fn prepare(
     candidate.validate().map_err(str::to_owned)?;
     Ok((candidate, files))
 }
-pub(super) fn show(ui: &mut egui::Ui, project: &Project) -> Option<PathBuf> {
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    project: &Project,
+    revealed: Option<&Path>,
+) -> Option<PathBuf> {
     let mut insert = None;
     ui.heading("Media Pool");
     ui.label("Delete retains source media here. Shift+Delete removes unused source files with undo recovery.");
@@ -118,7 +122,23 @@ pub(super) fn show(ui: &mut egui::Ui, project: &Project) -> Option<PathBuf> {
                         .flat_map(|t| &t.clips)
                         .filter(|c| c.source_path == path)
                         .count();
-                    ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                    let is_revealed = revealed.is_some_and(|shown| shown == path);
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    let label = if is_revealed {
+                        format!("▶ {name}")
+                    } else {
+                        name.into_owned()
+                    };
+                    let response = if is_revealed {
+                        ui.colored_label(theme::palette(ui).accent, label)
+                    } else {
+                        ui.label(label)
+                    };
+                    if is_revealed {
+                        // Bring the revealed source into view when the pool is
+                        // longer than the window.
+                        response.scroll_to_me(Some(egui::Align::Center));
+                    }
                     ui.label(if path.is_file() {
                         format!("{uses} event(s)")
                     } else {
@@ -910,6 +930,60 @@ mod tests {
             PathBuf::from("/nowhere/missing.wav")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_pool_marks_and_scrolls_to_a_revealed_source() {
+        let mut project = Project::default();
+        project.media_pool.insert(PathBuf::from("/media/kick.wav"));
+        project.media_pool.insert(PathBuf::from("/media/snare.wav"));
+
+        let ctx = egui::Context::default();
+        let revealed = PathBuf::from("/media/kick.wav");
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(800.0, 600.0),
+                    )),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |ui| {
+                    assert!(show(ui, &project, Some(revealed.as_path())).is_none());
+                },
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("▶ kick.wav"), "{joined}");
+        assert!(
+            !joined.contains("▶ snare.wav"),
+            "only the revealed file is marked: {joined}"
+        );
+        assert!(
+            joined.contains("snare.wav"),
+            "the other file is still listed"
+        );
     }
 
     #[test]
