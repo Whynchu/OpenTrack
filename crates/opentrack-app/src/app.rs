@@ -10341,6 +10341,8 @@ impl OpenTrackApp {
         let mut open = true;
         let mut accepted = false;
         let mut cancelled = false;
+        let remaining_track_capacity = 1024usize.saturating_sub(self.data.project.tracks.len());
+        let max_track_count = remaining_track_capacity.min(64).max(1);
         let response = egui::Window::new(title)
             .id(Id::new("add-track-configuration-dialog"))
             .open(&mut open)
@@ -10377,7 +10379,7 @@ impl OpenTrackApp {
                                     ui.add_sized(
                                         Vec2::new(40.0, 16.0),
                                         egui::DragValue::new(&mut dialog.count)
-                                            .range(1..=64)
+                                            .range(1..=max_track_count)
                                             .speed(1),
                                     );
                                     ui.label(egui::RichText::new("count").size(10.0));
@@ -10471,6 +10473,12 @@ impl OpenTrackApp {
                                 dialog.browse_presets,
                                 "Browse Presets (unavailable)",
                             ));
+                            if remaining_track_capacity == 0 {
+                                ui.colored_label(
+                                    theme::WARNING,
+                                    "Project track limit reached (1024)",
+                                );
+                            }
                         });
                     });
                 ui.add_space(6.0);
@@ -10486,8 +10494,8 @@ impl OpenTrackApp {
                         cancelled = true;
                     }
                     if ui
-                        .add_sized(
-                            Vec2::new(78.0, 22.0),
+                        .add_enabled(
+                            remaining_track_capacity > 0,
                             egui::Button::new(egui::RichText::new("OK").size(12.0)),
                         )
                         .clicked()
