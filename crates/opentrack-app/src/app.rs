@@ -101,11 +101,11 @@ use serde::{Deserialize, Serialize};
 use crate::icons::ToolbarIcon;
 use crate::native_keys::NativeKeyCapture;
 use crate::project_file::{
-    ArrangeViewState, CHANNEL_SETTINGS_WINDOW_ID, MEDIA_WINDOW_ID, MIXER_WINDOW_ID,
-    PROJECT_WINDOW_ID, ProjectFile, ProjectFileError, arrange_view_state_from_workspace,
-    dock_state_from_workspace, initial_workspace_state, main_window_window_snapshot,
-    midi_editor_window_snapshot, project_window_snapshot, store_active_dock_state,
-    store_active_project_window_state, store_active_workspace_child_state,
+    ArrangeViewState, CHANNEL_SETTINGS_WINDOW_ID, MEDIA_WINDOW_ID, MIXER_2_WINDOW_ID,
+    MIXER_3_WINDOW_ID, MIXER_WINDOW_ID, PROJECT_WINDOW_ID, ProjectFile, ProjectFileError,
+    arrange_view_state_from_workspace, dock_state_from_workspace, initial_workspace_state,
+    main_window_window_snapshot, midi_editor_window_snapshot, project_window_snapshot,
+    store_active_dock_state, store_active_project_window_state, store_active_workspace_child_state,
 };
 use crate::theme;
 
@@ -2970,6 +2970,8 @@ impl OpenTrackApp {
                 self.vst3_editor_bounds.clone(),
                 &self.channel_settings_window,
                 &self.mixer_window,
+                &self.mixer_window_2,
+                &self.mixer_window_3,
                 &self.media_window,
             )?;
         }
@@ -2986,6 +2988,8 @@ impl OpenTrackApp {
         vst3_editor_bounds: Option<WindowBounds>,
         channel_settings_window: &NativeWindowState,
         mixer_window: &NativeWindowState,
+        mixer_window_2: &NativeWindowState,
+        mixer_window_3: &NativeWindowState,
         media_window: &NativeWindowState,
     ) -> Result<(), ProjectFileError> {
         store_active_dock_state(
@@ -3025,6 +3029,8 @@ impl OpenTrackApp {
         )?;
         for (id, window) in [
             (CHANNEL_SETTINGS_WINDOW_ID, channel_settings_window),
+            (MIXER_2_WINDOW_ID, mixer_window_2),
+            (MIXER_3_WINDOW_ID, mixer_window_3),
             (MEDIA_WINDOW_ID, media_window),
         ] {
             store_active_project_window_state(
@@ -5211,6 +5217,16 @@ impl OpenTrackApp {
             MIXER_WINDOW_ID,
             self.mixer_window.epoch,
         );
+        self.mixer_window_2 = restore_native_window_state(
+            active_workspace.as_ref(),
+            MIXER_2_WINDOW_ID,
+            self.mixer_window_2.epoch,
+        );
+        self.mixer_window_3 = restore_native_window_state(
+            active_workspace.as_ref(),
+            MIXER_3_WINDOW_ID,
+            self.mixer_window_3.epoch,
+        );
         self.media_window = restore_native_window_state(
             active_workspace.as_ref(),
             MEDIA_WINDOW_ID,
@@ -7001,6 +7017,8 @@ impl OpenTrackApp {
             self.vst3_editor_bounds.clone(),
             &self.channel_settings_window,
             &self.mixer_window,
+            &self.mixer_window_2,
+            &self.mixer_window_3,
             &self.media_window,
         )
     }
@@ -7046,6 +7064,16 @@ impl OpenTrackApp {
         );
         self.mixer_window =
             restore_native_window_state(Some(&workspace), MIXER_WINDOW_ID, self.mixer_window.epoch);
+        self.mixer_window_2 = restore_native_window_state(
+            Some(&workspace),
+            MIXER_2_WINDOW_ID,
+            self.mixer_window_2.epoch,
+        );
+        self.mixer_window_3 = restore_native_window_state(
+            Some(&workspace),
+            MIXER_3_WINDOW_ID,
+            self.mixer_window_3.epoch,
+        );
         self.media_window =
             restore_native_window_state(Some(&workspace), MEDIA_WINDOW_ID, self.media_window.epoch);
         self.status_message = format!("Activated workspace: {}", workspace.name);
@@ -7089,6 +7117,8 @@ impl OpenTrackApp {
             self.vst3_editor_bounds.clone(),
             &self.channel_settings_window,
             &self.mixer_window,
+            &self.mixer_window_2,
+            &self.mixer_window_3,
             &self.media_window,
         ) {
             self.status_message = format!("Could not initialize workspace: {error}");
@@ -30298,6 +30328,69 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+    }
+}
+
+#[cfg(test)]
+mod extra_mixer_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn the_extra_mixers_round_trip_through_the_workspace_snapshot() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        let second = WindowBounds {
+            left: 120.0,
+            top: 90.0,
+            width: 820.0,
+            height: 460.0,
+            inner_width: None,
+            inner_height: None,
+            monitor_id: None,
+        };
+        let third = WindowBounds {
+            left: 960.0,
+            top: 120.0,
+            width: 700.0,
+            height: 400.0,
+            inner_width: None,
+            inner_height: None,
+            monitor_id: None,
+        };
+        app.mixer_window_2.open = true;
+        app.mixer_window_2.bounds = Some(second.clone());
+        app.mixer_window_3.open = true;
+        app.mixer_window_3.bounds = Some(third.clone());
+
+        // Saving captures both extra mixers in the active workspace.
+        let workspace_state = app.workspace_state_for_save().expect("workspace");
+        let active = workspace_state.active_index.expect("active");
+        let workspace = workspace_state.workspaces[active].clone();
+        assert_eq!(
+            main_window_window_snapshot(&workspace).is_some(),
+            true,
+            "the workspace still stores its main window"
+        );
+
+        // Restoring maps each mixer back to its own state.
+        let restored_2 = restore_native_window_state(Some(&workspace), MIXER_2_WINDOW_ID, 0);
+        let restored_3 = restore_native_window_state(Some(&workspace), MIXER_3_WINDOW_ID, 0);
+        assert!(restored_2.open && restored_3.open);
+        assert_eq!(restored_2.bounds, Some(second));
+        assert_eq!(restored_3.bounds, Some(third));
+
+        // Closing one is saved as closed without disturbing the other.
+        app.mixer_window_2.open = false;
+        let workspace_state = app.workspace_state_for_save().expect("workspace");
+        let active = workspace_state.active_index.expect("active");
+        let workspace = workspace_state.workspaces[active].clone();
+        let restored_2 = restore_native_window_state(Some(&workspace), MIXER_2_WINDOW_ID, 0);
+        let restored_3 = restore_native_window_state(Some(&workspace), MIXER_3_WINDOW_ID, 0);
+        assert!(!restored_2.open);
+        assert!(restored_3.open);
+        assert_eq!(restored_3.bounds, app.mixer_window_3.bounds);
     }
 }
 

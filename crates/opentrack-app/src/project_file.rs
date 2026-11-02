@@ -49,6 +49,8 @@ pub(crate) const DEFAULT_EVENT_COLORS: [[u8; 3]; 16] = [
 ];
 pub(crate) const CHANNEL_SETTINGS_WINDOW_ID: &str = "channel-settings";
 pub(crate) const MIXER_WINDOW_ID: &str = "mixer";
+pub(crate) const MIXER_2_WINDOW_ID: &str = "mixer-2";
+pub(crate) const MIXER_3_WINDOW_ID: &str = "mixer-3";
 pub(crate) const MEDIA_WINDOW_ID: &str = "media";
 pub(crate) const PROJECT_WINDOW_ID: &str = "project-window";
 const DOCK_STATE_KEY: &str = "egui_dock_state_v1";

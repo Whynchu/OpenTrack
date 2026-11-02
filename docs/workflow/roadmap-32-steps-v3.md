@@ -540,5 +540,12 @@ still one commit with tests and refreshed counts.
    workspace snapshot yet, which the roadmap records as a limitation. 1 app test.
    Disabled entries 76 -> 74.
 
+53b. **Extra-mixer persistence.** *Delivered.* Slice 53 noted that Mixer 2/3 bounds
+   were session-only. `store_active_workspace_windows` now takes both extra mixer
+   states, stores them as `mixer-2` / `mixer-3` child windows beside the docked
+   mixer, and project load and workspace activation restore each slot from its own
+   snapshot. 1 app test (round trip through `workspace_state_for_save`, closing one
+   while the other keeps its bounds). No entry count change.
+
 Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
 Archive, then the user-dependent reviews and CPR fixtures.
