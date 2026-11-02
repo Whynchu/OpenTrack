@@ -529,6 +529,119 @@ impl OpenTrackApp {
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
     }
 
+    /// Moves the selected events by one grid step, left or right.
+    ///
+    /// Locked events and locked group members are refused by the core move, so a
+    /// nudge says why instead of writing a partial edit.
+    pub(super) fn nudge_selected_audio_events(&mut self, right: bool) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before nudging audio events".into();
+            return;
+        }
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if selected.is_empty() {
+            self.status_message = "Select audio events to nudge".to_owned();
+            return;
+        }
+        let step = self
+            .arrange_view_state
+            .snap_grid_beats(self.data.project.beats_per_bar)
+            .unwrap_or_else(|| f64::from(self.data.project.beats_per_bar.max(1)) / 4.0);
+        let delta = if right { step } else { -step };
+        let tempo = self.data.project.tempo_bpm;
+        let mut candidate = self.data.project.clone();
+        let mut edits = Vec::new();
+        for track in candidate
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            for clip in &track.clips {
+                if !selected.contains(&clip.id) {
+                    continue;
+                }
+                let mut moved = clip.clone();
+                moved.start_beats += delta;
+                if moved.start_beats < 0.0 {
+                    self.status_message =
+                        "Nudging left would move an audio event before the project start"
+                            .to_owned();
+                    return;
+                }
+                edits.push((track.id, track.id, moved));
+            }
+        }
+        if edits.is_empty() {
+            self.status_message = "The selection no longer contains audio events".to_owned();
+            return;
+        }
+        let end = edits
+            .iter()
+            .map(|(_, _, clip)| clip.start_beats + clip.duration_seconds * tempo / 60.0)
+            .fold(0.0_f64, f64::max);
+        if end > 1_000_000.0 {
+            self.status_message = "Nudging right would leave the supported timeline".to_owned();
+            return;
+        }
+        if !candidate.move_audio_clips_with_automation(&edits, self.automation_follows_events) {
+            self.status_message =
+                "The selected audio events could not be nudged (a locked event blocks it)"
+                    .to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot nudge: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Nudged {} event(s) {} by {step:.3} beat(s); Undo restores them",
+            edits.len(),
+            if right { "right" } else { "left" }
+        );
+    }
+
+    /// Splits every audio event crossing the locators, as one undo step.
+    pub(super) fn split_audio_events_at_loop(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before splitting audio events".into();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let (split, _) = candidate.split_audio_clips_at_loop();
+        if split == 0 {
+            self.status_message = "No audio event crosses a locator".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot split: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.arrange_view_state.audio_events.clear_selection();
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Split {split} audio event(s) at the locators; Undo restores them");
+    }
+
     /// Copies the selected events' media into the project's own import folder.
     ///
     /// The event keeps every edit but stops depending on a shared source file, so
@@ -3956,6 +4069,89 @@ mod split_selection_tests {
             bytes.extend_from_slice(&(-value).to_le_bytes());
         }
         std::fs::write(path, bytes).expect("write wav");
+    }
+
+    #[test]
+    fn nudging_moves_the_selection_by_one_grid_step() {
+        use crate::timeline::QuantizeNote;
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 4.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+        app.arrange_view_state.snap_enabled = true;
+        app.arrange_view_state.grid_type = crate::timeline::GridType::UseQuantize;
+        app.arrange_view_state.quantize.note = QuantizeNote::Eighth;
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        // An eighth at 4/4 is half a beat.
+        app.nudge_selected_audio_events(true);
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 4.5);
+        app.nudge_selected_audio_events(true);
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 5.0);
+        app.nudge_selected_audio_events(false);
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 4.5);
+        assert!(app.status_message.contains("Nudged 1 event(s) left"));
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn nudging_refuses_at_the_project_start_and_on_locked_events() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.nudge_selected_audio_events(false);
+        assert!(app.status_message.contains("before the project start"));
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 0.0);
+
+        app.data.project.set_audio_clips_locked(&[id], true);
+        app.nudge_selected_audio_events(true);
+        assert!(app.status_message.contains("could not be nudged"));
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 0.0);
+
+        // Nothing selected is reported too.
+        app.arrange_view_state.audio_events.clear_selection();
+        app.nudge_selected_audio_events(true);
+        assert!(app.status_message.contains("Select audio events to nudge"));
+    }
+
+    #[test]
+    fn split_loop_cuts_at_both_locators_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 8.0)
+            .unwrap();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.project_history.clear();
+
+        app.split_audio_events_at_loop();
+        assert_eq!(app.data.project.tracks[0].clips.len(), 3);
+        assert!(app.status_message.contains("Split 2 audio event(s)"));
+
+        // Nothing crosses a locator the second time.
+        app.split_audio_events_at_loop();
+        assert!(app.status_message.contains("No audio event crosses"));
+        assert!(app.modified);
     }
 
     #[test]

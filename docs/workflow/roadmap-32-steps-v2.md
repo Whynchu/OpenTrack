@@ -60,9 +60,15 @@ Still open from revision 1:
 
 ### B. Arrangement editing depth
 
-5. **Nudge selection.** Arrow keys move the selected events by one grid step
-   (Shift for a fine step), as one undo step, honouring locks and groups.
-6. **Split Loop.** Split every event crossing the left and right locators.
+5. **Nudge selection.** *Delivered for left/right.* `nudge.left` (Ctrl+Left) and
+   `nudge.right` (Ctrl+Right) move the selection by one grid step (a quarter bar
+   when snap is off) through the same core move that honours locks, groups and
+   Automation follows Events, and refuse at the project start or timeline end.
+   Edge nudging (Alt+Left/Right, Alt+Shift+Left/Right) remains open.
+6. **Split Loop.** *Delivered.* `Project::split_audio_clips_at_loop` splits every
+   audio event crossing either locator (an event spanning the whole loop becomes
+   three), skipping locked events, and the Edit menu command is one undo step.
+   2 core and 1 app tests.
 7. **Glue events.** Join adjacent or overlapping events on one track into a
    single event that keeps both sources' audio readable.
 8. **Range delete and trim to range.** Delete the loop range from the selected

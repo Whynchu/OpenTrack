@@ -6481,6 +6481,8 @@ impl OpenTrackApp {
             "edit.lock" => self.set_selected_audio_events_locked(true),
             "edit.unlock" => self.set_selected_audio_events_locked(false),
             "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
+            "nudge.left" => self.nudge_selected_audio_events(false),
+            "nudge.right" => self.nudge_selected_audio_events(true),
             "transport.insert_marker" => self.add_marker_at_playhead(),
             "transport.locate_next_marker" => self.locate_next_marker(),
             "transport.locate_previous_marker" => self.locate_previous_marker(),
@@ -9205,7 +9207,10 @@ impl OpenTrackApp {
                         self.move_selected_audio_events_to_cursor();
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Split Loop", "")]);
+                    if menu_command(ui, "Split Loop", "", self.project_open).clicked() {
+                        self.split_audio_events_at_loop();
+                        ui.close();
+                    }
                     let can_delete_audio = self.project_open
                         && !self.is_recording()
                         && media_pool::selection_target(

@@ -2352,6 +2352,56 @@ impl Project {
         changed
     }
 
+    /// Splits every audio event crossing either locator.
+    ///
+    /// The loop range is the target, so this is the "Split Loop" command: each
+    /// crossing event becomes two, and an event that spans the whole loop becomes
+    /// three. Locked events are skipped by `split_audio_clip` itself.
+    pub fn split_audio_clips_at_loop(&mut self) -> (usize, Vec<u64>) {
+        let mut boundaries = [self.loop_start_beats, self.loop_end_beats];
+        boundaries.sort_by(f64::total_cmp);
+        let mut split = 0;
+        let mut created = Vec::new();
+        for track_id in self
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .map(|track| track.id)
+            .collect::<Vec<_>>()
+        {
+            for boundary in boundaries {
+                if !boundary.is_finite() || boundary <= 0.0 {
+                    continue;
+                }
+                // Re-read the clips each pass: a previous split produced new ids.
+                let targets = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == track_id)
+                    .map(|track| {
+                        track
+                            .clips
+                            .iter()
+                            .filter(|clip| {
+                                let end =
+                                    clip.start_beats + clip.duration_seconds * self.tempo_bpm / 60.0;
+                                clip.start_beats < boundary - 1e-9 && end > boundary + 1e-9
+                            })
+                            .map(|clip| clip.id)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for clip_id in targets {
+                    if let Some(id) = self.split_audio_clip(track_id, clip_id, boundary) {
+                        split += 1;
+                        created.push(id);
+                    }
+                }
+            }
+        }
+        (split, created)
+    }
+
     /// Split every descendant audio event crossing one timeline position and
     /// retain the shared virtual-event boundary on the group channel.
     pub fn split_group_audio_clips(&mut self, group_id: u64, at_beats: f64) -> (bool, Vec<u64>) {
@@ -4610,6 +4660,65 @@ mod sample_edit_tests {
         assert_eq!(project.tracks[0].automation_lanes[0].points[0].beat, 4.0);
         assert_eq!(project.tracks[0].clips.len(), 0);
         assert_eq!(project.tracks[1].clips[0].id, id);
+    }
+
+    #[test]
+    fn split_loop_cuts_every_event_at_both_locators() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        // 8 s at 120 BPM is 16 beats, so this event spans the whole loop 4..8.
+        let spanning = project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 0.0, 8.0)
+            .unwrap();
+        // 4 s at 120 BPM is 8 beats, so this one spans 2..10 and crosses both
+        // locators as well.
+        project
+            .add_audio_clip(1, PathBuf::from("left.wav"), 2.0, 4.0)
+            .unwrap();
+        project.set_loop_range(4.0, 8.0);
+        let track_id = project.tracks[0].id;
+        project.set_audio_clips_locked(&[spanning], false);
+
+        let (split, created) = project.split_audio_clips_at_loop();
+        assert_eq!(split, 4, "each event crosses both locators");
+        assert_eq!(created.len(), 4);
+        let beats = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        assert_eq!(beats, vec![0.0, 4.0, 8.0], "the spanning event became three");
+        assert!(project.validate().is_ok());
+        // The split copies keep the source identity.
+        assert!(project.tracks[0]
+            .clips
+            .iter()
+            .all(|clip| clip.source_path == PathBuf::from("long.wav")));
+        assert_eq!(project.tracks[1].clips.len(), 3);
+        assert_eq!(project.tracks[0].id, track_id);
+    }
+
+    #[test]
+    fn split_loop_skips_locked_events_and_reports_when_nothing_crosses() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 8.0)
+            .unwrap();
+        project.set_loop_range(4.0, 8.0);
+        project.set_audio_clips_locked(&[id], true);
+        assert_eq!(project.split_audio_clips_at_loop().0, 0, "locked stays whole");
+
+        project.set_audio_clips_locked(&[id], false);
+        project.set_loop_range(20.0, 24.0);
+        assert_eq!(
+            project.split_audio_clips_at_loop().0,
+            0,
+            "nothing crosses locators past the event"
+        );
     }
 
     #[test]
