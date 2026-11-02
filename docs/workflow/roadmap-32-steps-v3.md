@@ -194,6 +194,13 @@ and measured numbers.
    selection and a missing marker report instead of starting. 3 app tests.
    Disabled entries 116 -> 113.
 
+24. **Menu aliases for existing commands.** *Delivered.* Media > Insert into
+   Project now opens the Add Track dialog for audio, instrument and MIDI tracks;
+   Media > Find Missing Files... reuses the relink folder picker (and reports when
+   nothing is missing); MIDI > Functions > Merge reuses the MIDI part merge. No
+   new behavior was duplicated — each entry calls the command that already
+   exists. 1 app test for the relink refusal. Disabled entries 113 -> 108.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

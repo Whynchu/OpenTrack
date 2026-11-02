@@ -987,6 +987,18 @@ mod tests {
     }
 
     #[test]
+    fn find_missing_files_reports_when_nothing_is_missing() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        // No clips, so nothing can be missing and no picker is opened.
+        app.find_missing_media_dialog();
+        assert_eq!(app.status_message, "This project has no missing media");
+    }
+
+    #[test]
     fn removing_unused_pool_entries_is_one_undo_step_and_keeps_the_files() {
         let root =
             std::env::temp_dir().join(format!("opentrack-pool-clean-{}", std::process::id()));

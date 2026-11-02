@@ -4422,6 +4422,21 @@ impl OpenTrackApp {
         self.status_message = "Select an audio event or a MIDI part to edit it in place".to_owned();
     }
 
+    /// Asks for a folder and relinks the project's missing sources from it.
+    fn find_missing_media_dialog(&mut self) {
+        if self.data.project.missing_media().is_empty() {
+            self.status_message = "This project has no missing media".to_owned();
+            return;
+        }
+        let Some(folder) = FileDialog::new()
+            .set_title("Find Missing Media")
+            .pick_folder()
+        else {
+            return;
+        };
+        self.relink_missing_media(&folder);
+    }
+
     /// Reveals the selected event's source in the Media Pool.
     fn find_selected_event_in_pool(&mut self) {
         let selected = self.arrange_view_state.audio_events.selected_ids();
@@ -12543,11 +12558,7 @@ impl OpenTrackApp {
                     )
                     .clicked()
                     {
-                        if let Some(folder) =
-                            FileDialog::new().set_title("Find Missing Media").pick_folder()
-                        {
-                            self.relink_missing_media(&folder);
-                        }
+                        self.find_missing_media_dialog();
                         ui.close();
                     }
                     if menu_command(ui, "Project Setup...", "Shift+S", true).clicked() {
@@ -12870,11 +12881,23 @@ impl OpenTrackApp {
                         &[("Make Chord Symbols", ""), ("Make Guitar Symbols", "")],
                     );
                     ui.menu_button("Functions", |ui| {
+                        if menu_command(
+                            ui,
+                            "Merge",
+                            "",
+                            self.project_open
+                                && !self.is_recording()
+                                && self.data.project.selected_midi_part_id.is_some(),
+                        )
+                        .clicked()
+                        {
+                            self.merge_selected_midi_parts();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
                                 ("Explode", ""),
-                                ("Merge", ""),
                                 ("Explode Pitches", ""),
                                 ("Make Chord Symbols", ""),
                             ],
@@ -12940,6 +12963,17 @@ impl OpenTrackApp {
                     }
                     if menu_command(
                         ui,
+                        "Find Missing Files...",
+                        "",
+                        pool_available && !self.data.project.missing_media().is_empty(),
+                    )
+                    .clicked()
+                    {
+                        self.find_missing_media_dialog();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
                         "Remove Missing Files",
                         "",
                         pool_available
@@ -12956,7 +12990,6 @@ impl OpenTrackApp {
                             ("Import Audio CD...", ""),
                             ("Import Pool...", ""),
                             ("Export Pool...", ""),
-                            ("Find Missing Files...", ""),
                             ("Reconstruct", ""),
                             ("Convert Files...", ""),
                             ("Conform Files...", ""),
@@ -12969,14 +13002,23 @@ impl OpenTrackApp {
                         ],
                     );
                     ui.menu_button("Insert into Project", |ui| {
-                        disabled_menu_commands(
-                            ui,
-                            &[
-                                ("Audio Track", ""),
-                                ("Instrument Track", ""),
-                                ("MIDI Track", ""),
-                            ],
-                        );
+                        for (label, kind) in [
+                            ("Audio Track", TrackKind::Audio),
+                            ("Instrument Track", TrackKind::Instrument),
+                            ("MIDI Track", TrackKind::Midi),
+                        ] {
+                            if menu_command(ui, label, "", self.project_open).clicked() {
+                                self.track_add_dialog = Some(TrackAddDialog {
+                                    kind,
+                                    count: 1,
+                                    audio_channels: 1,
+                                    mono_input_channel: 1,
+                                    browse_presets: true,
+                                    instrument: None,
+                                });
+                                ui.close();
+                            }
+                        }
                     });
                     disabled_menu_commands(
                         ui,
