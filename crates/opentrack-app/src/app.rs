@@ -1190,6 +1190,8 @@ pub struct OpenTrackApp {
     default_fade_seconds: f64,
     /// Beat where playback should stop itself, set by the Play until commands.
     play_until: Option<f64>,
+    /// Insert Velocities dialog draft: start and end velocity.
+    insert_velocities: Option<(u8, u8)>,
     /// Media Pool search term and whether the field should take focus next frame.
     pool_search: String,
     pool_search_focus: bool,
@@ -2610,6 +2612,7 @@ impl OpenTrackApp {
             close_project_prompt: false,
             gain_dialog: None,
             play_until: None,
+            insert_velocities: None,
             pool_search: String::new(),
             pool_search_focus: false,
             default_fade_seconds: creation
@@ -8033,6 +8036,115 @@ impl OpenTrackApp {
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
     }
 
+    /// Applies a fixed velocity or a ramp to the selected notes.
+    fn insert_note_velocities(&mut self, start: u8, end: u8) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before inserting velocities".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let changed = if start == end {
+            opentrack_core::midi_transform::set_velocity(part, &ids, start)
+        } else {
+            opentrack_core::midi_transform::ramp_velocity(part, &ids, start, end)
+        };
+        if changed == 0 {
+            self.status_message = "No note velocity changed".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot insert velocities: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Insert Velocities");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = if start == end {
+            format!("Set {changed} note(s) to velocity {start}; Undo restores them")
+        } else {
+            format!("Ramped {changed} note(s) from velocity {start} to {end}; Undo restores them")
+        };
+    }
+
+    fn show_insert_velocities_dialog(&mut self, ctx: &egui::Context) {
+        let Some((mut start, mut end)) = self.insert_velocities.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Insert Velocities")
+            .id(Id::new("insert-velocities"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label("Selected notes, or the whole part when nothing is selected");
+                egui::Grid::new("insert-velocities-grid")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Start");
+                        ui.add(egui::DragValue::new(&mut start).range(1..=127));
+                        ui.end_row();
+                        ui.label("End");
+                        ui.add(egui::DragValue::new(&mut end).range(1..=127));
+                        ui.end_row();
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "Equal start and end sets every note to that velocity; different values ramp across the notes in time order.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("insert-velocities"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.insert_note_velocities(start, end);
+        } else if !cancel && open {
+            self.insert_velocities = Some((start, end));
+        }
+    }
+
     /// Transposes the selected notes as one undo step.
     fn transpose_selected_notes(&mut self, semitones: i16) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
@@ -12767,12 +12879,45 @@ impl OpenTrackApp {
                             });
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Insert Velocities",
+                        "",
+                        self.project_open
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        let velocity = self
+                            .selected_midi_note_ids
+                            .iter()
+                            .next()
+                            .and_then(|id| {
+                                self.data
+                                    .project
+                                    .selected_midi_part_id
+                                    .and_then(|part_id| {
+                                        self.data
+                                            .project
+                                            .tracks
+                                            .iter()
+                                            .flat_map(|track| track.midi_parts.iter())
+                                            .find(|part| part.id == part_id)
+                                    })
+                                    .and_then(|part| {
+                                        part.notes.iter().find(|note| note.id == *id)
+                                    })
+                            })
+                            .map(|note| note.velocity)
+                            .unwrap_or(100);
+                        self.insert_velocities = Some((velocity, velocity));
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Logical Presets", ""),
                             ("Drum Map Setup...", ""),
-                            ("Insert Velocities", ""),
                             ("VST Expression", ""),
                             ("CC Automation Setup...", ""),
                             ("Reset", ""),
@@ -14005,6 +14150,7 @@ impl OpenTrackApp {
             || self.close_project_prompt
             || self.gain_dialog.is_some()
             || self.auto_fades_settings_open
+            || self.insert_velocities.is_some()
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -16413,6 +16559,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_overview(&ctx);
         self.show_gain_dialog(&ctx);
         self.show_auto_fades_settings(&ctx);
+        self.show_insert_velocities_dialog(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -28395,6 +28542,82 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod insert_velocities_tests {
+    use super::*;
+    use opentrack_core::project::{MidiNote, MidiPart};
+
+    fn app_with_notes() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.next_midi_part_id = 2;
+        app.data.project.next_midi_note_id = 4;
+        app.data.project.tracks[0].midi_parts.push(MidiPart {
+            id: 1,
+            name: "Part".to_owned(),
+            start_beats: 0.0,
+            duration_beats: 8.0,
+            notes: vec![
+                MidiNote {
+                    id: 1,
+                    start_beats: 0.0,
+                    duration_beats: 0.5,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                },
+                MidiNote {
+                    id: 2,
+                    start_beats: 2.0,
+                    duration_beats: 0.5,
+                    pitch: 62,
+                    channel: 0,
+                    velocity: 100,
+                },
+            ],
+            controller_events: Vec::new(),
+        });
+        app.data.project.selected_midi_part_id = Some(1);
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn inserting_velocities_sets_or_ramps_as_one_undo_step() {
+        let mut app = app_with_notes();
+        app.insert_note_velocities(80, 80);
+        assert!(
+            app.data.project.tracks[0].midi_parts[0]
+                .notes
+                .iter()
+                .all(|note| note.velocity == 80)
+        );
+        assert!(app.status_message.contains("velocity 80"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Insert Velocities");
+
+        app.insert_note_velocities(20, 120);
+        let notes = &app.data.project.tracks[0].midi_parts[0].notes;
+        assert_eq!(notes[0].velocity, 20);
+        assert_eq!(notes[1].velocity, 120);
+        assert!(app.status_message.contains("Ramped 2 note(s)"));
+
+        // A zero-change request reports instead of writing another step.
+        let steps = app.project_history.counts().0;
+        app.insert_note_velocities(20, 120);
+        assert!(app.status_message.contains("No note velocity changed"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // Without a selected part it reports.
+        app.data.project.selected_midi_part_id = None;
+        app.insert_note_velocities(50, 60);
+        assert!(app.status_message.contains("Select a MIDI part"));
     }
 }
 

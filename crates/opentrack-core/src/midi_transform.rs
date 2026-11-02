@@ -61,6 +61,56 @@ pub fn change_velocity(part: &mut MidiPart, ids: &[u64], delta: i16) -> usize {
     changed
 }
 
+/// Sets the selected notes' velocity to a fixed value and reports changes.
+pub fn set_velocity(part: &mut MidiPart, ids: &[u64], velocity: u8) -> usize {
+    let target = velocity.clamp(1, 127);
+    let mut changed = 0;
+    for note in part.notes.iter_mut() {
+        if says_yes(ids, note.id) && note.velocity != target {
+            note.velocity = target;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Rises or falls the selected notes' velocity across their time order.
+///
+/// The first selected note takes `start`, the last takes `end`, and the notes
+/// between are spaced evenly by position, so a crescendo follows the performance
+/// rather than the note order in the file.
+pub fn ramp_velocity(part: &mut MidiPart, ids: &[u64], start: u8, end: u8) -> usize {
+    let start = start.clamp(1, 127);
+    let end = end.clamp(1, 127);
+    let mut selected = part
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| says_yes(ids, note.id))
+        .map(|(index, note)| (note.start_beats, index))
+        .collect::<Vec<_>>();
+    selected.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+    let count = selected.len();
+    if count == 0 {
+        return 0;
+    }
+    let mut changed = 0;
+    for (rank, (_, index)) in selected.into_iter().enumerate() {
+        let value = if count <= 1 {
+            start
+        } else {
+            let fraction = rank as f64 / (count - 1) as f64;
+            (f64::from(start) + (f64::from(end) - f64::from(start)) * fraction).round() as u8
+        }
+        .clamp(1, 127);
+        if part.notes[index].velocity != value {
+            part.notes[index].velocity = value;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +203,33 @@ mod tests {
             0,
             "already at the floor"
         );
+    }
+
+    #[test]
+    fn velocity_can_be_set_and_ramped_across_the_selection() {
+        let (_project, mut part) = part();
+        assert_eq!(set_velocity(&mut part, &[], 80), 3);
+        assert!(part.notes.iter().all(|note| note.velocity == 80));
+        assert_eq!(set_velocity(&mut part, &[], 80), 0, "no change twice");
+
+        // A ramp follows time order: note 3 (beat 2) is between notes 1 (0) and
+        // 2 (1), so the middle value goes to it.
+        assert_eq!(ramp_velocity(&mut part, &[], 10, 110), 3);
+        let by_start = |part: &MidiPart, beat: f64| {
+            part.notes
+                .iter()
+                .find(|note| (note.start_beats - beat).abs() < 1e-9)
+                .expect("note")
+                .velocity
+        };
+        assert_eq!(by_start(&part, 0.0), 10);
+        assert_eq!(by_start(&part, 1.0), 60);
+        assert_eq!(by_start(&part, 2.0), 110);
+
+        // A restricted selection only touches those notes.
+        assert_eq!(ramp_velocity(&mut part, &[2], 5, 5), 1);
+        assert_eq!(by_start(&part, 1.0), 5);
+        assert_eq!(by_start(&part, 0.0), 10);
     }
 
     #[test]

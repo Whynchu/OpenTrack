@@ -214,6 +214,13 @@ and measured numbers.
    copies media. Hand-written one-path-per-line lists, comments and duplicates
    are handled. 2 module/app tests. Disabled entries 107 -> 105.
 
+27. **Insert Velocities.** *Delivered.* MIDI > Insert Velocities opens a dialog
+   with start and end velocity; equal values set every selected note (or the whole
+   part) to that velocity, different values ramp across the notes in time order via
+   `midi_transform::set_velocity`/`ramp_velocity`. One labelled "Insert Velocities"
+   undo step, no-change and no-part reported. 1 core and 1 app tests. Disabled
+   entries 105 -> 104.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
