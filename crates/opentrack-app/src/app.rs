@@ -19619,7 +19619,11 @@ fn show_project(
     }
 
     let lane_header_width = 264.0;
-    let ruler_height = 22.0;
+    let ruler_height = if arrange_view_state.secondary_ruler_format.is_some() {
+        36.0
+    } else {
+        22.0
+    };
     crate::view_controls::apply_solid_scrollbars(ui);
     let scroll_parent = ui.available_rect_before_wrap();
     let timeline_view_width = (scroll_parent.width() - lane_header_width - 34.0).max(1.0);
@@ -20265,6 +20269,39 @@ fn show_project(
                     }
                 }
                 ui.separator();
+                ui.menu_button("Secondary Ruler", |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut arrange_view_state.secondary_ruler_format,
+                            None,
+                            "None",
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                    }
+                    for (index, label) in [
+                        "Bars+Beats",
+                        "Seconds",
+                        "Timecode",
+                        "Samples",
+                        "60 fps (User)",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if ui
+                            .selectable_value(
+                                &mut arrange_view_state.secondary_ruler_format,
+                                Some(index as u8),
+                                label,
+                            )
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
+                });
                 ui.checkbox(&mut arrange_view_state.ruler_time_linear, "Time Linear");
                 ui.checkbox(
                     &mut arrange_view_state.ruler_bars_beats_linear,
@@ -20550,7 +20587,14 @@ fn show_project(
                 );
                 if bar < content_bars && bar % label_stride == 0 {
                     ruler_grid_painter.text(
-                        Pos2::new(x + 2.0, ruler.center().y),
+                        Pos2::new(
+                            x + 2.0,
+                            if arrange_view_state.secondary_ruler_format.is_some() {
+                                ruler.top() + 10.0
+                            } else {
+                                ruler.center().y
+                            },
+                        ),
                         Align2::LEFT_CENTER,
                         ruler_label(
                             bar,
@@ -20562,6 +20606,28 @@ fn show_project(
                         ),
                         ruler_font.clone(),
                         palette.text,
+                    );
+                }
+            }
+            if let Some(secondary) = arrange_view_state.secondary_ruler_format {
+                for bar in (first_tick..=last_visible_bar).step_by(tick_stride) {
+                    if bar >= content_bars || bar % label_stride != 0 {
+                        continue;
+                    }
+                    let x = grid_left + bar as f32 * bar_width;
+                    ruler_grid_painter.text(
+                        Pos2::new(x + 2.0, ruler.top() + 26.0),
+                        Align2::LEFT_CENTER,
+                        ruler_label(
+                            bar,
+                            secondary,
+                            beats_per_bar,
+                            project.tempo_bpm,
+                            sample_rate,
+                            project.timecode_offset_seconds,
+                        ),
+                        ruler_font.clone(),
+                        palette.muted,
                     );
                 }
             }
@@ -31828,6 +31894,9 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+        // Samples follow the current project rate and ignore the timecode offset.
+        assert_eq!(ruler_label(2, 3, 4, 120.0, 48_000, 3600.0), "192000");
+        assert_eq!(ruler_label(2, 3, 4, 120.0, 44_100, 3600.0), "176400");
     }
 }
 

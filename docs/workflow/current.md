@@ -46,7 +46,9 @@ Step 21 added an optional real Marker lane backed by `Project.markers`: snapped 
 
 Step 22 added a Regions editor for `Project.regions` with select/locate/rename/resize/add/delete, Apply-time snapping and one "Edit Regions" history step; invalid ranges and empty names are refused unchanged, overlaps remain valid, and the editor's selection is separate from audio-event selection. Hitpoint-created regions appear in the same list. Core suite: 160 passed; app suite: 537 passed, 9 ignored; inventory is 273 leaves with 84 unavailable. Desktop editor review remains pending. See [R4-22](tasks/R4-22-regions-editor.md).
 
-Next ready work: revision-4 step 23, additional ruler presentation. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 23 added an optional secondary ruler row selected from the ruler context menu, using the existing bars/seconds/timecode/samples/60 fps conversion and project timecode offset. The choice persists in workspace view state and defaults off, so existing ruler height and row geometry are unchanged. App suite: 537 passed, 9 ignored; inventory remains 273 leaves with 84 unavailable. Desktop alignment review remains pending. See [R4-23](tasks/R4-23-secondary-ruler.md).
+
+Next ready work: revision-4 step 24, arranger data contract. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

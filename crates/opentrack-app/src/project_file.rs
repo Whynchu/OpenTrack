@@ -133,6 +133,9 @@ pub(crate) struct ArrangeViewState {
     pub(crate) event_colors: [[u8; 3]; 16],
     #[serde(default)]
     pub(crate) ruler_format: u8,
+    /// Optional second ruler row using another existing time format.
+    #[serde(default)]
+    pub(crate) secondary_ruler_format: Option<u8>,
     #[serde(default = "default_true")]
     pub(crate) ruler_time_linear: bool,
     #[serde(default)]
@@ -200,6 +203,7 @@ impl Default for ArrangeViewState {
             cc_lane_controller: default_cc_lane_controller(),
             event_colors: DEFAULT_EVENT_COLORS,
             ruler_format: 0,
+            secondary_ruler_format: None,
             ruler_time_linear: true,
             ruler_bars_beats_linear: false,
             track_heights: Default::default(),
@@ -358,6 +362,7 @@ impl ArrangeViewState {
 
     fn normalize(&mut self) {
         self.ruler_format = self.ruler_format.min(4);
+        self.secondary_ruler_format = self.secondary_ruler_format.map(|format| format.min(4));
         self.cc_lane_controller = self.cc_lane_controller.min(127);
         if !self.track_vertical_zoom.is_finite() {
             self.track_vertical_zoom = default_track_vertical_zoom();
@@ -1892,6 +1897,28 @@ mod tests {
             .remove("show_marker_lane");
         let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
         assert!(!legacy.show_marker_lane);
+    }
+
+    #[test]
+    fn secondary_ruler_format_round_trips_and_defaults_off() {
+        let mut view = ArrangeViewState::default();
+        assert_eq!(view.secondary_ruler_format, None);
+        view.secondary_ruler_format = Some(3);
+        let encoded = serde_json::to_string(&view).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(restored.secondary_ruler_format, Some(3));
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("secondary_ruler_format");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
+        assert_eq!(legacy.secondary_ruler_format, None);
+        let mut clamped = serde_json::to_value(&view).unwrap();
+        clamped["secondary_ruler_format"] = 99.into();
+        let mut clamped: ArrangeViewState = serde_json::from_value(clamped).unwrap();
+        clamped.normalize();
+        assert_eq!(clamped.secondary_ruler_format, Some(4));
     }
 
     #[test]
