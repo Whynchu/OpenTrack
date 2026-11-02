@@ -201,6 +201,12 @@ and measured numbers.
    new behavior was duplicated — each entry calls the command that already
    exists. 1 app test for the relink refusal. Disabled entries 113 -> 108.
 
+25. **Search Media.** *Delivered.* Media > Search Media... opens the Media window
+   with a filter field focused. The pool filters rows by file name or full path,
+   case-insensitively, with a clear button and an empty-result message; the term
+   is transient and cleared when a project closes. 3 media-pool/app tests.
+   Disabled entries 108 -> 107.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

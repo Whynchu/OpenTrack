@@ -1190,6 +1190,9 @@ pub struct OpenTrackApp {
     default_fade_seconds: f64,
     /// Beat where playback should stop itself, set by the Play until commands.
     play_until: Option<f64>,
+    /// Media Pool search term and whether the field should take focus next frame.
+    pool_search: String,
+    pool_search_focus: bool,
     auto_fades_settings_open: bool,
     /// Source the Media Pool should show and highlight, set by Find in Pool.
     pool_reveal: Option<PathBuf>,
@@ -2607,6 +2610,8 @@ impl OpenTrackApp {
             close_project_prompt: false,
             gain_dialog: None,
             play_until: None,
+            pool_search: String::new(),
+            pool_search_focus: false,
             default_fade_seconds: creation
                 .storage
                 .and_then(|storage| eframe::get_value::<f64>(storage, "default-fade-seconds"))
@@ -3941,6 +3946,8 @@ impl OpenTrackApp {
         self.audio_event_clipboard = None;
         self.close_project_prompt = false;
         self.pool_reveal = None;
+        self.pool_search.clear();
+        self.pool_search_focus = false;
         self.dock_state = default_dock_state();
         self.workspace_state = initial_workspace_state(&self.dock_state)
             .expect("the built-in dock layout must be serializable");
@@ -4420,6 +4427,17 @@ impl OpenTrackApp {
             return;
         }
         self.status_message = "Select an audio event or a MIDI part to edit it in place".to_owned();
+    }
+
+    /// Opens the Media window with the pool search field focused.
+    fn search_media(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to search its media".to_owned();
+            return;
+        }
+        self.focus_tab(PanelTab::Media);
+        self.pool_search_focus = true;
+        self.status_message = "Search the Media Pool by file name or path".to_owned();
     }
 
     /// Asks for a folder and relinks the project's missing sources from it.
@@ -13020,10 +13038,11 @@ impl OpenTrackApp {
                             }
                         }
                     });
-                    disabled_menu_commands(
-                        ui,
-                        &[("Select in Project", ""), ("Search Media...", "")],
-                    );
+                    if menu_command(ui, "Search Media...", "", self.project_open).clicked() {
+                        self.search_media();
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Select in Project", "")]);
                     ui.separator();
                     if menu_command(
                         ui,
@@ -14611,7 +14630,13 @@ impl OpenTrackApp {
             egui::CentralPanel::default().show(window_ctx, |ui| {
                 let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                 blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
-                    insert = media_pool::show(ui, &self.data.project, self.pool_reveal.as_deref());
+                    insert = media_pool::show(
+                        ui,
+                        &self.data.project,
+                        self.pool_reveal.as_deref(),
+                        &mut self.pool_search,
+                        &mut self.pool_search_focus,
+                    );
                 });
             });
             self.media_window.popup_active = popup_behavior::close_when_pointer_leaves(window_ctx);

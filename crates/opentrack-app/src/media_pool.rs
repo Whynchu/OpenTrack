@@ -97,14 +97,46 @@ pub(super) fn prepare(
     candidate.validate().map_err(str::to_owned)?;
     Ok((candidate, files))
 }
+/// True when `path` matches a Media Pool search term.
+///
+/// A term matches the file name or any part of the full path, case-insensitively,
+/// so both "kick" and "Samples/Kick" work.
+pub(super) fn media_matches(path: &Path, search: &str) -> bool {
+    let search = search.trim().to_lowercase();
+    if search.is_empty() {
+        return true;
+    }
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_lowercase().contains(&search))
+        .unwrap_or(false)
+        || path.to_string_lossy().to_lowercase().contains(&search)
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     project: &Project,
     revealed: Option<&Path>,
+    search: &mut String,
+    focus_search: &mut bool,
 ) -> Option<PathBuf> {
     let mut insert = None;
     ui.heading("Media Pool");
     ui.label("Delete retains source media here. Shift+Delete removes unused source files with undo recovery.");
+    ui.horizontal(|ui| {
+        ui.label("Search");
+        let response = ui.add(
+            egui::TextEdit::singleline(search)
+                .desired_width(220.0)
+                .hint_text("Filter by name or path"),
+        );
+        if *focus_search {
+            response.request_focus();
+            *focus_search = false;
+        }
+        if !search.is_empty() && ui.button("✕").on_hover_text("Clear the filter").clicked() {
+            search.clear();
+        }
+    });
     ui.separator();
     egui::ScrollArea::both().show(ui, |ui| {
         egui::Grid::new("project-media-pool")
@@ -115,7 +147,13 @@ pub(super) fn show(
                     ui.strong(heading);
                 }
                 ui.end_row();
-                for path in project.media_paths() {
+                let mut shown = 0usize;
+                for path in project
+                    .media_paths()
+                    .into_iter()
+                    .filter(|path| media_matches(path, search))
+                {
+                    shown += 1;
                     let uses = project
                         .tracks
                         .iter()
@@ -151,6 +189,10 @@ pub(super) fn show(
                     {
                         insert = Some(path.clone());
                     }
+                    ui.end_row();
+                }
+                if shown == 0 && !search.trim().is_empty() {
+                    ui.weak("No media matches this search.");
                     ui.end_row();
                 }
             })
@@ -933,6 +975,71 @@ mod tests {
     }
 
     #[test]
+    fn the_pool_search_matches_names_and_paths_case_insensitively() {
+        assert!(media_matches(Path::new("/media/Kick.wav"), ""));
+        assert!(media_matches(Path::new("/media/Kick.wav"), "kick"));
+        assert!(media_matches(Path::new("/media/Kick.wav"), "KICK"));
+        assert!(media_matches(Path::new("/media/Kick.wav"), "media/"));
+        assert!(!media_matches(Path::new("/media/Kick.wav"), "snare"));
+        // Whitespace-only is no filter at all.
+        assert!(media_matches(Path::new("/media/Kick.wav"), "   "));
+        // Whitespace around a term is ignored.
+        assert!(media_matches(Path::new("/media/Kick.wav"), "  kick  "));
+    }
+
+    #[test]
+    fn the_pool_filters_rows_by_the_search_term() {
+        let mut project = Project::default();
+        project.media_pool.insert(PathBuf::from("/media/kick.wav"));
+        project.media_pool.insert(PathBuf::from("/media/snare.wav"));
+
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut search = "kick".to_owned();
+            let mut focus = false;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(800.0, 600.0),
+                    )),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |ui| {
+                    assert!(show(ui, &project, None, &mut search, &mut focus).is_none());
+                },
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("kick.wav"), "{joined}");
+        assert!(
+            !joined.contains("snare.wav"),
+            "the search hides non-matching rows: {joined}"
+        );
+        assert!(joined.contains("Search"), "{joined}");
+    }
+
+    #[test]
     fn the_pool_marks_and_scrolls_to_a_revealed_source() {
         let mut project = Project::default();
         project.media_pool.insert(PathBuf::from("/media/kick.wav"));
@@ -952,7 +1059,18 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    assert!(show(ui, &project, Some(revealed.as_path())).is_none());
+                    let mut search = String::new();
+                    let mut focus = false;
+                    assert!(
+                        show(
+                            ui,
+                            &project,
+                            Some(revealed.as_path()),
+                            &mut search,
+                            &mut focus
+                        )
+                        .is_none()
+                    );
                 },
             );
             output.textures_delta.clear();
@@ -984,6 +1102,23 @@ mod tests {
             joined.contains("snare.wav"),
             "the other file is still listed"
         );
+    }
+
+    #[test]
+    fn the_search_command_opens_the_media_window_with_the_field_focused() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.search_media();
+        assert!(app.media_window.open);
+        assert!(app.pool_search_focus);
+        assert!(app.status_message.contains("Search the Media Pool"));
+
+        // Without a project it reports instead.
+        let mut closed = OpenTrackApp::new_internal(&creation, false);
+        closed.search_media();
+        assert!(closed.status_message.contains("Open a project"));
     }
 
     #[test]
