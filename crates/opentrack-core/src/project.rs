@@ -1,5 +1,6 @@
 //! The application's native, version-independent project domain model.
 
+use crate::arranger::Arranger;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -1079,6 +1080,9 @@ pub struct Project {
     pub regions: Vec<Region>,
     #[serde(default = "first_marker_id")]
     pub next_region_id: u64,
+    /// Arranger sections and their ordered play sequence.
+    #[serde(default)]
+    pub arranger: Arranger,
 }
 
 /// A named range on the project timeline.
@@ -1284,6 +1288,7 @@ impl Default for Project {
             next_marker_id: first_marker_id(),
             regions: Vec::new(),
             next_region_id: first_marker_id(),
+            arranger: Arranger::default(),
             next_take_group: 1,
         }
     }
@@ -4868,6 +4873,7 @@ impl Project {
             return Err("project notepad is too long");
         }
         self.media_folders.is_valid()?;
+        self.arranger.validate()?;
         if let Some(folder) = &self.pool_record_folder
             && !is_usable_relative_folder(folder)
         {
@@ -9468,6 +9474,33 @@ mod sample_edit_tests {
         // Overlaps are allowed; regions are not clips.
         assert!(project.set_region_range(second, 5.0, 9.0));
         assert_eq!(project.validate(), Ok(()));
+    }
+
+    #[test]
+    fn arranger_edits_do_not_move_source_clips_and_round_trip() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 2.0, 1.0)
+            .expect("clip");
+        let before = project.tracks[0].clips.clone();
+        let section = project
+            .arranger
+            .add_section("Verse", 0.0, 8.0)
+            .expect("section");
+        project.arranger.append_sequence(section, 2);
+        assert_eq!(project.arranger.expanded_duration_beats(), Some(16.0));
+        assert_eq!(project.tracks[0].clips, before);
+        assert_eq!(project.validate(), Ok(()));
+        let encoded = serde_json::to_string(&project).expect("encode");
+        let restored: Project = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(restored.arranger, project.arranger);
+        assert_eq!(restored.tracks[0].clips, before);
+
+        let mut value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        value.as_object_mut().unwrap().remove("arranger");
+        let legacy: Project = serde_json::from_value(value).unwrap();
+        assert!(legacy.arranger.is_empty());
     }
 
     #[test]

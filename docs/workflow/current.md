@@ -48,7 +48,9 @@ Step 22 added a Regions editor for `Project.regions` with select/locate/rename/r
 
 Step 23 added an optional secondary ruler row selected from the ruler context menu, using the existing bars/seconds/timecode/samples/60 fps conversion and project timecode offset. The choice persists in workspace view state and defaults off, so existing ruler height and row geometry are unchanged. App suite: 537 passed, 9 ignored; inventory remains 273 leaves with 84 unavailable. Desktop alignment review remains pending. See [R4-23](tasks/R4-23-secondary-ruler.md).
 
-Next ready work: revision-4 step 24, arranger data contract. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 24 added the arranger data contract in `opentrack-core::arranger`: stable section IDs with half-open ranges, an ordered sequence of section references with positive repeats, 128/1024/1024 bounds, atomic reference-dropping removal and expanded-duration validation. Arranger edits leave source clips untouched; OPR is now 37. Add Arranger remains disabled until the editor and audible preview exist. Core suite: 164 passed; app suite: 538 passed, 9 ignored. See [R4-24](tasks/R4-24-arranger-contract.md).
+
+Next ready work: revision-4 step 25, implement the arranger editor and commands. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 
