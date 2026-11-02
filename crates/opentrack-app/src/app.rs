@@ -1331,6 +1331,7 @@ pub struct OpenTrackApp {
     region_editor: Option<region_editor::RegionEditor>,
     arranger_editor: Option<arranger_editor::ArrangerEditor>,
     arranger_preview: Option<ArrangerPreview>,
+    track_archive_import_task: Option<track_archive::TrackArchiveImportTask>,
     track_archive_task:
         Option<std::sync::mpsc::Receiver<Result<track_archive::ArchiveReport, String>>>,
     /// Beat where a running count-in should begin capture.
@@ -2832,6 +2833,7 @@ impl OpenTrackApp {
             region_editor: None,
             arranger_editor: None,
             arranger_preview: None,
+            track_archive_import_task: None,
             track_archive_task: None,
             count_in_armed: None,
             count_in_click_active: false,
@@ -4306,6 +4308,7 @@ impl OpenTrackApp {
         self.arranger_editor = None;
         self.arranger_preview = None;
         self.track_archive_task = None;
+        self.track_archive_import_task = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -13593,7 +13596,9 @@ impl OpenTrackApp {
                             ui,
                             "Track Archive (OpenTrack v1)...",
                             "",
-                            self.project_open && !self.is_recording(),
+                            self.project_open
+                                && !self.is_recording()
+                                && self.track_archive_import_task.is_none(),
                         )
                         .clicked()
                         {
@@ -18999,6 +19004,7 @@ impl eframe::App for OpenTrackApp {
         }
         self.poll_audio_export_task();
         self.poll_track_archive_task();
+        self.poll_track_archive_import();
         self.poll_bounce_task();
         self.poll_midi_file_task();
         self.show_midi_export_dialog(&ctx);

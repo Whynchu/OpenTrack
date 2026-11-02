@@ -290,6 +290,10 @@ impl OpenTrackApp {
             self.status_message = "Stop recording before importing a track archive".to_owned();
             return;
         }
+        if self.track_archive_import_task.is_some() {
+            self.status_message = "A track archive import is already running".to_owned();
+            return;
+        }
         let Some(project_dir) = self
             .project_path
             .as_deref()
@@ -305,13 +309,106 @@ impl OpenTrackApp {
         else {
             return;
         };
-        let (tracks, report) = match prepare_import(&self.data.project, &project_dir, &package) {
+        self.start_track_archive_import(package, project_dir);
+    }
+
+    /// Starts the bounded import worker.
+    ///
+    /// The worker copies and validates the package off the UI thread; the project
+    /// is only touched when its result arrives and the project has not changed
+    /// since the import began.
+    pub(super) fn start_track_archive_import(&mut self, package: PathBuf, project_dir: PathBuf) {
+        let project = self.data.project.clone();
+        let snapshot = project_fingerprint(&project);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::Mutex::new((0_u64, 0_u64)));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_cancel = std::sync::Arc::clone(&cancel);
+        let worker_progress = std::sync::Arc::clone(&progress);
+        let worker_project = project.clone();
+        let worker_package = package.clone();
+        let spawned = std::thread::Builder::new()
+            .name("opentrack-archive-import".to_owned())
+            .spawn(move || {
+                let result = prepare_import(
+                    &worker_project,
+                    &project_dir,
+                    &worker_package,
+                    &worker_cancel,
+                    &worker_progress,
+                );
+                let _ = sender.send(result);
+            });
+        if spawned.is_err() {
+            self.status_message = "Could not start the archive import worker".to_owned();
+            return;
+        }
+        self.track_archive_import_task = Some(TrackArchiveImportTask {
+            snapshot,
+            receiver,
+            cancel,
+            progress,
+        });
+        self.status_message = format!(
+            "Importing {}...",
+            package
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "the track archive".to_owned())
+        );
+    }
+
+    /// Cancels a running import and discards its result.
+    pub(super) fn cancel_track_archive_import(&mut self) {
+        if let Some(task) = self.track_archive_import_task.take() {
+            task.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.status_message = "Cancelling the archive import...".to_owned();
+        }
+    }
+
+    /// Polls the import worker and publishes a complete result.
+    pub(super) fn poll_track_archive_import(&mut self) {
+        let Some(task) = &self.track_archive_import_task else {
+            return;
+        };
+        let (done, total) = task.progress.lock().map(|state| *state).unwrap_or((0, 0));
+        let result = match task.receiver.try_recv() {
             Ok(result) => result,
-            Err(error) => {
-                self.status_message = error;
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if total > 0 {
+                    self.status_message =
+                        format!("Importing track archive: {done} of {total} media file(s)");
+                }
                 return;
             }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Track archive import stopped unexpectedly".to_owned())
+            }
         };
+        let task = self
+            .track_archive_import_task
+            .take()
+            .expect("the task is present");
+        match result {
+            Ok((tracks, report)) => self.finish_track_archive_import(task.snapshot, tracks, report),
+            Err(error) => self.status_message = error,
+        }
+    }
+
+    /// Applies an imported set of tracks, rejecting a stale result.
+    fn finish_track_archive_import(
+        &mut self,
+        snapshot: u64,
+        tracks: Vec<Track>,
+        report: ImportReport,
+    ) {
+        if project_fingerprint(&self.data.project) != snapshot {
+            self.status_message =
+                "The project changed while the archive was importing; run the import again"
+                    .to_owned();
+            return;
+        }
         let mut candidate = self.data.project.clone();
         candidate.tracks.extend(tracks);
         refresh_counters(&mut candidate);
@@ -383,6 +480,33 @@ impl OpenTrackApp {
             Err(error) => self.status_message = error,
         }
     }
+}
+
+/// A running background import, cancelled when it is dropped.
+pub(super) struct TrackArchiveImportTask {
+    /// Project fingerprint taken when the import began, so a stale result is
+    /// rejected instead of being applied to a project that moved on.
+    snapshot: u64,
+    receiver: std::sync::mpsc::Receiver<Result<(Vec<Track>, ImportReport), String>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    progress: std::sync::Arc<std::sync::Mutex<(u64, u64)>>,
+}
+
+impl Drop for TrackArchiveImportTask {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Cheap content fingerprint used to reject stale background results.
+pub(super) fn project_fingerprint(project: &Project) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(project)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -475,6 +599,8 @@ pub(super) fn prepare_import(
     project: &Project,
     project_dir: &Path,
     package: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &std::sync::Mutex<(u64, u64)>,
 ) -> Result<(Vec<Track>, ImportReport), String> {
     let manifest_path = package.join(MANIFEST_NAME);
     let metadata = std::fs::metadata(&manifest_path)
@@ -518,11 +644,21 @@ pub(super) fn prepare_import(
         std::process::id()
     ));
     let mut copied = Vec::new();
+    let total_media = manifest.media.len() as u64;
+    if let Ok(mut state) = progress.lock() {
+        *state = (0, total_media);
+    }
     let copy_result = (|| -> Result<BTreeMap<String, PathBuf>, String> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Track archive import cancelled".to_owned());
+        }
         std::fs::create_dir_all(&import_folder)
             .map_err(|error| format!("Could not create the import folder: {error}"))?;
         let mut remapped = BTreeMap::new();
         for media in &manifest.media {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return Err("Track archive import cancelled".to_owned());
+            }
             let relative = Path::new(&media.archive_path);
             if relative.is_absolute()
                 || relative
@@ -561,6 +697,9 @@ pub(super) fn prepare_import(
                 .map_err(|error| format!("Could not copy archive media: {error}"))?;
             copied.push(target.clone());
             remapped.insert(media.original_path.clone(), target);
+            if let Ok(mut state) = progress.lock() {
+                state.0 = state.0.saturating_add(1);
+            }
         }
         Ok(remapped)
     })();
@@ -736,7 +875,10 @@ mod tests {
         let mut target = Project::default();
         target.add_track(TrackKind::Audio);
         target.tracks[0].name = source.tracks[0].name.clone();
-        let (tracks, report) = prepare_import(&target, &project_dir, &package).expect("import");
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let progress = std::sync::Mutex::new((0, 0));
+        let (tracks, report) =
+            prepare_import(&target, &project_dir, &package, &cancel, &progress).expect("import");
         assert_eq!(report.track_count, 2);
         assert_eq!(report.media_count, 1);
         assert!(tracks.iter().all(|track| track.id >= target.next_track_id));
@@ -760,8 +902,121 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        assert!(prepare_import(&target, &project_dir, &escaped).is_err());
+        assert!(prepare_import(&target, &project_dir, &escaped, &cancel, &progress).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_cancelled_import_stages_nothing_and_reports() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-archive-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let media = root.join("clip.wav");
+        std::fs::write(&media, b"RIFF").expect("media");
+        let source = {
+            let mut project = Project::default();
+            project.add_track(TrackKind::Audio);
+            project
+                .add_audio_clip(0, media.clone(), 0.0, 1.0)
+                .expect("clip");
+            project
+        };
+        let package = root.join("Package");
+        export(&source, &[source.tracks[0].id], &package).expect("export");
+
+        let project_dir = root.join("Project");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let progress = std::sync::Mutex::new((0, 0));
+        let error = prepare_import(
+            &Project::default(),
+            &project_dir,
+            &package,
+            &cancel,
+            &progress,
+        )
+        .expect_err("cancelled");
+        assert!(error.contains("cancelled"), "{error}");
+        let imports = project_dir.join("Audio").join("Imports");
+        let staged = std::fs::read_dir(&imports)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(staged, 0, "a cancelled import leaves no staged media");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_background_import_publishes_one_history_step() {
+        use std::time::{Duration, Instant};
+
+        let root =
+            std::env::temp_dir().join(format!("opentrack-archive-bg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let media = root.join("clip.wav");
+        std::fs::write(&media, b"RIFF").expect("media");
+        let source = {
+            let mut project = Project::default();
+            project.add_track(TrackKind::Audio);
+            project
+                .add_audio_clip(0, media.clone(), 0.0, 1.0)
+                .expect("clip");
+            project
+        };
+        let package = root.join("Package");
+        export(&source, &[source.tracks[0].id], &package).expect("export");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = super::OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.project_history.clear();
+
+        app.start_track_archive_import(package, root.clone());
+        assert!(app.status_message.contains("Importing"));
+        // The menu row is gated while the worker runs.
+        assert!(app.track_archive_import_task.is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.track_archive_import_task.is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.poll_track_archive_import();
+        }
+        assert!(
+            app.track_archive_import_task.is_none(),
+            "the import finished"
+        );
+        assert_eq!(app.data.project.tracks.len(), 1);
+        assert!(app.status_message.contains("Imported 1 track(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Import Track Archive");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_stale_background_result_is_rejected() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-archive-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = super::OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_history.clear();
+
+        let snapshot = project_fingerprint(&app.data.project);
+        // The project moves on before the result is published.
+        app.data.project.add_track(TrackKind::Audio);
+        app.finish_track_archive_import(snapshot, Vec::new(), ImportReport::default());
+        assert!(
+            app.status_message
+                .contains("changed while the archive was importing")
+        );
+        assert_eq!(app.data.project.tracks.len(), 1, "no import applied");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
