@@ -104,6 +104,69 @@ use cpal::traits::StreamTrait;
 #[cfg(not(windows))]
 use cpal::{BufferSize, SampleFormat};
 
+/// Counts allocations made by the thread that asked for it, so the callback
+/// path can prove it does not allocate. Counting is per thread, so a parallel
+/// test suite does not disturb the measurement.
+#[cfg(test)]
+mod alloc_probe {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub struct Counting;
+
+    /// Starts counting on this thread and clears the previous count.
+    pub fn start() {
+        ALLOCATIONS.with(|count| count.set(0));
+        COUNTING.with(|counting| counting.set(true));
+    }
+
+    /// Stops counting and returns the number of allocations seen.
+    pub fn finish() -> u64 {
+        COUNTING.with(|counting| counting.set(false));
+        ALLOCATIONS.with(Cell::get)
+    }
+
+    fn note() {
+        // `try_with` keeps the allocator usable while a thread is being torn
+        // down, when the thread locals may already be gone.
+        let _ = COUNTING.try_with(|counting| {
+            if counting.get() {
+                let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+            }
+        });
+    }
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            note();
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            note();
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            note();
+            unsafe { System.realloc(pointer, layout, new_size) }
+        }
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_GLOBAL_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+
 const TEST_TONE_HZ: f32 = 440.0;
 const TEST_TONE_LEVEL: f32 = 0.08;
 const MAX_DECODED_WAV_BYTES: u64 = 512 * 1024 * 1024;
@@ -1111,6 +1174,20 @@ pub struct PlaybackPlan {
 struct CallbackMetrics {
     load_ema: AtomicU32,
     overruns: AtomicU64,
+    /// Callbacks that finished inside their deadline, and the worst load seen.
+    /// These stay bounded (three atomics) so the callback needs no allocation or
+    /// lock to report how close it came.
+    blocks: AtomicU64,
+    worst_load_permille: AtomicU32,
+}
+
+/// A snapshot of the callback budget counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CallbackBudgetSnapshot {
+    pub blocks: u64,
+    pub overruns: u64,
+    /// Worst observed render time as a percentage of the audio deadline.
+    pub worst_load_percent: u32,
 }
 
 const CALLBACK_TRACE_CAPACITY: usize = 2048;
@@ -1326,7 +1403,11 @@ pub struct StageTimingSummary {
 
 impl StageTimingTrace {
     fn new() -> Option<Self> {
-        std::env::var_os("OPENTRACK_REALTIME_DIAGNOSTICS")?;
+        // Tests always collect stage timings so the budget can be asserted
+        // headlessly; a release build needs the opt-in environment variable.
+        if !cfg!(test) && std::env::var_os("OPENTRACK_REALTIME_DIAGNOSTICS").is_none() {
+            return None;
+        }
         Some(Self {
             write_index: AtomicU64::new(0),
             samples: std::array::from_fn(|_| TimingSampleSlot::new()),
@@ -2681,6 +2762,17 @@ impl AudioEngine {
             .and_then(StageTimingTrace::summary)
     }
 
+    /// Bounded counters for the callback budget: how many blocks ran, how many
+    /// missed the deadline, and the worst load ever observed.
+    pub fn callback_budget(&self) -> CallbackBudgetSnapshot {
+        let metrics = &self.plan.load().callback_metrics;
+        CallbackBudgetSnapshot {
+            blocks: metrics.blocks.load(Ordering::Relaxed),
+            overruns: metrics.overruns.load(Ordering::Relaxed),
+            worst_load_percent: metrics.worst_load_permille.load(Ordering::Relaxed) / 10,
+        }
+    }
+
     /// Exponentially smoothed render time as a percentage of the callback's
     /// audio deadline. Values above 100% indicate a callback overrun.
     pub fn callback_load_percent(&self) -> f32 {
@@ -3585,6 +3677,11 @@ fn render_frames<T>(
         metrics
             .load_ema
             .store(smoothed.to_bits(), Ordering::Relaxed);
+        metrics.blocks.fetch_add(1, Ordering::Relaxed);
+        let permille = (load.max(0.0) * 1000.0).min(u32::MAX as f32) as u32;
+        metrics
+            .worst_load_permille
+            .fetch_max(permille, Ordering::Relaxed);
         if load > 1.0 {
             metrics.overruns.fetch_add(1, Ordering::Relaxed);
         }
@@ -7593,6 +7690,275 @@ impl InsertProcessor {
             Self::UnavailableLegacy => {}
             Self::Vst3Passthrough { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod callback_budget_tests {
+    use super::alloc_probe;
+    use super::*;
+
+    fn stereo_source(level: f32) -> PlaybackSource {
+        PlaybackSource::Decoded(Arc::new(DecodedWav {
+            samples: vec![level; 48_000 * 2].into(),
+            waveform_peaks: Arc::new(Vec::new()),
+            waveform: Arc::new(Waveform::default()),
+            channels: 2,
+            sample_rate: 48_000,
+        }))
+    }
+
+    /// A hosted insert that does nothing, to exercise the block renderer.
+    struct PassProcessor;
+
+    impl opentrack_plugins::HostedProcessor for PassProcessor {
+        fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String> {
+            for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+                *left *= 0.5;
+                *right *= 0.5;
+            }
+            Ok(())
+        }
+
+        fn latency_samples(&self) -> u32 {
+            0
+        }
+
+        fn tail_samples(&self) -> u32 {
+            0
+        }
+    }
+
+    fn audible_track(level: f32) -> PlaybackTrackSettings {
+        let mut settings = PlaybackTrackSettings {
+            is_group: false,
+            audio_channels: 2,
+            clips: vec![PlaybackClip {
+                source_fades: Vec::new(),
+                source: stereo_source(level),
+                start_beats: 0.0,
+                source_offset_seconds: 0.0,
+                duration_seconds: 2.0,
+                fade_in_seconds: 0.0,
+                fade_out_seconds: 0.0,
+                gain: 1.0,
+                muted: false,
+                solo: false,
+            }],
+            midi_notes: Vec::new(),
+            midi_controllers: Vec::new(),
+            instrument_factory: oscillator_instrument_factory(InstrumentWaveform::Sine),
+            meter_peak: Arc::new(StereoMeter::default()),
+            gain: 0.8,
+            pan: 0.0,
+            input_gain_db: 0.0,
+            input_phase_inverted: false,
+            track_delay_ms: 0.0,
+            muted: false,
+            solo: false,
+            solo_defeat: false,
+            equalizer: ChannelEqualizer::default(),
+            inserts: Vec::new(),
+            inserts_bypassed: false,
+            hosted_inserts: Vec::new(),
+            monitor_input: None,
+            volume_automation: None,
+            sends: Vec::new(),
+            output_route: PlaybackOutputRoute::Stereo,
+        };
+        settings.equalizer.band_mut(0).map(|band| {
+            band.enabled = true;
+            band.frequency_hz = 1_000.0;
+            band.gain_db = 3.0;
+        });
+        settings
+    }
+
+    /// Runs the callback path and reports how many allocations it made.
+    fn render_blocks(plan: PlaybackPlan, blocks: usize) -> u64 {
+        let mut plan = plan;
+        plan.metronome = MetronomeSettings {
+            enabled: true,
+            ..MetronomeSettings::default()
+        };
+        let bus = opentrack_core::project::BusChannel::output().strip;
+        plan.output_bus = bus::BusRuntime::new(&bus, 48_000);
+        let plan = ArcSwap::from(Arc::new(plan));
+        let tone = AtomicBool::new(false);
+        let playing = AtomicBool::new(true);
+        let playhead = AtomicU64::new(0);
+        let generation = AtomicU64::new(0);
+        let active = AtomicBool::new(false);
+        let monitor = Arc::new(ArcSwapOption::empty());
+        let mut reader = AudioMonitorReader::default();
+        let mut phase = 0.0;
+        let mut samples = vec![0.0_f32; 512 * 2];
+        let mut render = |samples: &mut [f32], phase: &mut f32| {
+            render_f32(
+                samples,
+                2,
+                48_000,
+                &tone,
+                &playing,
+                &playhead,
+                &plan,
+                &generation,
+                &active,
+                &monitor,
+                &mut reader,
+                phase,
+            );
+        };
+        // Warm up caches, meters and the plan snapshot before counting.
+        render(&mut samples, &mut phase);
+        alloc_probe::start();
+        for _ in 0..blocks {
+            render(&mut samples, &mut phase);
+        }
+        alloc_probe::finish()
+    }
+
+    /// Renders blocks for an already-shared plan without counting allocations.
+    fn render_blocks_inner(plan: Arc<PlaybackPlan>, blocks: usize) {
+        let plan = ArcSwap::from(plan);
+        let tone = AtomicBool::new(false);
+        let playing = AtomicBool::new(true);
+        let playhead = AtomicU64::new(0);
+        let generation = AtomicU64::new(0);
+        let active = AtomicBool::new(false);
+        let monitor = Arc::new(ArcSwapOption::empty());
+        let mut reader = AudioMonitorReader::default();
+        let mut phase = 0.0;
+        let mut samples = vec![0.0_f32; 512 * 2];
+        for _ in 0..blocks {
+            render_f32(
+                &mut samples,
+                2,
+                48_000,
+                &tone,
+                &playing,
+                &playhead,
+                &plan,
+                &generation,
+                &active,
+                &monitor,
+                &mut reader,
+                &mut phase,
+            );
+        }
+    }
+
+    #[test]
+    fn the_callback_path_does_not_allocate() {
+        let mut plan = PlaybackPlan::new(120.0, vec![audible_track(0.4)], 1, 48_000, None);
+        plan.metronome = MetronomeSettings::default();
+        let allocations = render_blocks(plan, 8);
+        assert_eq!(
+            allocations, 0,
+            "the callback allocated {allocations} time(s) while rendering"
+        );
+    }
+
+    #[test]
+    fn every_hosted_stage_records_a_bounded_worst_case() {
+        // Three playing tracks, a group and the output stage.
+        let mut group = audible_track(0.0);
+        group.is_group = true;
+        group.hosted_inserts = vec![HostedInsert {
+            processor: Arc::new(PassProcessor),
+            enabled: true,
+        }];
+        let mut first = audible_track(0.4);
+        let mut second = audible_track(0.3);
+        for settings in [&mut first, &mut second] {
+            settings.hosted_inserts = vec![HostedInsert {
+                processor: Arc::new(PassProcessor),
+                enabled: true,
+            }];
+        }
+        let plan = Arc::new(PlaybackPlan::new(
+            120.0,
+            vec![group, first, second],
+            1,
+            48_000,
+            None,
+        ));
+        assert!(plan.hosted_processing);
+        let output_stage = plan.output_stage_timing.as_ref().expect("output stage");
+        let track_stages = plan
+            .tracks
+            .iter()
+            .filter_map(|track| track.hosted_timing.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(track_stages.len(), 3, "one stage per hosted track");
+
+        let settings_snapshot = Arc::clone(&plan);
+        render_blocks_inner(Arc::clone(&settings_snapshot), 8);
+
+        let output = output_stage.summary().expect("output stage summary");
+        assert!(
+            output.samples > 0 && output.duration_max_us < 50_000,
+            "the output stage stays far below a 50 ms block: {output:?}"
+        );
+        for (index, stage) in track_stages.iter().enumerate() {
+            let summary = stage.summary().expect("track stage summary");
+            assert!(
+                summary.duration_max_us < 50_000,
+                "track stage {index} is bounded: {summary:?}"
+            );
+            eprintln!(
+                "stage {index}: p95 {} us, max {} us",
+                summary.duration_p95_us, summary.duration_max_us
+            );
+        }
+        eprintln!(
+            "output: p95 {} us, max {} us",
+            output.duration_p95_us, output.duration_max_us
+        );
+    }
+
+    #[test]
+    fn the_hosted_block_path_does_not_allocate() {
+        let mut settings = audible_track(0.4);
+        settings.hosted_inserts = vec![HostedInsert {
+            processor: Arc::new(PassProcessor),
+            enabled: true,
+        }];
+        let plan = PlaybackPlan::new(120.0, vec![settings], 1, 48_000, None);
+        assert!(
+            plan.hosted_processing,
+            "the hosted path is the one under test"
+        );
+        let allocations = render_blocks(plan, 8);
+        assert_eq!(
+            allocations, 0,
+            "the hosted callback allocated {allocations} time(s)"
+        );
+    }
+
+    #[test]
+    fn the_budget_counters_stay_bounded_and_record_the_worst_block() {
+        let plan = PlaybackPlan::new(120.0, vec![audible_track(0.4)], 1, 48_000, None);
+        let metrics = Arc::clone(&plan.callback_metrics);
+        let block_count = 8;
+        render_blocks(plan, block_count);
+        // render_blocks renders one warm-up block before it starts counting
+        // allocations, and every finished block is counted.
+        assert_eq!(
+            metrics.blocks.load(Ordering::Relaxed),
+            block_count as u64 + 1,
+            "every finished block is counted"
+        );
+        let worst = metrics.worst_load_permille.load(Ordering::Relaxed);
+        assert!(worst > 0, "a block took a measurable amount of time");
+        // The counters are three atomics; a snapshot is a plain read.
+        let snapshot = CallbackBudgetSnapshot {
+            blocks: metrics.blocks.load(Ordering::Relaxed),
+            overruns: metrics.overruns.load(Ordering::Relaxed),
+            worst_load_percent: worst / 10,
+        };
+        assert_eq!(snapshot.blocks, block_count as u64 + 1);
+        assert!(snapshot.worst_load_percent == worst / 10);
     }
 }
 

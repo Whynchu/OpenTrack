@@ -13958,6 +13958,7 @@ impl OpenTrackApp {
                     );
                     ui.separator();
                     let overruns = engine.callback_overrun_count();
+                    let budget = engine.callback_budget();
                     let asio_overloads = engine.asio_overload_window_count();
                     let asio_collisions = engine.asio_callback_collision_count();
                     let refresh_details = self
@@ -13966,13 +13967,15 @@ impl OpenTrackApp {
                     if refresh_details {
                     let diagnostic = if let Some(windows) = asio_overloads {
                         format!(
-                            "DSP {:.0}% · {overruns} render overruns · {windows} ASIO overload windows",
+                            "DSP {:.0}% (worst {}%) · {overruns} render overruns · {windows} ASIO overload windows",
                             engine.callback_load_percent(),
+                            budget.worst_load_percent,
                         )
                     } else {
                         format!(
-                            "DSP {:.0}% · {overruns} render overruns",
+                            "DSP {:.0}% (worst {}%) · {overruns} render overruns",
                             engine.callback_load_percent(),
+                            budget.worst_load_percent,
                         )
                     };
                     let diagnostic = if let Some(timing) = engine.callback_timing_summary() {

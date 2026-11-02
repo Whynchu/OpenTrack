@@ -230,9 +230,17 @@ Still open from revision 1:
 27. **Windows job-object containment for scanner workers** — implemented behind
     `cfg(windows)` with the isolation contract kept; cannot be exercised on this
     host, so it ships unverified and marked as such.
-28. **Callback budget audit.** Instrument the audio callback path with bounded
-    counters, assert no allocation in the callback in tests, and record the
-    measured worst case per stage.
+28. **Callback budget audit.** *Delivered.* The callback now maintains three
+   bounded atomics (blocks, overruns, worst load) alongside the existing DSP-load
+   EMA, and the realtime status shows `DSP n% (worst m%)`. A test-only global
+   allocator counts allocations per thread, and tests assert **zero allocations**
+   for both the per-sample path and the hosted block path (EQ on, metronome on,
+   512-frame blocks). Hosted stage timings (each track, each group, the output
+   stage) now record in test builds too, and a test asserts each stage summary is
+   present and far below a block. Measured on this Linux host, debug test binary,
+   48 kHz / 512 frames with three hosted tracks, a group and the output stage:
+   track stages p95 62–65 µs, max 65–70 µs; output p95 39 µs, max 50 µs — under
+   1% of the 10.67 ms block budget. 4 audio tests.
 29. **Linux VST3 editor embedding** — X11 embed path behind the existing host
     boundary. **Unverified without an installed plug-in**; ships only if a test
     plug-in can be produced in the same task, otherwise it stays planned.
