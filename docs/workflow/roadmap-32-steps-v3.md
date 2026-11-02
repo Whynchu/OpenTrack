@@ -457,5 +457,15 @@ still one commit with tests and refreshed counts.
    and a New Folder button. 3 core, 1 project, 1 migration and 2 app tests.
    Disabled entries 86 -> 85.
 
+45. **Hitpoints.** *Delivered.* `opentrack_audio::detect_hitpoints_wav_range`
+   finds transients in an event's used range: a 10 ms energy envelope over the mono
+   sum, positive energy change, local maxima above an adaptive threshold with 40 ms
+   spacing and a 2048-hit bound. Media > Hitpoints > Calculate Hitpoints runs it on
+   the selected event and keeps the result as transient analysis tied to that event
+   id; Create Markers turns them into timeline markers as one labelled "Create
+   Markers" undo step, and a stale or missing event asks for a recalculation rather
+   than guessing. Create Regions stays disabled because there is no multi-range
+   region model. 1 audio and 1 app tests. Disabled entries 85 -> 83.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

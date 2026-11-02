@@ -124,6 +124,90 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// Bound on hitpoints one detection pass may return.
+pub const MAX_HITPOINTS: usize = 2_048;
+
+/// Finds transient onsets in an event's used range, in seconds from its start.
+///
+/// The detector is deliberately simple and deterministic: it builds a 10 ms
+/// energy envelope over the mono sum, takes the positive energy change between
+/// frames, and keeps local maxima above an adaptive threshold with a 40 ms
+/// minimum spacing. That finds drum hits, note attacks and spoken syllables
+/// without pretending to be a general-purpose onset model.
+pub fn detect_hitpoints_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+) -> Result<Vec<f64>, String> {
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
+    let channels = usize::from(range.channels);
+    let rate = f64::from(range.sample_rate);
+    let frames = range.frames as usize;
+    let window = ((range.sample_rate / 100).max(32)) as usize;
+    let hop = (window / 2).max(1);
+    if frames < window * 2 {
+        return Err("the event is too short to detect hitpoints".to_owned());
+    }
+    // Mono envelope: the same detector works for a mono or stereo event.
+    let mut energy = Vec::with_capacity(frames / hop + 1);
+    let mut start = 0;
+    while start + window <= frames {
+        let mut sum = 0.0_f64;
+        for frame in start..start + window {
+            let base = frame * channels;
+            let value = if channels == 1 {
+                f64::from(range.samples[base])
+            } else {
+                (0..channels)
+                    .map(|channel| f64::from(range.samples[base + channel]))
+                    .sum::<f64>()
+                    / channels as f64
+            };
+            sum += value * value;
+        }
+        energy.push(sum / window as f64);
+        start += hop;
+    }
+    if energy.len() < 3 {
+        return Err("the event is too short to detect hitpoints".to_owned());
+    }
+    let flux = energy
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).max(0.0))
+        .collect::<Vec<_>>();
+    let mean = flux.iter().sum::<f64>() / flux.len() as f64;
+    let variance = flux
+        .iter()
+        .map(|value| (value - mean) * (value - mean))
+        .sum::<f64>()
+        / flux.len() as f64;
+    let threshold = mean + 1.5 * variance.sqrt();
+    let minimum_gap = ((rate * 0.04) / hop as f64).round().max(1.0) as usize;
+    let mut hitpoints = Vec::new();
+    let mut last: Option<usize> = None;
+    for index in 1..flux.len() {
+        if flux[index] <= threshold || flux[index] <= 0.0 {
+            continue;
+        }
+        let previous = flux[index - 1];
+        let next = flux.get(index + 1).copied().unwrap_or(0.0);
+        if flux[index] < previous || flux[index] < next {
+            continue;
+        }
+        if let Some(last) = last
+            && index.saturating_sub(last) < minimum_gap
+        {
+            continue;
+        }
+        last = Some(index);
+        hitpoints.push((index * hop) as f64 / rate);
+        if hitpoints.len() >= MAX_HITPOINTS {
+            break;
+        }
+    }
+    Ok(hitpoints)
+}
+
 /// What one trimming pass did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrimOutcome {
@@ -493,6 +577,48 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hitpoint_detection_finds_a_click_train_and_ignores_silence() {
+        let root = std::env::temp_dir().join(format!("opentrack-hitpoints-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let clicks = root.join("clicks.wav");
+        // Ten short bursts, 0.1 s apart, on a silent bed.
+        write_wav(&clicks, 1, 48_000, |frame, _| {
+            if frame % 4_800 < 120 { 0.8 } else { 0.0 }
+        });
+        let hits = detect_hitpoints_wav_range(&clicks, 0.0, 1.0).expect("detect");
+        assert!(hits.len() >= 8, "found {} hits", hits.len());
+        assert!(hits.len() <= 12, "found {} hits", hits.len());
+        // The first click already fills the first analysis window, so the first
+        // detectable rise is the second click.
+        assert!(hits[0] < 0.12, "first hit at {}", hits[0]);
+        for pair in hits.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                (0.06..=0.14).contains(&gap),
+                "spacing {gap} between {} and {}",
+                pair[0],
+                pair[1]
+            );
+        }
+
+        // Only the used range is analysed, so an offset shifts the hits.
+        let later = detect_hitpoints_wav_range(&clicks, 0.5, 0.5).expect("detect range");
+        assert!(later.len() >= 4 && later.len() <= 6, "{later:?}");
+
+        // Silence and unusably short ranges report instead of inventing hits.
+        let silent = root.join("silent.wav");
+        write_wav(&silent, 1, 48_000, |_, _| 0.0);
+        assert!(
+            detect_hitpoints_wav_range(&silent, 0.0, 1.0)
+                .expect("silence")
+                .is_empty()
+        );
+        assert!(detect_hitpoints_wav_range(&clicks, 0.0, 1e-6).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

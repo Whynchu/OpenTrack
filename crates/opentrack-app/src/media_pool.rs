@@ -2519,6 +2519,96 @@ mod tests {
         assert_eq!(selected, Some(PathBuf::from("/media/kick.wav")));
     }
 
+    fn write_click_train(path: &std::path::Path) {
+        let mut bytes = Vec::new();
+        let frames: u32 = 48_000;
+        let data_bytes = frames * 2;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        for frame in 0..frames {
+            let sample = if frame % 4_800 < 120 { 26_000_i16 } else { 0 };
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn hitpoints_become_markers_as_one_labelled_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-hitpoints-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("clicks.wav");
+        write_click_train(&source);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 4.0, 1.0)
+            .expect("clip");
+        app.project_history.clear();
+
+        // Without a selection and without hitpoints the commands report.
+        app.calculate_hitpoints();
+        assert!(
+            app.status_message
+                .contains("Select an audio event to calculate")
+        );
+        app.create_markers_from_hitpoints();
+        assert!(
+            app.status_message
+                .contains("Calculate hitpoints for an event before creating markers")
+        );
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.calculate_hitpoints();
+        assert!(
+            app.hitpoints.len() >= 8,
+            "found {} hitpoints",
+            app.hitpoints.len()
+        );
+        assert_eq!(app.hitpoints_clip, Some(id));
+        assert!(app.status_message.contains("hitpoint(s) in"));
+        let found = app.hitpoints.len();
+
+        app.create_markers_from_hitpoints();
+        assert_eq!(app.data.project.markers.len(), found);
+        // Two seconds of audio at 120 BPM is four beats, so markers stay inside
+        // the event's span starting at beat 4.
+        let first = &app.data.project.markers[0];
+        let last = app.data.project.markers.last().expect("markers");
+        assert!(first.beat >= 4.0 && first.beat < 4.6, "{}", first.beat);
+        assert!(last.beat > 4.0 && last.beat <= 8.0, "{}", last.beat);
+        assert!(first.name.starts_with("Hit "));
+        assert!(app.status_message.contains("Created"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Create Markers");
+
+        // A stale hitpoint event reports and clears instead of guessing.
+        app.data.project.tracks[0].clips.clear();
+        app.create_markers_from_hitpoints();
+        assert!(app.status_message.contains("Calculate hitpoints again"));
+        assert!(app.hitpoints_clip.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn creating_and_filling_a_pool_folder_are_undo_steps() {
         let ctx = egui::Context::default();

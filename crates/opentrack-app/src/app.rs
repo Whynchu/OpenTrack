@@ -1215,6 +1215,9 @@ pub struct OpenTrackApp {
     pool_folder_create: bool,
     /// New Folder dialog draft name.
     media_folder_dialog: Option<String>,
+    /// Hitpoints found for one event, in seconds from its start, and the event.
+    hitpoints: Vec<f64>,
+    hitpoints_clip: Option<u64>,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2650,6 +2653,8 @@ impl OpenTrackApp {
             pool_folder_assign: None,
             pool_folder_create: false,
             media_folder_dialog: None,
+            hitpoints: Vec::new(),
+            hitpoints_clip: None,
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -3981,6 +3986,8 @@ impl OpenTrackApp {
         self.pool_folder_assign = None;
         self.pool_folder_create = false;
         self.media_folder_dialog = None;
+        self.hitpoints.clear();
+        self.hitpoints_clip = None;
         self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
@@ -8077,6 +8084,123 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = format!("Removed {removed} MIDI note(s); Undo restores them");
+    }
+
+    /// Analyses the selected event's used audio for transient hitpoints.
+    ///
+    /// The result is transient analysis, not project content: it is kept with the
+    /// event id it came from so a later change cannot attach stale hitpoints to a
+    /// different event.
+    fn calculate_hitpoints(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before analysing hitpoints".to_owned();
+            return;
+        }
+        let Some(clip_id) = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .first()
+            .copied()
+        else {
+            self.status_message = "Select an audio event to calculate its hitpoints".to_owned();
+            return;
+        };
+        let Some((source, offset, duration, name)) = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| {
+                (
+                    clip.source_path.clone(),
+                    clip.source_offset_seconds,
+                    clip.duration_seconds,
+                    clip.name.clone(),
+                )
+            })
+        else {
+            self.status_message = "The selected event is no longer in the project".to_owned();
+            return;
+        };
+        self.hitpoints.clear();
+        self.hitpoints_clip = None;
+        match opentrack_audio::detect_hitpoints_wav_range(&source, offset, duration) {
+            Ok(hits) if hits.is_empty() => {
+                self.status_message = format!("No hitpoints were found in {name}");
+            }
+            Ok(hits) => {
+                let count = hits.len();
+                self.hitpoints = hits;
+                self.hitpoints_clip = Some(clip_id);
+                self.status_message =
+                    format!("Found {count} hitpoint(s) in {name}; create markers from them next");
+            }
+            Err(error) => {
+                self.status_message = format!("Could not calculate hitpoints: {error}");
+            }
+        }
+    }
+
+    /// Creates timeline markers at the analysed hitpoints as one undo step.
+    fn create_markers_from_hitpoints(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before creating markers".to_owned();
+            return;
+        }
+        let Some(clip_id) = self.hitpoints_clip else {
+            self.status_message =
+                "Calculate hitpoints for an event before creating markers".to_owned();
+            return;
+        };
+        let Some(start_beats) = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| clip.start_beats)
+        else {
+            self.hitpoints.clear();
+            self.hitpoints_clip = None;
+            self.status_message = "Calculate hitpoints again for the selected event".to_owned();
+            return;
+        };
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        let mut candidate = self.data.project.clone();
+        let mut created = 0;
+        for (index, seconds) in self.hitpoints.iter().enumerate() {
+            let beat = start_beats + seconds * tempo / 60.0;
+            if candidate
+                .add_marker(beat, format!("Hit {}", index + 1))
+                .is_some()
+            {
+                created += 1;
+            }
+        }
+        if created == 0 {
+            self.status_message =
+                "No markers were created; the project may already hold as many as it allows"
+                    .to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot create markers: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Create Markers");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message =
+            format!("Created {created} marker(s) at the hitpoints; Undo removes them");
     }
 
     /// Opens the New Folder dialog for the Media Pool.
@@ -13609,14 +13733,33 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.menu_button("Hitpoints", |ui| {
-                        disabled_menu_commands(
+                        let has_event =
+                            !self.arrange_view_state.audio_events.selected_ids().is_empty();
+                        if menu_command(
                             ui,
-                            &[
-                                ("Calculate Hitpoints", ""),
-                                ("Create Markers", ""),
-                                ("Create Regions", ""),
-                            ],
-                        );
+                            "Calculate Hitpoints",
+                            "",
+                            self.project_open && !self.is_recording() && has_event,
+                        )
+                        .clicked()
+                        {
+                            self.calculate_hitpoints();
+                            ui.close();
+                        }
+                        if menu_command(
+                            ui,
+                            "Create Markers",
+                            "",
+                            self.project_open
+                                && !self.is_recording()
+                                && self.hitpoints_clip.is_some(),
+                        )
+                        .clicked()
+                        {
+                            self.create_markers_from_hitpoints();
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Create Regions", "")]);
                     });
                     ui.menu_button("Realtime Processing", |ui| {
                         disabled_menu_commands(
