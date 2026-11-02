@@ -1017,6 +1017,11 @@ pub struct Project {
     /// Next loop-recording take group id.
     #[serde(default = "first_marker_id")]
     pub next_take_group: u64,
+    /// Seconds added to the timeline when the ruler shows timecode. Setting the
+    /// timecode at the cursor changes this offset, so zero means timecode starts
+    /// at 00:00:00 at beat zero.
+    #[serde(default)]
+    pub timecode_offset_seconds: f64,
     /// Free-form project notes, kept with the project.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notepad: String,
@@ -1044,6 +1049,9 @@ pub const MARKER_SLOTS: std::ops::RangeInclusive<u8> = 1..=9;
 
 /// Largest linear gain an audio event may carry (about +12 dB).
 pub const MAX_AUDIO_CLIP_GAIN: f64 = 4.0;
+
+/// Largest timecode offset a project accepts, in seconds (99:59:59).
+pub const MAX_TIMECODE_OFFSET_SECONDS: f64 = 359_999.0;
 
 /// Bound on the project notepad, in characters.
 pub const MAX_NOTEPAD_CHARS: usize = 100_000;
@@ -1140,6 +1148,7 @@ impl Default for Project {
             loop_start_beats: default_loop_start_beats(),
             loop_end_beats: default_loop_end_beats(),
             cycle_mode: CycleMode::Loop,
+            timecode_offset_seconds: 0.0,
             notepad: String::new(),
             markers: Vec::new(),
             next_marker_id: first_marker_id(),
@@ -4269,6 +4278,11 @@ impl Project {
         if !(1..=32).contains(&self.beat_unit) || !self.beat_unit.is_power_of_two() {
             return Err("beat unit must be a power of two between 1 and 32");
         }
+        if !self.timecode_offset_seconds.is_finite()
+            || self.timecode_offset_seconds.abs() > MAX_TIMECODE_OFFSET_SECONDS
+        {
+            return Err("timecode offset must be finite and within 99:59:59");
+        }
         if self.notepad.chars().count() > MAX_NOTEPAD_CHARS {
             return Err("project notepad is too long");
         }
@@ -6606,6 +6620,31 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn timecode_at_the_cursor_sets_a_bounded_offset() {
+        use crate::project::MAX_TIMECODE_OFFSET_SECONDS;
+
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        // Two beats is one second; asking for 01:00:00 there offsets by 3599 s.
+        assert!(project.set_timecode_at_cursor(2.0, 3600.0));
+        assert!((project.timecode_offset_seconds - 3599.0).abs() < 1e-9);
+        assert!((project.timecode_seconds_at(2.0) - 3600.0).abs() < 1e-9);
+        assert!((project.timecode_seconds_at(4.0) - 3601.0).abs() < 1e-9);
+
+        // A refused value leaves the offset untouched.
+        let before = project.timecode_offset_seconds;
+        assert!(!project.set_timecode_at_cursor(0.0, MAX_TIMECODE_OFFSET_SECONDS + 1.0));
+        assert_eq!(project.timecode_offset_seconds, before);
+        assert!(!project.set_timecode_at_cursor(0.0, f64::NAN));
+        assert!(!project.set_timecode_at_cursor(-1.0, 0.0));
+        assert!(project.validate().is_ok());
+
+        // An out-of-range offset loaded from a file is rejected.
+        project.timecode_offset_seconds = MAX_TIMECODE_OFFSET_SECONDS * 2.0;
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
     fn exploding_pitches_makes_one_track_per_pitch_and_keeps_controllers_once() {
         let mut project = Project::default();
         project.tempo_bpm = 120.0;
@@ -8069,6 +8108,31 @@ impl Project {
             )
             .collect()
     }
+    /// The timecode shown at a timeline beat, in seconds.
+    pub fn timecode_seconds_at(&self, beats: f64) -> f64 {
+        if !beats.is_finite() {
+            return self.timecode_offset_seconds.max(0.0);
+        }
+        beats * 60.0 / self.tempo_bpm.max(1.0) + self.timecode_offset_seconds
+    }
+
+    /// Makes `timecode_seconds` the timecode shown at `cursor_beats`.
+    ///
+    /// The offset is bounded so an absurd entry cannot make the ruler unusable or
+    /// the project invalid; a refused value leaves the project unchanged.
+    pub fn set_timecode_at_cursor(&mut self, cursor_beats: f64, timecode_seconds: f64) -> bool {
+        if !cursor_beats.is_finite() || cursor_beats < 0.0 || !timecode_seconds.is_finite() {
+            return false;
+        }
+        let cursor_seconds = cursor_beats * 60.0 / self.tempo_bpm.max(1.0);
+        let offset = timecode_seconds - cursor_seconds;
+        if !offset.is_finite() || offset.abs() > MAX_TIMECODE_OFFSET_SECONDS {
+            return false;
+        }
+        self.timecode_offset_seconds = offset;
+        true
+    }
+
     /// Replaces the project notepad, bounded to [`MAX_NOTEPAD_CHARS`].
     pub fn set_notepad(&mut self, text: impl Into<String>) -> bool {
         let mut text = text.into();

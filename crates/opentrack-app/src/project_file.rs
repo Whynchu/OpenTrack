@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 29;
+const FORMAT_VERSION: u32 = 30;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1231,6 +1231,34 @@ mod tests {
         );
         // The slot can be assigned again after the upgrade.
         let _ = loaded.project.marker_in_slot(3);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_29_file_without_a_timecode_offset_loads_at_zero() {
+        let mut project = Project::default();
+        project.set_timecode_at_cursor(120.0, 3600.0);
+        assert!(project.timecode_offset_seconds != 0.0);
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 29.into();
+        legacy["project"]
+            .as_object_mut()
+            .expect("project")
+            .remove("timecode_offset_seconds");
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v29-timecode-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert_eq!(loaded.project.timecode_offset_seconds, 0.0);
+        assert!(loaded.project.validate().is_ok());
         fs::remove_file(path).unwrap();
     }
 

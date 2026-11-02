@@ -1194,6 +1194,8 @@ pub struct OpenTrackApp {
     insert_velocities: Option<(u8, u8)>,
     /// Build N-Tuplet dialog draft: note count and span in beats.
     tuplet_dialog: Option<(u8, f64)>,
+    /// Set Timecode dialog draft, in seconds.
+    timecode_dialog: Option<f64>,
     /// Media Pool search term and whether the field should take focus next frame.
     pool_search: String,
     pool_search_focus: bool,
@@ -2616,6 +2618,7 @@ impl OpenTrackApp {
             play_until: None,
             insert_velocities: None,
             tuplet_dialog: None,
+            timecode_dialog: None,
             pool_search: String::new(),
             pool_search_focus: false,
             default_fade_seconds: creation
@@ -8039,6 +8042,100 @@ impl OpenTrackApp {
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
     }
 
+    /// Opens the timecode dialog seeded from the timecode at the cursor.
+    fn open_timecode_dialog(&mut self) {
+        let cursor = self.data.transport.position_beats.max(0.0);
+        self.timecode_dialog = Some(self.data.project.timecode_seconds_at(cursor).max(0.0));
+    }
+
+    /// Makes the typed timecode the timecode at the cursor, as one undo step.
+    fn apply_timecode_at_cursor(&mut self, seconds: f64) {
+        if !seconds.is_finite() || seconds < 0.0 {
+            self.status_message = "Enter a non-negative timecode".to_owned();
+            return;
+        }
+        let cursor = self.data.transport.position_beats.max(0.0);
+        let mut candidate = self.data.project.clone();
+        if !candidate.set_timecode_at_cursor(cursor, seconds) {
+            self.status_message = "That timecode is outside the supported range".to_owned();
+            return;
+        }
+        if (candidate.timecode_offset_seconds - self.data.project.timecode_offset_seconds).abs()
+            <= 1e-9
+        {
+            self.status_message = "The timecode at the cursor is already that value".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot set the timecode: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Set Timecode");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "Timecode at the cursor set to {}",
+            format_timecode(seconds, 30)
+        );
+    }
+
+    fn show_timecode_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut seconds) = self.timecode_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let cursor = self.data.transport.position_beats.max(0.0);
+        let response = egui::Window::new("Set Timecode at Cursor")
+            .id(Id::new("set-timecode"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label(format!(
+                    "The cursor sits at beat {cursor:.3}, {}",
+                    format_timecode(cursor * 60.0 / self.data.project.tempo_bpm.max(1.0), 30)
+                ));
+                ui.horizontal(|ui| {
+                    ui.label("Timecode (s)");
+                    ui.add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(0.0..=359_999.0)
+                            .speed(1.0),
+                    );
+                });
+                ui.label(
+                    egui::RichText::new(format!("Shown as {}", format_timecode(seconds, 30)))
+                        .small()
+                        .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(ctx, Id::new("set-timecode"), &mut open, response.as_ref());
+        if apply {
+            self.apply_timecode_at_cursor(seconds);
+        } else if !cancel && open {
+            self.timecode_dialog = Some(seconds);
+        }
+    }
+
     /// Splits the selected MIDI part into one track per distinct pitch.
     fn explode_selected_midi_part_by_pitch(&mut self) {
         if self.is_recording() {
@@ -12943,12 +13040,15 @@ impl OpenTrackApp {
                         self.auto_fades_settings_open = true;
                         ui.close();
                     }
+                    if menu_command(ui, "Set Timecode at Cursor", "", self.project_open).clicked() {
+                        self.open_timecode_dialog();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Tempo Track", "Ctrl+T"),
                             ("Automation Panel", ""),
-                            ("Set Timecode at Cursor", ""),
                         ],
                     );
                     ui.separator();
@@ -14396,6 +14496,7 @@ impl OpenTrackApp {
             || self.auto_fades_settings_open
             || self.insert_velocities.is_some()
             || self.tuplet_dialog.is_some()
+            || self.timecode_dialog.is_some()
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -16806,6 +16907,7 @@ impl eframe::App for OpenTrackApp {
         self.show_auto_fades_settings(&ctx);
         self.show_insert_velocities_dialog(&ctx);
         self.show_tuplet_dialog(&ctx);
+        self.show_timecode_dialog(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -18521,6 +18623,7 @@ fn show_project(
                                 beats_per_bar,
                                 project.tempo_bpm,
                                 sample_rate,
+                                project.timecode_offset_seconds,
                             ),
                             ruler_font.clone(),
                             palette.text,
@@ -18585,6 +18688,7 @@ fn show_project(
                             beats_per_bar,
                             project.tempo_bpm,
                             sample_rate,
+                            project.timecode_offset_seconds,
                         ),
                         ruler_font.clone(),
                         palette.text,
@@ -20500,9 +20604,15 @@ fn ruler_label(
     beats_per_bar: u8,
     tempo_bpm: f64,
     sample_rate: u32,
+    timecode_offset_seconds: f64,
 ) -> String {
     let beats = bar_index as f64 * f64::from(beats_per_bar.max(1));
-    let seconds = beats * 60.0 / tempo_bpm.max(1.0);
+    let seconds = beats * 60.0 / tempo_bpm.max(1.0)
+        + if matches!(format, 2 | 4) {
+            timecode_offset_seconds
+        } else {
+            0.0
+        };
     match format {
         1 => {
             let whole = seconds.floor().max(0.0) as u64;
@@ -28788,6 +28898,57 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod timecode_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn setting_the_timecode_is_one_labelled_undo_step() {
+        let mut app = app();
+        app.data.transport.position_beats = 2.0;
+        app.open_timecode_dialog();
+        // One second at 120 BPM is two beats, so the dialog seeds 1.0.
+        assert_eq!(app.timecode_dialog, Some(1.0));
+
+        app.apply_timecode_at_cursor(3600.0);
+        assert!((app.data.project.timecode_offset_seconds - 3599.0).abs() < 1e-9);
+        assert!(app.status_message.contains("01:00:00:00"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Timecode");
+
+        // Refusals: same value, negative, and out of range.
+        let steps = app.project_history.counts().0;
+        app.apply_timecode_at_cursor(3600.0);
+        assert!(app.status_message.contains("already that value"));
+        app.apply_timecode_at_cursor(-1.0);
+        assert!(app.status_message.contains("non-negative"));
+        app.apply_timecode_at_cursor(1_000_000.0);
+        assert!(app.status_message.contains("outside the supported range"));
+        assert_eq!(app.project_history.counts().0, steps);
+    }
+
+    #[test]
+    fn the_timecode_ruler_label_applies_the_project_offset() {
+        // Timecode formats 2 and 4 carry the offset; bars and seconds do not.
+        // Bar 2 is eight beats, which is four seconds at 120 BPM.
+        assert_eq!(ruler_label(0, 2, 4, 120.0, 48_000, 3600.0), "01:00:00:00");
+        assert_eq!(ruler_label(2, 2, 4, 120.0, 48_000, 3600.0), "01:00:04:00");
+        assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
+        assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
+        assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
     }
 }
 

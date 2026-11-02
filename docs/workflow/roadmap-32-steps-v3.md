@@ -237,6 +237,15 @@ and measured numbers.
    project unchanged. One labelled "Explode Pitches" undo step. 2 core and 1 app
    tests. Disabled entries 103 -> 102.
 
+30. **Set Timecode at Cursor.** *Delivered.* `Project::timecode_offset_seconds`
+   (bounded to 99:59:59, OPR version 30 with a v29 migration test) makes timecode
+   start anywhere; `set_timecode_at_cursor` computes the offset from the cursor and
+   `timecode_seconds_at` reads it back. Project > Set Timecode at Cursor opens a
+   seconds dialog with a live HH:MM:SS:FF preview, applies as one labelled "Set
+   Timecode" undo step, and the timecode ruler formats include the offset while
+   bars and seconds do not. 1 core, 1 migration and 2 app tests. Disabled entries
+   102 -> 101.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
