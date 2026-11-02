@@ -983,10 +983,14 @@ impl OpenTrackApp {
         match std::thread::Builder::new()
             .name("opentrack-vst3-scan".to_owned())
             .spawn(move || {
+                // Each module is enumerated in its own bounded child process, so
+                // a hanging or crashing plug-in becomes one rejected module
+                // instead of a scan that never finishes.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    opentrack_plugin_scan::scan_folders_enumerating(
+                    opentrack_plugin_scan::scan_folders_isolated(
                         &folders,
                         opentrack_plugin_scan::DiscoveryLimits::default(),
+                        opentrack_plugin_scan::IsolationLimits::default(),
                     )
                 }))
                 .map_err(|_| "the VST3 scan worker panicked".to_owned());
@@ -1319,6 +1323,126 @@ fn plugin_scan_status_label(status: opentrack_plugins::PluginScanStatus) -> &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timed_out_or_crashed_module_is_listed_with_its_reason() {
+        use opentrack_plugin_scan::{
+            FolderReport, FolderStatus, ModuleReport, SCAN_PROTOCOL_VERSION, ScanReport, ScanTotals,
+        };
+        use opentrack_plugins::PluginScanStatus;
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+
+        let module = |path: &str, status: PluginScanStatus, diagnostics: &str| ModuleReport {
+            path: path.to_owned(),
+            path_utf8: true,
+            architecture: opentrack_plugins::PluginArchitecture::X64,
+            pe_machine: Some(0x8664),
+            size_bytes: Some(1024),
+            kind: opentrack_plugin_scan::ModuleKind::SingleFile,
+            bundle_path: None,
+            platform_directory: None,
+            status,
+            class_ids: Vec::new(),
+            diagnostics: Some(diagnostics.to_owned()),
+        };
+        app.plugin_scan_report = Some(ScanReport {
+            protocol_version: SCAN_PROTOCOL_VERSION,
+            scanner_version: "test".to_owned(),
+            generated_at_unix_ms: 0,
+            folders: vec![FolderReport {
+                path: "/vst3".to_owned(),
+                path_utf8: true,
+                status: FolderStatus::Scanned,
+                modules_found: 2,
+                duplicates_skipped: 0,
+                warnings: Vec::new(),
+                truncated: false,
+                diagnostics: None,
+            }],
+            modules: vec![
+                module(
+                    "/vst3/Hang.vst3",
+                    PluginScanStatus::TimedOut,
+                    "module did not finish enumerating within 30 s and was terminated",
+                ),
+                module(
+                    "/vst3/Dead.vst3",
+                    PluginScanStatus::Crashed,
+                    "module process was terminated by signal 11 while enumerating",
+                ),
+            ],
+            totals: ScanTotals {
+                configured_folders: 1,
+                folders_reported: 1,
+                modules: 2,
+                ready_for_enumeration: 0,
+                unsupported_architecture: 0,
+                invalid_module: 0,
+                unreadable: 0,
+                rejected: 2,
+                enumerated_modules: 0,
+                plugins: 0,
+                duplicates_skipped: 0,
+                truncated: false,
+            },
+            plugins: Vec::new(),
+            notes: Vec::new(),
+        });
+        app.plugin_information_open = true;
+
+        // The window lays itself out on the first frame; read the second.
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_plugin_information(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(
+            joined.contains("Failed modules from the last scan (2)"),
+            "the failures section is shown: {joined}"
+        );
+        assert!(joined.contains("timed out"), "status is named: {joined}");
+        assert!(joined.contains("crashed"), "status is named: {joined}");
+        assert!(
+            joined.contains("/vst3/Hang.vst3") && joined.contains("/vst3/Dead.vst3"),
+            "the module paths are named: {joined}"
+        );
+        assert!(
+            joined.contains("did not finish enumerating"),
+            "the timeout reason is shown: {joined}"
+        );
+        assert!(
+            joined.contains("signal 11"),
+            "the crash reason is shown: {joined}"
+        );
+    }
 
     #[test]
     fn device_setup_opens_and_renders_all_pages_without_a_device_stream() {

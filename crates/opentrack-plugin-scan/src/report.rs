@@ -20,7 +20,7 @@ use opentrack_plugins::PluginArchitecture;
 use opentrack_plugins::PluginClassId;
 use opentrack_plugins::PluginDescriptor;
 use opentrack_plugins::PluginScanStatus;
-use opentrack_vst3::{Vst3Module, class_descriptor};
+use opentrack_vst3::class_descriptor;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -262,6 +262,22 @@ pub fn build_report(
     generated_at_unix_ms: u64,
     enumerate: bool,
 ) -> ScanReport {
+    let in_process = crate::isolation::InProcessEnumerator;
+    let enumerator: Option<&dyn crate::isolation::ModuleEnumerator> =
+        enumerate.then_some(&in_process);
+    build_report_with(folders, limits, generated_at_unix_ms, enumerator)
+}
+
+/// Builds a report, asking `enumerator` for each module's factory classes.
+///
+/// `None` builds a discovery-only report: no module is loaded.
+pub fn build_report_with(
+    folders: &[PathBuf],
+    limits: DiscoveryLimits,
+    generated_at_unix_ms: u64,
+    enumerator: Option<&dyn crate::isolation::ModuleEnumerator>,
+) -> ScanReport {
+    let enumerate = enumerator.is_some();
     let configured_folders = folders.len();
     let reported_folders = &folders[..configured_folders.min(MAX_REPORT_FOLDERS)];
     let batch = discover_all(reported_folders, limits);
@@ -309,19 +325,28 @@ pub fn build_report(
                 continue;
             }
             let path = PathBuf::from(&module.path);
-            let loaded = match Vst3Module::open(&path) {
-                Ok(loaded) => loaded,
-                Err(error) => {
-                    module.status = PluginScanStatus::LoadFailed;
-                    append_diagnostic(module, error.to_string());
-                    continue;
-                }
+            let Some(enumerator) = enumerator else {
+                continue;
             };
-            let enumeration = match loaded.enumerate() {
-                Ok(enumeration) => enumeration,
-                Err(error) => {
-                    module.status = PluginScanStatus::LoadFailed;
-                    append_diagnostic(module, error.to_string());
+            let enumeration = match enumerator.enumerate(&path) {
+                crate::isolation::IsolationOutcome::Enumerated(enumeration) => enumeration,
+                outcome => {
+                    // A timeout or crash is attributed to this module and keeps
+                    // its own status, so the report distinguishes "the module
+                    // said no" from "the module stopped responding".
+                    module.status = match outcome {
+                        crate::isolation::IsolationOutcome::Failed(_) => {
+                            PluginScanStatus::LoadFailed
+                        }
+                        crate::isolation::IsolationOutcome::TimedOut { .. } => {
+                            PluginScanStatus::TimedOut
+                        }
+                        crate::isolation::IsolationOutcome::Crashed(_) => PluginScanStatus::Crashed,
+                        crate::isolation::IsolationOutcome::Enumerated(_) => unreachable!(),
+                    };
+                    if let Some(diagnostic) = outcome.diagnostic() {
+                        append_diagnostic(module, diagnostic);
+                    }
                     continue;
                 }
             };
@@ -397,9 +422,14 @@ pub fn build_report(
         .iter()
         .filter(|module| module.status == PluginScanStatus::Enumerated)
         .count();
-    let mut notes = if enumerate {
+    let isolated = enumerator.is_some_and(|enumerator| !enumerator.runs_in_process());
+    let mut notes = if enumerate && isolated {
         vec![
-            "Factory class metadata was enumerated in this scanner process. Buses, parameters, editors, latency and audio hosting require instance introspection and are not implemented yet.".to_owned(),
+            "Each module was enumerated in its own bounded child process, so a module that hung or crashed is reported as a rejected module. Buses, parameters, editors, latency and audio hosting require instance introspection and are not implemented yet.".to_owned(),
+        ]
+    } else if enumerate {
+        vec![
+            "Factory class metadata was enumerated in this scanner process, so a module that hangs or crashes will stop the scan. Buses, parameters, editors, latency and audio hosting require instance introspection and are not implemented yet.".to_owned(),
         ]
     } else {
         vec![
@@ -458,6 +488,36 @@ pub fn scan_folders(folders: &[PathBuf], limits: DiscoveryLimits) -> ScanReport 
 /// Discovers folders and performs factory class enumeration in this process.
 pub fn scan_folders_enumerating(folders: &[PathBuf], limits: DiscoveryLimits) -> ScanReport {
     build_report(folders, limits, crate::unix_time_ms(), true)
+}
+
+/// Enumerates each module in its own bounded child process.
+///
+/// A hanging or crashing module becomes one rejected module with a diagnostic
+/// instead of stalling or killing the scan. When this process is not the
+/// scanner binary (for example a test harness), the report says so and falls
+/// back to in-process enumeration rather than spawning something unrelated.
+pub fn scan_folders_isolated(
+    folders: &[PathBuf],
+    limits: DiscoveryLimits,
+    isolation: crate::isolation::IsolationLimits,
+) -> ScanReport {
+    let isolation = isolation.sanitized();
+    match crate::isolation::ChildProcessEnumerator::current_scanner(isolation) {
+        Some(enumerator) => {
+            build_report_with(folders, limits, crate::unix_time_ms(), Some(&enumerator))
+        }
+        None => {
+            let in_process = crate::isolation::InProcessEnumerator;
+            let mut report =
+                build_report_with(folders, limits, crate::unix_time_ms(), Some(&in_process));
+            report.notes.insert(
+                0,
+                "Module isolation is unavailable in this process; modules were enumerated in-process."
+                    .to_owned(),
+            );
+            report
+        }
+    }
 }
 
 /// Builds a descriptor and copies the VST3 class subcategory text into the

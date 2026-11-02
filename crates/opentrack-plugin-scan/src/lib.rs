@@ -20,6 +20,7 @@
 
 pub mod discovery;
 pub mod image;
+pub mod isolation;
 pub mod pe;
 pub mod report;
 
@@ -36,13 +37,18 @@ pub use discovery::{
     discover_folder, resolve_vst3_bundle,
 };
 pub use image::{ModuleImageError, ModuleImageFormat, ModuleImageInfo, read_module_image};
+pub use isolation::{
+    ChildProcessEnumerator, ClassPayload, DEFAULT_MODULE_TIMEOUT, EnumerationPayload,
+    InProcessEnumerator, IsolationLimits, IsolationOutcome, MAX_MODULE_TIMEOUT, MIN_MODULE_TIMEOUT,
+    ModuleEnumerator, WorkerResult, run_worker,
+};
 pub use pe::{
     PeFileError, PeHeaderError, PeMachine, classify_pe_machine, parse_pe_machine,
     read_pe_machine_from_file,
 };
 pub use report::{
     FolderReport, FolderStatus, MAX_REPORT_FOLDERS, ModuleReport, ScanReport, ScanTotals,
-    build_report, scan_folders, scan_folders_enumerating,
+    build_report, build_report_with, scan_folders, scan_folders_enumerating, scan_folders_isolated,
 };
 
 /// Version of the scanner report protocol consumed by the application.

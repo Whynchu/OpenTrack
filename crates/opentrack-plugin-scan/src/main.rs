@@ -16,7 +16,8 @@ use std::process::ExitCode;
 use opentrack_plugin_scan::DiscoveryLimits;
 use opentrack_plugin_scan::SCANNER_VERSION;
 use opentrack_plugin_scan::default_vst3_folders;
-use opentrack_plugin_scan::{scan_folders, scan_folders_enumerating};
+use opentrack_plugin_scan::scan_folders;
+use opentrack_plugin_scan::{IsolationLimits, run_worker, scan_folders_isolated};
 
 const USAGE: &str = "\
 opentrack-plugin-scan - bounded VST3 discovery and native image precheck
@@ -31,8 +32,14 @@ Configured folders:
 
 Enumeration:
   --enumerate             Load each host-compatible module and read factory class metadata.
-                          The scanner is a separate process, but per-module
-                          timeout/crash recovery is still pending.
+                          Each module is enumerated in its own child process with a
+                          bounded timeout, so a hanging or crashing module is
+                          reported as a rejected module instead of stopping the scan.
+  --module-timeout SECS   Per-module budget in seconds (default 30, range 1-600).
+
+Worker mode (used by the scanner itself; not for direct use):
+  --enumerate-module PATH Enumerate one module and write the result.
+  --output PATH           Where the worker writes its result.
 
 Output:
   --json                  Emit JSON instead of text.
@@ -62,6 +69,9 @@ enum OutputFormat {
 }
 
 struct Cli {
+    /// Worker mode: enumerate exactly this module and exit.
+    enumerate_module: Option<PathBuf>,
+    module_timeout: IsolationLimits,
     folders: Vec<PathBuf>,
     use_default_folders: bool,
     format: OutputFormat,
@@ -94,6 +104,12 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if let Some(module) = cli.enumerate_module.as_deref() {
+        // The parent passes --output; without it the result goes nowhere and the
+        // parent reports that the worker wrote nothing.
+        return run_worker(module, cli.output.as_deref());
+    }
+
     let mut folders = Vec::new();
     if cli.use_default_folders {
         folders.extend(default_vst3_folders());
@@ -112,7 +128,7 @@ fn run() -> Result<(), String> {
     }
 
     let report = if cli.enumerate {
-        scan_folders_enumerating(&folders, cli.limits)
+        scan_folders_isolated(&folders, cli.limits, cli.module_timeout)
     } else {
         scan_folders(&folders, cli.limits)
     };
@@ -143,6 +159,8 @@ fn run() -> Result<(), String> {
 
 fn parse_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Cli, String> {
     let mut cli = Cli {
+        enumerate_module: None,
+        module_timeout: IsolationLimits::default(),
         folders: Vec::new(),
         use_default_folders: true,
         format: OutputFormat::Text,
@@ -163,6 +181,22 @@ fn parse_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Cli,
         }
         if argument == OsStr::new("--enumerate") {
             cli.enumerate = true;
+            continue;
+        }
+        if argument == OsStr::new("--enumerate-module") {
+            let Some(path) = args.next() else {
+                return Err("--enumerate-module requires a module path".to_owned());
+            };
+            cli.enumerate_module = Some(PathBuf::from(path));
+            continue;
+        }
+        if argument == OsStr::new("--module-timeout") {
+            let value = required_value(&mut args, "--module-timeout")?;
+            let seconds = parse_positive_usize(&value, "--module-timeout")?;
+            cli.module_timeout = IsolationLimits {
+                timeout: std::time::Duration::from_secs(u64::try_from(seconds).unwrap_or(u64::MAX)),
+            }
+            .sanitized();
             continue;
         }
         if argument == OsStr::new("--output") {

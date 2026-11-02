@@ -90,6 +90,36 @@ process working directory.
   dedicated-thread regressions pass. Live in-app listening/visual review remains
   pending.
 
+## Per-module scan isolation (2026-11-01)
+
+Scanning loads arbitrary native code, so each module's factory enumeration now
+runs in its own child process of the scanner (`--enumerate-module PATH --output
+FILE`) under a bounded budget (`--module-timeout SECS`, default 30, range 1-600):
+
+- A module that exceeds its budget is killed and reported as `timed_out` with
+  "module did not finish enumerating within N s and was terminated".
+- A module that kills its worker is reported as `crashed`, with the exit code,
+  signal (Unix) and the worker's stderr attached.
+- A module that loads but refuses to enumerate is reported as `load_failed` with
+  its own reason. The worker writes an explicit `Failed` result and exits
+  successfully, so "the module said no" is never confused with "the worker died".
+- The scan continues through the remaining modules; nothing is skipped silently.
+- `Devices > Plug-in Information` lists every rejected module from the last scan
+  with its status label, path and reason, so a timeout or crash is visible
+  without reading a log.
+
+Unit tests drive the isolation directly with stand-in programs (a hanging
+process, an abnormal exit, a clean exit without a result, a result written from
+the worker side). Integration tests run the real binary: the worker protocol for
+a refused module, and a full isolated scan that attributes a module which the
+precheck accepted but the worker could not load.
+
+Limits: the worker is the scanner binary, not a sandbox — a module that corrupts
+shared state (for example the process working directory or a global hook) still
+affects its own worker process only, because that worker exits afterwards. Audio
+hosting still runs in-process in the application, so this does not protect
+playback. Windows job-object containment is still pending.
+
 ## Failure isolation (2026-11-01)
 
 A plug-in that cannot load must not take the project with it. Current behavior,
@@ -119,7 +149,8 @@ parameter window.
 
 - Hosted VST3 instruments/MIDI routing, multi-out, sidechain, surround.
 - Offline bounce/tail handling, automation lanes, true sandboxing.
-- Per-module scanner timeout/quarantine/job object, cache persistence/UI.
+- Windows job-object containment for scanner workers, persistent quarantine list
+  (a module that crashed is rejected for that scan only).
 - Process-level sandboxing for hosted plug-ins (isolation today is per-insert
   quarantine inside the app process).
 - Universal compatibility. Current evidence is one installed folder.
