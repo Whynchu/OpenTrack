@@ -12,6 +12,10 @@ Edit > Split at Cursor and the existing `edit.split_at_cursor` shortcut now shar
 
 Edit > Crossfade, `audio.crossfade` (X), and the arrange X gesture now share one operation. It requires two overlapping audio clips on the same track and leaves the project unchanged otherwise. Two focused app tests cover success and rejection; runtime listening remains pending.
 
+## Move to Cursor
+
+Edit > Move to Cursor and `edit.move_to_cursor` (Ctrl+L) align the earliest selected ordinary audio clip to the snapped transport cursor while preserving the selection's relative offsets. The move is applied atomically, recorded in project undo history, and rebuilds the playback plan. Two focused helper tests cover offset preservation and stale-selection rejection; runtime interaction review remains pending.
+
 ## Routing boundary
 
 The application routing module now owns send-to-playback resolution, group-cycle checks used by routing menus, and the shared active-send predicate. Core project validation and the audio engine retain their existing responsibilities; routing UI and broader typed-bus commands remain for later work. Local-ASIO check and focused Channel Settings (28), mixer (11), and preset/history (4) checks passed. The running EQ review build remains untouched.

@@ -33,7 +33,7 @@ OpenTrack is an early prototype under active development. Its features are still
 
 ### Available today
 
-- **Projects and arrangement:** a timeline for audio and MIDI tracks, transport and cycle playback, grid snapping, audio clip editing (including split-at-cursor and crossfades), and bounded undo/redo. New saves use native format version 27; earlier `.opr`, `.otp` and `.rwp` projects remain readable. Older OpenTrack builds through version 26 cannot reopen a version 27 save.
+- **Projects and arrangement:** a timeline for audio and MIDI tracks, transport and cycle playback, grid snapping, audio clip editing (including split-at-cursor, move-to-cursor and crossfades), and bounded undo/redo. New saves use native format version 27; earlier `.opr`, `.otp` and `.rwp` projects remain readable. Older OpenTrack builds through version 26 cannot reopen a version 27 save.
 - **Recording and media:** WAV import and playback, audio and MIDI recording, basic track input/output selection and software monitoring, managed project folders, media relinking, and a MediaBay.
 - **Mixing:** shared Mixer and Channel Settings controls, input gain and meters, a 32-band EQ with static and dynamic bands, spectrum and tonal-reference analysis, and an insert rack.
 - **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.

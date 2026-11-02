@@ -5617,6 +5617,7 @@ impl OpenTrackApp {
             "edit.paste" => self.paste_audio_events(),
             "edit.split_at_cursor" => self.split_selected_audio_events_at_cursor(),
             "audio.crossfade" => self.crossfade_selected_audio_events(),
+            "edit.move_to_cursor" => self.move_selected_audio_events_to_cursor(),
             "edit.open_default_editor" => self.open_selected_midi_editor(),
             "edit.open_close_editor" => self.midi_editor_open = false,
             "devices.mixer" => self.focus_tab(PanelTab::Mixer),
@@ -7895,6 +7896,23 @@ impl OpenTrackApp {
                         && self.arrange_view_state.audio_events.selected_ids().len() == 2;
                     if menu_command(ui, "Crossfade", "X", can_crossfade).clicked() {
                         self.crossfade_selected_audio_events();
+                        ui.close();
+                    }
+                    let can_move_to_cursor = self.project_open
+                        && !self.is_recording()
+                        && self
+                            .arrange_view_state
+                            .audio_events
+                            .selected_ids()
+                            .iter()
+                            .any(|id| {
+                                self.data.project.tracks.iter().any(|track| {
+                                    track.kind == TrackKind::Audio
+                                        && track.clips.iter().any(|clip| clip.id == *id)
+                                })
+                            });
+                    if menu_command(ui, "Move to Cursor", "Ctrl+L", can_move_to_cursor).clicked() {
+                        self.move_selected_audio_events_to_cursor();
                         ui.close();
                     }
                     disabled_menu_commands(ui, &[("Split Loop", "")]);

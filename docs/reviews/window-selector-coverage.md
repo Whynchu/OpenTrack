@@ -45,7 +45,7 @@ The counts above are coverage families, not counts of all controls. Complete ind
 
 ## Reconciled source findings
 
-- Keyboard command registry: 44 implemented dispatch actions, 6 partial, 102 generic fallback. The menu register is separate because menu actions are largely direct UI callbacks, not registered IDs.
+- Keyboard command registry: 45 implemented dispatch actions, 7 partial, 100 generic fallback. The menu register is separate because menu actions are largely direct UI callbacks, not registered IDs.
 - The menu register enumerates menu leaves by explicit path and generated family; runtime-discovered device/plug-in items are inventoried by generator, not by machine-specific contents.
 - Windows and selector findings remain source-only. Disabled placeholders, conditional state gates, and documented exclusions are distinguished in the detailed registers.
 - The source inventory does not claim running-app, audio, hardware or user acceptance. Native file pickers, dynamic catalogs, and some individual control behaviors are recorded as unknown where code tracing is insufficient.

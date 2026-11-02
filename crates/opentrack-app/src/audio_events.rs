@@ -219,7 +219,86 @@ fn crossfade_selection(project: &mut Project, ids: &[u64]) -> bool {
     ids.len() == 2 && project.crossfade_audio_clips(ids[0], ids[1])
 }
 
+fn move_selected_clips_to_cursor(
+    project: &mut Project,
+    selected: &HashSet<u64>,
+    cursor_beat: f64,
+) -> usize {
+    if !cursor_beat.is_finite() || cursor_beat < 0.0 || selected.is_empty() {
+        return 0;
+    }
+    let clips = project
+        .tracks
+        .iter()
+        .filter(|track| track.kind == TrackKind::Audio)
+        .flat_map(|track| {
+            track
+                .clips
+                .iter()
+                .filter(|clip| selected.contains(&clip.id))
+                .map(move |clip| (track.id, clip.clone()))
+        })
+        .collect::<Vec<_>>();
+    if clips.len() != selected.len() {
+        return 0;
+    }
+    let anchor = clips
+        .iter()
+        .map(|(_, clip)| clip.start_beats)
+        .fold(f64::INFINITY, f64::min);
+    let edits = clips
+        .iter()
+        .map(|(track_id, clip)| {
+            let mut moved = clip.clone();
+            moved.start_beats = cursor_beat + clip.start_beats - anchor;
+            (*track_id, *track_id, moved)
+        })
+        .collect::<Vec<_>>();
+    if project.move_audio_clips(&edits) {
+        clips.len()
+    } else {
+        0
+    }
+}
+
 impl OpenTrackApp {
+    pub(super) fn move_selected_audio_events_to_cursor(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before moving audio events".into();
+            return;
+        }
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let beat = self.data.transport.position_beats.max(0.0);
+        let beat = self
+            .arrange_view_state
+            .snap_grid_beats(self.data.project.beats_per_bar)
+            .map_or(beat, |grid| crate::timeline::snap_beats_to_grid(beat, grid));
+        let mut candidate = self.data.project.clone();
+        let moved = move_selected_clips_to_cursor(&mut candidate, &selected, beat);
+        if moved == 0 {
+            self.status_message = "Select audio events that can move to the cursor".into();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self.project_history.begin(&self.data.project) {
+            self.status_message = "Cannot move: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.arrange_view_state.audio_events.select_many(
+            selected.into_iter().collect::<Vec<_>>(),
+        );
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!("Moved {moved} audio event(s) to the cursor; Undo restores them");
+    }
+
     pub(super) fn crossfade_selected_audio_events(&mut self) {
         if self.is_recording() {
             self.status_message = "Stop recording before creating a crossfade".into();
@@ -2942,6 +3021,45 @@ mod crossfade_selection_tests {
         assert!(!crossfade_selection(&mut project, &[first, second]));
         assert_eq!(project, before);
         assert!(!crossfade_selection(&mut project, &[first]));
+        assert_eq!(project, before);
+    }
+}
+
+#[cfg(test)]
+mod move_to_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn moving_selection_aligns_earliest_clip_and_preserves_offsets() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("first.wav"), 2.0, 1.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(1, PathBuf::from("second.wav"), 5.0, 1.0)
+            .unwrap();
+        assert_eq!(
+            move_selected_clips_to_cursor(&mut project, &HashSet::from([first, second]), 8.0),
+            2
+        );
+        assert_eq!(project.tracks[0].clips[0].start_beats, 8.0);
+        assert_eq!(project.tracks[1].clips[0].start_beats, 11.0);
+    }
+
+    #[test]
+    fn moving_selection_rejects_stale_ids_without_partial_changes() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("event.wav"), 2.0, 1.0)
+            .unwrap();
+        let before = project.clone();
+        assert_eq!(
+            move_selected_clips_to_cursor(&mut project, &HashSet::from([clip, u64::MAX]), 8.0),
+            0
+        );
         assert_eq!(project, before);
     }
 }
