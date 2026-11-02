@@ -34,6 +34,8 @@ mod project_controls;
 mod project_inspector;
 #[path = "project_rate.rs"]
 mod project_rate;
+#[path = "project_recovery.rs"]
+mod project_recovery;
 #[path = "recording_recovery.rs"]
 mod recording_recovery;
 #[path = "recording_undo.rs"]
@@ -1161,6 +1163,8 @@ pub struct OpenTrackApp {
     project_folder_managed: bool,
     project_folder_setup: Option<ProjectFolderSetup>,
     recording_recovery: Option<RecordingRecoveryPrompt>,
+    project_recovery: Option<ProjectRecoveryPrompt>,
+    last_autosave: Instant,
     saved_project_fingerprint: Vec<u8>,
     saved_workspace_fingerprint: Vec<u8>,
     modified: bool,
@@ -1175,11 +1179,20 @@ pub struct OpenTrackApp {
     project_open_error: Option<String>,
 }
 
+/// How often unsaved changes are copied into the project's recovery folder.
+const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(20);
+
 /// Takes an interrupted recording left behind, awaiting a restore/discard choice.
 struct RecordingRecoveryPrompt {
     project_root: std::path::PathBuf,
     takes: Vec<recording_recovery::PendingTake>,
     error: Option<String>,
+}
+
+/// An autosave from an earlier session that still needs a decision.
+struct ProjectRecoveryPrompt {
+    project_root: std::path::PathBuf,
+    pending: project_recovery::PendingAutosave,
 }
 
 struct RecordingSession {
@@ -2444,6 +2457,8 @@ impl OpenTrackApp {
             project_folder_managed: false,
             project_folder_setup: None,
             recording_recovery: None,
+            project_recovery: None,
+            last_autosave: Instant::now(),
             saved_project_fingerprint: Vec::new(),
             saved_workspace_fingerprint: Vec::new(),
             modified: false,
@@ -4175,7 +4190,153 @@ impl OpenTrackApp {
         }
         self.rebuild_audio_plan();
         self.mark_saved();
-        self.detect_interrupted_recording(path);
+        self.detect_interrupted_recording(path.clone());
+        self.detect_unsaved_recovery(path);
+    }
+
+    fn project_root(&self) -> Option<std::path::PathBuf> {
+        self.project_path
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    }
+
+    /// Keeps a recovery copy of unsaved changes inside the project folder.
+    ///
+    /// eframe does not deliver a reliable close hook, so a window close can end
+    /// the session without any prompt. The copy is written through the same
+    /// validated atomic save path as a normal save, at most every
+    /// [`AUTOSAVE_INTERVAL`], and only while the project has unsaved changes.
+    fn maybe_autosave(&mut self) {
+        if !self.project_open
+            || !self.project_folder_managed
+            || !self.modified
+            || self.project_load_task.is_some()
+        {
+            return;
+        }
+        if self.is_recording()
+            || self.data.transport.recording
+            || self.last_autosave.elapsed() < AUTOSAVE_INTERVAL
+        {
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            return;
+        };
+        self.last_autosave = Instant::now();
+        let Ok(path) = project_recovery::prepare(&root) else {
+            return;
+        };
+        // Plug-in state is captured on a real save; the recovery copy keeps the
+        // project as it stands so an autosave never mutates live plug-ins.
+        if let Ok(document) = self.project_file() {
+            let _ = document.write(&path);
+        }
+    }
+
+    fn clear_autosave(&mut self) {
+        if let Some(root) = self.project_root() {
+            let _ = project_recovery::clear(&root);
+        }
+    }
+
+    /// Offers unsaved changes left by an earlier session.
+    fn detect_unsaved_recovery(&mut self, project_path: std::path::PathBuf) {
+        self.project_recovery = None;
+        if !self.project_folder_managed {
+            return;
+        }
+        let Some(root) = project_path.parent() else {
+            return;
+        };
+        let Some(pending) = project_recovery::pending(root) else {
+            return;
+        };
+        self.project_recovery = Some(ProjectRecoveryPrompt {
+            project_root: root.to_path_buf(),
+            pending,
+        });
+    }
+
+    fn show_project_recovery(&mut self, ctx: &egui::Context) {
+        // The take prompt comes first: it is about audio that only exists once.
+        if self.recording_recovery.is_some() {
+            return;
+        }
+        let Some(prompt) = self.project_recovery.as_ref() else {
+            return;
+        };
+        let age = project_recovery::describe_age(prompt.pending.written);
+        let size = prompt.pending.bytes;
+        let mut recover = false;
+        let mut discard = false;
+        egui::Window::new("Recover Unsaved Changes")
+            .id(Id::new("project-recovery"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(460.0);
+                ui.label(format!(
+                    "OpenTrack kept a recovery copy of this project's unsaved changes ({age}, {:.1} MB).",
+                    size as f64 / (1024.0 * 1024.0)
+                ));
+                ui.label(
+                    "Recovering replaces the opened project with that copy. Discarding removes it \
+                     and keeps the saved project file.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Recover Changes").clicked() {
+                        recover = true;
+                    }
+                    if ui.button("Discard Changes").clicked() {
+                        discard = true;
+                    }
+                });
+            });
+
+        if recover {
+            self.apply_recovered_changes();
+        } else if discard {
+            if let Some(prompt) = self.project_recovery.take() {
+                match project_recovery::clear(&prompt.project_root) {
+                    Ok(()) => {
+                        self.status_message =
+                            "Discarded unsaved changes from the last session".to_owned()
+                    }
+                    Err(error) => {
+                        self.status_message = format!("Could not remove the recovery copy: {error}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Replaces the opened project with the autosave's content.
+    fn apply_recovered_changes(&mut self) {
+        let Some(prompt) = self.project_recovery.take() else {
+            return;
+        };
+        let document = match ProjectFile::read(&prompt.pending.path) {
+            Ok(document) => document,
+            Err(error) => {
+                self.status_message = format!("Could not read the recovery copy: {error}");
+                return;
+            }
+        };
+        self.project_history
+            .begin(&self.data.project, self.modified);
+        self.data.project = document.project;
+        self.data.transport.cycle = document.cycle;
+        self.data.selected_media = document.selected_media;
+        self.sample_editor.reset_target();
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.rebuild_audio_plan();
+        self.status_message = "Recovered unsaved changes from the last session".to_owned();
     }
 
     /// Offers to recover takes an abnormal exit left in the recording folder.
@@ -4314,6 +4475,7 @@ impl OpenTrackApp {
                 self.project_folder_setup = None;
                 self.status_message = format!("Saved {}", project_file_name(&path));
                 self.mark_saved();
+                self.clear_autosave();
                 true
             }
             Err(error) => {
@@ -4358,6 +4520,7 @@ impl OpenTrackApp {
                         self.refresh_modified_from_saved();
                     }
                     self.project_history.clear();
+                    self.clear_autosave();
                     self.apply_pending_project_action(ctx);
                 }
                 Err(error) => {
@@ -9659,6 +9822,7 @@ impl OpenTrackApp {
             || self.project_rate_change.is_some()
             || self.project_folder_setup.is_some()
             || self.recording_recovery.is_some()
+            || self.project_recovery.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -11786,6 +11950,7 @@ impl eframe::App for OpenTrackApp {
         if let Some(capture) = automation::take_finished_write(ui.ctx()) {
             self.apply_automation_write(capture);
         }
+        self.maybe_autosave();
         self.set_ui_stage(UiStage::FrameStart);
         self.ui_heartbeat
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -11942,6 +12107,7 @@ impl eframe::App for OpenTrackApp {
         self.show_audio_export(&ctx);
         self.show_project_folder_setup(&ctx);
         self.show_recording_recovery(&ctx);
+        self.show_project_recovery(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -20659,6 +20825,182 @@ mod plugin_catalog_tests {
                 .expect("catalog round-trip");
         assert_eq!(restored_folders, folders);
         assert_eq!(restored_catalog, catalog);
+    }
+}
+
+#[cfg(test)]
+mod project_recovery_tests {
+    use super::*;
+
+    fn autosave_fixture(name: &str) -> (PathBuf, OpenTrackApp) {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-autosave-app-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Metadata")).expect("metadata");
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].name = "Guitar".to_owned();
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.modified = true;
+        app.last_autosave = Instant::now() - Duration::from_secs(120);
+        (root, app)
+    }
+
+    #[test]
+    fn unsaved_changes_are_copied_into_the_projects_recovery_folder() {
+        let (root, mut app) = autosave_fixture("write");
+        assert!(project_recovery::pending(&root).is_none());
+        app.maybe_autosave();
+
+        let pending = project_recovery::pending(&root).expect("autosave written");
+        assert_eq!(
+            pending.path,
+            root.join("Metadata").join("Recovery").join("autosave.opr")
+        );
+        let document = ProjectFile::read(&pending.path).expect("the copy is a real project file");
+        assert_eq!(document.project.tracks.len(), 2);
+        assert_eq!(document.project.tracks[0].name, "Guitar");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unmodified_or_recording_project_keeps_no_recovery_copy() {
+        let (root, mut app) = autosave_fixture("skip");
+        app.modified = false;
+        app.maybe_autosave();
+        assert!(project_recovery::pending(&root).is_none());
+
+        app.modified = true;
+        app.data.transport.recording = true;
+        app.last_autosave = Instant::now() - Duration::from_secs(120);
+        app.maybe_autosave();
+        assert!(
+            project_recovery::pending(&root).is_none(),
+            "a transport in record mode must not be snapshotted"
+        );
+        assert!(
+            project_recovery::pending(&root).is_none(),
+            "a take in progress must not be snapshotted"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autosaves_are_rate_limited_so_a_drag_does_not_rewrite_the_project() {
+        let (root, mut app) = autosave_fixture("rate");
+        app.maybe_autosave();
+        let first = std::fs::metadata(project_recovery::autosave_path(&root))
+            .expect("written")
+            .modified()
+            .expect("mtime");
+        app.data.project.tracks[0].name = "Changed".to_owned();
+        app.maybe_autosave();
+        let second = std::fs::metadata(project_recovery::autosave_path(&root))
+            .expect("written")
+            .modified()
+            .expect("mtime");
+        assert_eq!(first, second, "the interval has not elapsed yet");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovering_replaces_the_project_with_the_recovery_copy() {
+        let (root, mut app) = autosave_fixture("recover");
+        app.maybe_autosave();
+        let pending = project_recovery::pending(&root).expect("autosave");
+
+        // The saved project loses a track; recovering must bring it back.
+        app.data.project.tracks.pop();
+        assert_eq!(app.data.project.tracks.len(), 1);
+        app.project_recovery = Some(ProjectRecoveryPrompt {
+            project_root: root.clone(),
+            pending,
+        });
+        assert!(app.modal_dialog_open());
+        app.apply_recovered_changes();
+
+        assert_eq!(app.data.project.tracks.len(), 2);
+        assert_eq!(app.data.project.tracks[0].name, "Guitar");
+        assert!(app.modified);
+        assert!(app.project_recovery.is_none());
+        assert!(
+            project_recovery::pending(&root).is_some(),
+            "the copy stays until the recovered project is saved"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn opening_a_project_with_an_autosave_offers_the_unsaved_changes() {
+        let (root, mut app) = autosave_fixture("detect");
+        create_project_directory_layout(&root).expect("project layout");
+        let project_file = root.join("Song.opr");
+
+        // The autosave holds two tracks.
+        app.maybe_autosave();
+        assert!(project_recovery::pending(&root).is_some());
+
+        // The saved file holds one track, so the two differ.
+        app.data.project.tracks.pop();
+        app.data.project.selected_track = None;
+        let document = app.project_file().expect("document");
+        document.write(&project_file).expect("write project");
+
+        app.load_project(project_file.clone());
+        assert!(
+            app.project_recovery.is_some(),
+            "opening a project with a recovery copy must offer it"
+        );
+        assert_eq!(app.data.project.tracks.len(), 1);
+        assert!(app.modal_dialog_open());
+
+        app.apply_recovered_changes();
+        assert_eq!(
+            app.data.project.tracks.len(),
+            2,
+            "recovering brings back the unsaved track"
+        );
+        assert_eq!(app.data.project.tracks[0].name, "Guitar");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_and_discarding_both_remove_the_recovery_copy() {
+        let (root, mut app) = autosave_fixture("clear");
+        app.maybe_autosave();
+        assert!(project_recovery::pending(&root).is_some());
+        app.clear_autosave();
+        assert!(
+            project_recovery::pending(&root).is_none(),
+            "a completed save settles the recovery copy"
+        );
+
+        app.last_autosave = Instant::now() - Duration::from_secs(120);
+        app.maybe_autosave();
+        let pending = project_recovery::pending(&root).expect("autosave again");
+        app.project_recovery = Some(ProjectRecoveryPrompt {
+            project_root: root.clone(),
+            pending,
+        });
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 700.0))),
+                ..Default::default()
+            },
+            |_| app.show_project_recovery(&ctx),
+        );
+        assert!(!output.shapes.is_empty(), "the prompt is drawn");
+        let _ = ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        output.textures_delta.clear();
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
