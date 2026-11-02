@@ -19,6 +19,11 @@ pub enum TrackKind {
 pub const MAX_CHANNEL_GAIN: f32 = 2.0;
 /// Maximum number of user-visible send slots on one channel.
 pub const MAX_SEND_SLOTS: usize = 24;
+/// Upper bound on one Repeat/Fill Loop command, so a single gesture cannot
+/// flood the timeline with events.
+pub const MAX_REPEAT_COUNT: u32 = 64;
+/// Latest beat a repetition may reach; mirrors the loop timeline bound.
+const MAX_CLIP_BEAT: f64 = 1_000_000.0;
 /// Stable identities for device buses, separate from arrange tracks.
 pub const INPUT_BUS_ID: u64 = u64::MAX - 1;
 pub const OUTPUT_BUS_ID: u64 = u64::MAX;
@@ -214,6 +219,20 @@ pub struct Track {
 
 fn default_audio_channels() -> u8 {
     2
+}
+
+fn rename_clip(project: &mut Project, track_id: u64, from: u64, to: u64) {
+    if let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id)
+        && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == from)
+    {
+        clip.id = to;
+    }
+}
+
+fn remove_clip(project: &mut Project, track_id: u64, clip_id: u64) {
+    if let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id) {
+        track.clips.retain(|clip| clip.id != clip_id);
+    }
 }
 
 fn track_belongs_to_group(tracks: &[Track], track_id: u64, group_id: u64) -> bool {
@@ -1726,6 +1745,190 @@ impl Project {
         }
         *self = candidate;
         created
+    }
+
+    /// Repeats the selection `count` more times directly after it.
+    ///
+    /// Each repetition is shifted by the selection's own span, so the spacing of
+    /// a multi-event selection is preserved. Returns the ids of the new events.
+    pub fn repeat_audio_clips(&mut self, ids: &[u64], count: u32) -> Vec<u64> {
+        let count = count.min(MAX_REPEAT_COUNT);
+        if ids.is_empty() || count == 0 {
+            return Vec::new();
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut start = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        let mut targets = Vec::new();
+        for (track_index, track) in self.tracks.iter().enumerate() {
+            if track.kind != TrackKind::Audio {
+                continue;
+            }
+            for (clip_index, clip) in track.clips.iter().enumerate() {
+                if !selected.contains(&clip.id) {
+                    continue;
+                }
+                start = start.min(clip.start_beats);
+                end = end.max(clip.start_beats + clip.duration_seconds * self.tempo_bpm / 60.0);
+                targets.push((track_index, clip_index));
+            }
+        }
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        let span = end - start;
+        if !span.is_finite() || span <= 0.0 {
+            return Vec::new();
+        }
+        // Stop before any repetition would leave the supported timeline or the
+        // id space, rather than writing a partial repeat the caller cannot see.
+        let mut usable = count;
+        while usable > 0 {
+            let farthest = end + span * f64::from(usable - 1);
+            if farthest <= MAX_CLIP_BEAT
+                && self
+                    .next_clip_id
+                    .checked_add(targets.len() as u64 * u64::from(usable))
+                    .is_some()
+            {
+                break;
+            }
+            usable -= 1;
+        }
+        if usable == 0 {
+            return Vec::new();
+        }
+        let mut candidate = self.clone();
+        let mut created = Vec::with_capacity(targets.len() * usable as usize);
+        for repetition in 1..=usable {
+            let offset = span * f64::from(repetition);
+            for (track_index, clip_index) in &targets {
+                let mut copy = candidate.tracks[*track_index].clips[*clip_index].clone();
+                copy.id = candidate.next_clip_id;
+                candidate.next_clip_id += 1;
+                copy.start_beats += offset;
+                created.push(copy.id);
+                candidate.tracks[*track_index].clips.push(copy);
+            }
+        }
+        if candidate.validate().is_err() {
+            return Vec::new();
+        }
+        *self = candidate;
+        created
+    }
+
+    /// Repeats the selection until it reaches the end of the loop range.
+    ///
+    /// The loop is the range the user already drew, so this is repeat with a
+    /// count derived from the range rather than typed by hand.
+    pub fn fill_loop_with_audio_clips(
+        &mut self,
+        ids: &[u64],
+        loop_start: f64,
+        loop_end: f64,
+    ) -> Vec<u64> {
+        if !loop_start.is_finite() || !loop_end.is_finite() || loop_end <= loop_start {
+            return Vec::new();
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut start = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        for track in self.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+            for clip in &track.clips {
+                if selected.contains(&clip.id) {
+                    start = start.min(clip.start_beats);
+                    end = end.max(clip.start_beats + clip.duration_seconds * self.tempo_bpm / 60.0);
+                }
+            }
+        }
+        let span = end - start;
+        if !span.is_finite() || span <= 0.0 || !start.is_finite() {
+            return Vec::new();
+        }
+        // How many direct repetitions land inside the loop range.
+        let count = ((loop_end.min(MAX_CLIP_BEAT) - end) / span).floor();
+        if !count.is_finite() || count <= 0.0 {
+            return Vec::new();
+        }
+        let count = count.min(f64::from(MAX_REPEAT_COUNT)) as u32;
+        self.repeat_audio_clips(ids, count)
+    }
+
+    /// Trims the given events to the half-open range and reports how many changed.
+    ///
+    /// Material outside the range is removed through the ordinary split path, so
+    /// source trims and fades keep their lineage. Events that lie entirely
+    /// outside are left untouched: cropping a range must not silently delete
+    /// material the user did not point at.
+    pub fn crop_audio_clips_to_range(&mut self, ids: &[u64], start: f64, end: f64) -> usize {
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+            return 0;
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        if selected.is_empty() {
+            return 0;
+        }
+        let mut candidate = self.clone();
+        let mut trimmed = 0;
+        for track_id in candidate
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .map(|track| track.id)
+            .collect::<Vec<_>>()
+        {
+            let targets = candidate
+                .tracks
+                .iter()
+                .find(|track| track.id == track_id)
+                .map(|track| {
+                    track
+                        .clips
+                        .iter()
+                        .filter(|clip| selected.contains(&clip.id))
+                        .map(|clip| {
+                            (
+                                clip.id,
+                                clip.start_beats,
+                                clip.start_beats
+                                    + clip.duration_seconds * candidate.tempo_bpm / 60.0,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for (clip_id, clip_start, clip_end) in targets {
+                if clip_end <= start + 1e-9 || clip_start >= end - 1e-9 {
+                    continue;
+                }
+                let mut changed = false;
+                // Trim the tail first so the head split keeps the shortened event.
+                if clip_end > end + 1e-9
+                    && let Some(right) = candidate.split_audio_clip(track_id, clip_id, end)
+                {
+                    remove_clip(&mut candidate, track_id, right);
+                    changed = true;
+                }
+                if clip_start < start - 1e-9
+                    && let Some(right) = candidate.split_audio_clip(track_id, clip_id, start)
+                {
+                    // The surviving part keeps the event's identity, so a
+                    // selection that pointed at it still points at it.
+                    remove_clip(&mut candidate, track_id, clip_id);
+                    rename_clip(&mut candidate, track_id, right, clip_id);
+                    changed = true;
+                }
+                if changed {
+                    trimmed += 1;
+                }
+            }
+        }
+        if trimmed == 0 || candidate.validate().is_err() {
+            return 0;
+        }
+        *self = candidate;
+        trimmed
     }
 
     /// Mutes or unmutes the given events and reports how many changed.
@@ -3860,6 +4063,165 @@ mod sample_edit_tests {
         // Only the muted event changes, so unmuting reports one edit.
         assert_eq!(project.set_audio_clips_muted(&[first, second], false), 1);
         assert!(project.tracks[0].clips.iter().all(|clip| !clip.muted));
+    }
+
+    #[test]
+    fn repeat_places_each_copy_one_selection_span_later() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 2 s at 120 BPM is 4 beats, so the selection spans beats 0 through 4.
+        let id = project
+            .add_audio_clip(0, PathBuf::from("loop.wav"), 0.0, 2.0)
+            .unwrap();
+
+        let created = project.repeat_audio_clips(&[id], 3);
+        assert_eq!(created.len(), 3);
+        let mut starts = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        starts.sort_by(f64::total_cmp);
+        assert_eq!(starts, vec![0.0, 4.0, 8.0, 12.0]);
+    }
+
+    #[test]
+    fn repeat_keeps_the_spacing_of_a_multi_event_selection() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 1.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(1, PathBuf::from("b.wav"), 3.0, 1.0)
+            .unwrap();
+
+        let created = project.repeat_audio_clips(&[first, second], 1);
+        assert_eq!(created.len(), 2);
+        // The selection spans beats 0 through 5, so both copies move by 5.
+        assert!(
+            project.tracks[0].clips.iter().any(|clip| {
+                created.contains(&clip.id) && (clip.start_beats - 5.0).abs() < 1e-9
+            })
+        );
+        assert!(
+            project.tracks[1].clips.iter().any(|clip| {
+                created.contains(&clip.id) && (clip.start_beats - 8.0).abs() < 1e-9
+            })
+        );
+    }
+
+    #[test]
+    fn repeat_is_bounded_and_leaves_the_project_alone_when_it_cannot_run() {
+        use crate::project::MAX_REPEAT_COUNT;
+
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 1.0)
+            .unwrap();
+        let before = project.clone();
+        assert!(project.repeat_audio_clips(&[id], 0).is_empty());
+        assert!(project.repeat_audio_clips(&[], 4).is_empty());
+        assert!(project.repeat_audio_clips(&[9_999], 4).is_empty());
+        assert_eq!(project, before);
+
+        // One command cannot exceed the cap even if asked for more.
+        let created = project.repeat_audio_clips(&[id], 1_000);
+        assert_eq!(created.len(), MAX_REPEAT_COUNT as usize);
+    }
+
+    #[test]
+    fn fill_loop_repeats_until_the_loop_end() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // One bar of 4/4 at 120 BPM is 8 beats; the event is half a bar.
+        let id = project
+            .add_audio_clip(0, PathBuf::from("half.wav"), 0.0, 2.0)
+            .unwrap();
+        project.set_loop_range(0.0, 16.0);
+
+        let created = project.fill_loop_with_audio_clips(&[id], 0.0, 16.0);
+        // Beats 0-4 are original, so 4-8, 8-12 and 12-16 are added.
+        assert_eq!(created.len(), 3);
+        let farthest = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .fold(0.0_f64, f64::max);
+        assert!((farthest - 12.0).abs() < 1e-9);
+
+        let before = project.clone();
+        assert!(
+            project
+                .fill_loop_with_audio_clips(&[id], 8.0, 8.0)
+                .is_empty()
+        );
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn crop_trims_crossing_events_and_leaves_outside_events_alone() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 4 s at 120 BPM is 8 beats: one event crosses both edges, one sits
+        // entirely before the range and one entirely after it.
+        let crossing = project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 2.0, 4.0)
+            .unwrap();
+        let before = project
+            .add_audio_clip(0, PathBuf::from("early.wav"), 0.0, 0.5)
+            .unwrap();
+        let after = project
+            .add_audio_clip(0, PathBuf::from("late.wav"), 20.0, 0.5)
+            .unwrap();
+
+        let trimmed = project.crop_audio_clips_to_range(&[crossing, before, after], 4.0, 8.0);
+        assert_eq!(trimmed, 1, "only the crossing event is trimmed");
+        let clips = &project.tracks[0].clips;
+        let cropped = clips
+            .iter()
+            .find(|clip| clip.id == crossing)
+            .expect("cropped event keeps its id");
+        assert!((cropped.start_beats - 4.0).abs() < 1e-9);
+        assert!(
+            (cropped.start_beats + cropped.duration_seconds * 120.0 / 60.0 - 8.0).abs() < 1e-9,
+            "the tail is trimmed to the range end"
+        );
+        assert!(clips.iter().any(|clip| clip.id == before));
+        assert!(clips.iter().any(|clip| clip.id == after));
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn crop_trims_each_edge_independently_and_rejects_empty_ranges() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 3 s at 120 BPM is 6 beats: beats 1 through 7.
+        let id = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 1.0, 3.0)
+            .unwrap();
+
+        let before = project.clone();
+        assert_eq!(project.crop_audio_clips_to_range(&[id], 4.0, 4.0), 0);
+        assert_eq!(project.crop_audio_clips_to_range(&[id], 0.0, 1.0), 0);
+        assert_eq!(project, before);
+
+        // Only the head is trimmed when the range ends after the event.
+        assert_eq!(project.crop_audio_clips_to_range(&[id], 3.0, 40.0), 1);
+        let clip = &project.tracks[0].clips[0];
+        assert!((clip.start_beats - 3.0).abs() < 1e-9);
+        assert!(
+            (clip.start_beats + clip.duration_seconds * 120.0 / 60.0 - 7.0).abs() < 1e-9,
+            "the tail is untouched"
+        );
     }
 
     #[test]

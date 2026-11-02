@@ -482,6 +482,11 @@ struct TrackRenameDialog {
     draft: String,
 }
 
+/// Bounded count for Edit > Repeat.
+struct RepeatDialog {
+    count: u32,
+}
+
 struct EventColorsDialog {
     slot_index: usize,
     draft_rgb: [u8; 3],
@@ -1150,6 +1155,7 @@ pub struct OpenTrackApp {
     track_rename_dialog: Option<TrackRenameDialog>,
     track_add_dialog: Option<TrackAddDialog>,
     event_colors_dialog: Option<EventColorsDialog>,
+    repeat_dialog: Option<RepeatDialog>,
     pending_track_delete_id: Option<u64>,
     midi_editor_settings: midi_editor_settings::MidiEditorSettings,
     selected_midi_note_id: Option<u64>,
@@ -2441,6 +2447,7 @@ impl OpenTrackApp {
             track_rename_dialog: None,
             track_add_dialog: None,
             event_colors_dialog: None,
+            repeat_dialog: None,
             pending_track_delete_id: None,
             midi_editor_settings,
             selected_midi_note_id: None,
@@ -5221,6 +5228,72 @@ impl OpenTrackApp {
         }
     }
 
+    /// Edit > Repeat: a bounded count, applied to the current event selection.
+    fn show_repeat_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.repeat_dialog.take() else {
+            let mut open = false;
+            dismiss_window_on_outside_click(
+                ctx,
+                Id::new("project-repeat-dialog"),
+                &mut open,
+                None::<&egui::InnerResponse<()>>,
+            );
+            return;
+        };
+        let mut open = true;
+        let mut cancelled = false;
+        let mut accepted = false;
+        let selected = self.arrange_view_state.audio_events.selected_ids().len();
+        let response = egui::Window::new("Repeat")
+            .id(Id::new("project-repeat-dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(260.0);
+                ui.label(format!(
+                    "Repeat {selected} selected audio event(s) after themselves."
+                ));
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        Vec2::new(64.0, 18.0),
+                        egui::DragValue::new(&mut dialog.count)
+                            .range(1..=opentrack_core::project::MAX_REPEAT_COUNT)
+                            .speed(1),
+                    );
+                    ui.label("time(s)");
+                });
+                ui.label(
+                    egui::RichText::new("Each repetition is placed one selection length later.")
+                        .small()
+                        .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Repeat").clicked() {
+                        accepted = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-repeat-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if accepted && open {
+            self.repeat_selected_audio_events(
+                dialog
+                    .count
+                    .clamp(1, opentrack_core::project::MAX_REPEAT_COUNT),
+            );
+        } else if !cancelled && open {
+            self.repeat_dialog = Some(dialog);
+        }
+    }
+
     fn show_event_colors_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.event_colors_dialog.take() else {
             let mut open = false;
@@ -6128,6 +6201,9 @@ impl OpenTrackApp {
             "audio.crossfade" => self.crossfade_selected_audio_events(),
             "edit.move_to_cursor" => self.move_selected_audio_events_to_cursor(),
             "edit.duplicate" => self.duplicate_selected_audio_events(),
+            "edit.repeat" => self.repeat_dialog = Some(RepeatDialog { count: 2 }),
+            "edit.fill_loop" => self.fill_loop_with_selected_audio_events(),
+            "edit.invert" => self.invert_audio_event_selection(),
             "edit.mute_events" => self.set_selected_audio_events_muted(true),
             "edit.unmute_events" => self.set_selected_audio_events_muted(false),
             "edit.mute_unmute_objects" => self.toggle_selected_audio_events_muted(),
@@ -8495,7 +8571,10 @@ impl OpenTrackApp {
                             self.set_locator_from_selection(false);
                             ui.close();
                         }
-                        disabled_menu_commands(ui, &[("Crop", "")]);
+                        if menu_command(ui, "Crop", "", has_selection).clicked() {
+                            self.crop_selected_audio_events_to_loop();
+                            ui.close();
+                        }
                     });
                     ui.menu_button("Select", |ui| {
                         if menu_command(ui, "All Events", "Ctrl+A", self.project_open).clicked() {
@@ -8506,14 +8585,25 @@ impl OpenTrackApp {
                             self.select_no_audio_events();
                             ui.close();
                         }
-                        disabled_menu_commands(ui, &[("Invert", ""), ("Events under Cursor", "")]);
+                        if menu_command(ui, "Invert", "", self.project_open).clicked() {
+                            self.invert_audio_event_selection();
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Events under Cursor", "")]);
                     });
                     let can_duplicate = can_move_to_cursor;
                     if menu_command(ui, "Duplicate", "Ctrl+D", can_duplicate).clicked() {
                         self.duplicate_selected_audio_events();
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Repeat...", "Ctrl+K"), ("Fill Loop", "")]);
+                    if menu_command(ui, "Repeat...", "Ctrl+K", can_duplicate).clicked() {
+                        self.repeat_dialog = Some(RepeatDialog { count: 2 });
+                        ui.close();
+                    }
+                    if menu_command(ui, "Fill Loop", "", can_duplicate).clicked() {
+                        self.fill_loop_with_selected_audio_events();
+                        ui.close();
+                    }
                     ui.menu_button("Move to", |ui| {
                         disabled_menu_commands(ui, &[("Left Locator", ""), ("Right Locator", "")]);
                     });
@@ -9839,6 +9929,7 @@ impl OpenTrackApp {
             || self.project_folder_setup.is_some()
             || self.recording_recovery.is_some()
             || self.project_recovery.is_some()
+            || self.repeat_dialog.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -12208,6 +12299,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_folder_setup(&ctx);
         self.show_recording_recovery(&ctx);
         self.show_project_recovery(&ctx);
+        self.show_repeat_dialog(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);

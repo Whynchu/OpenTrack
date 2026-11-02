@@ -381,6 +381,163 @@ impl OpenTrackApp {
         );
     }
 
+    /// Repeats the selected events `count` more times after themselves.
+    pub(super) fn repeat_selected_audio_events(&mut self, count: u32) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before repeating audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to repeat".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let created = candidate.repeat_audio_clips(&ids, count);
+        if created.is_empty() {
+            self.status_message = format!(
+                "Cannot repeat {} time(s); check the selection and the timeline end",
+                count
+            );
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot repeat: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.arrange_view_state
+            .audio_events
+            .select_many(ids.into_iter().chain(created.iter().copied()));
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Repeated {} audio event(s) {} time(s); Undo removes them",
+            created.len(),
+            count
+        );
+    }
+
+    /// Repeats the selected events until the loop end.
+    pub(super) fn fill_loop_with_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before filling the loop".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to fill the loop".to_owned();
+            return;
+        }
+        let (start, end) = (
+            self.data.project.loop_start_beats,
+            self.data.project.loop_end_beats,
+        );
+        let mut candidate = self.data.project.clone();
+        let created = candidate.fill_loop_with_audio_clips(&ids, start, end);
+        if created.is_empty() {
+            self.status_message =
+                "Fill Loop needs a loop range after the selected events".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot fill the loop: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.arrange_view_state
+            .audio_events
+            .select_many(ids.into_iter().chain(created.iter().copied()));
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Filled the loop with {} repeated audio event(s); Undo removes them",
+            created.len()
+        );
+    }
+
+    /// Trims the selected events to the loop range.
+    pub(super) fn crop_selected_audio_events_to_loop(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before cropping audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to crop".to_owned();
+            return;
+        }
+        let (start, end) = (
+            self.data.project.loop_start_beats,
+            self.data.project.loop_end_beats,
+        );
+        let mut candidate = self.data.project.clone();
+        let trimmed = candidate.crop_audio_clips_to_range(&ids, start, end);
+        if trimmed == 0 {
+            self.status_message = "No selected audio event crosses the loop range".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot crop: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
+    }
+
+    /// Selects every audio event that is not selected yet, leaving the rest.
+    pub(super) fn invert_audio_event_selection(&mut self) {
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let all = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| track.clips.iter().map(|clip| clip.id))
+            .collect::<Vec<_>>();
+        if all.is_empty() {
+            self.status_message = "There are no audio events to select".to_owned();
+            return;
+        }
+        let inverted = all
+            .iter()
+            .copied()
+            .filter(|id| !selected.contains(id))
+            .collect::<Vec<_>>();
+        if inverted.is_empty() {
+            self.arrange_view_state.audio_events.clear_selection();
+            self.status_message = "Inverted selection: nothing left to select".to_owned();
+            return;
+        }
+        let count = inverted.len();
+        self.arrange_view_state.audio_events.select_many(inverted);
+        self.status_message = format!("Inverted selection: {count} audio event(s) selected");
+    }
+
     /// Toggles mute on the selection, matching the reference Mute/Unmute Objects command.
     pub(super) fn toggle_selected_audio_events_muted(&mut self) {
         let ids = self.arrange_view_state.audio_events.selected_ids();
@@ -3254,6 +3411,131 @@ mod split_selection_tests {
         );
         assert!(app.modified);
         assert!(app.status_message.contains("group segment"));
+    }
+
+    #[test]
+    fn repeat_fill_loop_crop_and_invert_are_single_undo_steps() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        // 2 s at 120 BPM is 4 beats.
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+
+        // Repeat twice: the original plus two copies, all selected.
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.repeat_selected_audio_events(2);
+        assert_eq!(app.data.project.tracks[0].clips.len(), 3);
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids().len(),
+            3,
+            "the whole repeated run stays selected"
+        );
+
+        // Fill Loop repeats just that event until the loop end: the loop is
+        // 0-16 and the event is 4 beats, so three more copies are added.
+        app.data.project.set_loop_range(0.0, 16.0);
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.fill_loop_with_selected_audio_events();
+        assert_eq!(app.data.project.tracks[0].clips.len(), 6);
+
+        // Crop trims the events crossing the loop and leaves the rest alone.
+        let before_crop = app.data.project.clone();
+        app.data.project.set_loop_range(2.0, 6.0);
+        app.arrange_view_state.audio_events.select_many(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .map(|clip| clip.id)
+                .collect::<Vec<_>>(),
+        );
+        app.crop_selected_audio_events_to_loop();
+        assert_ne!(app.data.project, before_crop);
+        let clips_in_range = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .filter(|clip| {
+                let end = clip.start_beats + clip.duration_seconds * 120.0 / 60.0;
+                clip.start_beats >= 2.0 - 1e-9 && end <= 6.0 + 1e-9
+            })
+            .count();
+        assert_eq!(
+            clips_in_range, 3,
+            "the three events crossing the range were trimmed into it"
+        );
+        assert_eq!(
+            app.data.project.tracks[0].clips.len(),
+            6,
+            "events entirely outside the range are left untouched"
+        );
+
+        // Invert selects what is not selected.
+        app.arrange_view_state
+            .audio_events
+            .select_many([app.data.project.tracks[0].clips[0].id]);
+        app.invert_audio_event_selection();
+        assert!(
+            !app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+        );
+        assert_ne!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            vec![app.data.project.tracks[0].clips[0].id]
+        );
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn repeat_and_crop_report_what_they_cannot_do_without_editing() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let before = app.data.project.clone();
+
+        // Nothing selected.
+        app.repeat_selected_audio_events(2);
+        assert!(app.status_message.contains("Select audio events"));
+        app.fill_loop_with_selected_audio_events();
+        app.crop_selected_audio_events_to_loop();
+        assert_eq!(app.data.project.tracks[0].clips, before.tracks[0].clips);
+
+        // Selected, but the loop ends before the event does.
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.project.set_loop_range(0.0, 2.0);
+        app.fill_loop_with_selected_audio_events();
+        assert!(
+            app.status_message.contains("Fill Loop needs a loop range"),
+            "status was {}",
+            app.status_message
+        );
+
+        // Crop reports a loop range the event does not cross.
+        app.data.project.set_loop_range(8.0, 12.0);
+        app.crop_selected_audio_events_to_loop();
+        assert!(
+            app.status_message
+                .contains("No selected audio event crosses"),
+            "status was {}",
+            app.status_message
+        );
+        assert_eq!(
+            app.data.project.tracks[0].clips, before.tracks[0].clips,
+            "no event was trimmed"
+        );
     }
 
     #[test]
