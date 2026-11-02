@@ -1081,6 +1081,8 @@ pub struct OpenTrackApp {
     /// Process CPU and memory for the transport meters.
     system_stats: system_stats::SystemStats,
     vst3_plugin_catalog: Vec<PluginDescriptor>,
+    /// Modules the scanner refuses to load until the user retries them.
+    vst3_quarantine: Vec<opentrack_plugins::QuarantineEntry>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2342,6 +2344,15 @@ impl OpenTrackApp {
             vst3_plugin_catalog,
             plugin_information_open: false,
             plugin_scan_task: None,
+            vst3_quarantine: {
+                let stored = creation.storage.and_then(|storage| {
+                    eframe::get_value::<Vec<opentrack_plugins::QuarantineEntry>>(
+                        storage,
+                        "vst3-quarantine-v1",
+                    )
+                });
+                opentrack_plugins::normalize_quarantine(stored.unwrap_or_default())
+            },
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -12435,6 +12446,7 @@ impl eframe::App for OpenTrackApp {
         self.midi_editor_settings.save(storage);
         eframe::set_value(storage, "vst3-plugin-folders-v1", &self.vst3_plugin_folders);
         eframe::set_value(storage, "vst3-plugin-catalog-v1", &self.vst3_plugin_catalog);
+        eframe::set_value(storage, "vst3-quarantine-v1", &self.vst3_quarantine);
     }
 }
 

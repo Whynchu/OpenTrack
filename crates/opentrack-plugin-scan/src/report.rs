@@ -270,12 +270,31 @@ pub fn build_report(
 
 /// Builds a report, asking `enumerator` for each module's factory classes.
 ///
-/// `None` builds a discovery-only report: no module is loaded.
+/// `None` builds a discovery-only report: no module is loaded. `quarantined`
+/// maps a module path to why loading it again is refused; those modules are
+/// reported without spawning a worker at all.
 pub fn build_report_with(
     folders: &[PathBuf],
     limits: DiscoveryLimits,
     generated_at_unix_ms: u64,
     enumerator: Option<&dyn crate::isolation::ModuleEnumerator>,
+) -> ScanReport {
+    build_report_with_quarantine(
+        folders,
+        limits,
+        generated_at_unix_ms,
+        enumerator,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Builds a report while skipping modules quarantined by an earlier scan.
+pub fn build_report_with_quarantine(
+    folders: &[PathBuf],
+    limits: DiscoveryLimits,
+    generated_at_unix_ms: u64,
+    enumerator: Option<&dyn crate::isolation::ModuleEnumerator>,
+    quarantined: &std::collections::HashMap<PathBuf, String>,
 ) -> ScanReport {
     let enumerate = enumerator.is_some();
     let configured_folders = folders.len();
@@ -325,6 +344,15 @@ pub fn build_report_with(
                 continue;
             }
             let path = PathBuf::from(&module.path);
+            if let Some(reason) = quarantined.iter().find_map(|(skipped, reason)| {
+                opentrack_plugins::paths_match(skipped, &path).then_some(reason)
+            }) {
+                // Refusing to load it again is the point of the record: the last
+                // attempt stalled or killed its worker.
+                module.status = PluginScanStatus::Quarantined;
+                append_diagnostic(module, reason.clone());
+                continue;
+            }
             let Some(enumerator) = enumerator else {
                 continue;
             };
@@ -501,15 +529,39 @@ pub fn scan_folders_isolated(
     limits: DiscoveryLimits,
     isolation: crate::isolation::IsolationLimits,
 ) -> ScanReport {
+    scan_folders_isolated_skipping(
+        folders,
+        limits,
+        isolation,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Isolated scan that refuses to load modules quarantined by an earlier scan.
+pub fn scan_folders_isolated_skipping(
+    folders: &[PathBuf],
+    limits: DiscoveryLimits,
+    isolation: crate::isolation::IsolationLimits,
+    quarantined: &std::collections::HashMap<PathBuf, String>,
+) -> ScanReport {
     let isolation = isolation.sanitized();
     match crate::isolation::ChildProcessEnumerator::for_current_executable(isolation) {
-        Some(enumerator) => {
-            build_report_with(folders, limits, crate::unix_time_ms(), Some(&enumerator))
-        }
+        Some(enumerator) => build_report_with_quarantine(
+            folders,
+            limits,
+            crate::unix_time_ms(),
+            Some(&enumerator),
+            quarantined,
+        ),
         None => {
             let in_process = crate::isolation::InProcessEnumerator;
-            let mut report =
-                build_report_with(folders, limits, crate::unix_time_ms(), Some(&in_process));
+            let mut report = build_report_with_quarantine(
+                folders,
+                limits,
+                crate::unix_time_ms(),
+                Some(&in_process),
+                quarantined,
+            );
             report.notes.insert(
                 0,
                 "No scanner worker was found next to the application, so modules were enumerated in-process; a module that hangs or crashes will stop the scan. Reinstall OpenTrack with the scanner binary beside the application."
@@ -772,6 +824,116 @@ mod tests {
             .expect("incompatible module report");
         assert_eq!(legacy.status, PluginScanStatus::UnsupportedArchitecture);
         assert_eq!(legacy.architecture, other_architecture());
+    }
+
+    #[test]
+    fn a_quarantined_module_is_reported_without_loading_it() {
+        use crate::isolation::{IsolationLimits, IsolationOutcome, ModuleEnumerator};
+
+        /// Counts calls and always succeeds, so any call proves the module was
+        /// loaded despite the quarantine.
+        struct Counting {
+            calls: std::cell::Cell<usize>,
+        }
+        impl ModuleEnumerator for Counting {
+            fn enumerate(&self, _path: &std::path::Path) -> IsolationOutcome {
+                self.calls.set(self.calls.get() + 1);
+                IsolationOutcome::Failed("should not run".to_owned())
+            }
+        }
+
+        let temp = TempDir::new("quarantined");
+        let folder = temp.path().to_path_buf();
+        let module = folder.join("Hang.vst3");
+        std::fs::write(
+            &module,
+            image_for_architecture(PluginArchitecture::current_host()).0,
+        )
+        .expect("module");
+
+        let counter = Counting {
+            calls: std::cell::Cell::new(0),
+        };
+        let mut quarantined = std::collections::HashMap::new();
+        quarantined.insert(
+            module.clone(),
+            "skipped: quarantined after it timed out on an earlier scan".to_owned(),
+        );
+        let report = build_report_with_quarantine(
+            &[folder.clone()],
+            DiscoveryLimits::default(),
+            0,
+            Some(&counter),
+            &quarantined,
+        );
+
+        assert_eq!(
+            counter.calls.get(),
+            0,
+            "a quarantined module is never loaded"
+        );
+        assert_eq!(report.modules[0].status, PluginScanStatus::Quarantined);
+        let diagnostic = report.modules[0].diagnostics.as_deref().unwrap_or("");
+        assert!(diagnostic.contains("timed out"), "{diagnostic}");
+        assert!(report.plugins.is_empty());
+    }
+
+    #[test]
+    fn quarantine_matching_is_case_insensitive_for_windows_paths() {
+        use crate::isolation::{IsolationOutcome, ModuleEnumerator};
+
+        struct Counting(std::cell::Cell<usize>);
+        impl ModuleEnumerator for Counting {
+            fn enumerate(&self, _path: &std::path::Path) -> IsolationOutcome {
+                self.0.set(self.0.get() + 1);
+                IsolationOutcome::Failed("should not run".to_owned())
+            }
+        }
+
+        let temp = TempDir::new("quarantine-case");
+        let folder = temp.path().to_path_buf();
+        let module = folder.join("Thing.vst3");
+        std::fs::write(
+            &module,
+            image_for_architecture(PluginArchitecture::current_host()).0,
+        )
+        .expect("module");
+        let uppercased = PathBuf::from(module.to_string_lossy().to_uppercase());
+        let mut quarantined = std::collections::HashMap::new();
+        quarantined.insert(uppercased, "skipped: quarantined".to_owned());
+
+        let counter = Counting(std::cell::Cell::new(0));
+        let report = build_report_with_quarantine(
+            &[folder.clone()],
+            DiscoveryLimits::default(),
+            0,
+            Some(&counter),
+            &quarantined,
+        );
+        assert_eq!(counter.0.get(), 0);
+        assert_eq!(report.modules[0].status, PluginScanStatus::Quarantined);
+    }
+
+    #[test]
+    fn an_empty_quarantine_changes_nothing() {
+        let temp = TempDir::new("quarantine-empty");
+        let folder = temp.path().to_path_buf();
+        std::fs::write(
+            folder.join("Mod.vst3"),
+            image_for_architecture(PluginArchitecture::current_host()).0,
+        )
+        .expect("module");
+        let report = build_report_with_quarantine(
+            &[folder.clone()],
+            DiscoveryLimits::default(),
+            0,
+            None,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(
+            report.modules[0].status,
+            PluginScanStatus::ReadyForEnumeration
+        );
     }
 
     #[test]

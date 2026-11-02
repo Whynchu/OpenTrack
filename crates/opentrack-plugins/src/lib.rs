@@ -23,6 +23,7 @@
 pub mod catalog;
 pub mod class_id;
 pub mod descriptor;
+pub mod quarantine;
 pub mod runtime;
 
 pub use catalog::{
@@ -34,5 +35,9 @@ pub use descriptor::{
     MAX_BUS_SUMMARIES, MAX_DESCRIPTOR_TEXT_CHARS, MAX_PARAMETER_SUMMARIES, PluginArchitecture,
     PluginBusDirection, PluginBusKind, PluginBusSummary, PluginCategory, PluginDescriptor,
     PluginFormat, PluginParameterSummary, PluginScanStatus,
+};
+pub use quarantine::{
+    MAX_QUARANTINE_ENTRIES, MAX_QUARANTINE_REASON_CHARS, QuarantineEntry, QuarantineReason,
+    normalize_quarantine, paths_match, release,
 };
 pub use runtime::HostedProcessor;

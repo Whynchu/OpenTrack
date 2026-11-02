@@ -48,7 +48,8 @@ pub use pe::{
 };
 pub use report::{
     FolderReport, FolderStatus, MAX_REPORT_FOLDERS, ModuleReport, ScanReport, ScanTotals,
-    build_report, build_report_with, scan_folders, scan_folders_enumerating, scan_folders_isolated,
+    build_report, build_report_with, build_report_with_quarantine, scan_folders,
+    scan_folders_enumerating, scan_folders_isolated, scan_folders_isolated_skipping,
 };
 
 /// Version of the scanner report protocol consumed by the application.

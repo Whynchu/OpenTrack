@@ -915,8 +915,16 @@ impl OpenTrackApp {
                     .count();
                 self.merge_vst3_plugin_catalog(report.plugins.clone());
                 self.apply_vst3_scan_failures(&report);
+                let quarantined = self.update_quarantine_from_scan(&report);
+                let skipped = report
+                    .modules
+                    .iter()
+                    .filter(|module| {
+                        module.status == opentrack_plugins::PluginScanStatus::Quarantined
+                    })
+                    .count();
                 self.plugin_scan_status = format!(
-                    "Scanned {} folder(s): {new_plugins} plug-in class(es) found, {available_plugins} available for inserts. {failed_modules} module(s) failed; {unavailable_folders} folder(s) unavailable.",
+                    "Scanned {} folder(s): {new_plugins} plug-in class(es) found, {available_plugins} available for inserts. {failed_modules} module(s) failed ({quarantined} newly quarantined, {skipped} skipped from an earlier failure); {unavailable_folders} folder(s) unavailable.",
                     report.folders.len()
                 );
                 self.plugin_scan_error = None;
@@ -940,6 +948,60 @@ impl OpenTrackApp {
             }
         }
         sort_vst3_plugin_catalog(&mut self.vst3_plugin_catalog);
+    }
+
+    /// Path-to-reason map the scanner consults before loading a module.
+    fn vst3_quarantine_skip_map(&self) -> std::collections::HashMap<PathBuf, String> {
+        self.vst3_quarantine
+            .iter()
+            .map(|entry| (entry.module_path.clone(), entry.skip_reason()))
+            .collect()
+    }
+
+    /// Records modules that timed out or crashed, and drops records for modules
+    /// that now enumerate.
+    ///
+    /// The record is what stops the next scan from paying the same failure
+    /// again; a module that succeeds after an update releases itself.
+    fn update_quarantine_from_scan(&mut self, report: &opentrack_plugin_scan::ScanReport) -> usize {
+        use opentrack_plugins::{PluginScanStatus, QuarantineEntry, QuarantineReason};
+        let now = opentrack_plugin_scan::unix_time_ms();
+        let mut entries = std::mem::take(&mut self.vst3_quarantine);
+        let mut added = 0;
+        for module in &report.modules {
+            let path = PathBuf::from(&module.path);
+            let Some(reason) = QuarantineReason::from_status(module.status) else {
+                // Anything that is not a timeout or crash releases the module:
+                // it was enumerated, or it failed for a reason a retry can fix
+                // (a missing file, a bad header) without risk of hanging.
+                opentrack_plugins::release(&mut entries, &path);
+                continue;
+            };
+            let detail = module.diagnostics.clone().unwrap_or_default();
+            if !entries.iter().any(|existing| existing.matches(&path)) {
+                added += 1;
+            }
+            opentrack_plugins::release(&mut entries, &path);
+            entries.push(QuarantineEntry::new(path, reason, detail, now));
+        }
+        self.vst3_quarantine = opentrack_plugins::normalize_quarantine(entries);
+        added
+    }
+
+    /// Drops one module's quarantine so the next scan loads it again.
+    fn retry_quarantined_module(&mut self, module_path: &PathBuf) {
+        if opentrack_plugins::release(&mut self.vst3_quarantine, module_path) {
+            self.plugin_scan_status = format!(
+                "Cleared the quarantine for {}; scan again to try it",
+                module_path.display()
+            );
+        }
+    }
+
+    fn clear_vst3_quarantine(&mut self) {
+        let cleared = self.vst3_quarantine.len();
+        self.vst3_quarantine.clear();
+        self.plugin_scan_status = format!("Cleared {cleared} quarantined module(s)");
     }
 
     fn apply_vst3_scan_failures(&mut self, report: &opentrack_plugin_scan::ScanReport) {
@@ -980,17 +1042,22 @@ impl OpenTrackApp {
             "Scanning {} VST3 folder(s) in the background\u{2026}",
             folders.len()
         );
+        let quarantine = self.vst3_quarantine_skip_map();
         match std::thread::Builder::new()
             .name("opentrack-vst3-scan".to_owned())
             .spawn(move || {
                 // Each module is enumerated in its own bounded child process, so
                 // a hanging or crashing plug-in becomes one rejected module
                 // instead of a scan that never finishes.
+                // Modules that stalled or crashed a previous scan are skipped
+                // until the user retries them explicitly.
+                let quarantine = quarantine;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    opentrack_plugin_scan::scan_folders_isolated(
+                    opentrack_plugin_scan::scan_folders_isolated_skipping(
                         &folders,
                         opentrack_plugin_scan::DiscoveryLimits::default(),
                         opentrack_plugin_scan::IsolationLimits::default(),
+                        &quarantine,
                     )
                 }))
                 .map_err(|_| "the VST3 scan worker panicked".to_owned());
@@ -1045,6 +1112,8 @@ impl OpenTrackApp {
         let mut add_module_file = false;
         let mut scan_requested = false;
         let mut remove_folder = None;
+        let mut retry_quarantined: Option<PathBuf> = None;
+        let mut clear_quarantine = false;
         let response = egui::Window::new("Plug-in Information")
             .id(egui::Id::new("plugin-information-window"))
             .open(&mut open)
@@ -1224,6 +1293,51 @@ impl OpenTrackApp {
                                 });
                         });
                 }
+                if !self.vst3_quarantine.is_empty() {
+                    ui.separator();
+                    egui::CollapsingHeader::new(format!(
+                        "Quarantined modules ({}): not loaded again until retried",
+                        self.vst3_quarantine.len()
+                    ))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("vst3-quarantine-list")
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                for entry in self.vst3_quarantine.clone() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.colored_label(theme::WARNING, entry.reason.label());
+                                        ui.label(entry.module_path.display().to_string());
+                                        if ui
+                                            .button("Retry")
+                                            .on_hover_text(
+                                                "Load this module again on the next scan",
+                                            )
+                                            .clicked()
+                                        {
+                                            retry_quarantined = Some(entry.module_path.clone());
+                                        }
+                                        if ui
+                                            .button("Forget")
+                                            .on_hover_text("Stop tracking this module")
+                                            .clicked()
+                                        {
+                                            retry_quarantined = Some(entry.module_path.clone());
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(&entry.detail)
+                                                .small()
+                                                .color(theme::palette(ui).muted),
+                                        );
+                                    });
+                                }
+                            });
+                        if ui.button("Retry all quarantined modules").clicked() {
+                            clear_quarantine = true;
+                        }
+                    });
+                }
                 if let Some(report) = &self.plugin_scan_report {
                     let failed = report
                         .modules
@@ -1266,6 +1380,12 @@ impl OpenTrackApp {
             response.as_ref(),
         );
         self.plugin_information_open = open;
+        if let Some(module_path) = retry_quarantined {
+            self.retry_quarantined_module(&module_path);
+        }
+        if clear_quarantine {
+            self.clear_vst3_quarantine();
+        }
         if let Some(index) = remove_folder {
             self.remove_vst3_plugin_folder(index);
         }
@@ -1323,6 +1443,203 @@ fn plugin_scan_status_label(status: opentrack_plugins::PluginScanStatus) -> &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crashed_module_is_quarantined_persisted_and_skipped_until_retried() {
+        use opentrack_plugin_scan::{
+            FolderReport, FolderStatus, ModuleReport, SCAN_PROTOCOL_VERSION, ScanReport, ScanTotals,
+        };
+        use opentrack_plugins::{PluginScanStatus, QuarantineReason};
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+
+        let report = ScanReport {
+            protocol_version: SCAN_PROTOCOL_VERSION,
+            scanner_version: "test".to_owned(),
+            generated_at_unix_ms: 0,
+            folders: vec![FolderReport {
+                path: "/vst3".to_owned(),
+                path_utf8: true,
+                status: FolderStatus::Scanned,
+                modules_found: 2,
+                duplicates_skipped: 0,
+                warnings: Vec::new(),
+                truncated: false,
+                diagnostics: None,
+            }],
+            modules: vec![
+                ModuleReport {
+                    path: "/vst3/Dead.vst3".to_owned(),
+                    path_utf8: true,
+                    kind: opentrack_plugin_scan::ModuleKind::SingleFile,
+                    bundle_path: None,
+                    platform_directory: None,
+                    architecture: opentrack_plugins::PluginArchitecture::X64,
+                    pe_machine: None,
+                    status: PluginScanStatus::Crashed,
+                    class_ids: Vec::new(),
+                    size_bytes: None,
+                    diagnostics: Some("module process was terminated by signal 11".to_owned()),
+                },
+                // A plain load failure is retryable and must not be quarantined.
+                ModuleReport {
+                    path: "/vst3/Bad.vst3".to_owned(),
+                    path_utf8: true,
+                    kind: opentrack_plugin_scan::ModuleKind::SingleFile,
+                    bundle_path: None,
+                    platform_directory: None,
+                    architecture: opentrack_plugins::PluginArchitecture::X64,
+                    pe_machine: None,
+                    status: PluginScanStatus::LoadFailed,
+                    class_ids: Vec::new(),
+                    size_bytes: None,
+                    diagnostics: Some("could not open VST3 module".to_owned()),
+                },
+            ],
+            totals: ScanTotals {
+                configured_folders: 1,
+                folders_reported: 1,
+                modules: 2,
+                ready_for_enumeration: 0,
+                unsupported_architecture: 0,
+                invalid_module: 0,
+                unreadable: 0,
+                rejected: 2,
+                enumerated_modules: 0,
+                plugins: 0,
+                duplicates_skipped: 0,
+                truncated: false,
+            },
+            plugins: Vec::new(),
+            notes: Vec::new(),
+        };
+
+        assert_eq!(app.update_quarantine_from_scan(&report), 1);
+        assert_eq!(app.vst3_quarantine.len(), 1);
+        let entry = &app.vst3_quarantine[0];
+        assert_eq!(entry.reason, QuarantineReason::Crashed);
+        assert!(entry.module_path.ends_with("Dead.vst3"));
+        assert!(entry.detail.contains("signal 11"));
+
+        // The next scan is told to skip it, with the reason it was recorded.
+        let skips = app.vst3_quarantine_skip_map();
+        let reason = skips
+            .iter()
+            .find(|(path, _)| path.ends_with("Dead.vst3"))
+            .map(|(_, reason)| reason.clone())
+            .expect("the crashed module is skipped");
+        assert!(reason.contains("crashed"), "{reason}");
+        assert!(reason.contains("signal 11"), "{reason}");
+        assert_eq!(
+            skips.len(),
+            1,
+            "a load failure is not quarantined: {skips:?}"
+        );
+
+        // The record survives a restart because it is written to storage.
+        #[derive(Default)]
+        struct Storage {
+            values: std::collections::HashMap<String, String>,
+        }
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.values.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.values.insert(key.to_owned(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.values.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let mut storage = Storage::default();
+        eframe::set_value(&mut storage, "vst3-quarantine-v1", &app.vst3_quarantine);
+        let restored = eframe::get_value::<Vec<opentrack_plugins::QuarantineEntry>>(
+            &storage,
+            "vst3-quarantine-v1",
+        )
+        .expect("quarantine persists");
+        assert_eq!(restored, app.vst3_quarantine);
+
+        // Retrying releases the module so the next scan loads it again.
+        app.retry_quarantined_module(&entry.module_path.clone());
+        assert!(app.vst3_quarantine.is_empty());
+        assert!(app.vst3_quarantine_skip_map().is_empty());
+        assert!(app.plugin_scan_status.contains("Cleared the quarantine"));
+    }
+
+    #[test]
+    fn a_module_that_enumerates_after_an_update_releases_itself() {
+        use opentrack_plugin_scan::{
+            FolderReport, FolderStatus, ModuleReport, SCAN_PROTOCOL_VERSION, ScanReport, ScanTotals,
+        };
+        use opentrack_plugins::{PluginScanStatus, QuarantineEntry, QuarantineReason};
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.vst3_quarantine = vec![QuarantineEntry::new(
+            PathBuf::from("/vst3/Fixed.vst3"),
+            QuarantineReason::Crashed,
+            "worker died",
+            1,
+        )];
+
+        let report = ScanReport {
+            protocol_version: SCAN_PROTOCOL_VERSION,
+            scanner_version: "test".to_owned(),
+            generated_at_unix_ms: 0,
+            folders: vec![FolderReport {
+                path: "/vst3".to_owned(),
+                path_utf8: true,
+                status: FolderStatus::Scanned,
+                modules_found: 1,
+                duplicates_skipped: 0,
+                warnings: Vec::new(),
+                truncated: false,
+                diagnostics: None,
+            }],
+            modules: vec![ModuleReport {
+                path: "/vst3/Fixed.vst3".to_owned(),
+                path_utf8: true,
+                kind: opentrack_plugin_scan::ModuleKind::SingleFile,
+                bundle_path: None,
+                platform_directory: None,
+                architecture: opentrack_plugins::PluginArchitecture::X64,
+                pe_machine: None,
+                status: PluginScanStatus::Enumerated,
+                class_ids: Vec::new(),
+                size_bytes: None,
+                diagnostics: None,
+            }],
+            totals: ScanTotals {
+                configured_folders: 1,
+                folders_reported: 1,
+                modules: 1,
+                ready_for_enumeration: 0,
+                unsupported_architecture: 0,
+                invalid_module: 0,
+                unreadable: 0,
+                rejected: 0,
+                enumerated_modules: 1,
+                plugins: 0,
+                duplicates_skipped: 0,
+                truncated: false,
+            },
+            plugins: Vec::new(),
+            notes: Vec::new(),
+        };
+
+        assert_eq!(app.update_quarantine_from_scan(&report), 0);
+        assert!(
+            app.vst3_quarantine.is_empty(),
+            "a module that enumerates again is released: {:?}",
+            app.vst3_quarantine
+        );
+    }
 
     #[test]
     fn a_timed_out_or_crashed_module_is_listed_with_its_reason() {

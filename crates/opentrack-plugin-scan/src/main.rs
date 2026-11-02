@@ -17,7 +17,7 @@ use opentrack_plugin_scan::DiscoveryLimits;
 use opentrack_plugin_scan::SCANNER_VERSION;
 use opentrack_plugin_scan::default_vst3_folders;
 use opentrack_plugin_scan::scan_folders;
-use opentrack_plugin_scan::{IsolationLimits, run_worker, scan_folders_isolated};
+use opentrack_plugin_scan::{IsolationLimits, run_worker, scan_folders_isolated_skipping};
 
 const USAGE: &str = "\
 opentrack-plugin-scan - bounded VST3 discovery and native image precheck
@@ -36,6 +36,8 @@ Enumeration:
                           bounded timeout, so a hanging or crashing module is
                           reported as a rejected module instead of stopping the scan.
   --module-timeout SECS   Per-module budget in seconds (default 30, range 1-600).
+  --skip-module PATH      Do not load this module; report it as quarantined.
+                          Repeatable; the application passes its own records.
 
 Worker mode (used by the scanner itself; not for direct use):
   --enumerate-module PATH Enumerate one module and write the result.
@@ -72,6 +74,7 @@ struct Cli {
     /// Worker mode: enumerate exactly this module and exit.
     enumerate_module: Option<PathBuf>,
     module_timeout: IsolationLimits,
+    skip_modules: Vec<PathBuf>,
     folders: Vec<PathBuf>,
     use_default_folders: bool,
     format: OutputFormat,
@@ -128,7 +131,17 @@ fn run() -> Result<(), String> {
     }
 
     let report = if cli.enumerate {
-        scan_folders_isolated(&folders, cli.limits, cli.module_timeout)
+        let skipped = cli
+            .skip_modules
+            .iter()
+            .map(|path| {
+                (
+                    path.clone(),
+                    "skipped: quarantined after an earlier failure".to_owned(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        scan_folders_isolated_skipping(&folders, cli.limits, cli.module_timeout, &skipped)
     } else {
         scan_folders(&folders, cli.limits)
     };
@@ -161,6 +174,7 @@ fn parse_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Cli,
     let mut cli = Cli {
         enumerate_module: None,
         module_timeout: IsolationLimits::default(),
+        skip_modules: Vec::new(),
         folders: Vec::new(),
         use_default_folders: true,
         format: OutputFormat::Text,
@@ -188,6 +202,13 @@ fn parse_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Cli,
                 return Err("--enumerate-module requires a module path".to_owned());
             };
             cli.enumerate_module = Some(PathBuf::from(path));
+            continue;
+        }
+        if argument == OsStr::new("--skip-module") {
+            let Some(path) = args.next() else {
+                return Err("--skip-module requires a module path".to_owned());
+            };
+            cli.skip_modules.push(PathBuf::from(path));
             continue;
         }
         if argument == OsStr::new("--module-timeout") {
