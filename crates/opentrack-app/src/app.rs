@@ -36,6 +36,8 @@ mod project_inspector;
 mod project_rate;
 #[path = "project_recovery.rs"]
 mod project_recovery;
+#[path = "project_tools.rs"]
+mod project_tools;
 #[path = "recording_recovery.rs"]
 mod recording_recovery;
 #[path = "recording_undo.rs"]
@@ -1146,6 +1148,8 @@ pub struct OpenTrackApp {
     /// Name being typed in the Save as Template dialog.
     template_name_draft: Option<String>,
     session_health_open: bool,
+    project_statistics_open: bool,
+    beat_calculator: Option<project_tools::BeatCalculator>,
     /// Open MIDI quantize dialog settings.
     midi_quantize_dialog: Option<opentrack_core::midi_quantize::QuantizeOptions>,
     /// Open MIDI transpose/velocity dialog: semitones and velocity delta.
@@ -2545,6 +2549,8 @@ impl OpenTrackApp {
             undo_history_open: false,
             template_name_draft: None,
             session_health_open: false,
+            project_statistics_open: false,
+            beat_calculator: None,
             midi_quantize_dialog: None,
             midi_transform_dialog: None,
             punch_enabled: creation
@@ -7517,6 +7523,131 @@ impl OpenTrackApp {
         }
     }
 
+    fn show_project_statistics(&mut self, ctx: &egui::Context) {
+        if !self.project_statistics_open {
+            return;
+        }
+        let statistics = project_tools::project_statistics(&self.data.project);
+        let mut open = true;
+        let response = egui::Window::new("Project Statistics")
+            .id(Id::new("project-statistics"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                egui::Grid::new("project-statistics-grid")
+                    .num_columns(2)
+                    .spacing([18.0, 3.0])
+                    .show(ui, |ui| {
+                        for (label, value) in statistics.rows() {
+                            ui.label(label);
+                            ui.label(egui::RichText::new(value.to_string()).strong());
+                            ui.end_row();
+                        }
+                    });
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} Hz · {} BPM · {} beats per bar",
+                        self.data.project.sample_rate_hz,
+                        self.data.project.tempo_bpm,
+                        self.data.project.beats_per_bar
+                    ))
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-statistics"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.project_statistics_open = open;
+    }
+
+    fn show_beat_calculator(&mut self, ctx: &egui::Context) {
+        let Some(mut calculator) = self.beat_calculator.take() else {
+            return;
+        };
+        let tempo = self.data.project.tempo_bpm;
+        let mut open = true;
+        let mut close = false;
+        let response = egui::Window::new("Beat Calculator")
+            .id(Id::new("beat-calculator"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.label(format!("At {tempo:.3} BPM"));
+                ui.horizontal(|ui| {
+                    ui.label("Beats");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut calculator.beats)
+                                .range(0.0..=1_000_000.0)
+                                .speed(0.25),
+                        )
+                        .changed()
+                    {
+                        calculator.last_edited = project_tools::BeatCalculatorInput::Beats;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Seconds");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut calculator.seconds)
+                                .range(0.0..=100_000.0)
+                                .speed(0.01),
+                        )
+                        .changed()
+                    {
+                        calculator.last_edited = project_tools::BeatCalculatorInput::Seconds;
+                    }
+                });
+                calculator.refresh(tempo);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("From Locators").clicked() {
+                        calculator =
+                            project_tools::BeatCalculator::from_locators(&self.data.project);
+                        calculator.refresh(tempo);
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Locators span {:.3} beats ({:.3} s)",
+                        (self.data.project.loop_end_beats - self.data.project.loop_start_beats)
+                            .max(0.0),
+                        project_tools::beats_to_seconds(
+                            (self.data.project.loop_end_beats - self.data.project.loop_start_beats)
+                                .max(0.0),
+                            tempo
+                        )
+                    ))
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("beat-calculator"),
+            &mut open,
+            response.as_ref(),
+        );
+        if !close && open {
+            self.beat_calculator = Some(calculator);
+        }
+    }
+
     /// Collects the session's issues for the health window.
     fn session_health_issues(&self) -> Vec<session_health::HealthIssue> {
         let failures = self
@@ -11317,13 +11448,23 @@ impl OpenTrackApp {
                         self.markers_window_open = true;
                         ui.close();
                     }
+                    if menu_command(ui, "Browser", "Ctrl+B", self.project_open).clicked() {
+                        self.data.selected_media = 0;
+                        self.focus_tab(PanelTab::Media);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Beat Calculator...", "", self.project_open).clicked() {
+                        let mut calculator =
+                            project_tools::BeatCalculator::from_locators(&self.data.project);
+                        calculator.refresh(self.data.project.tempo_bpm);
+                        self.beat_calculator = Some(calculator);
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Tempo Track", "Ctrl+T"),
-                            ("Browser", "Ctrl+B"),
                             ("Automation Panel", ""),
-                            ("Beat Calculator...", ""),
                             ("Set Timecode at Cursor", ""),
                             ("Notepad", ""),
                             ("Auto Fades Settings...", ""),
@@ -11409,7 +11550,10 @@ impl OpenTrackApp {
                         );
                     });
                     menu_command(ui, "Spectrum Analyzer", "", false);
-                    menu_command(ui, "Statistics", "", false);
+                    if menu_command(ui, "Statistics", "", self.project_open).clicked() {
+                        self.project_statistics_open = true;
+                        ui.close();
+                    }
                     ui.menu_button("Hitpoints", |ui| {
                         disabled_menu_commands(
                             ui,
@@ -11436,7 +11580,6 @@ impl OpenTrackApp {
                             &[
                                 ("Detect Silence...", ""),
                                 ("Spectrum Analyzer...", ""),
-                                ("Statistics...", ""),
                             ],
                         );
                     });
@@ -12612,6 +12755,8 @@ impl OpenTrackApp {
             || self.undo_history_open
             || self.template_name_draft.is_some()
             || self.session_health_open
+            || self.project_statistics_open
+            || self.beat_calculator.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
             || self.project_open_error.is_some()
@@ -15006,6 +15151,8 @@ impl eframe::App for OpenTrackApp {
         self.show_undo_history(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
+        self.show_project_statistics(&ctx);
+        self.show_beat_calculator(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
         self.show_about_window(&ctx);
@@ -26668,6 +26815,87 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod project_tools_windows_tests {
+    use super::*;
+
+    fn collect_text(
+        ctx: &egui::Context,
+        mut show: impl FnMut(&mut OpenTrackApp, &egui::Context),
+    ) -> String {
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("/nowhere/a.wav"), 0.0, 2.0)
+            .expect("clip");
+        app.data.project.add_marker(4.0, "Verse").expect("marker");
+        app.project_statistics_open = true;
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| show(&mut app, ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        texts.join("\n")
+    }
+
+    #[test]
+    fn the_statistics_window_lists_the_project_counts() {
+        let ctx = egui::Context::default();
+        let text = collect_text(&ctx, |app, ctx| app.show_project_statistics(ctx));
+        assert!(text.contains("Project Statistics"), "{text}");
+        assert!(text.contains("Audio events"), "{text}");
+        assert!(text.contains("Markers"), "{text}");
+        assert!(text.contains("Media pool entries"), "{text}");
+    }
+
+    #[test]
+    fn the_beat_calculator_shows_the_tempo_and_converts() {
+        let ctx = egui::Context::default();
+        let text = collect_text(&ctx, |app, ctx| {
+            if app.beat_calculator.is_none() {
+                let mut calculator =
+                    project_tools::BeatCalculator::from_locators(&app.data.project);
+                calculator.beats = 8.0;
+                calculator.last_edited = project_tools::BeatCalculatorInput::Beats;
+                calculator.refresh(app.data.project.tempo_bpm);
+                app.beat_calculator = Some(calculator);
+            }
+            app.show_beat_calculator(ctx);
+        });
+        assert!(text.contains("Beat Calculator"), "{text}");
+        assert!(text.contains("BPM"), "{text}");
+        assert!(text.contains("From Locators"), "{text}");
+        assert!(text.contains("Seconds"), "{text}");
     }
 }
 

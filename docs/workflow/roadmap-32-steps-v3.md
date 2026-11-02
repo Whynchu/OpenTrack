@@ -58,7 +58,19 @@ work is named rather than approximated.
    realtime diagnostics panel. Disabled entries 130 -> 126; shortcut coverage
    114 -> 117. 1 app test.
 
-### D. Media pool
+### D. Project tools
+
+6. **Project Statistics and Beat Calculator.** *Delivered.* New `project_tools`
+   module with a pure `project_statistics` (track kinds, audio events, MIDI parts,
+   notes and controllers, markers, pool entries, missing media, automation points,
+   inserts, sends) and a beat calculator that converts beats and seconds at the
+   project tempo, with "From Locators" prefilling the loop length. Audio >
+   Statistics opens the counts; Project > Beat Calculator opens the converter;
+   Project > Browser (Ctrl+B) now opens the Media tab from its own menu entry,
+   matching the shortcut that already worked. 3 module and 2 app tests. Disabled
+   entries 126 -> 123.
+
+### E. Media pool
 
 4. **Pool cleanup commands.** *Delivered.* Media > Remove Unused Media, Empty
    Trash and Remove Missing Files. Core gained `referenced_media`,
