@@ -635,6 +635,11 @@ impl OpenTrackApp {
             self.status_message = "Select audio events to reverse".to_owned();
             return;
         }
+        if let Some(name) = self.first_locked_selected_event(&ids) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before reversing its audio");
+            return;
+        }
         if ids.len() > 64 {
             self.status_message = "Reverse is limited to 64 events at a time".to_owned();
             return;
@@ -756,6 +761,11 @@ impl OpenTrackApp {
         let ids = self.arrange_view_state.audio_events.selected_ids();
         if ids.is_empty() {
             self.status_message = "Select audio events to remove their DC offset".to_owned();
+            return;
+        }
+        if let Some(name) = self.first_locked_selected_event(&ids) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before processing its audio");
             return;
         }
         if ids.len() > 64 {
@@ -893,6 +903,11 @@ impl OpenTrackApp {
         let ids = self.arrange_view_state.audio_events.selected_ids();
         if ids.is_empty() {
             self.status_message = "Select audio events to flip their stereo channels".to_owned();
+            return;
+        }
+        if let Some(name) = self.first_locked_selected_event(&ids) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before processing its audio");
             return;
         }
         if ids.len() > 64 {
@@ -1042,6 +1057,11 @@ impl OpenTrackApp {
             self.status_message = "Select the audio event to merge into".to_owned();
             return;
         };
+        if let Some(name) = self.first_locked_selected_event(&[destination_id]) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before merging audio into it");
+            return;
+        }
         if !self.project_folder_managed {
             self.status_message = "Set up this project's folder before merging audio".to_owned();
             return;
@@ -1263,6 +1283,11 @@ impl OpenTrackApp {
         let ids = self.arrange_view_state.audio_events.selected_ids();
         if ids.is_empty() {
             self.status_message = "Select audio events to detect their silence".to_owned();
+            return;
+        }
+        if let Some(name) = self.first_locked_selected_event(&ids) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before detecting its silence");
             return;
         }
         if ids.len() > 16 {
@@ -2026,6 +2051,11 @@ impl OpenTrackApp {
             self.status_message = "Select audio events to shape their envelope".to_owned();
             return;
         }
+        if let Some(name) = self.first_locked_selected_event(&ids) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before shaping its audio");
+            return;
+        }
         if ids.len() > 64 {
             self.status_message = "Envelope is limited to 64 events at a time".to_owned();
             return;
@@ -2764,6 +2794,11 @@ impl OpenTrackApp {
             self.status_message = "Select audio events to normalize".to_owned();
             return;
         }
+        if let Some(name) = self.first_locked_selected_event(&ids) {
+            self.status_message =
+                format!("\"{name}\" is locked; unlock it before normalizing its audio");
+            return;
+        }
         if ids.len() > 64 {
             self.status_message = "Normalize is limited to 64 events at a time".to_owned();
             return;
@@ -2954,6 +2989,21 @@ impl OpenTrackApp {
         } else if !cancel && open {
             self.normalize_dialog = Some(target);
         }
+    }
+
+    /// The name of the first locked event in `ids`, if one is selected.
+    ///
+    /// Destructive source bakes write new media and repoint the event, so a lock
+    /// must stop them just as it stops a timeline move. Pool-wide maintenance
+    /// (convert/conform) is not an event edit and is not covered here.
+    fn first_locked_selected_event(&self, ids: &[u64]) -> Option<String> {
+        self.data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.locked && ids.contains(&clip.id))
+            .map(|clip| clip.name.clone())
     }
 
     fn cleanup_created_files(&self, files: &[PathBuf]) {
@@ -4540,6 +4590,75 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_second_conversion_leaves_the_project_untouched() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-convert-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let imports = root.join("Audio").join("Imports");
+        let good = imports.join("a-slow.wav");
+        let broken = imports.join("b-broken.wav");
+        write_rate_wav(&good, 44_100, 44_100);
+        std::fs::write(&broken, b"this is not a wav file").expect("broken");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let clip = app
+            .data
+            .project
+            .add_audio_clip(0, good.clone(), 0.0, 0.5)
+            .expect("clip");
+        app.data.project.media_pool.insert(good.clone());
+        app.data.project.media_pool.insert(broken.clone());
+        app.project_history.clear();
+
+        app.apply_convert_files(48_000);
+
+        assert!(
+            app.status_message.contains("Could not read"),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(
+            app.project_history.counts().0,
+            0,
+            "a failure must not add history"
+        );
+        assert_eq!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .find(|candidate| candidate.id == clip)
+                .expect("clip")
+                .source_path,
+            good,
+            "the project must keep the original source"
+        );
+        let mut remaining: Vec<String> = std::fs::read_dir(&imports)
+            .expect("imports")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec!["a-slow.wav".to_owned(), "b-broken.wav".to_owned()],
+            "the first converted file must be cleaned up"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn applying_an_envelope_repoints_events_and_is_one_undo_step() {
         let root =
             std::env::temp_dir().join(format!("opentrack-envelope-app-{}", std::process::id()));
@@ -5474,6 +5593,18 @@ mod tests {
         app.data.project.tracks[0].clips[0].source_offset_seconds = 0.1;
         app.project_history.clear();
         app.arrange_view_state.audio_events.select_many([id]);
+
+        // A locked event refuses the source bake and writes nothing.
+        app.data.project.set_audio_clips_locked(&[id], true);
+        app.reverse_selected_audio_events();
+        assert!(
+            app.status_message.contains("is locked"),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(app.data.project.tracks[0].clips[0].source_path, source);
+        assert_eq!(app.project_history.counts().0, 0);
+        app.data.project.set_audio_clips_locked(&[id], false);
 
         app.reverse_selected_audio_events();
         let clip = &app.data.project.tracks[0].clips[0];

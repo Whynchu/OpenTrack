@@ -25338,9 +25338,7 @@ fn audio_import_destination(
     if is_inside_project {
         return Ok((source.to_path_buf(), false));
     }
-    let directory = project_root.join(subfolder);
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    let directory = crate::media_paths::project_subfolder_directory(project_root, subfolder)?;
     let file_name = source
         .file_name()
         .ok_or_else(|| "the selected audio file has no name".to_owned())?;

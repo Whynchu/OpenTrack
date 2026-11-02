@@ -1098,9 +1098,53 @@ fn is_usable_relative_folder(folder: &str) -> bool {
     if folder.starts_with('/') || folder.starts_with('\\') || folder.contains(':') {
         return false;
     }
-    folder
-        .split(['/', '\\'])
-        .all(|part| !part.is_empty() && part != "." && part != "..")
+    folder.split(['/', '\\']).all(usable_folder_component)
+}
+
+/// A path component Windows can create as a normal directory name.
+///
+/// Reserved device names and trailing dots/spaces are refused even on other
+/// hosts so a portable project cannot become unwritable after a Windows move.
+/// An ADS colon is already refused for the whole folder.
+fn usable_folder_component(part: &str) -> bool {
+    if part.is_empty() || part == "." || part == ".." {
+        return false;
+    }
+    if part.ends_with('.') || part.ends_with(' ') {
+        return false;
+    }
+    if part.chars().any(|character| {
+        character.is_control() || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
+    }) {
+        return false;
+    }
+    let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
+    let stem = stem.to_ascii_uppercase();
+    !matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 /// Bound on regions per project.
@@ -7117,9 +7161,19 @@ mod sample_edit_tests {
         for bad in [
             "/tmp",
             "C:\\Audio",
+            "C:Audio",
+            "\\\\server\\share",
             "../outside",
             "Audio/../Takes",
             "Audio//Takes",
+            "Audio\\..\\Takes",
+            "Audio/NUL",
+            "Audio/COM1",
+            "CON",
+            "Audio./Takes",
+            "Audio /Takes",
+            "Audio/Takes?",
+            "Audio/file:stream",
             "   ",
         ] {
             assert!(

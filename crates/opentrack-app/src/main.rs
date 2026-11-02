@@ -4,6 +4,7 @@ mod app;
 mod crash_log;
 mod icon_system;
 mod icons;
+mod media_paths;
 #[cfg(test)]
 mod menu_inventory;
 mod native_keys;

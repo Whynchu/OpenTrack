@@ -636,9 +636,7 @@ pub(super) fn unique_wav_path(
     subfolder: &str,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let directory = root.join(subfolder);
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    let directory = crate::media_paths::project_subfolder_directory(root, subfolder)?;
     let base = stem_file_name(name, 0)
         .trim_end_matches(".wav")
         .trim_start_matches("001 ")
