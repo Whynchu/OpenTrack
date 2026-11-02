@@ -8600,7 +8600,11 @@ impl OpenTrackApp {
                             self.invert_audio_event_selection();
                             ui.close();
                         }
-                        disabled_menu_commands(ui, &[("Events under Cursor", "")]);
+                        if menu_command(ui, "Events under Cursor", "", self.project_open).clicked()
+                        {
+                            self.select_audio_events_under_cursor();
+                            ui.close();
+                        }
                     });
                     let can_duplicate = can_move_to_cursor;
                     if menu_command(ui, "Duplicate", "Ctrl+D", can_duplicate).clicked() {
@@ -8616,7 +8620,14 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.menu_button("Move to", |ui| {
-                        disabled_menu_commands(ui, &[("Left Locator", ""), ("Right Locator", "")]);
+                        if menu_command(ui, "Left Locator", "", can_duplicate).clicked() {
+                            self.move_selected_audio_events_to_locator(true);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Right Locator", "", can_duplicate).clicked() {
+                            self.move_selected_audio_events_to_locator(false);
+                            ui.close();
+                        }
                     });
                     if menu_command(ui, "Mute Events", "Shift+M", can_duplicate).clicked() {
                         self.set_selected_audio_events_muted(true);

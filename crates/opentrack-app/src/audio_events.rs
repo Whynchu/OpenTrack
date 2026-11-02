@@ -503,6 +503,80 @@ impl OpenTrackApp {
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
     }
 
+    /// Selects the audio events that overlap the transport position.
+    pub(super) fn select_audio_events_under_cursor(&mut self) {
+        let beat = self.data.transport.position_beats;
+        let tempo = self.data.project.tempo_bpm;
+        let ids = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| {
+                let end = clip.start_beats + clip.duration_seconds * tempo / 60.0;
+                clip.start_beats <= beat && beat < end
+            })
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.status_message = format!("No audio event is under beat {beat:.3}");
+            return;
+        }
+        let count = ids.len();
+        self.arrange_view_state.audio_events.select_many(ids);
+        self.status_message = format!("Selected {count} audio event(s) under the cursor");
+    }
+
+    /// Moves the selected events so their first event starts at a locator.
+    pub(super) fn move_selected_audio_events_to_locator(&mut self, left: bool) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before moving audio events".into();
+            return;
+        }
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if selected.is_empty() {
+            self.status_message = "Select audio events to move".to_owned();
+            return;
+        }
+        let beat = if left {
+            self.data.project.loop_start_beats
+        } else {
+            self.data.project.loop_end_beats
+        };
+        let mut candidate = self.data.project.clone();
+        let moved = move_selected_clips_to_cursor(&mut candidate, &selected, beat);
+        if moved == 0 {
+            self.status_message = "The selected audio events could not be moved".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot move: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.arrange_view_state
+            .audio_events
+            .select_many(selected.into_iter().collect::<Vec<_>>());
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Moved {moved} audio event(s) to the {} locator at beat {beat:.3}; Undo restores them",
+            if left { "left" } else { "right" }
+        );
+    }
+
     /// Selects every audio event that is not selected yet, leaving the rest.
     pub(super) fn invert_audio_event_selection(&mut self) {
         let selected = self
@@ -3536,6 +3610,68 @@ mod split_selection_tests {
             app.data.project.tracks[0].clips, before.tracks[0].clips,
             "no event was trimmed"
         );
+    }
+
+    #[test]
+    fn select_under_cursor_and_move_to_locator_work_on_the_selection() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        // 2 s at 120 BPM is 4 beats: the first spans 0-4, the second 8-12.
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 8.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+
+        // Beat 10 is inside only the later event.
+        app.data.transport.position_beats = 10.0;
+        app.select_audio_events_under_cursor();
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            vec![second]
+        );
+
+        // Beat 4 is the exclusive end of the first event.
+        app.data.transport.position_beats = 4.0;
+        app.select_audio_events_under_cursor();
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+                || app.arrange_view_state.audio_events.selected_ids() == vec![second],
+            "the first event does not cover its end: {:?}",
+            app.arrange_view_state.audio_events.selected_ids()
+        );
+
+        // Move the later event to the left locator at beat 2.
+        app.data.project.set_loop_range(2.0, 16.0);
+        app.arrange_view_state.audio_events.select_many([second]);
+        app.move_selected_audio_events_to_locator(true);
+        let moved = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == second)
+            .expect("event still present");
+        assert!((moved.start_beats - 2.0).abs() < 1e-9);
+        assert!(app.modified);
+
+        // The unselected event did not move.
+        let unmoved = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == first)
+            .expect("first event still present");
+        assert_eq!(unmoved.start_beats, 0.0);
     }
 
     #[test]
