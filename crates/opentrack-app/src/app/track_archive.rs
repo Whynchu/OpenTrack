@@ -907,6 +907,105 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_round_trip_keeps_folders_fx_sends_and_dedupes_media() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-archive-accept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let media = root.join("shared.wav");
+        std::fs::write(&media, b"RIFFxxxxWAVEdata").expect("media");
+        let source_bytes = std::fs::read(&media).expect("bytes");
+
+        // A project with a folder containing an audio track, an FX return and a
+        // send from the audio track into it. Both clips share one media file, so
+        // the archive must carry it once.
+        let mut source = Project::default();
+        source.add_track(TrackKind::Group);
+        source.tracks[0].name = "Folder".to_owned();
+        source.add_track(TrackKind::Audio);
+        source.tracks[1].name = "Vocal".to_owned();
+        source.tracks[1].parent_folder_id = Some(source.tracks[0].id);
+        source
+            .add_audio_clip(1, media.clone(), 0.0, 1.0)
+            .expect("clip");
+        source
+            .add_audio_clip(1, media.clone(), 2.0, 1.0)
+            .expect("clip");
+        source.add_track(TrackKind::Fx);
+        source.tracks[2].name = "Plate".to_owned();
+        let fx_id = source.tracks[2].id;
+        source.tracks[1]
+            .send_routing
+            .push(Some(format!("FX:{fx_id}")));
+
+        let package = root.join("Package");
+        let all_ids = source
+            .tracks
+            .iter()
+            .map(|track| track.id)
+            .collect::<Vec<_>>();
+        let report = export(&source, &all_ids, &package).expect("export");
+        assert_eq!(report.track_count, 3);
+        assert_eq!(report.media_count, 1, "shared media is stored once");
+
+        let project_dir = root.join("Project");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let mut target = Project::default();
+        target.add_track(TrackKind::Audio);
+        let existing = target.tracks[0].id;
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let progress = std::sync::Mutex::new((0, 0));
+        let (tracks, import) =
+            prepare_import(&target, &project_dir, &package, &cancel, &progress).expect("import");
+        assert_eq!(import.media_count, 1);
+
+        let imported_ids = tracks.iter().map(|track| track.id).collect::<Vec<_>>();
+        assert!(
+            imported_ids.iter().all(|id| *id != existing),
+            "ids are remapped away from existing tracks"
+        );
+        assert!(import.disconnected_routes.is_empty(), "{import:?}");
+        let audio = tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Audio)
+            .expect("audio");
+        let folder = tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Group)
+            .expect("folder");
+        assert_eq!(
+            audio.parent_folder_id,
+            Some(folder.id),
+            "the folder hierarchy is preserved with remapped ids"
+        );
+        let fx = tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Fx)
+            .expect("fx");
+        assert_eq!(
+            audio
+                .send_routing
+                .first()
+                .and_then(|route| route.as_deref()),
+            Some(format!("FX:{}", fx.id).as_str()),
+            "the send follows the remapped FX id"
+        );
+        // Both clips point at one copied file that exists, and the archive source
+        // is untouched.
+        let paths = audio
+            .clips
+            .iter()
+            .map(|clip| clip.source_path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], paths[1], "one copy serves both clips");
+        assert!(paths[0].exists());
+        assert!(paths[0].starts_with(&project_dir));
+        assert_eq!(std::fs::read(&media).expect("bytes"), source_bytes);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_cancelled_import_stages_nothing_and_reports() {
         let root =
             std::env::temp_dir().join(format!("opentrack-archive-cancel-{}", std::process::id()));
