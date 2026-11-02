@@ -1281,6 +1281,8 @@ pub struct OpenTrackApp {
     metronome_accent_mask: u32,
     /// Bars of click before recording starts; 0 disables the count-in.
     metronome_count_in_bars: u8,
+    /// Persisted pre/post-roll lengths in beats, independent of each other.
+    roll_lengths: crate::transport_commands::RollLengths,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2758,6 +2760,16 @@ impl OpenTrackApp {
                 .and_then(|s| eframe::get_value::<u8>(s, "metronome-count-in-bars"))
                 .unwrap_or(0)
                 .min(4),
+            roll_lengths: crate::transport_commands::RollLengths::sanitized(
+                creation
+                    .storage
+                    .and_then(|s| eframe::get_value::<f64>(s, "transport-pre-roll-beats"))
+                    .unwrap_or(crate::transport_commands::DEFAULT_ROLL_BEATS),
+                creation
+                    .storage
+                    .and_then(|s| eframe::get_value::<f64>(s, "transport-post-roll-beats"))
+                    .unwrap_or(crate::transport_commands::DEFAULT_ROLL_BEATS),
+            ),
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4398,6 +4410,81 @@ impl OpenTrackApp {
             "Playing from the selection {} at beat {beat:.3}",
             if end { "end" } else { "start" }
         );
+    }
+
+    /// The selection boundary used by the roll scheduler.
+    fn roll_selection_span(&self) -> Option<crate::transport_commands::SelectionSpan> {
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        crate::transport_commands::selected_event_span(
+            &self.data.project,
+            &selected,
+            self.data.project.selected_midi_part_id,
+        )
+    }
+
+    /// Schedules a pre-roll (ending at the edge) or post-roll (starting there).
+    ///
+    /// The roll uses the ordinary transport: seek to the plan's start, play, and
+    /// stop at the plan's target through the existing `play_until` check. A
+    /// manual stop or seek clears the target. Recording and Cycle are refused
+    /// until their interaction with a roll is specified.
+    fn schedule_roll(&mut self, post: bool, edge_end: bool) -> bool {
+        use crate::transport_commands::{RollRefusal, plan_roll};
+        if self.is_recording() {
+            self.status_message = "Stop recording before using pre/post-roll".to_owned();
+            return false;
+        }
+        if self.data.transport.cycle {
+            self.status_message = "Turn off Cycle before using pre/post-roll".to_owned();
+            return false;
+        }
+        let Some(span) = self.roll_selection_span() else {
+            self.status_message = "Select an audio event or MIDI part for the roll".to_owned();
+            return false;
+        };
+        let plan = match plan_roll(self.roll_lengths, post, span, edge_end) {
+            Ok(plan) => plan,
+            Err(reason) => {
+                self.status_message = match reason {
+                    RollRefusal::MissingSelection | RollRefusal::ZeroLengthSelection => {
+                        "Select an audio event or MIDI part with a length for the roll".to_owned()
+                    }
+                    RollRefusal::Recording => {
+                        "Stop recording before using pre/post-roll".to_owned()
+                    }
+                    RollRefusal::CycleActive => {
+                        "Turn off Cycle before using pre/post-roll".to_owned()
+                    }
+                    RollRefusal::ZeroRoll => {
+                        "The pre/post-roll length is zero; set a length in Preferences".to_owned()
+                    }
+                    RollRefusal::NoRoomBeforeTarget => {
+                        "The selection starts at beat 0; there is no room to pre-roll".to_owned()
+                    }
+                };
+                return false;
+            }
+        };
+        self.seek_to_beats(plan.start_beats);
+        self.set_transport_playing(true);
+        if !self.data.transport.playing {
+            self.status_message =
+                "The roll is ready, but no audio output device could start".to_owned();
+            return false;
+        }
+        self.play_until = Some(plan.stop_beats);
+        self.status_message = format!(
+            "{} from beat {:.3}; stopping at beat {:.3}",
+            if post { "Post-roll" } else { "Pre-roll" },
+            plan.start_beats,
+            plan.stop_beats
+        );
+        true
     }
 
     /// Opens the event-gain dialog with the selection's current gain.
@@ -7868,10 +7955,14 @@ impl OpenTrackApp {
                 if self.is_recording() {
                     self.finish_recording();
                 }
+                self.play_until = None;
                 self.set_transport_playing(true);
                 self.data.transport.recording = false;
             }
             "transport.start_stop" => {
+                if !self.data.transport.playing {
+                    self.play_until = None;
+                }
                 self.set_transport_playing(!self.data.transport.playing);
                 self.data.transport.recording = false;
             }
@@ -7880,6 +7971,7 @@ impl OpenTrackApp {
                 self.data.transport.recording = false;
             }
             "transport.return_to_zero" => {
+                self.play_until = None;
                 self.data.transport.position_beats = 0.0;
                 if let Some(engine) = &self.audio_engine {
                     engine.seek_seconds(0.0);
@@ -10235,6 +10327,8 @@ impl OpenTrackApp {
     /// Moves the transport to a beat and seeks the engine with it.
     fn seek_to_beats(&mut self, beat: f64) {
         let beat = if beat.is_finite() { beat.max(0.0) } else { 0.0 };
+        // A manual seek cancels any scheduled play-until/pre-post-roll target.
+        self.play_until = None;
         self.data.transport.position_beats = beat;
         if let Some(engine) = &self.audio_engine {
             engine.seek_seconds(beat * 60.0 / self.data.project.tempo_bpm.max(1.0));
@@ -18357,6 +18451,16 @@ impl eframe::App for OpenTrackApp {
             storage,
             "metronome-count-in-bars",
             &self.metronome_count_in_bars,
+        );
+        eframe::set_value(
+            storage,
+            "transport-pre-roll-beats",
+            &self.roll_lengths.pre_beats,
+        );
+        eframe::set_value(
+            storage,
+            "transport-post-roll-beats",
+            &self.roll_lengths.post_beats,
         );
         eframe::set_value(storage, "metronome-level", &self.metronome_level);
         eframe::set_value(storage, "metronome-pitch-midi", &self.metronome_pitch_midi);
@@ -30306,6 +30410,61 @@ mod transport_locate_tests {
         );
         assert!(via_key.data.transport.cycle);
         assert_eq!(via_menu.status_message, via_key.status_message);
+    }
+
+    #[test]
+    fn roll_scheduling_refuses_unsupported_state_and_cancels_on_seek() {
+        let mut app = app_with_events();
+        app.arrange_view_state.audio_events.clear_selection();
+        app.data.project.selected_midi_part_id = None;
+        assert!(!app.schedule_roll(false, false));
+        assert!(app.status_message.contains("Select an audio event"));
+
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.cycle = true;
+        assert!(!app.schedule_roll(false, false));
+        assert!(app.status_message.contains("Turn off Cycle"));
+        app.data.transport.cycle = false;
+
+        app.roll_lengths.pre_beats = 0.0;
+        assert!(!app.schedule_roll(false, false));
+        assert!(app.status_message.contains("length is zero"));
+        app.roll_lengths = crate::transport_commands::RollLengths::default();
+
+        // The fixture has an engine, so a valid roll schedules and starts.
+        assert!(app.schedule_roll(true, false), "{}", app.status_message);
+        assert!(app.play_until.is_some());
+        assert!(app.status_message.contains("Post-roll"));
+        assert!(app.status_message.contains("stopping at beat"));
+        app.set_transport_playing(false);
+        assert_eq!(app.play_until, None, "stopping clears the roll target");
+
+        // A manual seek clears an existing scheduled target.
+        app.play_until = Some(99.0);
+        app.seek_to_beats(3.0);
+        assert_eq!(app.play_until, None);
+        assert_eq!(app.data.transport.position_beats, 3.0);
+    }
+
+    #[test]
+    fn a_scheduled_roll_stops_on_the_first_check_at_or_after_its_target() {
+        let mut app = app_with_events();
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.playing = true;
+        app.play_until = Some(10.0);
+        app.data.transport.position_beats = 9.999;
+        app.advance_play_until();
+        assert!(
+            app.data.transport.playing,
+            "a position inside the block before the target keeps playing"
+        );
+        app.data.transport.position_beats = 10.0;
+        app.advance_play_until();
+        assert!(!app.data.transport.playing);
+        assert_eq!(app.play_until, None);
+        assert!(app.status_message.contains("stopped at beat 10.000"));
     }
 
     #[test]
