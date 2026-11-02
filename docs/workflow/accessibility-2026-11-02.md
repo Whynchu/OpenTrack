@@ -18,7 +18,7 @@ assistive-technology conformance.
   Cursor), auto punch in/out, ruler format exchange, Split Range, zoom full/
   to event, the Info view / Inspector / track-colour toggles, automation
   read/write for every track, Paste at Origin, the VST Instruments / VST
-  Performance panels, and the four Nudge Start/End Left/Right edge trims.
+  Performance panels, the four Nudge Start/End Left/Right edge trims, and Insert Silence.
 - Twelve Transport and Track Folding menu entries moved from disabled to
   working in the first slice; the later slices were keyboard-only and did not
   change the menu inventory.
@@ -30,8 +30,8 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **121** commands have a dispatch
-arm; **31** still do not. The menus remain the way to reach the
+numpad ranges). **122** commands have a dispatch
+arm; **30** still do not. The menus remain the way to reach the
 uncovered features.
 
 ## Bound commands without a dispatch arm
@@ -52,7 +52,6 @@ uncovered features.
 - Cut Time (`Ctrl+Shift+X`) — `edit.cut_time`
 - Delete Time (`Shift+Backspace`) — `edit.delete_time`
 - Edit In-place (`Ctrl+Shift+I`) — `edit.edit_in_place`
-- Insert Silence (`Ctrl+Shift+E`) — `edit.insert_silence`
 - Open Score Editor (`Ctrl+R`) — `edit.open_score_editor`
 - Paste Time (`Ctrl+Shift+V`) — `edit.paste_time`
 

@@ -84,6 +84,13 @@ and measured numbers.
    End"). 3 core and 1 app tests. Shortcut coverage 117 -> 121. README numbers
    refreshed with the slice.
 
+9. **Insert Silence.** *Delivered.* Edit > Insert Silence (Ctrl+Shift+E) inserts
+   one bar at the cursor across the project. Core `insert_silence_at` splits every
+   event and MIDI part crossing the point, shifts the right-hand material,
+   markers and automation points, and refuses the whole edit when a locked event
+   crosses it. One labelled undo step ("Insert Silence"). 2 core and 1 app tests.
+   Shortcut coverage 121 -> 122.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

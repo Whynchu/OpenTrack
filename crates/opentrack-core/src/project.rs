@@ -2547,6 +2547,101 @@ impl Project {
         Some(keeper.id)
     }
 
+    /// Inserts `beats` of silence at `beat` and reports how many items moved.
+    ///
+    /// Events and MIDI parts that cross the insertion point are split first, so
+    /// their right-hand audio moves with the rest of the timeline instead of
+    /// being stretched. Markers and automation points at or after the point move
+    /// too. A locked event crossing the point refuses the whole edit: inserting
+    /// half a gap under a locked event would silently change what it plays.
+    pub fn insert_silence_at(&mut self, beat: f64, beats: f64) -> Option<usize> {
+        if !beat.is_finite()
+            || beat < 0.0
+            || !beats.is_finite()
+            || beats <= 0.0
+            || beats > MAX_LOOP_BEATS
+        {
+            return None;
+        }
+        let mut candidate = self.clone();
+        let mut changed = 0;
+        let track_ids = candidate
+            .tracks
+            .iter()
+            .map(|track| track.id)
+            .collect::<Vec<_>>();
+        for track_id in track_ids {
+            let track_index = candidate
+                .tracks
+                .iter()
+                .position(|track| track.id == track_id)?;
+            // Split every crossing event so no event spans the inserted gap.
+            let crossing = candidate.tracks[track_index]
+                .clips
+                .iter()
+                .filter(|clip| {
+                    let end = clip.start_beats + clip.duration_seconds * candidate.tempo_bpm / 60.0;
+                    clip.start_beats < beat - 1e-9 && end > beat + 1e-9
+                })
+                .map(|clip| (clip.id, clip.locked))
+                .collect::<Vec<_>>();
+            if crossing.iter().any(|(_, locked)| *locked) {
+                return None;
+            }
+            for (clip_id, _) in crossing {
+                candidate.split_audio_clip(track_id, clip_id, beat)?;
+            }
+            let crossing_parts = candidate.tracks[track_index]
+                .midi_parts
+                .iter()
+                .filter(|part| {
+                    part.start_beats < beat - 1e-9
+                        && part.start_beats + part.duration_beats > beat + 1e-9
+                })
+                .map(|part| part.id)
+                .collect::<Vec<_>>();
+            for part_id in crossing_parts {
+                candidate.split_midi_part(track_id, part_id, beat)?;
+            }
+
+            let track = &mut candidate.tracks[track_index];
+            for clip in track.clips.iter_mut() {
+                if clip.start_beats >= beat - 1e-9 {
+                    clip.start_beats += beats;
+                    changed += 1;
+                }
+            }
+            for part in track.midi_parts.iter_mut() {
+                if part.start_beats >= beat - 1e-9 {
+                    part.start_beats += beats;
+                    changed += 1;
+                }
+            }
+            for lane in track.automation_lanes.iter_mut() {
+                for point in lane.points.iter_mut() {
+                    if point.beat >= beat - 1e-9 {
+                        point.beat += beats;
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        for marker in candidate.markers.iter_mut() {
+            if marker.beat >= beat - 1e-9 {
+                marker.beat += beats;
+                changed += 1;
+            }
+        }
+        candidate
+            .markers
+            .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+        if changed == 0 || candidate.validate().is_err() {
+            return None;
+        }
+        *self = candidate;
+        Some(changed)
+    }
+
     /// Moves one selected event's start or end by `delta_beats`.
     ///
     /// Start moves carry the source offset with them, so the audio under the
@@ -5679,6 +5774,98 @@ mod sample_edit_tests {
         assert!(
             project.media_pool.contains(&gone),
             "the event still needs it"
+        );
+    }
+
+    #[test]
+    fn inserting_silence_splits_crossing_events_and_moves_the_rest() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Midi);
+        // 4 s at 120 BPM is 8 beats, so this event crosses beat 4.
+        project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 0.0, 4.0)
+            .unwrap();
+        project
+            .add_audio_clip(0, PathBuf::from("after.wav"), 16.0, 1.0)
+            .unwrap();
+        project.add_midi_part(1, 0.0, 16.0).unwrap();
+        project.add_marker(8.0, "Chorus").unwrap();
+        project.add_marker(2.0, "Intro").unwrap();
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![AutomationPoint {
+                beat: 10.0,
+                value: 0.5,
+            }],
+        });
+
+        assert_eq!(project.insert_silence_at(4.0, 4.0), Some(5));
+        // The spanning event became two: the left half stays, the right half
+        // starts after the inserted gap.
+        let starts = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec![0.0, 8.0, 20.0]);
+        // Both MIDI halves moved too.
+        let part_starts = project.tracks[1]
+            .midi_parts
+            .iter()
+            .map(|part| part.start_beats)
+            .collect::<Vec<_>>();
+        assert_eq!(part_starts, vec![0.0, 8.0]);
+        // Markers after the point moved, the one before stayed.
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|marker| (marker.name.as_str(), marker.beat))
+                .collect::<Vec<_>>(),
+            vec![("Intro", 2.0), ("Chorus", 12.0)]
+        );
+        // The automation point moved with the timeline.
+        assert_eq!(project.tracks[0].automation_lanes[0].points[0].beat, 14.0);
+        assert!(project.validate().is_ok());
+
+        // Nothing at or after the point means nothing to insert.
+        assert_eq!(project.insert_silence_at(1_000.0, 4.0), None);
+        // Invalid lengths are refused.
+        assert_eq!(project.insert_silence_at(4.0, 0.0), None);
+        assert_eq!(project.insert_silence_at(-1.0, 4.0), None);
+    }
+
+    #[test]
+    fn inserting_silence_refuses_when_a_locked_event_crosses_the_point() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 0.0, 4.0)
+            .unwrap();
+        project
+            .add_audio_clip(0, PathBuf::from("after.wav"), 16.0, 1.0)
+            .unwrap();
+        project.set_audio_clips_locked(&[clip], true);
+        let before = project.clone();
+        assert_eq!(project.insert_silence_at(4.0, 4.0), None);
+        assert_eq!(project, before, "a refused insert changes nothing");
+
+        // A locked event after the point is simply shifted with the timeline.
+        project.set_audio_clips_locked(&[clip], false);
+        let after = project.tracks[0].clips[1].id;
+        project.set_audio_clips_locked(&[after], true);
+        assert!(project.insert_silence_at(4.0, 4.0).is_some());
+        assert_eq!(
+            project.tracks[0]
+                .clips
+                .iter()
+                .find(|candidate| candidate.id == after)
+                .expect("after")
+                .start_beats,
+            20.0
         );
     }
 

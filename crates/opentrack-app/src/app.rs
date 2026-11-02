@@ -6888,6 +6888,7 @@ impl OpenTrackApp {
                 self.toggle_automation_for_all_tracks(true)
             }
             "edit.split_range" => self.split_audio_events_at_loop(),
+            "edit.insert_silence" => self.insert_silence_at_cursor(),
             "transport.auto_punch_in" => {
                 self.punch_enabled = true;
                 self.status_message =
@@ -8157,6 +8158,38 @@ impl OpenTrackApp {
             TransportLocate::PlaySelection => self.play_selection_range(),
             TransportLocate::LoopSelection => self.loop_selection(),
         }
+    }
+
+    /// Inserts one bar of silence at the cursor across the project.
+    fn insert_silence_at_cursor(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before inserting silence".to_owned();
+            return;
+        }
+        let beat = self.data.transport.position_beats.max(0.0);
+        let beats = f64::from(self.data.project.beats_per_bar.max(1));
+        let mut candidate = self.data.project.clone();
+        let Some(changed) = candidate.insert_silence_at(beat, beats) else {
+            self.status_message = "Nothing can be inserted here: no event, part, marker or point                  sits at or after the cursor, or a locked event crosses it"
+                .to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot insert silence: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Insert Silence");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Inserted one bar ({beats:.0} beats) at beat {beat:.3}; {changed} item(s) moved"
+        );
     }
 
     /// Moves the transport cursor by `beats`, clamped at the project start.
@@ -26582,6 +26615,41 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn insert_silence_adds_one_bar_at_the_cursor_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.data.transport.position_beats = 4.0;
+        app.data.project.set_loop_range(4.0, 12.0);
+        app.project_history.clear();
+
+        dispatch(&mut app, "edit.insert_silence", &ctx);
+        // The 8 s event spans 16 beats, so it splits at the cursor and its right
+        // half moves one bar later.
+        let starts = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec![0.0, 8.0]);
+        assert!(app.status_message.contains("Inserted one bar"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Insert Silence");
+        assert!(app.data.project.validate().is_ok());
+
+        // A locked event crossing the cursor refuses the edit.
+        let left = app.data.project.tracks[0].clips[0].id;
+        let right = app.data.project.tracks[0].clips[1].id;
+        app.data.transport.position_beats = 2.0;
+        app.data.project.set_audio_clips_locked(&[left], true);
+        let before = app.data.project.clone();
+        dispatch(&mut app, "edit.insert_silence", &ctx);
+        assert_eq!(app.data.project, before);
+        assert!(app.status_message.contains("locked event crosses"));
+        app.data.project.set_audio_clips_locked(&[left], false);
+        let _ = right;
+    }
+
+    #[test]
     fn edge_nudge_shortcuts_trim_starts_and_ends_by_the_grid() {
         use opentrack_core::project::ClipEdge;
 
@@ -27350,6 +27418,7 @@ mod keyboard_coverage_tests {
             "zoom.zoom_to_event",
             "edit.split_range",
             "edit.paste_at_origin",
+            "edit.insert_silence",
             "devices.vst_instruments",
             "devices.vst_performance",
             "midi.quantize",
