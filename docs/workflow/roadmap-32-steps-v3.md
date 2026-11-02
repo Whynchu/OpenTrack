@@ -99,6 +99,14 @@ and measured numbers.
    tracks and leaves markers alone. One labelled undo step each. 2 core and 1 app
    tests. Shortcut coverage 122 -> 124.
 
+11. **Typed position, locators and tempo.** *Delivered.* Input Position (Shift+P),
+   Input Left Locator (Shift+L), Input Right Locator (Shift+R) and Input Tempo
+   (Shift+T) open one small dialog seeded from the current value; Apply sets the
+   transport, the locator pair (one labelled "Set Locators" undo step) or the
+   project tempo (one labelled "Set Tempo" step). Negative, non-finite and
+   out-of-range values are refused without editing. 2 app tests. Shortcut
+   coverage 124 -> 128.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

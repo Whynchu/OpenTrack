@@ -50,7 +50,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Automation coverage:** input/output-bus automation and its Write controls are missing; track automation still needs live-device testing.
 - **Routing:** device-bus sends and wider physical channel maps are open. Track and group sends and typed routing pass offline checks and still need live review.
 - **Interchange:** CPR is inspection-only; a real adapter waits for sample files. Other DAW formats are future work. Authored MIDI fixtures pass; comparison with DAW-produced MIDI files remains.
-- **Interface completion:** 122 menu entries are still shown disabled and 124 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
+- **Interface completion:** 122 menu entries are still shown disabled and 128 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
 - **Linux plug-ins:** VST3 editor embedding on Linux is not implemented.
 - **Not available:** video, surround, score editing, macOS and browser builds, and a command-line or MCP interface. Plug-in compatibility and recovery behavior need continued verification.
 

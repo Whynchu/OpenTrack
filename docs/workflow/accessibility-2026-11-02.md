@@ -18,7 +18,7 @@ assistive-technology conformance.
   Cursor), auto punch in/out, ruler format exchange, Split Range, zoom full/
   to event, the Info view / Inspector / track-colour toggles, automation
   read/write for every track, Paste at Origin, the VST Instruments / VST
-  Performance panels, the four Nudge Start/End Left/Right edge trims, Insert Silence, Cut Time and Delete Time.
+  Performance panels, the four Nudge Start/End Left/Right edge trims, Insert Silence, Cut Time and Delete Time, and typed Position / Locator / Tempo entry.
 - Twelve Transport and Track Folding menu entries moved from disabled to
   working in the first slice; the later slices were keyboard-only and did not
   change the menu inventory.
@@ -30,8 +30,8 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **124** commands have a dispatch
-arm; **28** still do not. The menus remain the way to reach the
+numpad ranges). **128** commands have a dispatch
+arm; **24** still do not. The menus remain the way to reach the
 uncovered features.
 
 ## Bound commands without a dispatch arm
@@ -74,10 +74,6 @@ uncovered features.
 
 ### Transport
 
-- Input Left Locator (`Shift+L`) — `transport.input_left_locator`
-- Input Position (`Shift+P`) — `transport.input_position`
-- Input Right Locator (`Shift+R`) — `transport.input_right_locator`
-- Input Tempo (`Shift+T`) — `transport.input_tempo`
 - Recall Cycle Marker 1 to 9 (`Shift+Numpad1..9`) — `transport.recall_cycle_marker_1_to_9`
 - Retrospective Record (`Shift+NumpadMultiply`) — `transport.retrospective_record`
 - Set Marker 1 (`Ctrl+1`) — `transport.set_marker_1`

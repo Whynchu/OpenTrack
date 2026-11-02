@@ -504,6 +504,39 @@ struct HistoryStep {
     redo: bool,
 }
 
+/// What a numeric input dialog edits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NumericInputKind {
+    Position,
+    LeftLocator,
+    RightLocator,
+    Tempo,
+}
+
+impl NumericInputKind {
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Position => "Set Position",
+            Self::LeftLocator => "Set Left Locator",
+            Self::RightLocator => "Set Right Locator",
+            Self::Tempo => "Set Tempo",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Position | Self::LeftLocator | Self::RightLocator => "Beat",
+            Self::Tempo => "BPM",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NumericInput {
+    kind: NumericInputKind,
+    value: f64,
+}
+
 /// One Transport locate command, shared by the menu and the reference keymap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransportLocate {
@@ -1150,6 +1183,8 @@ pub struct OpenTrackApp {
     session_health_open: bool,
     project_statistics_open: bool,
     beat_calculator: Option<project_tools::BeatCalculator>,
+    /// Open numeric input dialog: what it edits and the value being typed.
+    numeric_input: Option<NumericInput>,
     /// Draft while the notepad is open; committed when the window closes.
     notepad_draft: Option<String>,
     /// Open MIDI quantize dialog settings.
@@ -2553,6 +2588,7 @@ impl OpenTrackApp {
             session_health_open: false,
             project_statistics_open: false,
             beat_calculator: None,
+            numeric_input: None,
             notepad_draft: None,
             midi_quantize_dialog: None,
             midi_transform_dialog: None,
@@ -6945,6 +6981,14 @@ impl OpenTrackApp {
             "navigate.bottom" => self.navigate_track_edge(true, false),
             "navigate.add_up" => self.navigate_track(-1, true),
             "navigate.add_down" => self.navigate_track(1, true),
+            "transport.input_position" => self.open_numeric_input(NumericInputKind::Position),
+            "transport.input_left_locator" => {
+                self.open_numeric_input(NumericInputKind::LeftLocator)
+            }
+            "transport.input_right_locator" => {
+                self.open_numeric_input(NumericInputKind::RightLocator)
+            }
+            "transport.input_tempo" => self.open_numeric_input(NumericInputKind::Tempo),
             "transport.set_left_locator" => self.set_locator_at_playhead(true),
             "transport.set_right_locator" => self.set_locator_at_playhead(false),
             "edit.left_selection_side_to_cursor" => self.set_locator_at_playhead(true),
@@ -7612,6 +7656,150 @@ impl OpenTrackApp {
         self.notepad_draft = Some(draft);
         if close || !open {
             self.apply_notepad();
+        }
+    }
+
+    /// Opens a typed-value dialog seeded from what it edits.
+    fn open_numeric_input(&mut self, kind: NumericInputKind) {
+        let value = match kind {
+            NumericInputKind::Position => self.data.transport.position_beats,
+            NumericInputKind::LeftLocator => self.data.project.loop_start_beats,
+            NumericInputKind::RightLocator => self.data.project.loop_end_beats,
+            NumericInputKind::Tempo => self.data.project.tempo_bpm,
+        };
+        self.numeric_input = Some(NumericInput { kind, value });
+    }
+
+    /// Applies one typed value, as one undo step where it changes the project.
+    fn apply_numeric_input(&mut self, input: NumericInput) {
+        if !input.value.is_finite() {
+            self.status_message = "Enter a finite value".to_owned();
+            return;
+        }
+        match input.kind {
+            NumericInputKind::Position => {
+                if input.value < 0.0 {
+                    self.status_message = "A position cannot be negative".to_owned();
+                    return;
+                }
+                self.seek_to_beats(input.value);
+                self.status_message = format!("Located to beat {:.3}", input.value);
+            }
+            NumericInputKind::LeftLocator | NumericInputKind::RightLocator => {
+                if input.value < 0.0 {
+                    self.status_message = "A locator cannot be negative".to_owned();
+                    return;
+                }
+                let left = input.kind == NumericInputKind::LeftLocator;
+                let (start, end) = if left {
+                    (
+                        input.value,
+                        self.data.project.loop_end_beats.max(input.value + 1.0),
+                    )
+                } else {
+                    (
+                        self.data
+                            .project
+                            .loop_start_beats
+                            .min(input.value - 1.0)
+                            .max(0.0),
+                        input.value,
+                    )
+                };
+                if end <= start {
+                    self.status_message = "That locator would invert the range".to_owned();
+                    return;
+                }
+                self.apply_loop_range(start, end, "Set Locators");
+            }
+            NumericInputKind::Tempo => {
+                if !(1.0..=1000.0).contains(&input.value) {
+                    self.status_message = "Tempo must be between 1 and 1000 BPM".to_owned();
+                    return;
+                }
+                let mut candidate = self.data.project.clone();
+                candidate.tempo_bpm = input.value;
+                if candidate.validate().is_err() {
+                    self.status_message = "That tempo is not usable by this project".to_owned();
+                    return;
+                }
+                self.project_history.finish_frame(&self.data.project, true);
+                if !self
+                    .project_history
+                    .begin(&self.data.project, self.modified)
+                {
+                    self.status_message =
+                        "Cannot set the tempo: undo snapshot is unavailable".to_owned();
+                    return;
+                }
+                self.project_history.label_next("Set Tempo");
+                self.data.project = candidate;
+                self.project_history.commit_after_frame = true;
+                self.rebuild_audio_plan();
+                self.mark_modified();
+                self.status_message = format!("Tempo set to {:.3} BPM", input.value);
+            }
+        }
+    }
+
+    fn show_numeric_input(&mut self, ctx: &egui::Context) {
+        let Some(mut input) = self.numeric_input.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new(input.kind.title())
+            .id(Id::new("numeric-input"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(240.0);
+                ui.horizontal(|ui| {
+                    ui.label(input.kind.label());
+                    let range = if input.kind == NumericInputKind::Tempo {
+                        1.0..=1000.0
+                    } else {
+                        0.0..=1_000_000.0
+                    };
+                    let response =
+                        ui.add(egui::DragValue::new(&mut input.value).range(range).speed(
+                            if input.kind == NumericInputKind::Tempo {
+                                0.1
+                            } else {
+                                0.25
+                            },
+                        ));
+                    if input.kind == NumericInputKind::Position
+                        && !response.has_focus()
+                        && !response.lost_focus()
+                    {
+                        // A fresh dialog focuses the field so typing replaces the
+                        // seeded value.
+                        response.request_focus();
+                    }
+                });
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                if ui.button("Apply").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("numeric-input"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_numeric_input(input);
+        } else if cancel || !open {
+            // Cancelled: the dialog simply closes.
+        } else {
+            self.numeric_input = Some(input);
         }
     }
 
@@ -12960,6 +13148,7 @@ impl OpenTrackApp {
             || self.session_health_open
             || self.project_statistics_open
             || self.beat_calculator.is_some()
+            || self.numeric_input.is_some()
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -15357,6 +15546,7 @@ impl eframe::App for OpenTrackApp {
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
         self.show_beat_calculator(&ctx);
+        self.show_numeric_input(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -27222,6 +27412,99 @@ mod transport_locate_tests {
 }
 
 #[cfg(test)]
+mod numeric_input_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.set_loop_range(0.0, 8.0);
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn typed_positions_locators_and_tempo_apply_with_the_right_undo_steps() {
+        let mut app = app();
+        app.data.transport.position_beats = 4.0;
+        app.open_numeric_input(NumericInputKind::Position);
+        assert_eq!(
+            app.numeric_input,
+            Some(NumericInput {
+                kind: NumericInputKind::Position,
+                value: 4.0
+            }),
+            "the dialog seeds from the current position"
+        );
+        app.apply_numeric_input(NumericInput {
+            kind: NumericInputKind::Position,
+            value: 12.5,
+        });
+        assert_eq!(app.data.transport.position_beats, 12.5);
+        assert!(app.status_message.contains("beat 12.500"));
+
+        app.apply_numeric_input(NumericInput {
+            kind: NumericInputKind::LeftLocator,
+            value: 2.0,
+        });
+        assert_eq!(app.data.project.loop_start_beats, 2.0);
+        assert_eq!(app.data.project.loop_end_beats, 8.0);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Locators");
+
+        app.apply_numeric_input(NumericInput {
+            kind: NumericInputKind::RightLocator,
+            value: 20.0,
+        });
+        assert_eq!(app.data.project.loop_end_beats, 20.0);
+
+        app.apply_numeric_input(NumericInput {
+            kind: NumericInputKind::Tempo,
+            value: 90.0,
+        });
+        assert_eq!(app.data.project.tempo_bpm, 90.0);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Tempo");
+    }
+
+    #[test]
+    fn invalid_typed_values_are_refused_without_editing() {
+        let mut app = app();
+        let before = app.data.project.clone();
+        let steps = app.project_history.counts().0;
+        for input in [
+            NumericInput {
+                kind: NumericInputKind::Tempo,
+                value: 2_000.0,
+            },
+            NumericInput {
+                kind: NumericInputKind::Tempo,
+                value: 0.0,
+            },
+            NumericInput {
+                kind: NumericInputKind::LeftLocator,
+                value: -1.0,
+            },
+            NumericInput {
+                kind: NumericInputKind::Position,
+                value: f64::NAN,
+            },
+        ] {
+            app.apply_numeric_input(input);
+            assert_eq!(app.data.project, before, "{input:?} changed the project");
+        }
+        assert_eq!(
+            app.project_history.counts().0,
+            steps,
+            "no undo steps written"
+        );
+        assert!(app.status_message.contains("finite") || app.status_message.contains("Tempo"));
+    }
+}
+
+#[cfg(test)]
 mod notepad_tests {
     use super::*;
 
@@ -27561,6 +27844,10 @@ mod keyboard_coverage_tests {
             "transport.rewind",
             "transport.to_left_locator",
             "transport.to_right_locator",
+            "transport.input_position",
+            "transport.input_left_locator",
+            "transport.input_right_locator",
+            "transport.input_tempo",
             "transport.auto_punch_in",
             "transport.auto_punch_out",
             "navigate.up",
