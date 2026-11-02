@@ -12,6 +12,7 @@ mod automation;
 mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
+mod drum_editor;
 mod drum_map_setup;
 #[path = "media_names.rs"]
 pub(crate) mod media_names;
@@ -1286,6 +1287,10 @@ pub struct OpenTrackApp {
     roll_lengths: crate::transport_commands::RollLengths,
     /// Open Drum Map Setup draft; `None` means closed.
     drum_map_setup: Option<drum_map_setup::DrumMapDraft>,
+    /// Focused drum editor window and its transient move gesture.
+    drum_editor_open: bool,
+    drum_editor_drag: Option<drum_editor::DrumEditorDrag>,
+    drum_editor_velocity: u8,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2774,6 +2779,9 @@ impl OpenTrackApp {
                     .unwrap_or(crate::transport_commands::DEFAULT_ROLL_BEATS),
             ),
             drum_map_setup: None,
+            drum_editor_open: false,
+            drum_editor_drag: None,
+            drum_editor_velocity: 96,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4082,6 +4090,8 @@ impl OpenTrackApp {
         self.conform_files_dialog = None;
         self.pool_record_folder_dialog = None;
         self.drum_map_setup = None;
+        self.drum_editor_open = false;
+        self.drum_editor_drag = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -14152,13 +14162,11 @@ impl OpenTrackApp {
                         self.list_editor_open = true;
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Open Score Editor", ""),
-                            ("Open Drum Editor", ""),
-                        ],
-                    );
+                    disabled_menu_commands(ui, &[("Open Score Editor", "")]);
+                    if menu_command(ui, "Open Drum Editor", "", midi_editor_available).clicked() {
+                        self.toggle_drum_editor();
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(ui, "Quantize Setup...", "", self.project_open).clicked() {
                         self.midi_quantize_dialog =
@@ -18451,6 +18459,7 @@ impl eframe::App for OpenTrackApp {
         self.show_conform_files_dialog(&ctx);
         self.show_pool_record_folder_dialog(&ctx);
         self.show_drum_map_setup(&ctx);
+        self.show_drum_editor(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);

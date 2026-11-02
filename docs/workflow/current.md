@@ -20,7 +20,9 @@ Step 8 added the project-owned drum-map model in `opentrack-core::drum_map` (uni
 
 Step 9 enabled MIDI > Drum Map Setup with a draft dialog (add/rename/reorder/remove/reset). Apply validates and makes one labelled history step; duplicate pitches keep the dialog open with an error; Cancel changes nothing; changing the selected track while open keeps the draft. App suite: 518 passed, 9 ignored; inventory is 271 leaves with 89 unavailable. Runtime visual/save-reopen review pending. See [R4-09](tasks/R4-09-drum-map-setup.md).
 
-Next ready work: revision-4 step 10, Open Drum Editor. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+Step 10 enabled MIDI > Open Drum Editor over the selected MIDI part: map-ordered rows plus unmapped sounding pitches, snapped add, Ctrl multi-select, drag move on release, Escape cancel, Delete, velocity and Close, each content change as a labelled history step. Shared note-ID selection is used. App suite: 521 passed, 9 ignored; inventory is 271 leaves with 88 unavailable. Desktop pointer/visual review pending. See [R4-10](tasks/R4-10-open-drum-editor.md).
+
+Next ready work: revision-4 step 11, bounded Logical Presets. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
 
 ---
 
