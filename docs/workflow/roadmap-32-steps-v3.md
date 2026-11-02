@@ -160,6 +160,11 @@ and measured numbers.
    resulting step. The flag persists with view state and defaults off for older
    projects. 1 view-state and 1 app tests. Shortcut coverage 143 -> 144.
 
+19. **Edit In-place.** *Delivered.* Ctrl+Shift+I opens the selection in the editor
+   that fits it: an audio event opens the Sample Editor in the lower zone (the
+   in-place media surface), a MIDI part opens the MIDI editor. An empty selection
+   reports instead of guessing. 1 app test. Shortcut coverage 144 -> 145.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

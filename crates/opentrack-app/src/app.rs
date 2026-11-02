@@ -3969,6 +3969,38 @@ impl OpenTrackApp {
         };
     }
 
+    /// Opens the selected event in the editor that fits it.
+    ///
+    /// An audio event opens the Sample Editor in the lower zone, which is the
+    /// in-place editing surface for media; a selected MIDI part opens the MIDI
+    /// editor. Nothing selected reports instead of guessing.
+    fn edit_selected_event_in_place(&mut self) {
+        let selected = self.arrange_view_state.audio_events.selected_ids();
+        if let Some(clip_id) = selected.first().copied() {
+            let Some(track_id) = self
+                .data
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.clips.iter().any(|clip| clip.id == clip_id))
+                .map(|track| track.id)
+            else {
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            self.arrange_view_state.audio_events.open_editor = Some((track_id, clip_id));
+            self.status_message = "Editing the selected event in the Sample Editor".to_owned();
+            return;
+        }
+        if self.data.project.selected_midi_part_id.is_some() {
+            self.midi_editor_open = true;
+            self.sample_editor_active = false;
+            self.status_message = "Editing the selected MIDI part".to_owned();
+            return;
+        }
+        self.status_message = "Select an audio event or a MIDI part to edit it in place".to_owned();
+    }
+
     /// Reveals the selected event's source in the Media Pool.
     fn find_selected_event_in_pool(&mut self) {
         let selected = self.arrange_view_state.audio_events.selected_ids();
@@ -6966,6 +6998,7 @@ impl OpenTrackApp {
             "file.save_new_version" => self.save_new_project_version(),
             "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
             "edit.paste_time" => self.paste_time(),
+            "edit.edit_in_place" => self.edit_selected_event_in_place(),
             "audio.find_selected_in_pool" => self.find_selected_event_in_pool(),
             "audio.auto_grid" => {
                 self.arrange_view_state.auto_grid = !self.arrange_view_state.auto_grid;
@@ -27295,6 +27328,38 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn edit_in_place_opens_the_editor_that_fits_the_selection() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        let clip_id = app.data.project.tracks[0].clips[0].id;
+        let track_id = app.data.project.tracks[0].id;
+        app.arrange_view_state.audio_events.select_many([clip_id]);
+
+        dispatch(&mut app, "edit.edit_in_place", &ctx);
+        assert_eq!(
+            app.arrange_view_state.audio_events.open_editor,
+            Some((track_id, clip_id))
+        );
+        assert!(app.status_message.contains("Sample Editor"));
+
+        // A MIDI part opens the MIDI editor instead.
+        app.arrange_view_state.audio_events.clear_selection();
+        app.data.project.add_track(TrackKind::Midi);
+        let part = app.data.project.add_midi_part(1, 0.0, 4.0).expect("part");
+        app.data.project.selected_midi_part_id = Some(part);
+        dispatch(&mut app, "edit.edit_in_place", &ctx);
+        assert!(app.midi_editor_open);
+        assert!(!app.sample_editor_active);
+        assert!(app.status_message.contains("MIDI part"));
+
+        // Nothing selected reports.
+        app.midi_editor_open = false;
+        app.data.project.selected_midi_part_id = None;
+        dispatch(&mut app, "edit.edit_in_place", &ctx);
+        assert!(app.status_message.contains("Select an audio event"));
+    }
+
+    #[test]
     fn auto_grid_shortcut_toggles_and_changes_the_snap_step() {
         let ctx = egui::Context::default();
         let mut app = app_with_track();
@@ -28502,6 +28567,7 @@ mod keyboard_coverage_tests {
             "edit.split_range",
             "edit.paste_at_origin",
             "edit.paste_time",
+            "edit.edit_in_place",
             "audio.find_selected_in_pool",
             "audio.adjust_fades_to_range",
             "audio.auto_grid",
