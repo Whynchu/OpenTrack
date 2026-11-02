@@ -14133,17 +14133,43 @@ impl OpenTrackApp {
                             self.open_arranger_editor();
                             ui.close();
                         }
+                        // Marker and Ruler map to the existing timeline lanes rather
+                        // than pretending to be audio tracks; Signature and Tempo
+                        // open the tempo editor that owns both; Transpose opens the
+                        // MIDI transpose dialog. Video and the browser stay honestly
+                        // unavailable.
+                        if menu_command(ui, "Marker", "", self.project_open).clicked() {
+                            self.toggle_marker_lane();
+                            ui.close();
+                        }
+                        if menu_command(ui, "Ruler", "", self.project_open).clicked() {
+                            self.toggle_second_ruler();
+                            ui.close();
+                        }
+                        if menu_command(ui, "Signature", "", self.project_open).clicked() {
+                            self.open_tempo_editor();
+                            ui.close();
+                        }
+                        if menu_command(ui, "Tempo", "", self.project_open).clicked() {
+                            self.open_tempo_editor();
+                            ui.close();
+                        }
+                        if menu_command(
+                            ui,
+                            "Transpose",
+                            "",
+                            self.project_open
+                                && !self.is_recording()
+                                && self.data.project.selected_midi_part_id.is_some(),
+                        )
+                        .clicked()
+                        {
+                            self.midi_transform_dialog = Some((0, 0));
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
-                            &[
-                                ("Marker", ""),
-                                ("Ruler", ""),
-                                ("Signature", ""),
-                                ("Tempo", ""),
-                                ("Transpose", ""),
-                                ("Video", ""),
-                                ("Browse Sounds...", ""),
-                            ],
+                            &[("Video", ""), ("Browse Sounds...", "")],
                         );
                     });
                     if ui
@@ -16136,6 +16162,30 @@ impl OpenTrackApp {
             self.mark_modified();
         }
         removed
+    }
+
+    /// Shows or hides the marker lane.
+    fn toggle_marker_lane(&mut self) {
+        self.arrange_view_state.show_marker_lane = !self.arrange_view_state.show_marker_lane;
+        self.status_message = if self.arrange_view_state.show_marker_lane {
+            "Marker lane shown".to_owned()
+        } else {
+            "Marker lane hidden".to_owned()
+        };
+    }
+
+    /// Shows or hides the second ruler row.
+    fn toggle_second_ruler(&mut self) {
+        self.arrange_view_state.secondary_ruler_format =
+            match self.arrange_view_state.secondary_ruler_format {
+                None => Some(1),
+                Some(_) => None,
+            };
+        self.status_message = if self.arrange_view_state.secondary_ruler_format.is_some() {
+            "Second ruler shown".to_owned()
+        } else {
+            "Second ruler hidden".to_owned()
+        };
     }
 
     /// Opens or closes the on-screen keyboard.
@@ -32424,6 +32474,51 @@ mod timecode_tests {
         // Samples follow the current project rate and ignore the timecode offset.
         assert_eq!(ruler_label(2, 3, 4, 120.0, 48_000, 3600.0), "192000");
         assert_eq!(ruler_label(2, 3, 4, 120.0, 44_100, 3600.0), "176400");
+    }
+}
+
+#[cfg(test)]
+mod add_track_lane_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app
+    }
+
+    #[test]
+    fn the_lane_entries_reach_their_existing_surfaces() {
+        let mut app = app();
+        // Marker and Ruler toggle the existing lanes, not a new track kind.
+        assert!(!app.arrange_view_state.show_marker_lane);
+        app.toggle_marker_lane();
+        assert!(app.arrange_view_state.show_marker_lane);
+        assert_eq!(app.status_message, "Marker lane shown");
+        app.toggle_marker_lane();
+        assert!(!app.arrange_view_state.show_marker_lane);
+
+        assert_eq!(app.arrange_view_state.secondary_ruler_format, None);
+        app.toggle_second_ruler();
+        assert_eq!(app.arrange_view_state.secondary_ruler_format, Some(1));
+        assert_eq!(app.status_message, "Second ruler shown");
+        app.toggle_second_ruler();
+        assert_eq!(app.arrange_view_state.secondary_ruler_format, None);
+        assert!(
+            app.data.project.tracks.is_empty(),
+            "no lane invents a track"
+        );
+
+        // Signature and Tempo open the editor that owns both.
+        app.open_tempo_editor();
+        assert!(app.tempo_editor.is_some());
+
+        // Transpose seeds the MIDI dialog from zero.
+        app.midi_transform_dialog = Some((0, 0));
+        assert_eq!(app.midi_transform_dialog, Some((0, 0)));
+        assert_eq!(app.data.project.tracks.len(), 0, "no fake track was added");
     }
 }
 
