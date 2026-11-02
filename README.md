@@ -51,7 +51,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Routing:** device-bus sends and wider physical channel maps are open. Track and group sends and typed routing pass offline checks and still need live review.
 - **Arranger:** Project > Add Track > Arranger opens the section/sequence editor; Apply is one undo step, Preview Arranger is playback-only, and the offline transformer renders exact repeated sections. Audible preview, rapid-stop/seek behavior and export of the sequence still need runtime review.
 - **Interchange:** CPR is inspection-only; a real adapter waits for sample files. OpenTrack Track Archive v1 export/import is implemented; large-package background import and desktop round-trip review remain. Other DAW formats are future work. Authored MIDI fixtures pass; comparison with DAW-produced MIDI files remains.
-- **Interface completion:** the project-open main menu has 83 rows still shown disabled (measured from source in the [generated inventory](docs/reviews/generated-source-inventory.md)); 147 of 152 keymap-bound commands have a dispatch arm. Four of the five undispatched commands are also unavailable in their menus, and the fifth opens a different editor. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
+- **Interface completion:** the project-open main menu has 82 rows still shown disabled (measured from source in the [generated inventory](docs/reviews/generated-source-inventory.md)); 147 of 152 keymap-bound commands have a dispatch arm. Four of the five undispatched commands are also unavailable in their menus, and the fifth opens a different editor. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
 - **Linux plug-ins:** VST3 editor embedding on Linux is not implemented.
 - **Not available:** video, surround, score editing, macOS and browser builds, and a command-line or MCP interface. Plug-in compatibility and recovery behavior need continued verification.
 
@@ -80,7 +80,7 @@ These features are under active development; live listening, visual behavior and
 
 User-side review of the recording, delivery and listening features above; the CPR adapter once real `.cpr` files are available; the remaining disabled menus and undispatched shortcuts; and a Linux VST3 editor path with a test plug-in. Windows x64 remains the primary target.
 
-Progress and verification live in [the current workflow state](docs/workflow/current.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
+Progress and verification live in [the current workflow state](docs/workflow/current.md), [the revision-4 delivery handoff](docs/workflow/handoffs/revision-4-delivery.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
 
 ## Build and run
 
