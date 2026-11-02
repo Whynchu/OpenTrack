@@ -1245,6 +1245,8 @@ pub struct OpenTrackApp {
     audio_export_task: Option<audio_export::Task>,
     bounce_task: Option<audio_export::BounceTask>,
     midi_file_task: Option<midi_file::Task>,
+    /// Open state of the Export MIDI Selection dialog.
+    midi_export_dialog: Option<midi_file::ExportDialog>,
     project_load_task: Option<ProjectLoadTask>,
     midi_recording_session: Option<MidiRecordingSession>,
     project_path: Option<std::path::PathBuf>,
@@ -2673,6 +2675,7 @@ impl OpenTrackApp {
             audio_export_task: None,
             bounce_task: None,
             midi_file_task: None,
+            midi_export_dialog: None,
             project_load_task: None,
             midi_recording_session: None,
             project_path: None,
@@ -10182,6 +10185,26 @@ impl OpenTrackApp {
                             self.export_midi_file();
                             ui.close();
                         }
+                        if menu_command(
+                            ui,
+                            "MIDI Selection...",
+                            "",
+                            self.midi_file_task.is_none(),
+                        )
+                        .clicked()
+                        {
+                            let default_choice = if self.data.project.selected_midi_part_id.is_some()
+                            {
+                                midi_file::ExportChoice::SelectedPart
+                            } else {
+                                midi_file::ExportChoice::SelectedTrack
+                            };
+                            self.midi_export_dialog = Some(midi_file::ExportDialog {
+                                choice: default_choice,
+                                use_loop_range: false,
+                            });
+                            ui.close();
+                        }
                     });
                     menu_command(ui, "Replace Audio in Video File...", "", false);
                     menu_command(ui, "Cleanup...", "", false);
@@ -14241,6 +14264,7 @@ impl eframe::App for OpenTrackApp {
         self.poll_audio_export_task();
         self.poll_bounce_task();
         self.poll_midi_file_task();
+        self.show_midi_export_dialog(&ctx);
         if self.midi_file_task.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }

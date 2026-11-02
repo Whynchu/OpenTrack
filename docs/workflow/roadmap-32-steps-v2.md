@@ -210,7 +210,14 @@ Still open from revision 1:
    tracks is refused, and the render runs in a background thread with a cancel
    button. 2 core and 1 app test; the app test renders a real two-event bounce and
    checks the resulting file, span and history label. Listening review remains.
-24. **MIDI export of a selection** in addition to the whole project.
+24. **MIDI export of a selection.** *Delivered.* `export_standard_midi_scope`
+   takes a `MidiExportScope` (track ids, part ids, optional beat range). The
+   whole-project command delegates to it with an empty scope, so its output is
+   unchanged. Edit/File > Export > MIDI Selection... offers Selected MIDI part,
+   Selected MIDI track(s) or Whole project plus "Limit to the loop range"; notes
+   crossing a boundary are clipped rather than dropped, controller events follow
+   the same rule, and a track contributing nothing to a selection is omitted. 2
+   core and 4 app tests.
 25. **CPR adapter (blocked).** Version-specific reader with an explicit support
     report and opaque preservation. **Needs user fixtures**; until they arrive
     this task stays unstarted and unclaimed.

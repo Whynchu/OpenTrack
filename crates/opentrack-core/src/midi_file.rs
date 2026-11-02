@@ -612,9 +612,61 @@ struct OutputEvent {
     data: Vec<u8>,
 }
 
+/// What part of a project a MIDI export should contain.
+///
+/// The default (everything empty) is the whole project, which is what the
+/// existing "MIDI File..." command exports. A selection narrows it to specific
+/// tracks or parts, optionally limited to a beat range, so a user can hand a
+/// collaborator one part or one loop without cutting the project first.
+#[derive(Clone, Debug, Default)]
+pub struct MidiExportScope {
+    /// Track ids to include. Empty means every MIDI track.
+    pub track_ids: Vec<u64>,
+    /// Part ids to include. Empty means every part on the chosen tracks.
+    pub part_ids: Vec<u64>,
+    /// Start of the exported range, or `None` for the part's own start.
+    pub start_beats: Option<f64>,
+    /// End of the exported range, or `None` for the part's own end.
+    pub end_beats: Option<f64>,
+}
+
+impl MidiExportScope {
+    pub fn is_whole_project(&self) -> bool {
+        self.track_ids.is_empty()
+            && self.part_ids.is_empty()
+            && self.start_beats.is_none()
+            && self.end_beats.is_none()
+    }
+
+    /// The chosen range when both ends are present and form a real interval.
+    fn range(&self) -> Option<(f64, f64)> {
+        match (self.start_beats, self.end_beats) {
+            (Some(start), Some(end))
+                if start.is_finite() && end.is_finite() && end > start && start >= 0.0 =>
+            {
+                Some((start, end))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Encodes supported project notes and CC events as a format-1, 480-PPQ file.
 pub fn export_standard_midi(
     project: &Project,
+) -> Result<(Vec<u8>, MidiExportReport), MidiFileError> {
+    export_standard_midi_scope(project, &MidiExportScope::default())
+}
+
+/// Encodes the chosen tracks, parts and range as a format-1, 480-PPQ file.
+///
+/// A note that crosses the range boundary is clipped to it rather than dropped,
+/// so a loop export still ends on the note that sounds at the boundary. A note
+/// entirely outside the range is left out, and controller events follow the same
+/// rule.
+pub fn export_standard_midi_scope(
+    project: &Project,
+    scope: &MidiExportScope,
 ) -> Result<(Vec<u8>, MidiExportReport), MidiFileError> {
     project.validate().map_err(MidiFileError::InvalidProject)?;
     let tempo_micros = (60_000_000.0 / project.tempo_bpm).round();
@@ -642,10 +694,14 @@ pub fn export_standard_midi(
     });
     output_tracks.push(encode_track(conductor)?);
     let mut report = MidiExportReport::default();
+    let range = scope.range();
     for track in &project.tracks {
         if !matches!(track.kind, TrackKind::Midi | TrackKind::Instrument)
             || track.midi_parts.is_empty()
         {
+            continue;
+        }
+        if !scope.track_ids.is_empty() && !scope.track_ids.contains(&track.id) {
             continue;
         }
         let mut events = Vec::new();
@@ -654,11 +710,26 @@ pub fn export_standard_midi(
             order: 0,
             data: meta_event(0x03, track.name.as_bytes()),
         });
+        let notes_before = report.notes_written;
+        let controllers_before = report.controllers_written;
         for part in &track.midi_parts {
+            if !scope.part_ids.is_empty() && !scope.part_ids.contains(&part.id) {
+                continue;
+            }
             for note in &part.notes {
-                let start = beats_to_ticks(part.start_beats + note.start_beats)?;
-                let end =
-                    beats_to_ticks(part.start_beats + note.start_beats + note.duration_beats)?;
+                let note_start = part.start_beats + note.start_beats;
+                let note_end = note_start + note.duration_beats;
+                let (start_beats, end_beats) = match range {
+                    Some((start, end)) => {
+                        if note_end <= start || note_start >= end {
+                            continue;
+                        }
+                        (note_start.max(start), note_end.min(end))
+                    }
+                    None => (note_start, note_end),
+                };
+                let start = beats_to_ticks(start_beats)?;
+                let end = beats_to_ticks(end_beats)?;
                 if end <= start {
                     continue;
                 }
@@ -679,8 +750,14 @@ pub fn export_standard_midi(
                 report.notes_written += 1;
             }
             for event in &part.controller_events {
+                let position = part.start_beats + event.position_beats;
+                if let Some((start, end)) = range
+                    && (position < start || position >= end)
+                {
+                    continue;
+                }
                 events.push(OutputEvent {
-                    tick: beats_to_ticks(part.start_beats + event.position_beats)?,
+                    tick: beats_to_ticks(position)?,
                     order: 1,
                     data: vec![
                         0xb0 | (event.channel & 0x0f),
@@ -690,6 +767,21 @@ pub fn export_standard_midi(
                 });
                 report.controllers_written += 1;
             }
+        }
+        // A selection export leaves out a track that contributes nothing to it,
+        // so a loop export of one part does not carry every other track's name.
+        if scope.track_ids.is_empty()
+            && scope.part_ids.is_empty()
+            && range.is_none()
+            && report.notes_written == notes_before
+            && report.controllers_written == controllers_before
+        {
+            // The whole-project export keeps its historic shape, including a
+            // track whose parts are empty.
+        } else if report.notes_written == notes_before
+            && report.controllers_written == controllers_before
+        {
+            continue;
         }
         events.sort_by_key(|event| (event.tick, event.order));
         output_tracks.push(encode_track(events)?);
@@ -1003,6 +1095,157 @@ mod tests {
         assert_eq!(part.notes[0].channel, 2);
         assert!((part.controller_events[0].position_beats - 6.0).abs() < 1e-9);
         assert_eq!(part.controller_events[0].channel, 3);
+    }
+
+    #[test]
+    fn a_scoped_export_contains_only_the_chosen_part() {
+        let mut project = project_with_midi();
+        project.add_track(TrackKind::Midi);
+        project.tracks[1].name = "Lead".to_owned();
+        let other_part = project.add_midi_part(1, 0.0, 4.0).unwrap();
+        project
+            .add_midi_note_on_channel(1, other_part, 0.0, 1.0, 72, 0, 100)
+            .unwrap();
+        let (_, whole) = export_standard_midi(&project).unwrap();
+        assert_eq!(whole.tracks_written, 3, "conductor plus two MIDI tracks");
+        assert_eq!(whole.notes_written, 2);
+
+        // One part only: the conductor and that one track.
+        let (bytes, report) = export_standard_midi_scope(
+            &project,
+            &MidiExportScope {
+                part_ids: vec![other_part],
+                ..MidiExportScope::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.tracks_written, 2);
+        assert_eq!(report.notes_written, 1);
+        assert_eq!(
+            report.controllers_written, 0,
+            "the bass part's CC is excluded"
+        );
+        let mut imported = Project::default();
+        import_standard_midi(&mut imported, &bytes).unwrap();
+        assert_eq!(imported.tracks.len(), 1);
+        assert_eq!(imported.tracks[0].name, "Lead");
+
+        // One track only, with every part on it.
+        let (_, report) = export_standard_midi_scope(
+            &project,
+            &MidiExportScope {
+                track_ids: vec![project.tracks[0].id],
+                ..MidiExportScope::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.notes_written, 1);
+        assert_eq!(report.controllers_written, 1);
+
+        // A scope that matches nothing still writes only the conductor.
+        let (_, report) = export_standard_midi_scope(
+            &project,
+            &MidiExportScope {
+                part_ids: vec![9_999],
+                ..MidiExportScope::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.tracks_written, 1);
+        assert_eq!(report.notes_written, 0);
+    }
+
+    #[test]
+    fn a_loop_range_clips_crossing_notes_and_drops_the_rest() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Midi);
+        let part = project.add_midi_part(0, 0.0, 8.0).unwrap();
+        // Before, crossing, inside, crossing the end, and after the 2..4 range.
+        for (start, duration, pitch) in [
+            (0.0, 1.0, 60),
+            (1.5, 1.0, 62),
+            (2.5, 0.5, 64),
+            (3.5, 1.0, 65),
+            (5.0, 1.0, 67),
+        ] {
+            project
+                .add_midi_note_on_channel(0, part, start, duration, pitch, 0, 100)
+                .unwrap();
+        }
+        project
+            .add_midi_controller_event_on_channel(0, part, 1.0, 11, 0, 10)
+            .unwrap();
+        project
+            .add_midi_controller_event_on_channel(0, part, 3.0, 11, 0, 20)
+            .unwrap();
+
+        let (bytes, report) = export_standard_midi_scope(
+            &project,
+            &MidiExportScope {
+                start_beats: Some(2.0),
+                end_beats: Some(4.0),
+                ..MidiExportScope::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.notes_written, 3, "the crossing and inside notes");
+        assert_eq!(
+            report.controllers_written, 1,
+            "only the CC inside the range"
+        );
+
+        let mut imported = Project::default();
+        import_standard_midi(&mut imported, &bytes).unwrap();
+        let exported = &imported.tracks[0].midi_parts[0];
+        let spans = exported
+            .notes
+            .iter()
+            .map(|note| {
+                (
+                    note.start_beats,
+                    note.start_beats + note.duration_beats,
+                    note.pitch,
+                )
+            })
+            .collect::<Vec<_>>();
+        // The note from 1.5 is clipped to start at 2.0, the note from 3.5 is
+        // clipped to end at 4.0, and the inside note is untouched.
+        assert!(spans.iter().any(|(start, end, pitch)| *pitch == 62
+            && (*start - 2.0).abs() < 1e-6
+            && (*end - 2.5).abs() < 1e-6));
+        assert!(spans.iter().any(|(start, end, pitch)| *pitch == 64
+            && (*start - 2.5).abs() < 1e-6
+            && (*end - 3.0).abs() < 1e-6));
+        assert!(spans.iter().any(|(start, end, pitch)| *pitch == 65
+            && (*start - 3.5).abs() < 1e-6
+            && (*end - 4.0).abs() < 1e-6));
+        assert!(
+            !spans
+                .iter()
+                .any(|(_, _, pitch)| *pitch == 60 || *pitch == 67)
+        );
+
+        // An unusable range is ignored rather than exporting nothing.
+        let (_, report) = export_standard_midi_scope(
+            &project,
+            &MidiExportScope {
+                start_beats: Some(4.0),
+                end_beats: Some(4.0),
+                ..MidiExportScope::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.notes_written, 5);
+        assert!(!MidiExportScope::default().is_whole_project() == false);
+        assert!(
+            MidiExportScope {
+                part_ids: vec![part],
+                ..MidiExportScope::default()
+            }
+            .is_whole_project()
+                == false
+        );
     }
 
     #[test]
