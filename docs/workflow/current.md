@@ -4,9 +4,9 @@ Revision 4 is complete (steps 1-32); its [delivery handoff](handoffs/revision-4-
 
 [Revision 5](roadmap-32-steps-v5.md) is the active queue: tempo/signature editing (OPR bump), transpose dialog, retrospective MIDI capture, a per-event offline processing chain, cue-sheet Audio CD import, Track Archive background import, timeline-surface reviews, and decision records for MMC, external sync and video. It also opens with a baseline reconciliation (step 1), the runtime review checklist for the fixes above (step 2) and an export/delivery contract review (step 3).
 
-Delivered so far: R5-01 (baseline reconciliation), R5-03 (export/delivery contract review), R5-04 (tempo/signature contract - no OPR bump was needed, accents stay an application preference), R5-05 (Tempo Track Editor) and R5-08 (Ctrl+T wired). R5-02 is the user's runtime checklist for the manual-review fixes.
+Delivered so far: R5-01 (baseline reconciliation), R5-03 (export/delivery contract review), R5-04 (tempo/signature contract - no OPR bump needed, accents stay an application preference), R5-05 (Tempo Track Editor), R5-06 (beat/sample conversion audit across three tempo/rate combinations) and R5-08 (Ctrl+T wired). R5-07 (tempo exchange) is delivered in the same checkpoint. R5-02 is the user's runtime checklist for the manual-review fixes.
 
-Next ready step: R5-06, the beat/sample conversion audit. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+Next ready step: R5-09, the transpose dialog. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 

@@ -59,6 +59,7 @@ mod system_stats;
 #[path = "templates.rs"]
 mod templates;
 mod tempo_editor;
+mod tempo_file;
 mod track_archive;
 #[path = "transport_panel.rs"]
 mod transport_panel;
@@ -13541,14 +13542,20 @@ impl OpenTrackApp {
                             self.import_audio_file();
                             ui.close();
                         }
+                        if menu_command(
+                            ui,
+                            "Tempo Track...",
+                            "",
+                            self.project_open && !self.is_recording(),
+                        )
+                        .clicked()
+                        {
+                            self.import_tempo_file();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
-                            &[
-                                ("Audio CD...", ""),
-                                ("Video File...", ""),
-                                ("Tempo Track...", ""),
-                                ("OMF...", ""),
-                            ],
+                            &[("Audio CD...", ""), ("Video File...", ""), ("OMF...", "")],
                         );
                         if menu_command(
                             ui,
@@ -13596,7 +13603,17 @@ impl OpenTrackApp {
                                 Some(audio_export::Dialog::for_stems(&self.data.project));
                             ui.close();
                         }
-                        disabled_menu_commands(ui, &[("Tempo Track...", "")]);
+                        if menu_command(
+                            ui,
+                            "Tempo Track...",
+                            "",
+                            self.project_open && !self.is_recording(),
+                        )
+                        .clicked()
+                        {
+                            self.export_tempo_file();
+                            ui.close();
+                        }
                         if menu_command(ui, "MIDI File...", "", self.midi_file_task.is_none())
                             .clicked()
                         {

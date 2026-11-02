@@ -972,6 +972,67 @@ mod render_tests {
     }
 
     #[test]
+    fn rendered_length_follows_tempo_and_rate_consistently() {
+        use opentrack_audio::PlaybackMidiNote;
+        use opentrack_core::project::TrackKind;
+        use std::sync::atomic::AtomicBool;
+
+        let root =
+            std::env::temp_dir().join(format!("opentrack-tempo-audit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+
+        // Two beats at 60 BPM, four at 120 BPM and one at 174 BPM are different
+        // musical lengths; the rendered frames must follow 60/tempo * rate.
+        for (tempo, rate, beats, expected) in [
+            (60.0_f64, 44_100_u32, 2.0_f64, 88_200_u64),
+            (120.0, 48_000, 4.0, 96_000),
+            (174.0, 96_000, 1.0, 33_103),
+        ] {
+            let mut project = Project::default();
+            project.tempo_bpm = tempo;
+            project.sample_rate_hz = rate;
+            project.add_track(TrackKind::Instrument);
+            let mut settings = track(0.5);
+            settings.midi_notes = vec![PlaybackMidiNote {
+                id: 1,
+                start_beats: 0.0,
+                duration_beats: beats,
+                frequency_hz: 440.0,
+                channel: 0,
+                velocity: 0.8,
+            }];
+            let snapshot = PlaybackSettingsSnapshot {
+                tempo_bpm: tempo,
+                tracks: vec![settings],
+            };
+            let destination = root.join(format!("tempo-{tempo}-{rate}.wav"));
+            let cancel = AtomicBool::new(false);
+            let progress = Mutex::new((0, 0));
+            render_export(
+                project,
+                snapshot,
+                destination.clone(),
+                0.0,
+                beats,
+                rate,
+                RecordingFormat::Float32,
+                &cancel,
+                &progress,
+            )
+            .expect("render");
+            let metadata = opentrack_audio::audio_file_metadata(&destination).expect("metadata");
+            assert_eq!(metadata.sample_rate, rate);
+            assert_eq!(
+                u64::from(metadata.frames),
+                expected,
+                "{beats} beats at {tempo} BPM and {rate} Hz"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn every_audible_track_renders_its_own_wav_in_the_chosen_folder() {
         use opentrack_audio::{DecodedWav, PlaybackClip, PlaybackSource};
         use opentrack_core::project::TrackKind;
