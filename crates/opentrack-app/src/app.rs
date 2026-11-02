@@ -32478,6 +32478,123 @@ mod timecode_tests {
 }
 
 #[cfg(test)]
+mod arranger_preview_tests {
+    use super::*;
+
+    fn app_with_sequence() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        let intro = app
+            .data
+            .project
+            .arranger
+            .add_section("Intro".to_owned(), 0.0, 4.0)
+            .expect("section");
+        let verse = app
+            .data
+            .project
+            .arranger
+            .add_section("Verse".to_owned(), 4.0, 12.0)
+            .expect("section");
+        app.data.project.arranger.append_sequence(intro, 1);
+        app.data.project.arranger.append_sequence(verse, 2);
+        app
+    }
+
+    #[test]
+    fn the_preview_refuses_unsupported_states_with_reasons() {
+        let mut app = app_with_sequence();
+        // Nothing to preview.
+        app.data.project.arranger.sequence.clear();
+        app.start_arranger_preview();
+        assert!(app.status_message.contains("sequence is empty"));
+        assert!(app.arranger_preview.is_none());
+
+        // Cycle is refused during preview.
+        let mut app = app_with_sequence();
+        app.data.transport.cycle = true;
+        app.start_arranger_preview();
+        assert!(app.status_message.contains("Turn Cycle off"));
+        assert!(app.arranger_preview.is_none());
+
+        // The recording guard uses `is_recording()` (a live session), which needs
+        // inputs to construct, so it is exercised on the desktop rather than here.
+
+        // Without a prepared playback plan it refuses instead of pretending.
+        let mut app = app_with_sequence();
+        assert!(app.offline_playback_settings.is_none());
+        app.start_arranger_preview();
+        assert!(app.status_message.contains("Prepare the playback plan"));
+        assert!(app.arranger_preview.is_none());
+    }
+
+    #[test]
+    fn preview_positions_follow_the_sequence_across_repeats() {
+        let mut app = app_with_sequence();
+        app.arranger_preview = Some(ArrangerPreview {
+            total_beats: 20.0,
+            plays: vec![
+                ArrangerPreviewPlay {
+                    sequence_start: 0.0,
+                    sequence_end: 4.0,
+                    source_start: 0.0,
+                },
+                ArrangerPreviewPlay {
+                    sequence_start: 4.0,
+                    sequence_end: 20.0,
+                    source_start: 4.0,
+                },
+            ],
+        });
+        let position = |app: &mut OpenTrackApp, beats: f64| {
+            app.data.transport.position_beats = beats;
+            app.arranger_preview_positions().expect("positions")
+        };
+        assert_eq!(position(&mut app, 2.0), (2.0, 2.0));
+        // The second item's first repeat starts at source 4.
+        assert_eq!(position(&mut app, 4.0), (4.0, 4.0));
+        assert_eq!(position(&mut app, 12.0), (12.0, 12.0));
+        // Past the end it clamps to the last item rather than inventing a source.
+        let (sequence, source) = position(&mut app, 99.0);
+        assert!((sequence - 20.0).abs() < 1e-9);
+        assert!((source - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stopping_clears_the_preview_and_rewinds() {
+        let mut app = app_with_sequence();
+        app.arranger_preview = Some(ArrangerPreview {
+            total_beats: 8.0,
+            plays: vec![ArrangerPreviewPlay {
+                sequence_start: 0.0,
+                sequence_end: 8.0,
+                source_start: 0.0,
+            }],
+        });
+        app.data.transport.position_beats = 5.0;
+        app.data.transport.playing = true;
+        app.set_transport_playing(false);
+        assert!(
+            app.arranger_preview.is_none(),
+            "preview stops with playback"
+        );
+        assert_eq!(app.data.transport.position_beats, 0.0, "it rewinds");
+
+        // A content change while previewing stops it with a reason.
+        let mut app = app_with_sequence();
+        app.arranger_preview = Some(ArrangerPreview {
+            total_beats: 8.0,
+            plays: Vec::new(),
+        });
+        app.stop_arranger_preview("Project content changed; arranger preview stopped");
+        assert!(app.arranger_preview.is_none());
+        assert!(app.status_message.contains("content changed"));
+    }
+}
+
+#[cfg(test)]
 mod add_track_lane_tests {
     use super::*;
 
