@@ -1,12 +1,13 @@
-# Active planning handoff - revision 4 complete (2026-11-02)
+# Active planning handoff - revision 5 prepared (2026-11-02)
 
-Revision 4 is complete at step 32. Detailed delivered scope, verification, pending runtime work and the next-queue recommendation are in [the revision-4 delivery handoff](handoffs/revision-4-delivery.md). [Revision 4](roadmap-32-steps-v4.md) remains the active queue reference; [the OpenCode handoff](opencode-revision-4-handoff.md) records the runner contract.
+Revision 4 is complete (steps 1-32); its [delivery handoff](handoffs/revision-4-delivery.md) records scope, runtime-pending work and measurements. The post-commit manual review produced four findings, all fixed in `9a5e7dd`: extra mixers moved to native viewports (click-through), track-keyed widget ids made relative (duplicate id 7411), the spectrum window gained its own grid and state line, and Audio Mixdown now takes its range from the locators only, per user direction.
 
-Latest checkpoint: steps 12-31 delivered CC Automation Setup, FX returns (identity/sends/UI/review), folder hierarchy (model/commands/folding/cross-view), the optional marker lane, regions editor, secondary ruler, arranger contract/editor/offline render/playback-only preview/Add Arranger, and Track Archive v1 export/import. Step 31 ran core 164 passed, audio 171 passed/3 ignored, app 544 passed/9 ignored, clean fmt/diff, and an x64 local-ASIO release build (SHA-256 7206DC24A44620E59D57828E6C6CBC7EEB0C0B849DAA5545AA13B434AF23A826).
+[Revision 5](roadmap-32-steps-v5.md) is the active queue: tempo/signature editing (OPR bump), transpose dialog, retrospective MIDI capture, a per-event offline processing chain, cue-sheet Audio CD import, Track Archive background import, timeline-surface reviews, and decision records for MMC, external sync and video. It also opens with a baseline reconciliation (step 1), the runtime review checklist for the fixes above (step 2) and an export/delivery contract review (step 3).
 
-Open issues: no desktop, listening, hardware, VST3 or user acceptance has been performed. Track Archive import is synchronous; rolls stop per frame; arranger preview/export and FX audibility await desktop review. Preserve the untracked recovery-20261028-204244/ and stress-bench/ directories.
+Next ready step: R5-01, reconcile the inventory and QA baseline. Create its packet from `tasks/TEMPLATE.md` before editing. Do not append post-close slices to revision 4.
 
-Next: user runtime review of revision 4; do not append post-close slices to this revision. Candidate next contracts are tempo/signature, offline plug-in processing, or Track Archive background import; CPR/OMF remain fixture-blocked. Actual model: DeepSeek V4.1 Flash (opencode-go/deepseek-v4.1-flash); no independent reviewer.
+Measured baseline at `9a5e7dd` (rerun in step 1): 275 project-open menu leaves - 40 available, 145 state-dependent, 82 unavailable, 8 informational; 147/152 command IDs dispatched; app 549 passed / 4 failed / 9 ignored, core 164, audio 170 / 3 ignored; OPR 37. The four app failures are `transport_locate_tests` roll cases that fail identically on the pristine revision-4 checkpoint here because no audio output device is available. No desktop, listening, hardware, VST3 or user acceptance is claimed. Actual model: DeepSeek V4.1 Flash (opencode-go/deepseek-v4.1-flash); no independent reviewer.
+
 ---
 
 # Current assignment ΓÇö roadmap activation (2026-11-01)
