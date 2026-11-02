@@ -29,6 +29,7 @@ mod midi_editor_settings;
 mod midi_file;
 #[path = "mixer.rs"]
 mod mixer;
+mod offline_processing;
 #[path = "popup_behavior.rs"]
 mod popup_behavior;
 #[path = "preferences.rs"]

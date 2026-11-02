@@ -12,7 +12,9 @@ R5-12 closed the virtual-keyboard review items at source level (MIDI Reset and c
 
 R5-13 delivered the per-event offline chain model (OPR 38, bounded to eight first-party processors, validated on load, locked events refuse edits).
 
-Next ready step: R5-14, the staged chain renderer. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+R5-14 delivered the staged chain renderer: each processor reads the previous stage, a failure deletes every staged file and leaves the project untouched, and a successful bake clears the chain, resets lineage and commits one "Direct Offline Processing" step.
+
+Next ready step: R5-15, the Direct Offline Processing UI. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 
