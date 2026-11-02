@@ -1330,6 +1330,9 @@ pub struct OpenTrackApp {
     applied_eq_solo: Option<(u64, usize)>,
     channel_window_owner: crate::native_windows::ChannelOwner,
     mixer_window: NativeWindowState,
+    /// Extra mixer panels, opened from Window > Mixer 2 and Mixer 3.
+    mixer_window_2: NativeWindowState,
+    mixer_window_3: NativeWindowState,
     mixer_track_control_cache: Vec<(f32, f32, f32, bool)>,
     media_window: NativeWindowState,
     track_rename_dialog: Option<TrackRenameDialog>,
@@ -2798,6 +2801,32 @@ impl OpenTrackApp {
             },
             applied_eq_solo: None,
             channel_window_owner: crate::native_windows::ChannelOwner::new(creation),
+            mixer_window_2: NativeWindowState {
+                channel_bus: None,
+                open: false,
+                bounds: None,
+                restore_bounds: None,
+                epoch: 0,
+                viewport_live: false,
+                focus_requested: false,
+                focused: false,
+                window_level: None,
+                level_settle: 0,
+                popup_active: false,
+            },
+            mixer_window_3: NativeWindowState {
+                channel_bus: None,
+                open: false,
+                bounds: None,
+                restore_bounds: None,
+                epoch: 0,
+                viewport_live: false,
+                focus_requested: false,
+                focused: false,
+                window_level: None,
+                level_settle: 0,
+                popup_active: false,
+            },
             mixer_window: NativeWindowState {
                 open: true,
                 ..NativeWindowState::default()
@@ -4038,6 +4067,8 @@ impl OpenTrackApp {
         self.channel_settings_window =
             reset_native_window_state(self.channel_settings_window.epoch);
         self.mixer_window = reset_native_window_state(self.mixer_window.epoch);
+        self.mixer_window_2 = reset_native_window_state(self.mixer_window_2.epoch);
+        self.mixer_window_3 = reset_native_window_state(self.mixer_window_3.epoch);
         self.media_window = reset_native_window_state(self.media_window.epoch);
         let instantiated = self
             .workspace_state
@@ -14521,11 +14552,23 @@ impl OpenTrackApp {
                         self.toggle_inspector_panel();
                         ui.close();
                     }
+                    if ui
+                        .selectable_label(self.mixer_window_2.open, "Mixer 2")
+                        .clicked()
+                    {
+                        self.mixer_window_2.open = !self.mixer_window_2.open;
+                        ui.close();
+                    }
+                    if ui
+                        .selectable_label(self.mixer_window_3.open, "Mixer 3")
+                        .clicked()
+                    {
+                        self.mixer_window_3.open = !self.mixer_window_3.open;
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Mixer 2", ""),
-                            ("Mixer 3", ""),
                             ("Video Window", "F8"),
                             ("Virtual Keyboard", "Alt+K"),
                         ],
@@ -14751,44 +14794,71 @@ impl OpenTrackApp {
         );
     }
 
-    fn show_mixer_window(&mut self, ui: &mut egui::Ui) {
-        self.mixer_window.viewport_live = false;
-        self.mixer_window.focus_requested = false;
+    /// The window state behind one mixer slot: the docked panel or an extra mixer.
+    fn mixer_window_state(&mut self, slot: u8) -> &mut NativeWindowState {
+        match slot {
+            1 => &mut self.mixer_window_2,
+            2 => &mut self.mixer_window_3,
+            _ => &mut self.mixer_window,
+        }
+    }
+
+    /// Draws one mixer panel.
+    ///
+    /// Slot 0 is the docked panel with its header and editor tabs. Slots 1 and 2
+    /// are the extra mixers, which show the mixer body only: their tabs would
+    /// otherwise switch the docked panel's editor behind the user's back.
+    fn show_mixer_window(&mut self, ui: &mut egui::Ui, slot: u8) {
+        let docked = slot == 0;
         let panel_rect = ui.max_rect();
-        self.mixer_window.bounds = Some(docked_bounds(panel_rect));
+        {
+            let state = self.mixer_window_state(slot);
+            state.viewport_live = false;
+            state.focus_requested = false;
+            state.bounds = Some(docked_bounds(panel_rect));
+        }
         let palette = theme::palette(ui);
         ui.painter().rect_filled(panel_rect, 0.0, palette.surface);
-        if docked_panel_header(ui, "", false) {
-            self.mixer_window.open = false;
-            self.sample_editor_active = false;
-            self.midi_editor_open = false;
-            return;
-        }
-        for (index, label) in [(0, "Mixer"), (1, "Audio Editor"), (2, "MIDI Editor")] {
-            let rect = Rect::from_min_size(
-                panel_rect.min + Vec2::new(5.0 + index as f32 * 105.0, 1.0),
-                Vec2::new(102.0, PANEL_HEADER_HEIGHT - 2.0),
-            );
-            let active = match index {
-                0 => !self.sample_editor_active && !self.midi_editor_open,
-                1 => self.sample_editor_active,
-                _ => self.midi_editor_open,
-            };
-            if ui
-                .put(rect, egui::Button::new(label).selected(active))
-                .clicked()
-            {
-                self.sample_editor_active = index == 1;
-                self.midi_editor_open = index == 2;
+        if docked {
+            if docked_panel_header(ui, "", false) {
+                self.mixer_window.open = false;
+                self.sample_editor_active = false;
+                self.midi_editor_open = false;
+                return;
+            }
+            for (index, label) in [(0, "Mixer"), (1, "Audio Editor"), (2, "MIDI Editor")] {
+                let rect = Rect::from_min_size(
+                    panel_rect.min + Vec2::new(5.0 + index as f32 * 105.0, 1.0),
+                    Vec2::new(102.0, PANEL_HEADER_HEIGHT - 2.0),
+                );
+                let active = match index {
+                    0 => !self.sample_editor_active && !self.midi_editor_open,
+                    1 => self.sample_editor_active,
+                    _ => self.midi_editor_open,
+                };
+                if ui
+                    .put(rect, egui::Button::new(label).selected(active))
+                    .clicked()
+                {
+                    self.sample_editor_active = index == 1;
+                    self.midi_editor_open = index == 2;
+                }
             }
         }
-        let body_rect = Rect::from_min_max(
-            Pos2::new(
-                panel_rect.left() + 5.0,
-                panel_rect.top() + PANEL_HEADER_HEIGHT,
-            ),
-            Pos2::new(panel_rect.right() - 5.0, panel_rect.bottom() - 3.0),
-        );
+        let body_rect = if docked {
+            Rect::from_min_max(
+                Pos2::new(
+                    panel_rect.left() + 5.0,
+                    panel_rect.top() + PANEL_HEADER_HEIGHT,
+                ),
+                Pos2::new(panel_rect.right() - 5.0, panel_rect.bottom() - 3.0),
+            )
+        } else {
+            Rect::from_min_max(
+                panel_rect.min + Vec2::new(4.0, 4.0),
+                panel_rect.max - Vec2::new(4.0, 4.0),
+            )
+        };
         let position_before = self.data.transport.position_beats;
         let selection_before = self.data.project.selected_track;
         let midi_editor_visible = self.midi_editor_open;
@@ -15429,6 +15499,26 @@ impl OpenTrackApp {
             transport_active,
             position_seconds,
         );
+    }
+
+    /// Draws an extra mixer as a floating window that shares the mixer body.
+    fn show_extra_mixer(&mut self, ctx: &egui::Context, slot: u8) {
+        if !self.mixer_window_state(slot).open {
+            return;
+        }
+        let title = if slot == 1 { "Mixer 2" } else { "Mixer 3" };
+        let mut open = true;
+        egui::Window::new(title)
+            .id(Id::new(("extra-mixer", slot)))
+            .order(egui::Order::Middle)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(820.0, 460.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                self.show_mixer_window(ui, slot);
+            });
+        self.mixer_window_state(slot).open = open;
     }
 
     fn show_spectrum_window(&mut self, ctx: &egui::Context) {
@@ -16569,7 +16659,7 @@ impl OpenTrackApp {
                 if project {
                     self.show_project_window(ui);
                 } else {
-                    self.show_mixer_window(ui);
+                    self.show_mixer_window(ui, 0);
                 }
             },
         );
@@ -17813,6 +17903,8 @@ impl eframe::App for OpenTrackApp {
             self.show_track_add_dialog(&ctx);
             self.show_event_colors_dialog(&ctx);
             self.show_channel_settings_window(&ctx);
+            self.show_extra_mixer(&ctx, 1);
+            self.show_extra_mixer(&ctx, 2);
             self.update_spectrum_analyzer();
             self.show_spectrum_window(&ctx);
             self.show_media_window(&ctx);
@@ -30206,6 +30298,91 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+    }
+}
+
+#[cfg(test)]
+mod extra_mixer_tests {
+    use super::*;
+
+    fn run(ctx: &egui::Context, app: &mut OpenTrackApp, slot: u8, frame: usize) -> Vec<String> {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0))),
+                time: Some(frame as f64 * 0.05),
+                ..Default::default()
+            },
+            |_| app.show_extra_mixer(ctx, slot),
+        );
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    fn app_with_tracks() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Midi);
+        app
+    }
+
+    #[test]
+    fn the_extra_mixers_open_independently_of_the_docked_one() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_tracks();
+        assert!(!app.mixer_window_2.open);
+        assert!(!app.mixer_window_3.open);
+
+        // Neither extra mixer draws while closed.
+        let closed = run(&ctx, &mut app, 1, 0);
+        assert!(!closed.iter().any(|text| text == "Mixer 2"), "{closed:?}");
+
+        let docked_before = app.mixer_window.open;
+        app.mixer_window_2.open = true;
+        run(&ctx, &mut app, 1, 1);
+        let texts = run(&ctx, &mut app, 1, 2);
+        let joined = texts.join("\n");
+        assert!(joined.contains("Mixer 2"), "{joined}");
+        // The mixer body is real, not a placeholder: the bus strips are drawn.
+        assert!(
+            joined.contains("Input 1/2") || joined.contains("stereo"),
+            "{joined}"
+        );
+        assert!(app.mixer_window_2.open, "the window keeps its own state");
+        assert_eq!(
+            app.mixer_window.open, docked_before,
+            "opening an extra mixer leaves the docked mixer alone"
+        );
+
+        // The third mixer is separate again.
+        app.mixer_window_3.open = true;
+        run(&ctx, &mut app, 2, 3);
+        let texts = run(&ctx, &mut app, 2, 4);
+        assert!(texts.iter().any(|text| text == "Mixer 3"), "{texts:?}");
+        assert!(app.mixer_window_3.open);
+
+        // Closing one leaves the other open.
+        app.mixer_window_2.open = false;
+        let texts = run(&ctx, &mut app, 2, 5);
+        assert!(texts.iter().any(|text| text == "Mixer 3"));
+        assert!(!app.mixer_window_2.open && app.mixer_window_3.open);
     }
 }
 

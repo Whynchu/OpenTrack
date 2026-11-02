@@ -531,5 +531,14 @@ still one commit with tests and refreshed counts.
    only tap the window subscribes to; with no audio device it says so instead of
    drawing a blank graph silently. 1 app test. Disabled entries 77 -> 76.
 
+53. **Mixer 2 and Mixer 3.** *Delivered.* Window > Mixer 2 / Mixer 3 open extra
+   mixer panels in floating windows. `show_mixer_window` gained a slot (`0` docked,
+   `1`/`2` extra) so each mixer reads and writes its own `NativeWindowState`, and
+   the extra panels draw the mixer body without the docked header and editor tabs —
+   otherwise their tabs would switch the docked panel behind the user's back. The
+   docked panel is unchanged. Their bounds are session state, not part of the saved
+   workspace snapshot yet, which the roadmap records as a limitation. 1 app test.
+   Disabled entries 76 -> 74.
+
 Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
 Archive, then the user-dependent reviews and CPR fixtures.
