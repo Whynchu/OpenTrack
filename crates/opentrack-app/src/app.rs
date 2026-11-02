@@ -6779,6 +6779,18 @@ impl OpenTrackApp {
                 }
             }
             "file.save_new_version" => self.save_new_project_version(),
+            "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
+            "devices.vst_instruments" => {
+                self.track_add_dialog = Some(TrackAddDialog {
+                    kind: TrackKind::Instrument,
+                    count: 1,
+                    audio_channels: 2,
+                    mono_input_channel: 1,
+                    browse_presets: true,
+                    instrument: None,
+                });
+            }
+            "devices.vst_performance" => self.realtime_diagnostics_open = true,
             "edit.select_all" => self.select_all_audio_events(),
             "edit.select_none" => self.select_no_audio_events(),
             "edit.delete" => self.delete_audio_selection(false),
@@ -10823,7 +10835,6 @@ impl OpenTrackApp {
                         self.paste_audio_events();
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Paste at Origin", "Alt+V")]);
                     let can_split = self.project_open
                         && !self.is_recording()
                         && self.data.project.tracks.iter().any(|track| {
@@ -11445,10 +11456,17 @@ impl OpenTrackApp {
                         ],
                     );
                     ui.separator();
+                    if menu_command(ui, "Quantize Setup...", "", self.project_open).clicked() {
+                        self.midi_quantize_dialog =
+                            Some(opentrack_core::midi_quantize::QuantizeOptions {
+                                grid_beats: self.arrange_view_state.quantize.step_beats(),
+                                ..opentrack_core::midi_quantize::QuantizeOptions::default()
+                            });
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Quantize Setup...", ""),
                             ("Logical Presets", ""),
                             ("Drum Map Setup...", ""),
                             ("Insert Velocities", ""),
@@ -11787,8 +11805,19 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.separator();
-                    if menu_command(ui, "Realtime Performance...", "", true).clicked() {
+                    if menu_command(ui, "Realtime Performance...", "F12", true).clicked() {
                         self.realtime_diagnostics_open = true;
+                        ui.close();
+                    }
+                    if menu_command(ui, "VST Instruments", "F11", true).clicked() {
+                        self.track_add_dialog = Some(TrackAddDialog {
+                            kind: TrackKind::Instrument,
+                            count: 1,
+                            audio_channels: 2,
+                            mono_input_channel: 1,
+                            browse_presets: true,
+                            instrument: None,
+                        });
                         ui.close();
                     }
                     disabled_menu_commands(
@@ -11812,8 +11841,6 @@ impl OpenTrackApp {
                             ("Mixer 3", ""),
                             ("Remaining Record Time Display", ""),
                             ("Time Display", ""),
-                            ("VST Instruments", "F11"),
-                            ("VST Performance", "F12"),
                             ("Video Window", "F8"),
                             ("Virtual Keyboard", "Alt+K"),
                             ("Show Panel", ""),
@@ -26314,6 +26341,37 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn paste_at_origin_restores_the_copied_positions_and_devices_keys_open_panels() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.copy_selected_audio_events();
+        // Paste normally lands at the cursor; origin paste uses the copy point.
+        app.data.transport.position_beats = 40.0;
+        dispatch(&mut app, "edit.paste_at_origin", &ctx);
+        let starts = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        assert!(
+            starts.contains(&0.0),
+            "the copy is back where it started: {starts:?}"
+        );
+        assert!(!starts.contains(&40.0), "origin paste ignores the cursor");
+
+        dispatch(&mut app, "devices.vst_instruments", &ctx);
+        let dialog = app.track_add_dialog.as_ref().expect("instrument dialog");
+        assert_eq!(dialog.kind, TrackKind::Instrument);
+        assert!(dialog.browse_presets);
+
+        assert!(!app.realtime_diagnostics_open);
+        dispatch(&mut app, "devices.vst_performance", &ctx);
+        assert!(app.realtime_diagnostics_open);
+    }
+
+    #[test]
     fn selection_side_project_setup_and_toggle_reach_their_state() {
         let ctx = egui::Context::default();
         let mut app = app_with_track();
@@ -26807,6 +26865,9 @@ mod keyboard_coverage_tests {
             "zoom.zoom_full",
             "zoom.zoom_to_event",
             "edit.split_range",
+            "edit.paste_at_origin",
+            "devices.vst_instruments",
+            "devices.vst_performance",
             "midi.quantize",
             "nudge.left",
             "nudge.right",

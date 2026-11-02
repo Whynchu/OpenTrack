@@ -29,8 +29,8 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **114** commands have a dispatch
-arm; **38** still do not. The menus remain the way to reach the
+numpad ranges). **117** commands have a dispatch
+arm; **35** still do not. The menus remain the way to reach the
 uncovered features.
 
 ## Bound commands without a dispatch arm
@@ -45,8 +45,6 @@ uncovered features.
 
 - Video (`F8`) — `devices.video`
 - Virtual Keyboard (`Alt+K`) — `devices.virtual_keyboard`
-- VST Instruments (`F11`) — `devices.vst_instruments`
-- VST Performance (`F12`) — `devices.vst_performance`
 
 ### Edit
 
@@ -55,7 +53,6 @@ uncovered features.
 - Edit In-place (`Ctrl+Shift+I`) — `edit.edit_in_place`
 - Insert Silence (`Ctrl+Shift+E`) — `edit.insert_silence`
 - Open Score Editor (`Ctrl+R`) — `edit.open_score_editor`
-- Paste at Origin (`Alt+V`) — `edit.paste_at_origin`
 - Paste Time (`Ctrl+Shift+V`) — `edit.paste_time`
 
 ### Editors

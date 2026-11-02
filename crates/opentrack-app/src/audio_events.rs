@@ -1551,6 +1551,21 @@ impl OpenTrackApp {
     }
 
     pub(super) fn paste_audio_events(&mut self) {
+        let base = self.data.transport.position_beats.max(0.0);
+        self.paste_audio_events_at(base);
+    }
+
+    /// Pastes the copied events at the beats they were copied from.
+    pub(super) fn paste_audio_events_at_origin(&mut self) {
+        let Some(clipboard) = self.audio_event_clipboard.as_ref() else {
+            self.status_message = "Copy audio events before pasting".into();
+            return;
+        };
+        let base = clipboard.anchor_beat;
+        self.paste_audio_events_at(base);
+    }
+
+    fn paste_audio_events_at(&mut self, base_beats: f64) {
         if self.is_recording() {
             self.status_message = "Stop recording before pasting audio events".into();
             return;
@@ -1665,8 +1680,8 @@ impl OpenTrackApp {
                 return;
             }
             let mut clip = item.clip.clone();
-            clip.start_beats = self.data.transport.position_beats.max(0.0)
-                + (item.clip.start_beats - clipboard.anchor_beat);
+            clip.start_beats =
+                base_beats.max(0.0) + (item.clip.start_beats - clipboard.anchor_beat);
             paste.push((track_index, clip));
         }
         if !self

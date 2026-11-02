@@ -48,7 +48,17 @@ work is named rather than approximated.
    the media in the pool. Both skip locked events and run as one labelled undo
    step. 2 core and 1 app tests. Disabled entries 137 -> 134.
 
-### C. Media pool
+### C. Editing and panels
+
+5. **Paste at Origin, Quantize Setup, VST Instruments, VST Performance.**
+   *Delivered.* Edit > Paste at Origin (Alt+V) pastes the clipboard at the beats
+   it was copied from instead of the cursor. MIDI > Quantize Setup opens the
+   quantize dialog with the toolbar grid. Devices > VST Instruments (F11) opens
+   the instrument-track dialog with the catalog; VST Performance (F12) opens the
+   realtime diagnostics panel. Disabled entries 130 -> 126; shortcut coverage
+   114 -> 117. 1 app test.
+
+### D. Media pool
 
 4. **Pool cleanup commands.** *Delivered.* Media > Remove Unused Media, Empty
    Trash and Remove Missing Files. Core gained `referenced_media`,
