@@ -750,6 +750,49 @@ pub(super) fn settings(app: &mut OpenTrackApp, ctx: &egui::Context) {
                     changed = true;
                 }
             });
+            ui.separator();
+            ui.label("Accent pattern");
+            ui.horizontal(|ui| {
+                let beats = usize::from(app.data.project.beats_per_bar.clamp(1, 16));
+                for beat in 0..beats {
+                    let bit = 1_u32 << beat;
+                    let accented = app.metronome_accent_mask & bit != 0;
+                    let label = if beat == 0 { "1".to_owned() } else { format!("{}", beat + 1) };
+                    let response = ui.selectable_label(accented, label);
+                    if response.clicked() {
+                        app.metronome_accent_mask ^= bit;
+                        if app.metronome_accent_mask == 0 {
+                            // An empty pattern would silence every accent, so the
+                            // first beat is kept as the plain downbeat click.
+                            app.metronome_accent_mask = 1;
+                        }
+                        changed = true;
+                    }
+                }
+            });
+            ui.label(
+                egui::RichText::new("Accented beats use the downbeat pitch; others sound an octave lower.")
+                    .small()
+                    .color(theme::palette(ui).muted),
+            );
+            ui.horizontal(|ui| {
+                ui.label("Count-in");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut app.metronome_count_in_bars)
+                            .range(0..=4)
+                            .speed(1)
+                            .suffix(" bar(s)"),
+                    )
+                    .changed();
+            });
+            ui.label(
+                egui::RichText::new(
+                    "The count-in rolls the transport back, clicks, and starts recording at the playhead position. Punch takes precedence.",
+                )
+                .small()
+                .color(theme::palette(ui).muted),
+            );
             ui.label("Tempo and time signature follow the project.");
         });
     app.metronome_settings_open = open;

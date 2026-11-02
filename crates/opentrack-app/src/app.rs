@@ -1162,6 +1162,16 @@ pub struct OpenTrackApp {
     metronome_level: f32,
     metronome_pitch_midi: u8,
     metronome_settings_open: bool,
+    /// Bit `n` accents beat `n + 1` of the bar.
+    metronome_accent_mask: u32,
+    /// Bars of click before recording starts; 0 disables the count-in.
+    metronome_count_in_bars: u8,
+    /// Beat where a running count-in should begin capture.
+    count_in_armed: Option<f64>,
+    /// True while the count-in forces the click on regardless of the toggle.
+    count_in_click_active: bool,
+    /// Stops the count-in from re-arming itself when it starts the recording.
+    suppress_count_in: bool,
     tempo_signature_settings_open: bool,
     edit_tool: EditTool,
     keymap_profile: Option<KeymapProfile>,
@@ -2571,6 +2581,18 @@ impl OpenTrackApp {
                 .unwrap_or(87)
                 .clamp(24, 108),
             metronome_settings_open: false,
+            metronome_accent_mask: creation
+                .storage
+                .and_then(|s| eframe::get_value::<u32>(s, "metronome-accent-mask"))
+                .unwrap_or(1),
+            metronome_count_in_bars: creation
+                .storage
+                .and_then(|s| eframe::get_value::<u8>(s, "metronome-count-in-bars"))
+                .unwrap_or(0)
+                .min(4),
+            count_in_armed: None,
+            count_in_click_active: false,
+            suppress_count_in: false,
             tempo_signature_settings_open: false,
             edit_tool: EditTool::Select,
             keymap_profile,
@@ -3566,6 +3588,7 @@ impl OpenTrackApp {
         let output_hosted_inserts =
             vst3_runtime.hosted_inserts(&self.data.project.output_channel.strip);
         let mut send_routing_warning = None;
+        let accent_mask = self.effective_accent_mask();
         if let Some(engine) = self.audio_engine.as_mut() {
             engine.set_playback_plan_with_hosted_output(
                 tempo_bpm,
@@ -3574,11 +3597,12 @@ impl OpenTrackApp {
                 self.data.project.cycle_mode,
                 &self.data.project.output_channel.strip,
                 opentrack_audio::MetronomeSettings {
-                    enabled: self.metronome_enabled,
+                    enabled: self.metronome_enabled || self.count_in_click_active,
                     level: self.metronome_level,
                     beats_per_bar: self.data.project.beats_per_bar,
                     beat_unit: self.data.project.beat_unit,
                     downbeat_note: self.metronome_pitch_midi,
+                    accent_mask,
                 },
                 output_hosted_inserts,
             );
@@ -3696,6 +3720,56 @@ impl OpenTrackApp {
         if let Some(engine) = &self.audio_engine {
             engine.set_playing(playing);
         }
+    }
+
+    /// The accent mask clipped to the project's bar length.
+    ///
+    /// A pattern wider than the bar would accent beats that do not exist, so only
+    /// the beats the bar has are kept; an empty pattern falls back to the plain
+    /// downbeat click.
+    fn effective_accent_mask(&self) -> u32 {
+        let beats = u32::from(self.data.project.beats_per_bar.clamp(1, 32));
+        let mask = if beats >= 32 {
+            self.metronome_accent_mask
+        } else {
+            self.metronome_accent_mask & ((1 << beats) - 1)
+        };
+        if mask == 0 { 1 } else { mask }
+    }
+
+    /// Arms a count-in before recording, when one is configured.
+    ///
+    /// Returns true when the count-in took over the recording start. The click is
+    /// forced on for the count-in bars without changing the user's toggle.
+    fn arm_count_in(&mut self, start_beats: f64) -> bool {
+        if self.suppress_count_in || self.metronome_count_in_bars == 0 || start_beats <= 0.0 {
+            return false;
+        }
+        let bars = f64::from(self.metronome_count_in_bars.min(4));
+        let beats_per_bar = f64::from(self.data.project.beats_per_bar.max(1));
+        let lead = bars * beats_per_bar;
+        let from = (start_beats - lead).max(0.0);
+        if (start_beats - from).abs() < 1e-6 {
+            // The project has no room before the start, so a count-in would not
+            // be heard and recording would just be late.
+            return false;
+        }
+        self.seek_to_beats(from);
+        self.count_in_armed = Some(start_beats);
+        self.count_in_click_active = true;
+        self.rebuild_audio_plan();
+        self.set_transport_playing(true);
+        self.status_message = format!(
+            "Count-in: {} bar(s), recording starts at beat {start_beats:.3}",
+            self.metronome_count_in_bars
+        );
+        true
+    }
+
+    /// True when a running count-in has reached the beat where capture begins.
+    pub(super) fn count_in_should_start(&self, position: f64) -> bool {
+        self.count_in_armed
+            .is_some_and(|target| !self.is_recording() && position >= target - 1e-6)
     }
 
     fn toggle_metronome(&mut self) {
@@ -7516,6 +7590,20 @@ impl OpenTrackApp {
         );
     }
 
+    /// Starts capture when a running count-in reaches its target beat.
+    fn advance_count_in(&mut self) {
+        if !self.count_in_should_start(self.data.transport.position_beats) {
+            return;
+        }
+        self.count_in_armed = None;
+        self.count_in_click_active = false;
+        // The recording this count-in starts must not arm another one.
+        self.suppress_count_in = true;
+        self.toggle_recording();
+        self.suppress_count_in = false;
+        self.rebuild_audio_plan();
+    }
+
     /// True when an armed punch has reached its in point.
     pub(super) fn punch_should_start(&self, position: f64) -> bool {
         self.punch_armed
@@ -8561,6 +8649,14 @@ impl OpenTrackApp {
             .as_ref()
             .map(|engine| engine.position_seconds() * self.data.project.tempo_bpm / 60.0)
             .unwrap_or(self.data.transport.position_beats);
+
+        // A configured count-in rolls the transport back and starts capture at
+        // the original position; punch would fight that, so punch wins when both
+        // are on.
+        if !self.punch_enabled && self.arm_count_in(start_beats) {
+            self.data.transport.recording = true;
+            return;
+        }
 
         // Punch waits for the in locator instead of recording from the playhead.
         if self.punch_enabled {
@@ -9873,6 +9969,7 @@ impl OpenTrackApp {
         let position_before = self.data.transport.position_beats;
         let was_playing = self.data.transport.playing;
         self.advance_transport_inner(ctx);
+        self.advance_count_in();
         self.advance_punch();
         // Auto Select Events under Cursor follows a seek the user made, never
         // playback: stealing the selection every frame while playing would make
@@ -14311,6 +14408,16 @@ impl eframe::App for OpenTrackApp {
         );
         eframe::set_value(storage, "midi-thru-enabled", &self.midi_thru_enabled);
         eframe::set_value(storage, "metronome-enabled", &self.metronome_enabled);
+        eframe::set_value(
+            storage,
+            "metronome-accent-mask",
+            &self.metronome_accent_mask,
+        );
+        eframe::set_value(
+            storage,
+            "metronome-count-in-bars",
+            &self.metronome_count_in_bars,
+        );
         eframe::set_value(storage, "metronome-level", &self.metronome_level);
         eframe::set_value(storage, "metronome-pitch-midi", &self.metronome_pitch_midi);
         if let Some(profile) = &self.keymap_profile {
@@ -23363,6 +23470,133 @@ mod snap_type_tests {
         view.snap_type = SnapType::GridAndCursor;
         assert_eq!(view.snap_type.label(), "Grid + Cursor");
         assert_eq!(SnapType::ALL.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod metronome_setup_tests {
+    use super::*;
+
+    fn app_with_bar() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].armed = true;
+        app.data.project.tracks[0].input_routing = Some("Stereo In".to_owned());
+        app
+    }
+
+    #[test]
+    fn the_accent_mask_is_clipped_to_the_projects_bar() {
+        let mut app = app_with_bar();
+        app.data.project.beats_per_bar = 4;
+        app.metronome_accent_mask = 0b1111_1111;
+        assert_eq!(
+            app.effective_accent_mask(),
+            0b1111,
+            "beats beyond the bar cannot be accented"
+        );
+
+        app.data.project.beats_per_bar = 3;
+        app.metronome_accent_mask = 0b0110;
+        assert_eq!(
+            app.effective_accent_mask(),
+            0b0110,
+            "an in-bar pattern is kept"
+        );
+
+        // An empty pattern still clicks the downbeat rather than going silent.
+        app.metronome_accent_mask = 0;
+        assert_eq!(app.effective_accent_mask(), 1);
+    }
+
+    #[test]
+    fn the_count_in_rolls_back_and_targets_the_record_start() {
+        let mut app = app_with_bar();
+        app.data.transport.position_beats = 8.0;
+        app.metronome_count_in_bars = 2;
+        app.data.project.beats_per_bar = 4;
+        assert!(app.arm_count_in(8.0));
+        assert_eq!(app.data.transport.position_beats, 0.0, "two bars of lead");
+        assert_eq!(app.count_in_armed, Some(8.0));
+        assert!(app.count_in_click_active, "the click is forced on");
+        assert!(app.status_message.contains("Count-in: 2 bar(s)"));
+
+        // A start too close to the project start gets the lead that exists.
+        let mut app = app_with_bar();
+        app.data.transport.position_beats = 2.0;
+        app.metronome_count_in_bars = 2;
+        assert!(app.arm_count_in(2.0));
+        assert_eq!(app.data.transport.position_beats, 0.0);
+
+        // No configured bars means no count-in at all.
+        let mut app = app_with_bar();
+        app.metronome_count_in_bars = 0;
+        assert!(!app.arm_count_in(16.0));
+
+        // A start at the project start has no room to count in.
+        let mut app = app_with_bar();
+        app.metronome_count_in_bars = 2;
+        assert!(!app.arm_count_in(0.0));
+    }
+
+    #[test]
+    fn the_count_in_starts_capture_only_at_its_target_beat() {
+        let mut app = app_with_bar();
+        app.metronome_count_in_bars = 1;
+        app.data.transport.position_beats = 8.0;
+        assert!(app.arm_count_in(8.0));
+        assert!(!app.count_in_should_start(7.0));
+        assert!(app.count_in_should_start(8.0));
+
+        // Reaching the target clears the count-in and drops the click override.
+        app.data.transport.position_beats = 8.0;
+        app.advance_count_in();
+        assert_eq!(app.count_in_armed, None);
+        assert!(!app.count_in_click_active);
+    }
+
+    #[test]
+    fn the_metronome_settings_persist() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let app = OpenTrackApp::new_internal(&creation, false);
+
+        #[derive(Default)]
+        struct Storage {
+            values: std::collections::HashMap<String, String>,
+        }
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.values.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.values.insert(key.to_owned(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.values.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let mut storage = Storage::default();
+        eframe::set_value(&mut storage, "metronome-accent-mask", &0b1011_u32);
+        eframe::set_value(&mut storage, "metronome-count-in-bars", &2_u8);
+        assert_eq!(
+            eframe::get_value::<u32>(&storage, "metronome-accent-mask"),
+            Some(0b1011)
+        );
+        assert_eq!(
+            eframe::get_value::<u8>(&storage, "metronome-count-in-bars"),
+            Some(2)
+        );
+        assert_eq!(
+            app.metronome_accent_mask, 1,
+            "the default is the plain downbeat"
+        );
+        assert_eq!(app.metronome_count_in_bars, 0);
     }
 }
 

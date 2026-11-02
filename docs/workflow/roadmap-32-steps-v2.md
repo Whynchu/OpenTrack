@@ -180,8 +180,15 @@ Still open from revision 1:
    drawn dimmed with a `T`, and excluded from playback by `clip_is_audible`. Edit >
    Make Take Active switches which pass plays as one undo step. 3 core and 2 app
    tests. A device run of a real multi-pass take remains.
-21. **Metronome configuration** (accent pattern, level, count-in) persisted and
-    applied by the engine.
+21. **Metronome configuration.** *Delivered.* The engine's click now takes an
+   accent mask (`MetronomeSettings::accent_mask`, one bit per beat of the bar) in
+   addition to the level and pitch it already applied. Metronome Setup adds a
+   per-beat accent row clipped to the project's bar length and a 0–4 bar count-in;
+   both persist (`metronome-accent-mask`, `metronome-count-in-bars`). A count-in
+   rolls the transport back, forces the click on for the lead without changing the
+   user's toggle, and starts capture at the original position; punch takes
+   precedence when both are on. 3 engine and 4 app tests. Listening review
+   remains.
 
 ### F. Delivery and interchange
 

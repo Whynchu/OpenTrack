@@ -5,8 +5,11 @@ pub struct MetronomeSettings {
     pub level: f32,
     pub beats_per_bar: u8,
     pub beat_unit: u8,
-    /// MIDI note for the downbeat; other beats sound one octave lower.
+    /// MIDI note for an accented beat; unaccented beats sound one octave lower.
     pub downbeat_note: u8,
+    /// Bit `n` accents beat `n + 1` of the bar. Bit 0 alone is the plain
+    /// downbeat-only click that older projects and the default use.
+    pub accent_mask: u32,
 }
 impl Default for MetronomeSettings {
     fn default() -> Self {
@@ -16,6 +19,7 @@ impl Default for MetronomeSettings {
             beats_per_bar: 4,
             beat_unit: 4,
             downbeat_note: 87,
+            accent_mask: 1,
         }
     }
 }
@@ -48,7 +52,12 @@ impl MetronomeSettings {
         if age >= 0.024 {
             return 0.0;
         }
-        let accent = beat as u64 % u64::from(self.beats_per_bar.max(1)) == 0;
+        let beat_in_bar = beat as u64 % u64::from(self.beats_per_bar.max(1));
+        let accent = if self.accent_mask == 0 {
+            beat_in_bar == 0
+        } else {
+            beat_in_bar < 32 && (self.accent_mask >> beat_in_bar) & 1 == 1
+        };
         let frequency = downbeat_frequency / if accent { 1.0 } else { 2.0 };
         let phase = std::f64::consts::TAU * frequency * age;
         let n = (age * f64::from(rate)).round() as u64;
@@ -76,6 +85,63 @@ fn midi_frequency(note: u8) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Peak sample of one beat's click, found by scanning the click's window.
+    fn beat_peak(settings: MetronomeSettings, beat: u64, rate: u32, tempo: f64) -> f32 {
+        let beat_seconds = 60.0 / tempo * 4.0 / f64::from(settings.beat_unit.max(1));
+        let start = (beat as f64 * beat_seconds * f64::from(rate)) as u64;
+        let mut peak = 0.0_f32;
+        for frame in start..start + (0.03 * f64::from(rate)) as u64 {
+            peak = peak.max(settings.sample(frame, rate, tempo, true).abs());
+        }
+        peak
+    }
+
+    #[test]
+    fn the_accent_mask_chooses_which_beats_are_loud_within_the_bar() {
+        let settings = MetronomeSettings {
+            enabled: true,
+            // Beats 1 and 3 of a 4/4 bar.
+            accent_mask: 0b0101,
+            ..MetronomeSettings::default()
+        };
+        let rate = 48_000;
+        let tempo = 120.0;
+        let first = beat_peak(settings, 0, rate, tempo);
+        let second = beat_peak(settings, 1, rate, tempo);
+        let third = beat_peak(settings, 2, rate, tempo);
+        let fourth = beat_peak(settings, 3, rate, tempo);
+        assert!(first > second, "beat 1 is accented: {first} vs {second}");
+        assert!(third > fourth, "beat 3 is accented: {third} vs {fourth}");
+        // The next bar repeats the pattern.
+        assert!(beat_peak(settings, 4, rate, tempo) > second);
+    }
+
+    #[test]
+    fn an_empty_accent_mask_falls_back_to_the_downbeat_only() {
+        let settings = MetronomeSettings {
+            enabled: true,
+            accent_mask: 0,
+            ..MetronomeSettings::default()
+        };
+        let rate = 48_000;
+        let tempo = 120.0;
+        assert!(beat_peak(settings, 0, rate, tempo) > beat_peak(settings, 1, rate, tempo));
+        // Beat 4 of the bar is unaccented even with no mask.
+        assert!(beat_peak(settings, 0, rate, tempo) > beat_peak(settings, 4 + 1, rate, tempo));
+    }
+
+    #[test]
+    fn the_default_settings_still_accent_only_the_downbeat() {
+        let settings = MetronomeSettings {
+            enabled: true,
+            ..MetronomeSettings::default()
+        };
+        assert_eq!(settings.accent_mask, 1);
+        let rate = 48_000;
+        let tempo = 120.0;
+        assert!(beat_peak(settings, 0, rate, tempo) > beat_peak(settings, 8 + 1, rate, tempo));
+    }
+
     #[test]
     fn clock_click_is_short_accented_and_silent_when_stopped_or_disabled() {
         let click = MetronomeSettings {
