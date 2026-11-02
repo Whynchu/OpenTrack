@@ -228,7 +228,7 @@ Still open from revision 1:
 
 ### G. Platform and performance
 
-27. **Windows job-object containment for scanner workers** — implemented behind
+27. **Windows job-object containment for scanner workers.** *Delivered, unverified at runtime.* Implemented behind
     `cfg(windows)` with the isolation contract kept; cannot be exercised on this
     host, so it ships unverified and marked as such.
 28. **Callback budget audit.** *Delivered.* The callback now maintains three
@@ -272,7 +272,7 @@ Still open from revision 1:
    uncovered commands by category, the focus/label behaviour, and the remaining
    gaps (screen readers, high-contrast theme, manual keyboard-only review). 5 app
    tests.
-32. **Consolidate revision 2.** Reconcile this plan with the delivered code,
+32. **Consolidate revision 2.** *Delivered.* Reconcile this plan with the delivered code,
     re-measure the menu inventory and the suites, and choose revision 3.
 
 ## Dependencies and honest blockers
