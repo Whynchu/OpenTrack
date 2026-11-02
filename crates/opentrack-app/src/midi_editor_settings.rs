@@ -15,7 +15,6 @@ pub(crate) struct MidiEditorSettings {
     pub(crate) position_grid_beats: f64,
     pub(crate) length_grid_beats: f64,
     pub(crate) insert_velocity: u8,
-    pub(crate) controller_number: u8,
 }
 
 impl MidiEditorSettings {
@@ -36,7 +35,6 @@ impl MidiEditorSettings {
                 .and_then(|storage| eframe::get_value(storage, "midi-insert-velocity"))
                 .filter(|value| (1..=127).contains(value))
                 .unwrap_or(96),
-            controller_number: 11,
         }
     }
 

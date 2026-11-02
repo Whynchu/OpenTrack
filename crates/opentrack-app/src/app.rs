@@ -8,6 +8,7 @@ pub(crate) mod audio_events;
 mod audio_export;
 #[path = "automation.rs"]
 mod automation;
+mod cc_automation;
 #[path = "channel_gain.rs"]
 mod channel_gain;
 #[path = "channel_settings.rs"]
@@ -1293,6 +1294,7 @@ pub struct OpenTrackApp {
     drum_editor_drag: Option<drum_editor::DrumEditorDrag>,
     drum_editor_velocity: u8,
     logical_preset_dialog: Option<logical_presets::LogicalPresetDialog>,
+    cc_automation_setup: Option<cc_automation::CcAutomationSetup>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2785,6 +2787,7 @@ impl OpenTrackApp {
             drum_editor_drag: None,
             drum_editor_velocity: 96,
             logical_preset_dialog: None,
+            cc_automation_setup: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4096,6 +4099,7 @@ impl OpenTrackApp {
         self.drum_editor_open = false;
         self.drum_editor_drag = None;
         self.logical_preset_dialog = None;
+        self.cc_automation_setup = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -14214,13 +14218,11 @@ impl OpenTrackApp {
                         self.insert_velocities = Some((velocity, velocity));
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("VST Expression", ""),
-                            ("CC Automation Setup...", ""),
-                        ],
-                    );
+                    disabled_menu_commands(ui, &[("VST Expression", "")]);
+                    if menu_command(ui, "CC Automation Setup...", "", self.project_open).clicked() {
+                        self.open_cc_automation_setup();
+                        ui.close();
+                    }
                     if menu_command(
                         ui,
                         "Logical Presets",
@@ -16759,7 +16761,7 @@ impl OpenTrackApp {
                 &mut self.midi_editor_settings.position_grid_beats,
                 &mut self.midi_editor_settings.length_grid_beats,
                 &mut self.midi_editor_settings.insert_velocity,
-                &mut self.midi_editor_settings.controller_number,
+                &mut self.arrange_view_state.cc_lane_controller,
                 live_velocity_update,
                 &mut self.selected_midi_note_id,
                 &mut self.selected_midi_note_ids,
@@ -18475,6 +18477,7 @@ impl eframe::App for OpenTrackApp {
         self.show_drum_map_setup(&ctx);
         self.show_drum_editor(&ctx);
         self.show_logical_presets(&ctx);
+        self.show_cc_automation_setup(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
@@ -22837,10 +22840,14 @@ fn show_midi_editor(
                                 track_id,
                                 part_id,
                             ))
-                            .selected_text(midi_controller_label(*controller_number))
+                            .selected_text(cc_automation::controller_label(*controller_number))
                             .show_ui(ui, |ui| {
-                                for (controller, label) in MIDI_CONTROLLER_VALUES {
-                                    ui.selectable_value(controller_number, controller, label);
+                                for controller in 0..=127 {
+                                    ui.selectable_value(
+                                        controller_number,
+                                        controller,
+                                        cc_automation::controller_label(controller),
+                                    );
                                 }
                             });
                             ui.label("Click to add a point; drag to edit; right-click to remove.");
@@ -23763,7 +23770,7 @@ fn show_midi_editor(
                                 controller_canvas.min.y + 12.0,
                             ),
                             Align2::LEFT_CENTER,
-                            midi_controller_label(*controller_number),
+                            cc_automation::controller_label(*controller_number),
                             FontId::monospace(theme::type_size::LABEL),
                             theme::palette(ui).text,
                         );
@@ -23771,14 +23778,10 @@ fn show_midi_editor(
                             [plot.left_top(), plot.right_top()],
                             Stroke::new(1.0, theme::palette(ui).grid),
                         );
-                        let mut lane_events: Vec<_> = project.tracks[track_index].midi_parts
-                            [part_index]
-                            .controller_events
-                            .iter()
-                            .filter(|event| event.controller == *controller_number)
-                            .map(|event| (event.id, event.position_beats, event.value))
-                            .collect();
-                        lane_events.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+                        let mut lane_events = cc_automation::lane_events(
+                            &project.tracks[track_index].midi_parts[part_index],
+                            *controller_number,
+                        );
                         for beat in 0..=visible_beats {
                             let x = plot.left() + beat as f32 * beat_width;
                             let bar_line = beat % bpb == 0;
@@ -23809,7 +23812,7 @@ fn show_midi_editor(
                                 theme::palette(ui).muted,
                             );
                         }
-                        let default_value = midi_controller_default_value(*controller_number);
+                        let default_value = cc_automation::default_value(*controller_number);
                         let default_y = plot.bottom()
                             - f32::from(default_value) / 127.0 * controller_plot_height;
                         let mut previous_point = Some((plot.left(), default_y));
@@ -24301,35 +24304,12 @@ enum MidiEditAction {
     Split(u64, f64),
 }
 
-const MIDI_CONTROLLER_VALUES: [(u8, &str); 4] = [
-    (1, "Modulation (CC 1)"),
-    (7, "Volume (CC 7)"),
-    (10, "Pan (CC 10)"),
-    (11, "Expression (CC 11)"),
-];
-
 fn midi_quantize_label(value: f64) -> &'static str {
     midi_editor_settings::MIDI_QUANTIZE_VALUES
         .iter()
         .find(|(candidate, _)| value == *candidate)
         .map(|(_, label)| *label)
         .unwrap_or("1/4 note")
-}
-
-fn midi_controller_label(controller: u8) -> &'static str {
-    MIDI_CONTROLLER_VALUES
-        .iter()
-        .find(|(candidate, _)| *candidate == controller)
-        .map(|(_, label)| *label)
-        .unwrap_or("Expression (CC 11)")
-}
-
-fn midi_controller_default_value(controller: u8) -> u8 {
-    match controller {
-        7 | 11 => 127,
-        10 => 64,
-        _ => 0,
-    }
 }
 
 fn midi_pitch_label(pitch: u8) -> String {

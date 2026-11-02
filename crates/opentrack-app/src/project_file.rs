@@ -125,6 +125,10 @@ pub(crate) struct ArrangeViewState {
     pub(crate) show_remaining_record_time: bool,
     #[serde(default)]
     pub(crate) selected_event_color: Option<u8>,
+    /// The single MIDI controller lane shown in the MIDI editor. A view choice
+    /// saved with the project, defaulting to Expression (CC 11).
+    #[serde(default = "default_cc_lane_controller")]
+    pub(crate) cc_lane_controller: u8,
     #[serde(default = "default_event_colors")]
     pub(crate) event_colors: [[u8; 3]; 16],
     #[serde(default)]
@@ -186,6 +190,7 @@ impl Default for ArrangeViewState {
             show_time_display: false,
             show_remaining_record_time: false,
             selected_event_color: None,
+            cc_lane_controller: default_cc_lane_controller(),
             event_colors: DEFAULT_EVENT_COLORS,
             ruler_format: 0,
             ruler_time_linear: true,
@@ -301,6 +306,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_cc_lane_controller() -> u8 {
+    11
+}
+
 fn default_track_vertical_zoom() -> f32 {
     1.0
 }
@@ -340,6 +349,7 @@ impl ArrangeViewState {
 
     fn normalize(&mut self) {
         self.ruler_format = self.ruler_format.min(4);
+        self.cc_lane_controller = self.cc_lane_controller.min(127);
         if !self.track_vertical_zoom.is_finite() {
             self.track_vertical_zoom = default_track_vertical_zoom();
         }
@@ -1749,6 +1759,57 @@ mod tests {
         let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
         assert!(!legacy.show_time_display);
         assert!(!legacy.show_remaining_record_time);
+    }
+
+    #[test]
+    fn cc_lane_view_choice_round_trips_and_cc_content_survives_reopen() {
+        let dock = finite_test_dock_state();
+        let mut workspace = initial_workspace_state(&dock).unwrap();
+        let mut view = ArrangeViewState::default();
+        assert_eq!(view.cc_lane_controller, 11, "legacy default");
+        view.cc_lane_controller = 74;
+        set_arrange_view_state(&mut workspace, &view);
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let part = project.add_midi_part(0, 0.0, 8.0).expect("part");
+        project
+            .add_midi_controller_event_on_channel(0, part, 2.0, 74, 3, 40)
+            .expect("cc 74");
+
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-cc-lane-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        document.write(&path).unwrap();
+        let restored = ProjectFile::read(&path).unwrap();
+        let active = restored.workspace_state.active_index.unwrap();
+        let restored_view =
+            super::arrange_view_state_from_workspace(&restored.workspace_state.workspaces[active]);
+        assert_eq!(restored_view.cc_lane_controller, 74, "lane choice persists");
+        let event = &restored.project.tracks[0].midi_parts[0].controller_events[0];
+        assert_eq!(
+            (event.channel, event.controller, event.value),
+            (3, 74, 40),
+            "CC content survives save/reopen"
+        );
+        fs::remove_file(&path).unwrap();
+
+        let mut legacy = serde_json::to_value(&view).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("cc_lane_controller");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.cc_lane_controller, 11);
+
+        let mut out_of_range = serde_json::to_value(&view).unwrap();
+        out_of_range["cc_lane_controller"] = 200.into();
+        let mut out_of_range: ArrangeViewState = serde_json::from_value(out_of_range).unwrap();
+        out_of_range.normalize();
+        assert_eq!(out_of_range.cc_lane_controller, 127);
     }
 
     #[test]
