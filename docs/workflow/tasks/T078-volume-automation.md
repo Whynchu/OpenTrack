@@ -1,6 +1,6 @@
 # T078 - Track volume automation contract
 
-Status: persistent point model, read-only track-volume playback, bounded point-edit commands, and arrange-lane insert/move/remove gestures implemented in source; write capture, fader-follow display, and live acceptance remain open. Read is track-volume only. Write controls are disabled and labeled unavailable until write capture is implemented. This is the first slice for roadmap steps 17-20. Author: GPT-6.1 Terra.
+Status: persistent point model, read-only track-volume playback, bounded point-edit commands, arrange-lane gestures, gesture cancellation, fader follow and bounded write capture implemented in source; live desktop/audio acceptance remains open. Read and Write are track-volume only. This is the first slice for roadmap steps 17-20. Author: GPT-6.1 Terra.
 
 ## Current state
 
@@ -20,6 +20,14 @@ Tracks persist `automation_read` and `automation_write`, both defaulting to fals
 - The existing Volume lane is the entry point. Add, select, move and delete points with explicit project commands; snap timing to the active project grid unless the user invokes the established fine-adjust modifier. Moving a point must not cross or duplicate its neighbors. One drag is one undo transaction; cancel restores the original curve. The lane must not steal audio-event gestures outside its reserved area.
 - Write is not a claim of Touch or Latch modes. In the initial bounded write workflow, capture only explicit fader movement while transport is playing and Write is enabled. A gesture records timestamped values from the engine clock into a bounded nonblocking queue; do not write project data from the audio callback. Preserve points outside the touched interval and define boundary values before replacing any interior points. Commit the whole gesture as one undo action; cancellation or queue overflow must leave the previous curve recoverable and report the failure. Loop crossings must be handled as separate timeline intervals, never silently overwrite untouched material.
 - Read and Write are independent persisted flags. During a write gesture, manual control is audible immediately; after the gesture, Read resumes the recorded curve when enabled. With Write off, moving the fader does not record points. With transport stopped, editing the fader changes the base value only. Touch/Latch, plug-in automation, multi-parameter lanes and external controller mapping remain future work and must stay disabled or clearly identified until delivered.
+
+## Write capture
+
+Write controls are enabled for Audio and Instrument tracks in the Mixer strip, Mixer sidebar, Channel Settings, Project Inspector and the arrange lane. With Write on and the transport playing, dragging a fader records `(transport beat, base gain)` samples on the control thread into a bounded gesture buffer; the audio callback is never involved and no project data is touched while recording. The buffer caps at 4096 samples and a longer gesture is discarded with a status message.
+
+A transport loop during the gesture starts a new interval rather than one wrapped range, so each pass is written separately and material between passes is untouched. On release, `opentrack_core::automation::replace_volume_points_in_range` replaces only the interior of each interval and adds edge points so the written section joins the untouched curve; the whole gesture is one undo entry from the pointer interaction. A rejected or over-budget write restores the pre-gesture project and reports the failure. Escape during the drag uses the cancellation path above.
+
+Covered by core tests for interior replacement, edge points, ordering rejection and no-op detection, and by app tests for loop-interval splitting, budget discard and single-sample intervals. Live fader capture with real playback remains for desktop review.
 
 ## Fader follow and manual override
 

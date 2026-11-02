@@ -104,6 +104,7 @@ pub enum AutomationEditError {
     LaneUnavailable,
     PointUnavailable,
     InvalidPoint,
+    InvalidRange,
     WouldCrossNeighbor,
     LaneLimit,
     PointLimit,
@@ -117,6 +118,7 @@ impl std::fmt::Display for AutomationEditError {
             Self::LaneUnavailable => "The automation lane is unavailable",
             Self::PointUnavailable => "The automation point is unavailable",
             Self::InvalidPoint => "Automation position or gain is outside the supported range",
+            Self::InvalidRange => "The automation range is empty or outside the timeline",
             Self::WouldCrossNeighbor => "Automation points cannot cross or overlap",
             Self::LaneLimit => "The track has too many automation lanes",
             Self::PointLimit => "The automation lane has too many points",
@@ -200,6 +202,114 @@ pub fn set_volume_point(
     Ok(true)
 }
 
+/// Replace the curve inside `[start, end]` with `samples`, keeping points outside.
+///
+/// A write gesture produces the captured samples. The interval edges always
+/// become points, so the written section joins the untouched curve on both
+/// sides instead of ending in an implied value.
+pub fn replace_volume_points_in_range(
+    project: &mut Project,
+    track_id: u64,
+    start: f64,
+    end: f64,
+    samples: &[AutomationPoint],
+) -> Result<bool, AutomationEditError> {
+    if !start.is_finite()
+        || !end.is_finite()
+        || start < 0.0
+        || end <= start
+        || end > MAX_AUTOMATION_BEAT
+    {
+        return Err(AutomationEditError::InvalidRange);
+    }
+    if samples.is_empty() {
+        return Err(AutomationEditError::InvalidPoint);
+    }
+    // Captured samples arrive in timeline order; an out-of-order capture means
+    // the caller mixed intervals and must not be written as one range.
+    let mut captured = samples.to_vec();
+    let mut previous: Option<f64> = None;
+    for point in &captured {
+        if !valid_point(*point) || point.beat < start - 1e-9 || point.beat > end + 1e-9 {
+            return Err(AutomationEditError::InvalidPoint);
+        }
+        if previous.is_some_and(|beat| point.beat <= beat + 1e-9) {
+            return Err(AutomationEditError::WouldCrossNeighbor);
+        }
+        previous = Some(point.beat);
+    }
+    if captured[0].beat > start + 1e-9 {
+        captured.insert(
+            0,
+            AutomationPoint {
+                beat: start,
+                value: captured[0].value,
+            },
+        );
+    }
+    if let Some(last) = captured.last()
+        && last.beat < end - 1e-9
+    {
+        captured.push(AutomationPoint {
+            beat: end,
+            value: last.value,
+        });
+    }
+
+    let track_index = project
+        .tracks
+        .iter()
+        .position(|track| track.id == track_id)
+        .ok_or(AutomationEditError::TrackUnavailable)?;
+    let track = &project.tracks[track_index];
+    let lane_index = track
+        .automation_lanes
+        .iter()
+        .position(|lane| lane.target == AutomationTarget::TrackVolume);
+    let existing: &[AutomationPoint] = lane_index
+        .map(|index| track.automation_lanes[index].points.as_slice())
+        .unwrap_or(&[]);
+
+    let mut points = existing
+        .iter()
+        .copied()
+        .filter(|point| point.beat < start - 1e-9 || point.beat > end + 1e-9)
+        .collect::<Vec<_>>();
+    points.extend(captured);
+    points.sort_by(|left, right| left.beat.total_cmp(&right.beat));
+
+    if points.len() > MAX_AUTOMATION_POINTS_PER_LANE {
+        return Err(AutomationEditError::PointLimit);
+    }
+    if lane_index.is_none() && track.automation_lanes.len() >= MAX_AUTOMATION_LANES_PER_TRACK {
+        return Err(AutomationEditError::LaneLimit);
+    }
+    let total = project
+        .tracks
+        .iter()
+        .flat_map(|track| &track.automation_lanes)
+        .fold(0usize, |total, lane| {
+            total.saturating_add(lane.points.len())
+        });
+    if total - existing.len() + points.len() > MAX_AUTOMATION_POINTS_PER_PROJECT {
+        return Err(AutomationEditError::ProjectLimit);
+    }
+    if points == existing {
+        return Ok(false);
+    }
+
+    let track = &mut project.tracks[track_index];
+    let index = lane_index.unwrap_or_else(|| {
+        track.automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: Vec::new(),
+        });
+        track.automation_lanes.len() - 1
+    });
+    track.automation_lanes[index].points = points;
+    Ok(true)
+}
+
 /// Move a point without crossing its neighbors; its index remains stable.
 pub fn move_volume_point(
     project: &mut Project,
@@ -270,6 +380,94 @@ mod tests {
 
     fn point(beat: f64, value: f32) -> AutomationPoint {
         AutomationPoint { beat, value }
+    }
+
+    #[test]
+    fn write_range_replaces_interior_and_keeps_outside_points() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.tracks[0].id;
+        set_volume_point(&mut project, id, point(1.0, 0.25)).unwrap();
+        set_volume_point(&mut project, id, point(5.0, 0.75)).unwrap();
+        set_volume_point(&mut project, id, point(9.0, 0.5)).unwrap();
+
+        let changed = replace_volume_points_in_range(
+            &mut project,
+            id,
+            3.0,
+            7.0,
+            &[point(3.0, 0.4), point(5.0, 0.9), point(7.0, 0.6)],
+        )
+        .unwrap();
+        assert!(changed);
+
+        let points = &project.tracks[0].automation_lanes[0].points;
+        assert_eq!(
+            points,
+            &[
+                point(1.0, 0.25),
+                point(3.0, 0.4),
+                point(5.0, 0.9),
+                point(7.0, 0.6),
+                point(9.0, 0.5),
+            ]
+        );
+    }
+
+    #[test]
+    fn write_range_adds_edge_points_when_capture_starts_late() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.tracks[0].id;
+        let changed =
+            replace_volume_points_in_range(&mut project, id, 2.0, 6.0, &[point(3.0, 0.5)]).unwrap();
+        assert!(changed);
+        assert_eq!(
+            project.tracks[0].automation_lanes[0].points,
+            vec![point(2.0, 0.5), point(3.0, 0.5), point(6.0, 0.5)]
+        );
+    }
+
+    #[test]
+    fn write_range_rejects_empty_unsorted_and_out_of_range_captures() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.tracks[0].id;
+        assert_eq!(
+            replace_volume_points_in_range(&mut project, id, 2.0, 6.0, &[]),
+            Err(AutomationEditError::InvalidPoint)
+        );
+        assert_eq!(
+            replace_volume_points_in_range(
+                &mut project,
+                id,
+                2.0,
+                6.0,
+                &[point(4.0, 0.5), point(3.0, 0.5)]
+            ),
+            Err(AutomationEditError::WouldCrossNeighbor)
+        );
+        assert_eq!(
+            replace_volume_points_in_range(&mut project, id, 2.0, 6.0, &[point(7.0, 0.5)]),
+            Err(AutomationEditError::InvalidPoint)
+        );
+        assert_eq!(
+            replace_volume_points_in_range(&mut project, id, 6.0, 2.0, &[point(4.0, 0.5)]),
+            Err(AutomationEditError::InvalidRange)
+        );
+        assert!(project.tracks[0].automation_lanes.is_empty());
+    }
+
+    #[test]
+    fn write_range_that_matches_the_curve_reports_no_change() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.tracks[0].id;
+        replace_volume_points_in_range(&mut project, id, 2.0, 4.0, &[point(3.0, 0.5)]).unwrap();
+        assert_eq!(
+            replace_volume_points_in_range(&mut project, id, 2.0, 4.0, &[point(3.0, 0.5)]),
+            Ok(false)
+        );
     }
 
     #[test]

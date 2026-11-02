@@ -367,9 +367,12 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
             rect.min + Vec2::new(2.0 + index as f32 * 24.0, 3.0),
             Vec2::new(22.0, 14.0),
         );
-        let read_control =
-            index == 0 && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument);
-        let active = read_control && track.automation_read;
+        let supported = matches!(track.kind, TrackKind::Audio | TrackKind::Instrument);
+        let control_enabled = index <= 1 && supported;
+        let active = match index {
+            0 => supported && track.automation_read,
+            _ => supported && track.automation_write,
+        };
         if project_inspector::button(
             ui,
             r,
@@ -378,15 +381,19 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
             if index == 0 {
                 "Read Enable (track volume only)"
             } else {
-                "Automation writing is not implemented"
+                "Write Enable (track volume only, while playing)"
             },
             active,
-            read_control,
+            control_enabled,
             false,
         )
         .clicked()
         {
-            track.automation_read = !track.automation_read;
+            if index == 0 {
+                track.automation_read = !track.automation_read;
+            } else {
+                track.automation_write = !track.automation_write;
+            }
             changed = true;
         }
     }
@@ -512,13 +519,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn automation_write_control_is_disabled_and_preserves_saved_flag() {
+    fn automation_write_control_toggles_the_persisted_flag() {
         let context = egui::Context::default();
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(220.0, 42.0));
         let mut track = opentrack_core::project::Project::default();
         track.add_track(TrackKind::Audio);
         let track = &mut track.tracks[0];
-        track.automation_write = true;
         let point = rect.min + Vec2::new(2.0 + 24.0 + 11.0, 3.0 + 7.0);
         let run = |time, pressed, track: &mut Track| {
             let events = if pressed {
@@ -553,10 +559,11 @@ mod tests {
             output.textures_delta.clear();
             output
         };
+        assert!(!track.automation_write);
         run(0.0, false, track);
         run(0.1, true, track);
         run(0.2, false, track);
-        assert!(track.automation_write);
+        assert!(track.automation_write, "the write control toggles the flag");
     }
 
     #[test]

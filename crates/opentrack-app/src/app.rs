@@ -5025,6 +5025,56 @@ impl OpenTrackApp {
         }
     }
 
+    /// Writes a completed fader gesture into the project as one undo step.
+    ///
+    /// Each captured interval replaces only its own range, so a loop crossing
+    /// never overwrites the material between passes. Any rejection restores the
+    /// pre-gesture project and reports the failure.
+    fn apply_automation_write(&mut self, mut capture: automation::WriteCapture) {
+        let (track_id, intervals) = match capture.finish() {
+            Ok(result) => result,
+            Err(message) => {
+                self.status_message = message;
+                self.restore_after_failed_write();
+                return;
+            }
+        };
+        let mut changed = false;
+        for (start, end, samples) in intervals {
+            let points = samples
+                .into_iter()
+                .map(|(beat, value)| opentrack_core::project::AutomationPoint { beat, value })
+                .collect::<Vec<_>>();
+            match opentrack_core::automation::replace_volume_points_in_range(
+                &mut self.data.project,
+                track_id,
+                start,
+                end,
+                &points,
+            ) {
+                Ok(edit) => changed |= edit,
+                Err(error) => {
+                    self.status_message = format!("Automation write rejected: {error}");
+                    self.restore_after_failed_write();
+                    return;
+                }
+            }
+        }
+        if changed {
+            self.mark_modified();
+            self.rebuild_audio_plan();
+            self.status_message = "Automation written".to_owned();
+        }
+    }
+
+    fn restore_after_failed_write(&mut self) {
+        if let Some((project, was_modified)) = self.project_history.cancel_pending() {
+            self.data.project = project;
+            self.modified = was_modified;
+            self.rebuild_audio_plan();
+        }
+    }
+
     fn apply_pending_project_action(&mut self, ctx: &egui::Context) {
         if let Some(action) = self.pending_project_action.take() {
             if matches!(action, PendingProjectAction::Close) {
@@ -8857,6 +8907,11 @@ impl OpenTrackApp {
                         );
                         (changed, changed)
                     } else {
+                        automation::publish_transport(
+                            ui,
+                            self.data.transport.playing,
+                            self.data.transport.position_beats,
+                        );
                         automation::publish_follow_gains(
                             ui,
                             &self.data.project,
@@ -9494,6 +9549,11 @@ impl OpenTrackApp {
                 .show(window_ctx, |ui| {
                     let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                     blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
+                        automation::publish_transport(
+                            ui,
+                            self.data.transport.playing,
+                            self.data.transport.position_beats,
+                        );
                         automation::publish_follow_gains(
                             ui,
                             &self.data.project,
@@ -11423,6 +11483,9 @@ impl eframe::App for OpenTrackApp {
         egui::Rgba::from(visuals.panel_fill).to_array()
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(capture) = automation::take_finished_write(ui.ctx()) {
+            self.apply_automation_write(capture);
+        }
         self.set_ui_stage(UiStage::FrameStart);
         self.ui_heartbeat
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -13052,7 +13115,11 @@ fn show_project(
                 ("M", "Unmute All", true),
                 ("S", "Deactivate All Solo", true),
                 ("R", "All Automation to Read Status", true),
-                ("W", "Automation writing is not implemented", false),
+                (
+                    "W",
+                    "Write Automation for all tracks (track volume only, while playing)",
+                    true,
+                ),
                 ("C", "Show/Hide Track Colors", true),
             ];
             for (index, (label, tooltip, enabled)) in track_toolbar.into_iter().enumerate() {
@@ -13090,6 +13157,16 @@ fn show_project(
                             for track in &mut project.tracks {
                                 if track.kind != TrackKind::Group && !track.automation_read {
                                     track.automation_read = true;
+                                    modified = true;
+                                }
+                            }
+                        }
+                        5 => {
+                            for track in &mut project.tracks {
+                                if matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
+                                    && !track.automation_write
+                                {
+                                    track.automation_write = true;
                                     modified = true;
                                 }
                             }

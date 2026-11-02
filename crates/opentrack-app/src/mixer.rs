@@ -398,7 +398,7 @@ fn sidebar(
         ),
         (
             Icon::Text("W"),
-            "Automation writing is not implemented",
+            "Write Automation for all tracks (track volume only, while playing)",
             200.0,
         ),
     ];
@@ -408,6 +408,7 @@ fn sidebar(
             1 => t.solo,
             2 => t.listen,
             3 => t.automation_read,
+            4 => t.automation_write,
             _ => false,
         });
         let response = control(
@@ -417,10 +418,10 @@ fn sidebar(
             symbol,
             active,
             false,
-            i != 4,
+            true,
             Some(tip),
         );
-        if i != 4 && response.clicked() {
+        if response.clicked() {
             for t in &mut project.tracks {
                 match i {
                     0 => t.muted = false,
@@ -428,6 +429,9 @@ fn sidebar(
                     2 => t.listen = false,
                     3 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
                         t.automation_read = true
+                    }
+                    4 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
+                        t.automation_write = true
                     }
                     _ => {}
                 }
@@ -1134,7 +1138,12 @@ fn strip(
                 "Read Automation (track volume only)",
                 183.0,
             ),
-            ("W", false, "Automation writing is not implemented", 200.0),
+            (
+                "W",
+                track.automation_write,
+                "Write Automation (track volume only, while playing)",
+                200.0,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -1146,10 +1155,8 @@ fn strip(
                 Icon::Text(label),
                 active,
                 false,
-                if i == 3 {
+                if i == 3 || i == 4 {
                     !is_bus && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
-                } else if i == 4 {
-                    false
                 } else {
                     !is_bus || i == 0
                 },
@@ -1176,6 +1183,7 @@ fn strip(
                     }
                     2 => track.listen = !track.listen,
                     3 => track.automation_read = !track.automation_read,
+                    4 => track.automation_write = !track.automation_write,
                     _ => {}
                 }
                 modified = true;
@@ -1309,7 +1317,7 @@ fn strip(
         }
         let fader_color = project_controls::track_color(track);
         let mut displayed_gain = automation::fader_gain(ui, track.id, track.gain);
-        let fader_changed = fader(
+        let (fader_changed, fader_response) = fader(
             ui,
             r,
             &mut displayed_gain,
@@ -1321,6 +1329,9 @@ fn strip(
         );
         if fader_changed {
             track.gain = displayed_gain;
+        }
+        if !is_bus && track.automation_write {
+            automation::capture_fader_write(ui, track.id, &fader_response, track.gain);
         }
         modified |= fader_changed;
         requires_plan_rebuild |= fader_changed && track.id == opentrack_core::project::INPUT_BUS_ID;
@@ -1558,8 +1569,8 @@ fn fader(
     enabled: bool,
     held_peak: &mut metering::Hold,
     color: Color32,
-) -> bool {
-    fader_impl(
+) -> (bool, egui::Response) {
+    let (changed, response) = fader_impl(
         ui,
         r,
         gain,
@@ -1569,8 +1580,11 @@ fn fader(
         "mixer-fader",
         held_peak,
         color,
+    );
+    (
+        changed,
+        response.expect("Mixer fader is always interactive"),
     )
-    .0
 }
 
 pub(super) fn channel_settings_fader(
@@ -1786,14 +1800,14 @@ mod bus_tests {
     use super::*;
 
     #[test]
-    fn global_write_automation_button_is_disabled() {
+    fn global_write_automation_button_enables_supported_tracks() {
         let context = egui::Context::default();
         let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 320.0));
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(68.0, 320.0));
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Midi);
         let track_id = project.tracks[0].id;
-        project.tracks[0].automation_write = true;
         let run = |time, pressed, project: &mut Project| {
             let point = Pos2::new(17.5, 207.5);
             let events = if pressed {
@@ -1829,8 +1843,12 @@ mod bus_tests {
         };
         assert!(!run(0.0, false, &mut project));
         assert!(!run(0.1, true, &mut project));
-        assert!(!run(0.2, false, &mut project));
+        assert!(run(0.2, false, &mut project));
         assert!(project.tracks[0].automation_write);
+        assert!(
+            !project.tracks[1].automation_write,
+            "MIDI tracks have no track-volume automation"
+        );
         assert_eq!(project.tracks[0].id, track_id);
     }
 

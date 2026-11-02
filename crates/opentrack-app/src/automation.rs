@@ -43,6 +43,151 @@ pub(super) enum LaneAction {
     },
 }
 
+/// One captured write gesture: monotonic intervals of `(beat, gain)` samples.
+///
+/// The transport can loop while the fader is held, so a gesture is a sequence of
+/// intervals rather than one range; writing them separately keeps material
+/// between them untouched.
+#[derive(Clone, Default)]
+pub(super) struct WriteCapture {
+    track_id: Option<u64>,
+    intervals: Vec<Vec<(f64, f32)>>,
+    samples: usize,
+    overflowed: bool,
+}
+
+/// Bound on samples per gesture. At the control rate this is minutes of fader
+/// movement; exceeding it aborts the gesture instead of writing a partial curve.
+pub(super) const MAX_WRITE_SAMPLES: usize = 4096;
+
+impl WriteCapture {
+    pub(super) fn start(&mut self, track_id: u64, beat: f64, gain: f32) {
+        self.track_id = Some(track_id);
+        self.intervals.clear();
+        self.intervals.push(vec![(beat, gain)]);
+        self.samples = 1;
+        self.overflowed = false;
+    }
+
+    pub(super) fn record(&mut self, beat: f64, gain: f32) {
+        if self.overflowed || !beat.is_finite() || !gain.is_finite() {
+            return;
+        }
+        if self.samples >= MAX_WRITE_SAMPLES {
+            self.overflowed = true;
+            return;
+        }
+        let Some(current) = self.intervals.last_mut() else {
+            return;
+        };
+        let last_beat = current.last().map(|sample| sample.0).unwrap_or(beat);
+        if beat < last_beat - 1e-9 {
+            // The transport looped: start a separate interval.
+            self.intervals.push(vec![(beat, gain)]);
+            self.samples += 1;
+            return;
+        }
+        if beat <= last_beat + 1e-9 {
+            return;
+        }
+        current.push((beat, gain));
+        self.samples += 1;
+    }
+
+    /// Intervals of at least two samples, or an error when the gesture cannot be
+    /// written. The capture is consumed either way.
+    pub(super) fn finish(&mut self) -> Result<(u64, Vec<(f64, f64, Vec<(f64, f32)>)>), String> {
+        let track_id = self.track_id.take();
+        let overflowed = std::mem::replace(&mut self.overflowed, false);
+        let intervals = std::mem::take(&mut self.intervals);
+        self.samples = 0;
+        let Some(track_id) = track_id else {
+            return Ok((0, Vec::new()));
+        };
+        if overflowed {
+            return Err("Automation write was too long and was discarded".to_owned());
+        }
+        Ok((
+            track_id,
+            intervals
+                .into_iter()
+                .filter(|samples| samples.len() >= 2)
+                .map(|samples| {
+                    let start = samples[0].0;
+                    let end = samples[samples.len() - 1].0;
+                    (start, end, samples)
+                })
+                .collect(),
+        ))
+    }
+
+    pub(super) fn cancel(&mut self) {
+        self.track_id = None;
+        self.intervals.clear();
+        self.samples = 0;
+        self.overflowed = false;
+    }
+
+    pub(super) fn is_active(&self) -> bool {
+        self.track_id.is_some()
+    }
+}
+
+const TRANSPORT_KEY: &str = "automation-transport";
+const WRITE_KEY: &str = "automation-write-capture";
+const WRITE_FINISHED_KEY: &str = "automation-write-finished";
+
+/// Publishes the transport state the faders need for write capture.
+pub(super) fn publish_transport(ui: &egui::Ui, playing: bool, position_beats: f64) {
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(Id::new(TRANSPORT_KEY), (playing, position_beats)));
+}
+
+fn write_capture(ui: &egui::Ui, update: impl FnOnce(&mut WriteCapture)) {
+    ui.ctx().data_mut(|data| {
+        let mut capture = data
+            .get_temp::<WriteCapture>(Id::new(WRITE_KEY))
+            .unwrap_or_default();
+        update(&mut capture);
+        data.insert_temp(Id::new(WRITE_KEY), capture);
+    });
+}
+
+/// Captures explicit fader movement for a Write-enabled track while playing.
+///
+/// Values are timestamped with the transport position on the control thread;
+/// the audio callback is never involved and no project data is touched here.
+pub(super) fn capture_fader_write(
+    ui: &egui::Ui,
+    track_id: u64,
+    response: &egui::Response,
+    gain: f32,
+) {
+    let Some((playing, position)) =
+        ui.data(|data| data.get_temp::<(bool, f64)>(Id::new(TRANSPORT_KEY)))
+    else {
+        return;
+    };
+    if !playing {
+        return;
+    }
+    if response.drag_started() {
+        write_capture(ui, |capture| capture.start(track_id, position, gain));
+    } else if response.dragged() {
+        write_capture(ui, |capture| capture.record(position, gain));
+    } else if response.drag_stopped() {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(Id::new(WRITE_FINISHED_KEY), true));
+    }
+}
+
+/// Takes a finished capture so the caller can apply it with project history.
+pub(super) fn take_finished_write(ctx: &egui::Context) -> Option<WriteCapture> {
+    let finished = ctx.data_mut(|data| data.remove_temp::<bool>(Id::new(WRITE_FINISHED_KEY)));
+    finished?;
+    ctx.data_mut(|data| data.remove_temp::<WriteCapture>(Id::new(WRITE_KEY)))
+}
+
 const FOLLOW_KEY: &str = "automation-follow-gains";
 
 /// Gain a read-enabled track displays at `position_beats`.
@@ -360,6 +505,48 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn write_capture_splits_looped_gestures_into_intervals() {
+        let mut capture = WriteCapture::default();
+        capture.start(7, 1.0, 0.5);
+        capture.record(2.0, 0.6);
+        capture.record(3.0, 0.7);
+        // Transport loops back to the start of the cycle.
+        capture.record(1.0, 0.8);
+        capture.record(2.0, 0.9);
+        let (track_id, intervals) = capture.finish().unwrap();
+        assert_eq!(track_id, 7);
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[0].0, 1.0);
+        assert_eq!(intervals[0].1, 3.0);
+        assert_eq!(intervals[1].0, 1.0);
+        assert_eq!(intervals[1].1, 2.0);
+        assert!(!capture.is_active());
+    }
+
+    #[test]
+    fn write_capture_discards_a_gesture_that_exceeds_its_budget() {
+        let mut capture = WriteCapture::default();
+        capture.start(7, 0.0, 0.5);
+        for index in 0..=MAX_WRITE_SAMPLES {
+            capture.record(index as f64, 0.5);
+        }
+        assert!(capture.finish().is_err());
+        assert!(!capture.is_active());
+    }
+
+    #[test]
+    fn write_capture_ignores_single_sample_intervals_and_cancel() {
+        let mut capture = WriteCapture::default();
+        capture.start(7, 4.0, 0.5);
+        assert!(capture.finish().unwrap().1.is_empty());
+        capture.start(7, 4.0, 0.5);
+        capture.record(5.0, 0.6);
+        capture.cancel();
+        assert!(!capture.is_active());
+        assert!(capture.finish().unwrap().1.is_empty());
     }
 
     #[test]

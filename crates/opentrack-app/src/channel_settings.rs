@@ -2641,7 +2641,12 @@ fn strip(
             "Read Automation (track volume only)",
             233.0,
         ),
-        ("W", false, "Automation writing is not implemented", 250.0),
+        (
+            "W",
+            track.automation_write,
+            "Write Automation (track volume only, while playing)",
+            250.0,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -2653,10 +2658,8 @@ fn strip(
             mixer::Icon::Text(label),
             active,
             false,
-            if i == 3 {
+            if i == 3 || i == 4 {
                 !is_bus && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
-            } else if i == 4 {
-                false
             } else {
                 !is_bus || i == 0
             },
@@ -2675,6 +2678,7 @@ fn strip(
                 }
                 2 => track.listen = !track.listen,
                 3 => track.automation_read = !track.automation_read,
+                4 => track.automation_write = !track.automation_write,
                 _ => {}
             };
             changed = true;
@@ -2773,6 +2777,9 @@ fn strip(
         );
         if edit {
             track.gain = displayed_gain;
+        }
+        if track.automation_write && !matches!(track.kind, TrackKind::Group) {
+            automation::capture_fader_write(ui, track.id, &response, track.gain);
         }
         changed |= edit;
         context(&response, state);
