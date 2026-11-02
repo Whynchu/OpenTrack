@@ -32,8 +32,6 @@ impl Format {
 }
 
 pub(super) struct Dialog {
-    start_beats: f64,
-    end_beats: f64,
     format: Format,
     sample_rate: u32,
     open: bool,
@@ -44,8 +42,6 @@ pub(super) struct Dialog {
 impl Dialog {
     pub(super) fn for_project(project: &Project) -> Self {
         Self {
-            start_beats: 0.0,
-            end_beats: project_end_beats(project).max(4.0),
             format: Format::Float32,
             sample_rate: project.sample_rate_hz.max(1),
             open: true,
@@ -59,6 +55,19 @@ impl Dialog {
             ..Self::for_project(project)
         }
     }
+}
+
+/// The export range, always taken from the locators.
+///
+/// Exporting a hand-typed range is deliberately not offered: the locators are the
+/// one place a range is defined, so a mixdown cannot silently disagree with what
+/// the transport cycles over.
+fn locator_range(project: &Project) -> Result<(f64, f64), &'static str> {
+    let (start, end) = (project.loop_start_beats, project.loop_end_beats);
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start + 1e-9 {
+        return Err("Set the left and right locators before exporting");
+    }
+    Ok((start, end))
 }
 
 pub(super) struct Task {
@@ -202,22 +211,21 @@ impl super::OpenTrackApp {
                     &mut dialog.stems,
                     "Stems: one WAV per track (choose a folder)",
                 );
-                ui.horizontal(|ui| {
-                    ui.label("Start (beats)");
-                    ui.add(
-                        egui::DragValue::new(&mut dialog.start_beats)
-                            .speed(0.25)
-                            .range(0.0..=1_000_000.0),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("End (beats)");
-                    ui.add(
-                        egui::DragValue::new(&mut dialog.end_beats)
-                            .speed(0.25)
-                            .range(0.0..=1_000_000.0),
-                    );
-                });
+                match locator_range(&self.data.project) {
+                    Ok((start, end)) => {
+                        ui.label(format!("Range: locators {start:.3} to {end:.3} beats"));
+                        ui.label(
+                            egui::RichText::new(
+                                "Export always follows the locators; move them or use Loop Selection to change the range.",
+                            )
+                            .small()
+                            .color(super::theme::palette(ui).muted),
+                        );
+                    }
+                    Err(message) => {
+                        ui.colored_label(super::theme::WARNING, message);
+                    }
+                }
                 egui::ComboBox::from_label("WAV format")
                     .selected_text(match dialog.format {
                         Format::Pcm16 => "PCM 16-bit",
@@ -254,16 +262,14 @@ impl super::OpenTrackApp {
             return;
         }
         if begin {
+            let (start_beats, end_beats) = match locator_range(&self.data.project) {
+                Ok(range) => range,
+                Err(message) => {
+                    self.status_message = message.to_owned();
+                    return;
+                }
+            };
             let dialog = self.audio_export_dialog.take().expect("dialog is present");
-            if !dialog.start_beats.is_finite()
-                || !dialog.end_beats.is_finite()
-                || dialog.start_beats < 0.0
-                || dialog.end_beats <= dialog.start_beats
-            {
-                self.status_message = "Choose a finite, non-empty beat range".to_owned();
-                self.audio_export_dialog = Some(dialog);
-                return;
-            }
             if dialog.stems {
                 let Some(folder) = rfd::FileDialog::new()
                     .set_title("Choose a folder for the stems")
@@ -274,8 +280,8 @@ impl super::OpenTrackApp {
                 };
                 if let Err(error) = self.start_audio_export(
                     folder,
-                    dialog.start_beats,
-                    dialog.end_beats,
+                    start_beats,
+                    end_beats,
                     dialog.format.recording_format(),
                     dialog.sample_rate,
                     true,
@@ -295,8 +301,8 @@ impl super::OpenTrackApp {
             destination.set_extension("wav");
             if let Err(error) = self.start_audio_export(
                 destination,
-                dialog.start_beats,
-                dialog.end_beats,
+                start_beats,
+                end_beats,
                 dialog.format.recording_format(),
                 dialog.sample_rate,
                 false,
@@ -821,6 +827,45 @@ fn project_end_beats(project: &Project) -> f64 {
 }
 
 #[cfg(test)]
+mod dialog_range_tests {
+    use super::*;
+
+    #[test]
+    fn export_follows_the_locators_and_refuses_an_unusable_range() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(opentrack_core::project::TrackKind::Audio);
+
+        // The locators are the range, and the dialog exposes no range fields to
+        // disagree with them.
+        project.set_loop_range(8.0, 24.0);
+        assert_eq!(locator_range(&project), Ok((8.0, 24.0)));
+        let dialog = Dialog::for_project(&project);
+        assert!(!dialog.stems);
+        assert!(Dialog::for_stems(&project).stems);
+
+        // An empty, inverted or negative locator pair is refused with advice
+        // rather than silently exporting the whole project.
+        project.loop_end_beats = project.loop_start_beats;
+        assert_eq!(
+            locator_range(&project),
+            Err("Set the left and right locators before exporting")
+        );
+        project.loop_start_beats = 24.0;
+        project.loop_end_beats = 8.0;
+        assert!(locator_range(&project).is_err());
+        project.loop_start_beats = -1.0;
+        project.loop_end_beats = 8.0;
+        assert!(locator_range(&project).is_err());
+
+        // A valid pair is used verbatim, including a zero start.
+        project.loop_start_beats = 0.0;
+        project.loop_end_beats = 4.0;
+        assert_eq!(locator_range(&project), Ok((0.0, 4.0)));
+    }
+}
+
+#[cfg(test)]
 mod render_tests {
     use super::*;
     use opentrack_audio::{StereoMeter, oscillator_instrument_factory};
@@ -1160,7 +1205,6 @@ mod render_tests {
         assert!(dialog.stems);
         assert_eq!(dialog.format, Format::Float32);
         assert_eq!(dialog.sample_rate, project.sample_rate_hz);
-        assert!(dialog.end_beats >= 4.0);
         assert!(
             !Dialog::for_project(&project).stems,
             "mixdown is the default"

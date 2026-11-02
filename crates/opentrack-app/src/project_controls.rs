@@ -41,7 +41,7 @@ pub(super) fn color_strip(
     let response = ui
         .interact(
             rect,
-            Id::new(("track-color-selector", track.id)),
+            ui.make_persistent_id(("track-color-selector", track.id)),
             Sense::click(),
         )
         .on_hover_text("Track Color Selector");
@@ -71,7 +71,7 @@ pub(super) fn color_strip(
                 .rect_filled(first, 0.0, Color32::from_gray(160));
             let default = ui.interact(
                 first,
-                Id::new(("track-default-color", track.id)),
+                ui.make_persistent_id(("track-default-color", track.id)),
                 Sense::click(),
             );
             if default.hovered() {
@@ -105,7 +105,7 @@ pub(super) fn color_strip(
                 }
                 let swatch = ui.interact(
                     r,
-                    Id::new(("track-color-swatch", track.id, index)),
+                    ui.make_persistent_id(("track-color-swatch", track.id, index)),
                     Sense::click(),
                 );
                 if swatch.hovered() {
@@ -387,15 +387,19 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
         };
         crate::icon_system::paint_app_icon(ui, rect, icon, ink);
     }
-    ui.interact(rect, Id::new(("track-type-icon", track.id)), Sense::hover())
-        .on_hover_text(match track.kind {
-            TrackKind::Audio => "Audio Track",
-            TrackKind::Group => "Group Channel",
-            TrackKind::Fx => "FX Channel",
-            TrackKind::Folder => "Folder",
-            TrackKind::Instrument => "Instrument Track",
-            TrackKind::Midi => "MIDI Track",
-        });
+    ui.interact(
+        rect,
+        ui.make_persistent_id(("track-type-icon", track.id)),
+        Sense::hover(),
+    )
+    .on_hover_text(match track.kind {
+        TrackKind::Audio => "Audio Track",
+        TrackKind::Group => "Group Channel",
+        TrackKind::Fx => "FX Channel",
+        TrackKind::Folder => "Folder",
+        TrackKind::Instrument => "Instrument Track",
+        TrackKind::Midi => "MIDI Track",
+    });
 }
 pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) -> bool {
     let mut changed = false;
@@ -469,7 +473,7 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
     ));
     let response = ui.interact(
         choice,
-        Id::new(("automation-parameter", track.id)),
+        ui.make_persistent_id(("automation-parameter", track.id)),
         Sense::click(),
     );
     if response.hovered() {

@@ -837,6 +837,20 @@ impl State {
         }
         changed
     }
+    /// True when a spectrum frame for the shown stage has arrived.
+    pub fn has_signal(&self) -> bool {
+        self.owner.is_some_and(|id| {
+            self.frames
+                .get(&(id, self.active_stage()))
+                .is_some_and(|frame| !frame.bins_dbfs.is_empty())
+        })
+    }
+
+    /// The dB range the graph currently shows, so a caller can draw its own axes.
+    pub fn display_range_db(&self) -> i32 {
+        self.range_db.unwrap_or(90)
+    }
+
     pub fn rate(&self, id: Option<u64>) -> u32 {
         id.or(self.owner)
             .and_then(|id| self.frames.get(&(id, self.active_stage())))

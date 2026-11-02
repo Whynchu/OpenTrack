@@ -15388,7 +15388,7 @@ impl OpenTrackApp {
     fn show_mixer_window(&mut self, ui: &mut egui::Ui, slot: u8) {
         let docked = slot == 0;
         let panel_rect = ui.max_rect();
-        {
+        if docked {
             let state = self.mixer_window_state(slot);
             state.viewport_live = false;
             state.focus_requested = false;
@@ -16315,24 +16315,66 @@ impl OpenTrackApp {
         );
     }
 
-    /// Draws an extra mixer as a floating window that shares the mixer body.
+    /// Draws an extra mixer in its own native viewport.
+    ///
+    /// Each extra mixer is a separate OS toplevel and a separate egui pass, which
+    /// is what keeps its pointer input away from the project window and keeps its
+    /// widget ids from clashing with the docked mixer's: the strip controls use
+    /// absolute ids keyed by track, so two mixers drawn in one pass collide.
     fn show_extra_mixer(&mut self, ctx: &egui::Context, slot: u8) {
         if !self.mixer_window_state(slot).open {
+            let state = self.mixer_window_state(slot);
+            state.viewport_live = false;
+            state.popup_active = false;
             return;
         }
         let title = if slot == 1 { "Mixer 2" } else { "Mixer 3" };
+        let (restore_bounds, epoch, focus_requested) = {
+            let state = self.mixer_window_state(slot);
+            let restore = if state.viewport_live {
+                None
+            } else {
+                state
+                    .restore_bounds
+                    .clone()
+                    .or_else(|| state.bounds.clone())
+            };
+            (restore, state.epoch, state.focus_requested)
+        };
+        let id = egui::ViewportId::from_hash_of(("extra-mixer", slot, epoch));
+        if focus_requested {
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+            self.mixer_window_state(slot).focus_requested = false;
+        }
+        let builder = viewport_builder(
+            title,
+            Vec2::new(900.0, 520.0),
+            Vec2::new(560.0, 300.0),
+            restore_bounds.as_ref(),
+        )
+        .with_visible(self.mixer_window_state(slot).viewport_live);
         let mut open = true;
-        egui::Window::new(title)
-            .id(Id::new(("extra-mixer", slot)))
-            .order(egui::Order::Middle)
-            .collapsible(false)
-            .resizable(true)
-            .default_size(Vec2::new(820.0, 460.0))
-            .open(&mut open)
-            .show(ctx, |ui| {
-                self.show_mixer_window(ui, slot);
+        let mut bounds = None;
+        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+            self.handle_native_window_input(window_ctx);
+            open &= !window_ctx.input(|input| input.viewport().close_requested());
+            egui::CentralPanel::default().show(window_ctx, |ui| {
+                let pointer_blocked = self.dialog_owns_input() || self.menu_open;
+                blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
+                    self.show_mixer_window(ui, slot);
+                });
             });
-        self.mixer_window_state(slot).open = open;
+            bounds = native_window_bounds(window_ctx);
+        });
+        let state = self.mixer_window_state(slot);
+        state.open = open;
+        state.viewport_live = open;
+        if restore_bounds.is_some() {
+            state.restore_bounds = None;
+        }
+        if let Some(bounds) = bounds {
+            state.bounds = Some(bounds);
+        }
     }
 
     fn show_spectrum_window(&mut self, ctx: &egui::Context) {
@@ -16358,17 +16400,68 @@ impl OpenTrackApp {
                     .controls(ui, controls_rect, &mut scratch);
                 let (plot, _) =
                     ui.allocate_exact_size(Vec2::new(width, 240.0), egui::Sense::hover());
-                let colour = theme::palette(ui).accent;
-                self.spectrum_state.paint(ui, plot, colour);
-                if self.audio_engine.is_none() {
-                    ui.label(
-                        egui::RichText::new(
-                            "No audio output device is open, so the analyser has no signal.",
-                        )
-                        .small()
-                        .color(theme::palette(ui).muted),
+                let palette = theme::palette(ui);
+                let rate = self
+                    .audio_engine
+                    .as_ref()
+                    .map(|engine| engine.sample_rate)
+                    .unwrap_or(self.data.project.sample_rate_hz)
+                    .max(1);
+                let range_db = self.spectrum_state.display_range_db().max(1);
+                // The analyser only paints its own trace, so the window draws the
+                // grid and axes; without them a working spectrum looks like an
+                // empty EQ display.
+                let painter = ui.painter().with_clip_rect(plot);
+                painter.rect_filled(plot, egui::CornerRadius::same(2), palette.canvas);
+                let nyquist = f64::from(rate) / 2.0;
+                for (hz, label) in [(100.0_f64, "100"), (1_000.0, "1k"), (10_000.0, "10k")] {
+                    if hz >= nyquist {
+                        continue;
+                    }
+                    let fraction = (hz / nyquist).sqrt();
+                    let x = plot.left() + fraction as f32 * plot.width();
+                    painter.line_segment(
+                        [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+                        egui::Stroke::new(1.0, palette.grid.gamma_multiply(0.5)),
+                    );
+                    painter.text(
+                        Pos2::new(x + 2.0, plot.bottom() - 2.0),
+                        Align2::LEFT_BOTTOM,
+                        label,
+                        FontId::monospace(9.0),
+                        palette.muted,
                     );
                 }
+                for step in 0..=3 {
+                    let db = -(step * range_db / 3);
+                    let y = plot.top() + step as f32 / 3.0 * plot.height();
+                    painter.line_segment(
+                        [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+                        egui::Stroke::new(1.0, palette.grid.gamma_multiply(0.5)),
+                    );
+                    painter.text(
+                        Pos2::new(plot.left() + 3.0, y + 1.0),
+                        Align2::LEFT_TOP,
+                        format!("{db} dB"),
+                        FontId::monospace(9.0),
+                        palette.muted,
+                    );
+                }
+                painter.rect_stroke(
+                    plot,
+                    egui::CornerRadius::same(2),
+                    egui::Stroke::new(1.0, palette.grid),
+                    egui::StrokeKind::Inside,
+                );
+                self.spectrum_state.paint(ui, plot, palette.accent);
+                let status = if self.audio_engine.is_none() {
+                    "No audio output device is open, so the analyser has no signal."
+                } else if self.spectrum_state.has_signal() {
+                    "Live spectrum of the master output (post-fader)."
+                } else {
+                    "Waiting for audio from the master output; play the project or make some noise."
+                };
+                ui.label(egui::RichText::new(status).small().color(palette.muted));
             });
         self.spectrum_open = open;
     }
@@ -32444,34 +32537,6 @@ mod extra_mixer_persistence_tests {
 mod extra_mixer_tests {
     use super::*;
 
-    fn run(ctx: &egui::Context, app: &mut OpenTrackApp, slot: u8, frame: usize) -> Vec<String> {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0))),
-                time: Some(frame as f64 * 0.05),
-                ..Default::default()
-            },
-            |_| app.show_extra_mixer(ctx, slot),
-        );
-        output.textures_delta.clear();
-        let mut texts = Vec::new();
-        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
-            match shape {
-                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
-                egui::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        walk(shape, texts);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for shape in &output.shapes {
-            walk(&shape.shape, &mut texts);
-        }
-        texts
-    }
-
     fn app_with_tracks() -> OpenTrackApp {
         let ctx = egui::Context::default();
         let creation = eframe::CreationContext::_new_kittest(ctx);
@@ -32482,46 +32547,57 @@ mod extra_mixer_tests {
         app
     }
 
+    /// Runs one frame with both extra mixers, each in its own viewport pass.
+    fn run(ctx: &egui::Context, app: &mut OpenTrackApp, frame: usize) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0))),
+                time: Some(frame as f64 * 0.05),
+                ..Default::default()
+            },
+            |_| {
+                app.show_extra_mixer(ctx, 1);
+                app.show_extra_mixer(ctx, 2);
+            },
+        );
+        output.textures_delta.clear();
+    }
+
     #[test]
-    fn the_extra_mixers_open_independently_of_the_docked_one() {
+    fn the_extra_mixers_open_in_their_own_viewports() {
         let ctx = egui::Context::default();
         let mut app = app_with_tracks();
         assert!(!app.mixer_window_2.open);
         assert!(!app.mixer_window_3.open);
 
-        // Neither extra mixer draws while closed.
-        let closed = run(&ctx, &mut app, 1, 0);
-        assert!(!closed.iter().any(|text| text == "Mixer 2"), "{closed:?}");
+        // Closed mixers do not run a viewport pass.
+        run(&ctx, &mut app, 0);
+        assert!(!app.mixer_window_2.viewport_live);
+        assert!(!app.mixer_window_3.viewport_live);
 
-        let docked_before = app.mixer_window.open;
+        // Each extra mixer marks itself live in its own pass; drawing both in the
+        // same frame is safe because they are separate immediate viewports.
         app.mixer_window_2.open = true;
-        run(&ctx, &mut app, 1, 1);
-        let texts = run(&ctx, &mut app, 1, 2);
-        let joined = texts.join("\n");
-        assert!(joined.contains("Mixer 2"), "{joined}");
-        // The mixer body is real, not a placeholder: the bus strips are drawn.
-        assert!(
-            joined.contains("Input 1/2") || joined.contains("stereo"),
-            "{joined}"
-        );
-        assert!(app.mixer_window_2.open, "the window keeps its own state");
+        let docked_before = app.mixer_window.open;
+        run(&ctx, &mut app, 1);
+        assert!(app.mixer_window_2.viewport_live);
+        assert!(app.mixer_window_2.open);
         assert_eq!(
             app.mixer_window.open, docked_before,
-            "opening an extra mixer leaves the docked mixer alone"
+            "an extra mixer leaves the docked one alone"
         );
+        assert!(!app.mixer_window_3.viewport_live);
 
-        // The third mixer is separate again.
+        // The third mixer is independent again.
         app.mixer_window_3.open = true;
-        run(&ctx, &mut app, 2, 3);
-        let texts = run(&ctx, &mut app, 2, 4);
-        assert!(texts.iter().any(|text| text == "Mixer 3"), "{texts:?}");
-        assert!(app.mixer_window_3.open);
+        run(&ctx, &mut app, 2);
+        assert!(app.mixer_window_3.viewport_live);
 
-        // Closing one leaves the other open.
+        // Closing one leaves the other open and live.
         app.mixer_window_2.open = false;
-        let texts = run(&ctx, &mut app, 2, 5);
-        assert!(texts.iter().any(|text| text == "Mixer 3"));
-        assert!(!app.mixer_window_2.open && app.mixer_window_3.open);
+        run(&ctx, &mut app, 3);
+        assert!(!app.mixer_window_2.viewport_live);
+        assert!(app.mixer_window_3.viewport_live && app.mixer_window_3.open);
     }
 }
 
@@ -32583,6 +32659,10 @@ mod spectrum_window_tests {
             joined.to_lowercase().contains("spectrum") || joined.contains("Hold"),
             "{joined}"
         );
+        // The window supplies the grid the analyser itself does not paint, so a
+        // working spectrum is not mistaken for an empty EQ display.
+        assert!(joined.contains("dB"), "dB axis missing: {joined}");
+        assert!(joined.contains("1k"), "frequency axis missing: {joined}");
         assert!(app.spectrum_open, "the window stays open");
 
         // Closing stops the analyser work and the window.
