@@ -201,8 +201,15 @@ Still open from revision 1:
    automation stay. Files are numbered and name-sanitized (`001 Drums.wav`), a
    track with no audio writes nothing and the status reports the shortfall. 5
    tests, one of which renders two real WAVs end to end.
-23. **Bounce selection in place.** Render the selected range through the track
-    chain into a new event on that track.
+23. **Bounce selection in place.** *Delivered.* Edit > Bounce Selection in Place
+   renders the selected events' span through their own track's channel (the same
+   `OfflineRenderer` and settings as a stem, sends dropped, output to the master)
+   into `Audio/Imports`, then replaces the selected events with one event covering
+   the span as a single undo step labelled "Bounce in Place". Replaced audio stays
+   in the media pool, a locked event blocks the bounce, a selection spanning two
+   tracks is refused, and the render runs in a background thread with a cancel
+   button. 2 core and 1 app test; the app test renders a real two-event bounce and
+   checks the resulting file, span and history label. Listening review remains.
 24. **MIDI export of a selection** in addition to the whole project.
 25. **CPR adapter (blocked).** Version-specific reader with an explicit support
     report and opaque preservation. **Needs user fixtures**; until they arrive

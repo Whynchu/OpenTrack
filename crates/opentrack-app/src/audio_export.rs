@@ -10,7 +10,7 @@ use std::{
 
 use eframe::egui;
 use opentrack_audio::{
-    OfflineRenderer, PlaybackSettingsSnapshot, WavExportReport, write_mixdown_wav,
+    AudioSource, OfflineRenderer, PlaybackSettingsSnapshot, WavExportReport, write_mixdown_wav,
 };
 use opentrack_core::project::{Project, RecordingFormat};
 
@@ -130,6 +130,31 @@ impl super::OpenTrackApp {
     }
 
     pub(super) fn show_audio_export(&mut self, ctx: &egui::Context) {
+        if let Some(task) = self.bounce_task.as_ref() {
+            let (done, total) = task
+                .progress
+                .lock()
+                .map(|progress| *progress)
+                .unwrap_or_default();
+            egui::Window::new("Bounce Selection")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Rendering the selected range through this track's channel...");
+                    let fraction = if total == 0 {
+                        0.0
+                    } else {
+                        done as f32 / total as f32
+                    };
+                    ui.add(egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).show_percentage());
+                    if ui.button("Cancel Bounce").clicked() {
+                        task.cancel.store(true, Ordering::Release);
+                    }
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+            return;
+        }
+
         if self.audio_export_task.is_some() {
             let (done, total) = self
                 .audio_export_task
@@ -281,6 +306,221 @@ impl super::OpenTrackApp {
         }
     }
 
+    /// Renders the selected events' range through their track chain into one new
+    /// event on that track.
+    ///
+    /// The replaced events leave the arrangement but keep their files (the media
+    /// pool still lists them), so a bounce is recoverable beyond Undo.
+    pub(super) fn start_bounce_in_place(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before bouncing a selection".to_owned();
+            return;
+        }
+        if self.bounce_task.is_some() {
+            self.status_message = "Wait for the running bounce to finish".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to bounce".to_owned();
+            return;
+        }
+        let selected = ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut target = None;
+        for (index, track) in self.data.project.tracks.iter().enumerate() {
+            let found = track
+                .clips
+                .iter()
+                .filter(|clip| selected.contains(&clip.id))
+                .count();
+            if found == 0 {
+                continue;
+            }
+            if target.is_some() {
+                self.status_message = "Bounce works on events from one track at a time".to_owned();
+                return;
+            }
+            target = Some((index, found));
+        }
+        let Some((track_index, found)) = target else {
+            self.status_message = "The selection no longer contains audio events".to_owned();
+            return;
+        };
+        if found != selected.len() {
+            self.status_message =
+                "Bounce works on audio events from one track at a time".to_owned();
+            return;
+        }
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        let (start_beats, end_beats) = self.data.project.tracks[track_index]
+            .clips
+            .iter()
+            .filter(|clip| selected.contains(&clip.id))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(start, end), clip| {
+                (
+                    start.min(clip.start_beats),
+                    end.max(clip.start_beats + clip.duration_seconds * tempo / 60.0),
+                )
+            });
+        if !start_beats.is_finite() || !end_beats.is_finite() || end_beats <= start_beats {
+            self.status_message = "The selected events have no usable range".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.begin_project_folder_setup();
+            self.status_message = "Set up this project's folder before bouncing".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message = "Save this project into its folder before bouncing".to_owned();
+            return;
+        };
+        let Some(snapshot) = self.offline_playback_settings.clone() else {
+            self.status_message =
+                "The project playback graph is not ready yet; try again in a moment".to_owned();
+            return;
+        };
+        let mut project = self.data.project.clone();
+        self.vst3_runtime.capture_states(&mut project);
+        let track_id = project.tracks[track_index].id;
+        let track_name = project.tracks[track_index].name.clone();
+        let destination = match unique_wav_path(&root, &format!("{track_name} bounce")) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status_message = format!("Could not choose a bounce file: {error}");
+                return;
+            }
+        };
+        let duration_seconds = (end_beats - start_beats) * 60.0 / tempo;
+        let sample_rate = self.data.project.sample_rate_hz.max(1);
+        let progress = Arc::new(Mutex::new((0, 0)));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, result) = mpsc::channel();
+        let worker_progress = Arc::clone(&progress);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_destination = destination.clone();
+        thread::Builder::new()
+            .name("opentrack-bounce".to_owned())
+            .spawn(move || {
+                // The bounce is one track's channel, exactly like its stem.
+                let Some(settings) = stem_snapshot(&snapshot, track_index) else {
+                    let _ = sender.send(Err("the track has no playback settings".to_owned()));
+                    return;
+                };
+                let mut bounce_project = project;
+                bounce_project.tracks.retain(|track| track.id == track_id);
+                let outcome = render_export(
+                    bounce_project,
+                    settings,
+                    worker_destination,
+                    start_beats,
+                    end_beats,
+                    sample_rate,
+                    RecordingFormat::Float32,
+                    &worker_cancel,
+                    &worker_progress,
+                );
+                let _ = sender.send(outcome);
+            })
+            .map_err(|error| error.to_string())
+            .ok();
+        self.status_message = format!(
+            "Bouncing {:.2} s of {} through its channel...",
+            duration_seconds, track_name
+        );
+        self.bounce_task = Some(BounceTask {
+            destination,
+            track_id,
+            replaced: ids,
+            start_beats,
+            duration_seconds,
+            result,
+            progress,
+            cancel,
+        });
+    }
+
+    /// Finishes a bounce: places the rendered event as one undo step.
+    pub(super) fn poll_bounce_task(&mut self) {
+        let result = match self.bounce_task.as_ref() {
+            Some(task) => match task.result.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("bounce worker stopped unexpectedly".to_owned()))
+                }
+            },
+            None => return,
+        };
+        let Some(outcome) = result else {
+            return;
+        };
+        let task = self.bounce_task.take().expect("bounce task is present");
+        let report = match outcome {
+            Ok(report) => report,
+            Err(error) => {
+                let _ = std::fs::remove_file(&task.destination);
+                self.status_message = format!("Bounce failed: {error}");
+                return;
+            }
+        };
+        let mut candidate = self.data.project.clone();
+        let Some(new_id) = candidate.replace_audio_clips_with_bounce(
+            task.track_id,
+            &task.replaced,
+            task.destination.clone(),
+            task.start_beats,
+            task.duration_seconds,
+        ) else {
+            let _ = std::fs::remove_file(&task.destination);
+            self.status_message =
+                "The selected events could not be replaced (a locked event blocks the bounce)"
+                    .to_owned();
+            return;
+        };
+        match AudioSource::open(&task.destination) {
+            Ok(source) => {
+                self.data
+                    .audio_sources
+                    .insert(task.destination.clone(), source);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&task.destination);
+                self.status_message = format!("The bounced file could not be opened: {error}");
+                return;
+            }
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot bounce: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Bounce in Place");
+        let track_index = candidate
+            .tracks
+            .iter()
+            .position(|track| track.id == task.track_id);
+        self.data.project = candidate;
+        if let Some(track_index) = track_index {
+            self.data.project.selected_track = Some(track_index as u32);
+        }
+        self.arrange_view_state.audio_events.select_many([new_id]);
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Bounced {} event(s) into {}; Undo restores the originals",
+            task.replaced.len(),
+            task.destination.display()
+        );
+    }
+
     fn start_audio_export(
         &mut self,
         destination: PathBuf,
@@ -369,6 +609,43 @@ impl super::OpenTrackApp {
         });
         Ok(())
     }
+}
+
+/// A bounce-in-place render running in the background.
+///
+/// Bounce keeps the range and the replaced events with the task, so a finished
+/// render becomes one undo step rather than a file the user has to place by hand.
+pub(super) struct BounceTask {
+    destination: PathBuf,
+    track_id: u64,
+    replaced: Vec<u64>,
+    start_beats: f64,
+    duration_seconds: f64,
+    result: Receiver<Result<WavExportReport, String>>,
+    progress: Arc<Mutex<(u64, u64)>>,
+    cancel: Arc<AtomicBool>,
+}
+
+/// A free file name for rendered audio inside the project's `Audio/Imports`.
+pub(super) fn unique_wav_path(root: &std::path::Path, name: &str) -> Result<PathBuf, String> {
+    let directory = root.join("Audio").join("Imports");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    let base = stem_file_name(name, 0)
+        .trim_end_matches(".wav")
+        .trim_start_matches("001 ")
+        .to_owned();
+    let candidate = directory.join(format!("{base}.wav"));
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    for index in 2..=99_999 {
+        let candidate = directory.join(format!("{base} ({index}).wav"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("no unused name is available in Audio/Imports".to_owned())
 }
 
 /// One stem's playback settings: only the chosen track, routed to the master.
@@ -538,7 +815,7 @@ fn project_end_beats(project: &Project) -> f64 {
 }
 
 #[cfg(test)]
-mod stem_tests {
+mod render_tests {
     use super::*;
     use opentrack_audio::{StereoMeter, oscillator_instrument_factory};
     use opentrack_core::project::{ChannelEqualizer, InstrumentWaveform};
@@ -746,6 +1023,113 @@ mod stem_tests {
             .is_empty(),
             "a track with no media writes no stem"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bouncing_a_selection_places_one_rendered_event_as_one_undo_step() {
+        use opentrack_audio::{DecodedWav, PlaybackClip, PlaybackSource};
+        use opentrack_core::project::TrackKind;
+
+        let root = std::env::temp_dir().join(format!("opentrack-bounce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        super::super::create_project_directory_layout(&root).expect("project layout");
+        let first_path = root.join("one.wav");
+        let second_path = root.join("two.wav");
+        write_test_wav(&first_path, 0.25);
+        write_test_wav(&second_path, 0.25);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = super::super::OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.sample_rate_hz = 48_000;
+        app.data.project.add_track(TrackKind::Audio);
+        // At 120 BPM one second is two beats: the events cover 0..2 and 4..6
+        // beats, so the bounce spans three seconds.
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, first_path.clone(), 0.0, 1.0)
+            .expect("first");
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, second_path.clone(), 4.0, 1.0)
+            .expect("second");
+        app.project_history.clear();
+
+        let clip = |path: &std::path::Path, start: f64| PlaybackClip {
+            source_fades: Vec::new(),
+            source: PlaybackSource::Decoded(Arc::new(DecodedWav::open(path).expect("open wav"))),
+            start_beats: start,
+            source_offset_seconds: 0.0,
+            duration_seconds: 1.0,
+            fade_in_seconds: 0.0,
+            fade_out_seconds: 0.0,
+            gain: 1.0,
+            muted: false,
+            solo: false,
+        };
+        let mut settings = track(1.0);
+        settings.clips = vec![clip(&first_path, 0.0), clip(&second_path, 4.0)];
+        app.offline_playback_settings = Some(PlaybackSettingsSnapshot {
+            tempo_bpm: 120.0,
+            tracks: vec![settings],
+        });
+
+        app.arrange_view_state
+            .audio_events
+            .select_many([first, second]);
+        app.start_bounce_in_place();
+        assert!(app.bounce_task.is_some(), "the render started");
+        assert!(app.status_message.contains("Bouncing"));
+
+        // Wait for the worker, then let the app finish the placement.
+        for _ in 0..500 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_bounce_task();
+            if app.bounce_task.is_none() {
+                break;
+            }
+        }
+        assert!(app.bounce_task.is_none(), "the bounce finished");
+
+        let bounced = {
+            let clips = &app.data.project.tracks[0].clips;
+            assert_eq!(clips.len(), 1, "the two events became one rendered event");
+            clips[0].clone()
+        };
+        assert!((bounced.start_beats - 0.0).abs() < 1e-9);
+        assert!((bounced.duration_seconds - 3.0).abs() < 1e-6);
+        assert!(
+            bounced
+                .source_path
+                .starts_with(root.join("Audio").join("Imports")),
+            "the render lives in the project: {}",
+            bounced.source_path.display()
+        );
+        assert!(bounced.source_path.exists());
+        assert!(app.status_message.contains("Bounced 2 event(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Bounce in Place");
+
+        // A selection spanning two tracks is refused.
+        app.data.project.add_track(TrackKind::Audio);
+        let elsewhere = app
+            .data
+            .project
+            .add_audio_clip(1, first_path.clone(), 0.0, 2.0)
+            .expect("other");
+        app.arrange_view_state
+            .audio_events
+            .select_many([bounced.id, elsewhere]);
+        app.start_bounce_in_place();
+        assert!(app.status_message.contains("one track at a time"));
+        assert!(app.bounce_task.is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1243,6 +1243,7 @@ pub struct OpenTrackApp {
     audio_import_task: Option<AudioImportTask>,
     audio_export_dialog: Option<audio_export::Dialog>,
     audio_export_task: Option<audio_export::Task>,
+    bounce_task: Option<audio_export::BounceTask>,
     midi_file_task: Option<midi_file::Task>,
     project_load_task: Option<ProjectLoadTask>,
     midi_recording_session: Option<MidiRecordingSession>,
@@ -2670,6 +2671,7 @@ impl OpenTrackApp {
             audio_import_task: None,
             audio_export_dialog: None,
             audio_export_task: None,
+            bounce_task: None,
             midi_file_task: None,
             project_load_task: None,
             midi_recording_session: None,
@@ -10360,6 +10362,13 @@ impl OpenTrackApp {
                     let can_activate_take = self.project_open
                         && !self.is_recording()
                         && self.arrange_view_state.audio_events.selected_ids().len() == 1;
+                    let can_bounce = self.project_open
+                        && !self.is_recording()
+                        && !self.arrange_view_state.audio_events.selected_ids().is_empty();
+                    if menu_command(ui, "Bounce Selection in Place", "", can_bounce).clicked() {
+                        self.start_bounce_in_place();
+                        ui.close();
+                    }
                     if menu_command(ui, "Make Take Active", "", can_activate_take).clicked() {
                         self.make_selected_event_active_take();
                         ui.close();
@@ -14230,6 +14239,7 @@ impl eframe::App for OpenTrackApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         self.poll_audio_export_task();
+        self.poll_bounce_task();
         self.poll_midi_file_task();
         if self.midi_file_task.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));

@@ -2464,6 +2464,59 @@ impl Project {
         Some(keeper.id)
     }
 
+    /// Replaces events on one track with a single rendered event.
+    ///
+    /// Bounce in place renders a range of a track through its own chain, so the
+    /// result is one event that sounds like the replaced ones. The replaced events
+    /// leave the arrangement (their files stay in the pool, so normal deletion
+    /// rules still protect the media) and the new event covers their span.
+    pub fn replace_audio_clips_with_bounce(
+        &mut self,
+        track_id: u64,
+        replaced: &[u64],
+        source_path: PathBuf,
+        start_beats: f64,
+        duration_seconds: f64,
+    ) -> Option<u64> {
+        if replaced.is_empty() {
+            return None;
+        }
+        let track_index = self
+            .tracks
+            .iter()
+            .position(|track| track.id == track_id && track.kind == TrackKind::Audio)?;
+        let selected: BTreeSet<u64> = replaced.iter().copied().collect();
+        let found = self.tracks[track_index]
+            .clips
+            .iter()
+            .filter(|clip| selected.contains(&clip.id))
+            .count();
+        if found != selected.len() {
+            return None;
+        }
+        if self.tracks[track_index]
+            .clips
+            .iter()
+            .any(|clip| selected.contains(&clip.id) && clip.locked)
+        {
+            // A locked event is a promise not to change it, so bouncing refuses
+            // instead of quietly unlocking and replacing it.
+            return None;
+        }
+        let id = self.add_audio_clip(track_index, source_path, start_beats, duration_seconds)?;
+        let track = &mut self.tracks[track_index];
+        track
+            .clips
+            .retain(|clip| !selected.contains(&clip.id) || clip.id == id);
+        track
+            .clips
+            .sort_by(|left, right| left.start_beats.total_cmp(&right.start_beats));
+        if self.validate().is_err() {
+            return None;
+        }
+        Some(id)
+    }
+
     /// Splits one continuous loop recording into one clip per cycle pass.
     ///
     /// The recorder writes one file for the whole take, so each pass is a clip
@@ -5279,6 +5332,102 @@ mod sample_edit_tests {
         // An empty mapping is a no-op.
         assert_eq!(project.relink_media(&BTreeMap::new()), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bouncing_replaces_the_selected_events_with_one_rendered_event() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 2.0)
+            .unwrap();
+        // A third event outside the selection must survive.
+        let untouched = project
+            .add_audio_clip(0, PathBuf::from("c.wav"), 20.0, 2.0)
+            .unwrap();
+
+        let bounced = project
+            .replace_audio_clips_with_bounce(
+                track_id,
+                &[first, second],
+                PathBuf::from("bounce.wav"),
+                0.0,
+                6.0,
+            )
+            .expect("bounce");
+        let ids = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&bounced));
+        assert!(ids.contains(&untouched));
+        assert!(!ids.contains(&first) && !ids.contains(&second));
+        let clip = project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == bounced)
+            .expect("bounced clip");
+        assert_eq!(clip.start_beats, 0.0);
+        assert_eq!(clip.duration_seconds, 6.0);
+        assert_eq!(clip.source_path, PathBuf::from("bounce.wav"));
+        assert!(project.media_pool.contains(&PathBuf::from("bounce.wav")));
+        // The replaced audio stays available for recovery.
+        assert!(project.media_pool.contains(&PathBuf::from("a.wav")));
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn bouncing_refuses_a_locked_event_or_a_foreign_selection() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let elsewhere = project
+            .add_audio_clip(1, PathBuf::from("b.wav"), 0.0, 2.0)
+            .unwrap();
+
+        project.set_audio_clips_locked(&[clip], true);
+        assert!(
+            project
+                .replace_audio_clips_with_bounce(
+                    track_id,
+                    &[clip],
+                    PathBuf::from("bounce.wav"),
+                    0.0,
+                    2.0
+                )
+                .is_none()
+        );
+
+        project.set_audio_clips_locked(&[clip], false);
+        // A selection that includes an event on another track is refused.
+        assert!(
+            project
+                .replace_audio_clips_with_bounce(
+                    track_id,
+                    &[clip, elsewhere],
+                    PathBuf::from("bounce.wav"),
+                    0.0,
+                    2.0
+                )
+                .is_none()
+        );
+        assert!(
+            project
+                .replace_audio_clips_with_bounce(track_id, &[], PathBuf::from("b.wav"), 0.0, 2.0)
+                .is_none()
+        );
+        assert_eq!(project.tracks[0].clips.len(), 1);
     }
 
     #[test]
