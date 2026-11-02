@@ -2352,6 +2352,88 @@ impl Project {
         changed
     }
 
+    /// Removes the material inside `[start, end)` from the given events.
+    ///
+    /// Each crossing event is split at both boundaries and the middle piece is
+    /// discarded, leaving a gap rather than closing it — deleting a range is not
+    /// a ripple edit. An event fully inside the range is removed entirely.
+    pub fn delete_range_from_audio_clips(&mut self, ids: &[u64], start: f64, end: f64) -> usize {
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+            return 0;
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        if selected.is_empty() {
+            return 0;
+        }
+        let mut changed = 0;
+        for track_id in self
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .map(|track| track.id)
+            .collect::<Vec<_>>()
+        {
+            let targets = self
+                .tracks
+                .iter()
+                .find(|track| track.id == track_id)
+                .map(|track| {
+                    track
+                        .clips
+                        .iter()
+                        .filter(|clip| selected.contains(&clip.id))
+                        .map(|clip| {
+                            (
+                                clip.id,
+                                clip.start_beats,
+                                clip.start_beats + clip.duration_seconds * self.tempo_bpm / 60.0,
+                                clip.locked,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for (clip_id, clip_start, clip_end, locked) in targets {
+                if locked || clip_end <= start + 1e-9 || clip_start >= end - 1e-9 {
+                    continue;
+                }
+                // Fully inside: the event goes away.
+                if clip_start >= start - 1e-9 && clip_end <= end + 1e-9 {
+                    remove_clip(self, track_id, clip_id);
+                    changed += 1;
+                    continue;
+                }
+                // Trim the tail beyond `end` first so the ids stay stable.
+                if clip_end > end + 1e-9
+                    && let Some(right) = self.split_audio_clip(track_id, clip_id, end)
+                    && clip_start >= start - 1e-9
+                {
+                    // The event starts inside: keep the surviving right part and
+                    // drop the head that reaches into the range.
+                    remove_clip(self, track_id, clip_id);
+                    rename_clip(self, track_id, right, clip_id);
+                    changed += 1;
+                    continue;
+                }
+                if clip_start < start - 1e-9 {
+                    match self.split_audio_clip(track_id, clip_id, start) {
+                        Some(middle) => {
+                            // `middle` is the piece starting at `start`. Cut it at
+                            // `end` when it reaches past the range, then drop it.
+                            if clip_end > end + 1e-9 {
+                                self.split_audio_clip(track_id, middle, end);
+                            }
+                            remove_clip(self, track_id, middle);
+                            changed += 1;
+                        }
+                        None => continue,
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     /// Splits every audio event crossing either locator.
     ///
     /// The loop range is the target, so this is the "Split Loop" command: each
@@ -2383,8 +2465,8 @@ impl Project {
                             .clips
                             .iter()
                             .filter(|clip| {
-                                let end =
-                                    clip.start_beats + clip.duration_seconds * self.tempo_bpm / 60.0;
+                                let end = clip.start_beats
+                                    + clip.duration_seconds * self.tempo_bpm / 60.0;
                                 clip.start_beats < boundary - 1e-9 && end > boundary + 1e-9
                             })
                             .map(|clip| clip.id)
@@ -4663,6 +4745,110 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn deleting_a_range_leaves_a_gap_and_keeps_the_outer_parts() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 8 s at 120 BPM is 16 beats, so this event spans the whole range.
+        let spanning = project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 0.0, 8.0)
+            .unwrap();
+
+        assert_eq!(
+            project.delete_range_from_audio_clips(&[spanning], 4.0, 8.0),
+            1
+        );
+        let mut spans = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| {
+                (
+                    clip.start_beats,
+                    clip.start_beats + clip.duration_seconds * 120.0 / 60.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        spans.sort_by(|left, right| left.0.total_cmp(&right.0));
+        assert_eq!(spans, vec![(0.0, 4.0), (8.0, 16.0)], "only the gap is gone");
+        assert!(project.validate().is_ok());
+        assert!(
+            project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.source_path == PathBuf::from("long.wav"))
+        );
+    }
+
+    #[test]
+    fn deleting_a_range_removes_events_inside_and_skips_those_outside() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 1 s at 120 BPM is 2 beats.
+        let inside = project
+            .add_audio_clip(0, PathBuf::from("inside.wav"), 4.0, 1.0)
+            .unwrap();
+        let before = project
+            .add_audio_clip(0, PathBuf::from("before.wav"), 0.0, 1.0)
+            .unwrap();
+        let after = project
+            .add_audio_clip(0, PathBuf::from("after.wav"), 12.0, 1.0)
+            .unwrap();
+        let locked = project
+            .add_audio_clip(0, PathBuf::from("locked.wav"), 5.0, 1.0)
+            .unwrap();
+        project.set_audio_clips_locked(&[locked], true);
+
+        let removed =
+            project.delete_range_from_audio_clips(&[inside, before, after, locked], 3.0, 9.0);
+        assert_eq!(removed, 1, "only the unlocked event inside the range goes");
+        let remaining = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(remaining, BTreeSet::from([before, after, locked]));
+        assert!(!project.tracks[0].clips.iter().any(|clip| clip.id == inside));
+
+        // An event spanning the range keeps both outer parts.
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let spanning = project
+            .add_audio_clip(0, PathBuf::from("span.wav"), 2.0, 4.0)
+            .unwrap();
+        assert_eq!(
+            project.delete_range_from_audio_clips(&[spanning], 3.0, 6.0),
+            1
+        );
+        let mut spans = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| {
+                (
+                    clip.start_beats,
+                    clip.start_beats + clip.duration_seconds * 120.0 / 60.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        spans.sort_by(|left, right| left.0.total_cmp(&right.0));
+        assert_eq!(spans, vec![(2.0, 3.0), (6.0, 10.0)]);
+
+        // An event that starts inside the range and ends after it keeps only its
+        // tail, under the same id.
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let head = project
+            .add_audio_clip(0, PathBuf::from("head.wav"), 3.0, 4.0)
+            .unwrap();
+        assert_eq!(project.delete_range_from_audio_clips(&[head], 3.0, 6.0), 1);
+        let clip = &project.tracks[0].clips[0];
+        assert_eq!(clip.id, head, "the surviving tail keeps the event identity");
+        assert!((clip.start_beats + clip.duration_seconds * 120.0 / 60.0 - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn split_loop_cuts_every_event_at_both_locators() {
         let mut project = Project::default();
         project.tempo_bpm = 120.0;
@@ -4689,13 +4875,19 @@ mod sample_edit_tests {
             .iter()
             .map(|clip| clip.start_beats)
             .collect::<Vec<_>>();
-        assert_eq!(beats, vec![0.0, 4.0, 8.0], "the spanning event became three");
+        assert_eq!(
+            beats,
+            vec![0.0, 4.0, 8.0],
+            "the spanning event became three"
+        );
         assert!(project.validate().is_ok());
         // The split copies keep the source identity.
-        assert!(project.tracks[0]
-            .clips
-            .iter()
-            .all(|clip| clip.source_path == PathBuf::from("long.wav")));
+        assert!(
+            project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.source_path == PathBuf::from("long.wav"))
+        );
         assert_eq!(project.tracks[1].clips.len(), 3);
         assert_eq!(project.tracks[0].id, track_id);
     }
@@ -4710,7 +4902,11 @@ mod sample_edit_tests {
             .unwrap();
         project.set_loop_range(4.0, 8.0);
         project.set_audio_clips_locked(&[id], true);
-        assert_eq!(project.split_audio_clips_at_loop().0, 0, "locked stays whole");
+        assert_eq!(
+            project.split_audio_clips_at_loop().0,
+            0,
+            "locked stays whole"
+        );
 
         project.set_audio_clips_locked(&[id], false);
         project.set_loop_range(20.0, 24.0);

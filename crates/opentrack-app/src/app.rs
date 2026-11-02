@@ -9255,6 +9255,10 @@ impl OpenTrackApp {
                             self.crop_selected_audio_events_to_loop();
                             ui.close();
                         }
+                        if menu_command(ui, "Delete Range", "", has_selection).clicked() {
+                            self.delete_loop_range_from_selected_events();
+                            ui.close();
+                        }
                     });
                     ui.menu_button("Select", |ui| {
                         if menu_command(ui, "All Events", "Ctrl+A", self.project_open).clicked() {

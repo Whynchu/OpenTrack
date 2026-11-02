@@ -529,6 +529,43 @@ impl OpenTrackApp {
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
     }
 
+    /// Removes the loop range from the selected events, as one undo step.
+    pub(super) fn delete_loop_range_from_selected_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before deleting a range".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to delete a range from".to_owned();
+            return;
+        }
+        let (start, end) = (
+            self.data.project.loop_start_beats,
+            self.data.project.loop_end_beats,
+        );
+        let mut candidate = self.data.project.clone();
+        let removed = candidate.delete_range_from_audio_clips(&ids, start, end);
+        if removed == 0 {
+            self.status_message = "No selected audio event overlaps the loop range".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot delete the range: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Deleted the loop range from {removed} audio event(s); Undo restores them");
+    }
+
     /// Moves the selected events by one grid step, left or right.
     ///
     /// Locked events and locked group members are refused by the core move, so a
@@ -4069,6 +4106,45 @@ mod split_selection_tests {
             bytes.extend_from_slice(&(-value).to_le_bytes());
         }
         std::fs::write(path, bytes).expect("write wav");
+    }
+
+    #[test]
+    fn deleting_the_loop_range_is_one_undo_step_and_reports_when_nothing_crosses() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 8.0)
+            .unwrap();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.project_history.clear();
+
+        app.delete_loop_range_from_selected_events();
+        let spans = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| {
+                (
+                    clip.start_beats,
+                    clip.start_beats + clip.duration_seconds * 120.0 / 60.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(spans, vec![(0.0, 4.0), (8.0, 16.0)]);
+        assert!(app.status_message.contains("Deleted the loop range from 1"));
+
+        // The remaining parts no longer overlap the range.
+        app.delete_loop_range_from_selected_events();
+        assert!(
+            app.status_message
+                .contains("No selected audio event overlaps")
+        );
+        assert!(app.modified);
     }
 
     #[test]

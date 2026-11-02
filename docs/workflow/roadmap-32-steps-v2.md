@@ -71,8 +71,13 @@ Still open from revision 1:
    2 core and 1 app tests.
 7. **Glue events.** Join adjacent or overlapping events on one track into a
    single event that keeps both sources' audio readable.
-8. **Range delete and trim to range.** Delete the loop range from the selected
-   events, and trim to range as the inverse of Crop.
+8. **Range delete and trim to range.** *Delete range delivered.*
+   `Project::delete_range_from_audio_clips` removes `[start, end)` from the
+   selected events: an event spanning the range keeps both outer parts, one that
+   starts inside keeps its tail under the same id, one fully inside is removed,
+   locked events are skipped, and the gap is not closed (this is not a ripple
+   edit). Edit > Range > Delete Range runs it as one undo step. Trim-to-range is
+   the existing Crop command; nothing further is needed there.
 9. **Undo history window.** List recent undo steps, jump to one, persisted per
    session; the truncation limit stays bounded.
 
