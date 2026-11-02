@@ -439,5 +439,13 @@ still one commit with tests and refreshed counts.
    grouping, the undo label and the wording. Bounded to 16 channels and refused
    without half-applying. 2 core and 1 app tests. Disabled entries 88 -> 87.
 
+43. **MIDI List Editor.** *Delivered.* MIDI > Open List Editor shows the selected
+   part's notes by start time with start, pitch name, length, velocity and channel;
+   clicking a start selects that note and locates the transport, Delete Notes
+   removes the selection as one labelled "Delete Notes" undo step, and the note
+   deletion path is now shared with the MIDI editor's Delete key. Bounded to the
+   selected part and reports when none is selected. 2 app tests. Disabled entries
+   87 -> 86.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

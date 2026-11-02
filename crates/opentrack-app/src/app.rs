@@ -1198,6 +1198,8 @@ pub struct OpenTrackApp {
     timecode_dialog: Option<f64>,
     /// Normalize dialog draft, peak target in dBFS.
     normalize_dialog: Option<f32>,
+    /// Whether the MIDI list editor window is open.
+    list_editor_open: bool,
     automation_panel_open: bool,
     /// Media Pool search term and whether the field should take focus next frame.
     pool_search: String,
@@ -2625,6 +2627,7 @@ impl OpenTrackApp {
             tuplet_dialog: None,
             timecode_dialog: None,
             normalize_dialog: None,
+            list_editor_open: false,
             automation_panel_open: false,
             pool_search: String::new(),
             pool_search_focus: false,
@@ -3964,6 +3967,7 @@ impl OpenTrackApp {
         self.close_project_prompt = false;
         self.pool_reveal = None;
         self.pool_selected = None;
+        self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
         self.dock_state = default_dock_state();
@@ -7229,32 +7233,7 @@ impl OpenTrackApp {
             && self.pending_track_delete_id.is_none()
         {
             if self.midi_editor_open && !self.selected_midi_note_ids.is_empty() {
-                self.project_history.finish_frame(&self.data.project, true);
-                if !self
-                    .project_history
-                    .begin(&self.data.project, self.modified)
-                {
-                    self.status_message =
-                        "Cannot delete notes: undo snapshot is unavailable".into();
-                    return;
-                }
-                let selected = &self.selected_midi_note_ids;
-                if let Some(part_id) = self.data.project.selected_midi_part_id {
-                    for track in &mut self.data.project.tracks {
-                        if let Some(part) =
-                            track.midi_parts.iter_mut().find(|part| part.id == part_id)
-                        {
-                            part.notes.retain(|note| !selected.contains(&note.id));
-                            break;
-                        }
-                    }
-                }
-                self.selected_midi_note_ids.clear();
-                self.selected_midi_note_id = None;
-                self.project_history.finish_frame(&self.data.project, true);
-                self.rebuild_audio_plan();
-                self.mark_modified();
-                self.status_message = "Removed selected MIDI notes; Undo restores them".into();
+                self.delete_selected_midi_notes();
                 return;
             }
             self.delete_audio_selection(modifiers.shift);
@@ -8048,6 +8027,162 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
+    }
+
+    /// Removes the selected MIDI notes from the selected part as one undo step.
+    fn delete_selected_midi_notes(&mut self) {
+        if self.selected_midi_note_ids.is_empty() {
+            self.status_message = "Select MIDI notes to delete".to_owned();
+            return;
+        }
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before deleting notes".to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot delete notes: undo snapshot is unavailable".into();
+            return;
+        }
+        self.project_history.label_next("Delete Notes");
+        let selected = std::mem::take(&mut self.selected_midi_note_ids);
+        let mut removed = 0;
+        for track in &mut self.data.project.tracks {
+            if let Some(part) = track.midi_parts.iter_mut().find(|part| part.id == part_id) {
+                let before = part.notes.len();
+                part.notes.retain(|note| !selected.contains(&note.id));
+                removed = before - part.notes.len();
+                break;
+            }
+        }
+        self.selected_midi_note_id = None;
+        self.project_history.finish_frame(&self.data.project, true);
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!("Removed {removed} MIDI note(s); Undo restores them");
+    }
+
+    /// Lists the selected MIDI part's events in a table.
+    ///
+    /// This is the list editor for parts without a piano roll: it shows start,
+    /// pitch, length, velocity and channel, seeks to a clicked note, and deletes
+    /// the notes selected here or in the MIDI editor.
+    fn show_list_editor(&mut self, ctx: &egui::Context) {
+        if !self.list_editor_open {
+            return;
+        }
+        let mut open = true;
+        let mut seek = None;
+        let mut toggle = None;
+        let mut delete = false;
+        let part = self.data.project.selected_midi_part_id.and_then(|part_id| {
+            self.data
+                .project
+                .tracks
+                .iter()
+                .flat_map(|track| track.midi_parts.iter())
+                .find(|part| part.id == part_id)
+        });
+        let part_name = part.map(|part| part.name.clone());
+        let part_start = part.map(|part| part.start_beats).unwrap_or(0.0);
+        let mut rows = part.map(|part| part.notes.clone()).unwrap_or_default();
+        rows.sort_by(|left, right| {
+            left.start_beats
+                .total_cmp(&right.start_beats)
+                .then(left.pitch.cmp(&right.pitch))
+        });
+        let selected = self.selected_midi_note_ids.clone();
+        let response = egui::Window::new("List Editor")
+            .id(Id::new("midi-list-editor"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(430.0, 320.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                match &part_name {
+                    Some(name) => {
+                        ui.label(format!(
+                            "{name} — {} event(s), shown by start time",
+                            rows.len()
+                        ));
+                    }
+                    None => {
+                        ui.label("Select a MIDI part to list its events.");
+                        return;
+                    }
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Grid::new("midi-list-editor-grid")
+                        .striped(true)
+                        .spacing([14.0, 4.0])
+                        .show(ui, |ui| {
+                            for heading in ["Start", "Pitch", "Length", "Velocity", "Ch"] {
+                                ui.strong(heading);
+                            }
+                            ui.end_row();
+                            for note in &rows {
+                                let is_selected = selected.contains(&note.id);
+                                let start = ui.selectable_label(
+                                    is_selected,
+                                    format!("{:.3}", note.start_beats),
+                                );
+                                if start.clicked() {
+                                    toggle = Some(note.id);
+                                    seek = Some(part_start + note.start_beats);
+                                }
+                                ui.label(sample_editor::pitch_note_name(i32::from(note.pitch)));
+                                ui.label(format!("{:.3}", note.duration_beats));
+                                ui.label(note.velocity.to_string());
+                                ui.label((note.channel + 1).to_string());
+                                ui.end_row();
+                            }
+                        });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!selected.is_empty(), egui::Button::new("Delete Notes"))
+                        .clicked()
+                    {
+                        delete = true;
+                    }
+                    if ui.button("Close").clicked() {
+                        self.list_editor_open = false;
+                    }
+                    ui.label(
+                        egui::RichText::new("Click a start time to select and locate that note.")
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("midi-list-editor"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.list_editor_open = open && self.list_editor_open;
+        if let Some(id) = toggle {
+            if self.selected_midi_note_ids.contains(&id) {
+                self.selected_midi_note_ids.remove(&id);
+            } else {
+                self.selected_midi_note_ids.clear();
+                self.selected_midi_note_ids.insert(id);
+            }
+            self.selected_midi_note_id = Some(id);
+        }
+        if let Some(beat) = seek {
+            self.seek_to_beats(beat);
+        }
+        if delete {
+            self.delete_selected_midi_notes();
+        }
     }
 
     /// Shows or hides the arrange inspector panel.
@@ -13382,12 +13517,23 @@ impl OpenTrackApp {
                         self.edit_selected_event_in_place();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Open List Editor",
+                        "",
+                        self.project_open
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.list_editor_open = true;
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Open Score Editor", ""),
                             ("Open Drum Editor", ""),
-                            ("Open List Editor", ""),
                         ],
                     );
                     ui.separator();
@@ -14753,6 +14899,7 @@ impl OpenTrackApp {
             || self.insert_velocities.is_some()
             || self.tuplet_dialog.is_some()
             || self.timecode_dialog.is_some()
+            || self.list_editor_open
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -17171,6 +17318,7 @@ impl eframe::App for OpenTrackApp {
         self.show_insert_velocities_dialog(&ctx);
         self.show_tuplet_dialog(&ctx);
         self.show_timecode_dialog(&ctx);
+        self.show_list_editor(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
@@ -29524,6 +29672,135 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+    }
+}
+
+#[cfg(test)]
+mod list_editor_tests {
+    use super::*;
+    use opentrack_core::project::{MidiNote, MidiPart};
+
+    fn app_with_notes() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.next_midi_part_id = 2;
+        app.data.project.next_midi_note_id = 4;
+        app.data.project.tracks[0].midi_parts.push(MidiPart {
+            id: 1,
+            name: "Lead".to_owned(),
+            start_beats: 4.0,
+            duration_beats: 8.0,
+            notes: vec![
+                MidiNote {
+                    id: 1,
+                    start_beats: 1.5,
+                    duration_beats: 0.5,
+                    pitch: 67,
+                    channel: 0,
+                    velocity: 90,
+                },
+                MidiNote {
+                    id: 2,
+                    start_beats: 0.0,
+                    duration_beats: 1.0,
+                    pitch: 60,
+                    channel: 1,
+                    velocity: 100,
+                },
+            ],
+            controller_events: Vec::new(),
+        });
+        app.data.project.selected_midi_part_id = Some(1);
+        app.project_history.clear();
+        app
+    }
+
+    fn run(ctx: &egui::Context, app: &mut OpenTrackApp, frame: usize) -> Vec<String> {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                time: Some(frame as f64 * 0.05),
+                ..Default::default()
+            },
+            |_| app.show_list_editor(ctx),
+        );
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_list_editor_shows_each_event_in_start_order() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_notes();
+        app.list_editor_open = true;
+        run(&ctx, &mut app, 0);
+        let texts = run(&ctx, &mut app, 1);
+        let joined = texts.join("\n");
+        assert!(joined.contains("List Editor"), "{joined}");
+        assert!(joined.contains("Lead — 2 event(s)"), "{joined}");
+        assert!(
+            joined.contains("Start") && joined.contains("Velocity"),
+            "{joined}"
+        );
+        assert!(joined.contains("C4"), "pitch name: {joined}");
+        assert!(joined.contains("G4"), "pitch name: {joined}");
+        assert!(joined.contains("1.500"), "{joined}");
+        // The notes are listed by start time, so the C4 row comes first.
+        let c4 = joined.find("C4").expect("C4 row");
+        let g4 = joined.find("G4").expect("G4 row");
+        assert!(c4 < g4, "start order: {joined}");
+
+        // Without a selected part the window says so instead of guessing.
+        app.data.project.selected_midi_part_id = None;
+        run(&ctx, &mut app, 2);
+        let texts = run(&ctx, &mut app, 3);
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("Select a MIDI part to list its events"))
+        );
+    }
+
+    #[test]
+    fn deleting_notes_from_the_list_editor_is_one_labelled_undo_step() {
+        let mut app = app_with_notes();
+        app.selected_midi_note_ids.insert(2);
+        app.delete_selected_midi_notes();
+        let part = &app.data.project.tracks[0].midi_parts[0];
+        assert_eq!(part.notes.len(), 1);
+        assert_eq!(part.notes[0].id, 1);
+        assert!(app.status_message.contains("Removed 1 MIDI note(s)"));
+        assert!(app.selected_midi_note_ids.is_empty());
+        assert_eq!(app.project_history.steps()[0].label, "Delete Notes");
+
+        // Empty selection and a missing part report without editing.
+        let steps = app.project_history.counts().0;
+        app.delete_selected_midi_notes();
+        assert!(app.status_message.contains("Select MIDI notes to delete"));
+        app.selected_midi_note_ids.insert(1);
+        app.data.project.selected_midi_part_id = None;
+        app.delete_selected_midi_notes();
+        assert!(app.status_message.contains("Select a MIDI part"));
+        assert_eq!(app.project_history.counts().0, steps);
+        assert_eq!(app.data.project.tracks[0].midi_parts[0].notes.len(), 1);
     }
 }
 
