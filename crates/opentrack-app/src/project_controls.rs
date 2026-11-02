@@ -328,32 +328,26 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
             rect.min + Vec2::new(2.0 + index as f32 * 24.0, 3.0),
             Vec2::new(22.0, 14.0),
         );
-        let active = if index == 0 {
-            track.automation_read
-        } else {
-            track.automation_write
-        };
+        let read_control =
+            index == 0 && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument);
+        let active = read_control && track.automation_read;
         if project_inspector::button(
             ui,
             r,
             ("automation-lane-control", track.id, index),
             label,
             if index == 0 {
-                "Read Enable"
+                "Read Enable (track volume only)"
             } else {
-                "Write automation (recording not implemented)"
+                "Automation writing is not implemented"
             },
             active,
-            true,
+            read_control,
             false,
         )
         .clicked()
         {
-            if index == 0 {
-                track.automation_read = !track.automation_read;
-            } else {
-                track.automation_write = !track.automation_write;
-            }
+            track.automation_read = !track.automation_read;
             changed = true;
         }
     }
@@ -477,6 +471,54 @@ pub(super) fn track_zoom_control(ui: &mut egui::Ui, rect: Rect, value: &mut f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_write_control_is_disabled_and_preserves_saved_flag() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(220.0, 42.0));
+        let mut track = opentrack_core::project::Project::default();
+        track.add_track(TrackKind::Audio);
+        let track = &mut track.tracks[0];
+        track.automation_write = true;
+        let point = rect.min + Vec2::new(2.0 + 24.0 + 11.0, 3.0 + 7.0);
+        let run = |time, pressed, track: &mut Track| {
+            let events = if pressed {
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            } else {
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]
+            };
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    automation_lane(ui, rect, track);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        run(0.0, false, track);
+        run(0.1, true, track);
+        run(0.2, false, track);
+        assert!(track.automation_write);
+    }
 
     #[test]
     fn stereo_buses_default_to_blue_and_accept_palette_colors() {

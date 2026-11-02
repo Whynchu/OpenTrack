@@ -96,7 +96,7 @@ Exceptions found: Add Track speaker/instrument choices above; MIDI toolbar Snap 
 
 | Workflow | Current finding | Evidence and documentation correction |
 | --- | --- | --- |
-| Automation | Track automation read/write flags and arrange reveal lane exist, but no persistent automation event/curve model or engine playback/write path was found. | `opentrack-core/src/project.rs` Track fields; `app.rs` automation lane; `docs/workflow/tasks/T020-automation-and-channel-gain.md:9,15`. Treat lane layout as implemented and automation behavior as absent. |
+| Automation | Persistent track-volume curves have bounded edit commands, arrange insert/move/remove gestures with project history, and read playback in both engine paths and offline bounce. Write capture and fader-follow display are not implemented; Write controls are disabled and labeled unavailable. Bus automation and non-volume targets are unsupported. | `opentrack-core/src/automation.rs`; `opentrack-app/src/automation.rs`; `opentrack-audio/src/lib.rs`; `docs/workflow/tasks/T078-volume-automation.md`. |
 | Sends | Destination/rack UI and stored route metadata exist, but no audible send DSP and no complete persistent per-send enabled/level state. | `app.rs` Track send fields; `channel_settings.rs`; `mixer.rs:1203`; T015/T020. Older statements that the sends section itself is absent are stale for ordinary track editors. |
 | MIDI arrangement | Moving/resizing MIDI parts appears implemented in current app source, despite older docs. | `app.rs:13978-14026,14175`; `docs/midi-editor.md:40` should be corrected. Physical MIDI output ports remain absent; current live input path/hardware has separate validation limits. |
 | Audio recording | WAV recording, take paths, undo/redo/discard recovery and waveform preview exist. Automatic recovery after abnormal termination is absent; hardware timing/reliability remains unverified. | `opentrack-audio/src/recording.rs`, `opentrack-app/src/recording_undo.rs`, `docs/workflow/tasks/T016-recording-undo-and-waveforms.md:11`; older T011 capture description may be stale. |
@@ -110,7 +110,7 @@ These checks expose a structural command gap: `CommandCatalog` is built from key
 ## Documentation cleanup candidates
 
 - Update `docs/midi-editor.md:40`: current app has MIDI part move/resize handling; preserve distinctions for physical MIDI output and hardware validation.
-- Keep `docs/native-project-format.md:22` automation statement specific: automation persistence/playback/write remains unimplemented, though automation reveal/layout controls exist.
+- Reconcile `docs/native-project-format.md` version 27 automation description with T078: track-volume points persist and read playback works; editing and writing are still in progress.
 - Update older T011 recording claims against current recording path and hardware evidence; do not assume old task packet means current behavior.
 - Distinguish current Sends UI/routing configuration from missing send DSP and full per-send state.
 - Keep CPR inspection utility and CPR interchange claims separate.

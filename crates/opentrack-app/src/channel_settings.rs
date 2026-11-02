@@ -2630,11 +2630,16 @@ fn strip(
             190.0,
         ),
         ("L", track.listen, "Listen", 210.0),
-        ("R", track.automation_read, "Read Automation", 233.0),
+        (
+            "R",
+            track.automation_read,
+            "Read Automation (track volume only)",
+            233.0,
+        ),
         (
             "W",
-            track.automation_write,
-            "Write automation (recording not implemented)",
+            false,
+            "Automation writing is not implemented",
             250.0,
         ),
     ]
@@ -2648,7 +2653,13 @@ fn strip(
             mixer::Icon::Text(label),
             active,
             false,
-            !is_bus || i == 0,
+            if i == 3 {
+                !is_bus && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
+            } else if i == 4 {
+                false
+            } else {
+                !is_bus || i == 0
+            },
             Some(tip),
         );
         context(&response, state);
@@ -2664,7 +2675,7 @@ fn strip(
                 }
                 2 => track.listen = !track.listen,
                 3 => track.automation_read = !track.automation_read,
-                _ => track.automation_write = !track.automation_write,
+                _ => {}
             };
             changed = true;
         }

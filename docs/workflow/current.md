@@ -4,6 +4,8 @@
 
 Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce. The arrange lane draws curves, inserts snapped points, supports left-drag movement and right-click removal using validated core commands, and clamps movement between neighboring points. Project history wraps gestures; command-level tests and the app check pass. Write capture, gesture cancellation, fader-follow/manual override and desktop playback review remain open. The existing expanded-lane snap test fails at beat 3.25 vs 3.5, reproduced at baseline `8b90b8a`. See [T078](tasks/T078-volume-automation.md).
 
+Write controls in Mixer, Channel Settings, Project Inspector, the arrange lane and global Mixer are now disabled and say automation writing is unavailable. This preserves the stored flag for compatibility while preventing the UI from suggesting that fader recording is active. Read remains available only for supported non-group track-volume playback; group and device-bus automation is unsupported.
+
 ## Shared Split at Cursor command
 
 Edit > Split at Cursor and the existing `edit.split_at_cursor` shortcut now share one operation for selected ordinary audio clips. The selection is atomic: if any selected clip cannot split at the cursor, no clip changes. Project undo/redo applies. Group-segment and loop splitting remain unavailable. Three focused app helper tests cover multi-clip split, cursor miss, and rollback; runtime menu/shortcut review remains pending.

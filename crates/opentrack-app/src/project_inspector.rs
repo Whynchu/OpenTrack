@@ -439,12 +439,17 @@ pub(super) fn show(
                 effective_solo,
                 true,
             ),
-            ("R", "Read Enable", track.automation_read, true),
+            (
+                "R",
+                "Read Enable (track volume only)",
+                track.automation_read,
+                matches!(track.kind, TrackKind::Audio | TrackKind::Instrument),
+            ),
             (
                 "W",
-                "Write automation (recording not implemented)",
-                track.automation_write,
-                true,
+                "Automation writing is not implemented",
+                false,
+                false,
             ),
             ("▦", "Open Device Panels", false, false),
             ("×", "Auto Fades Settings...", false, false),
@@ -494,11 +499,6 @@ pub(super) fn show(
                     }
                     2 => {
                         track.automation_read = !track.automation_read;
-                        modified = true;
-                        requires_plan_rebuild = true;
-                    }
-                    3 => {
-                        track.automation_write = !track.automation_write;
                         modified = true;
                         requires_plan_rebuild = true;
                     }

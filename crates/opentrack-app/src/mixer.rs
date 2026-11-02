@@ -391,10 +391,14 @@ fn sidebar(
             "Listen Active/Deactivate All Listen",
             160.0,
         ),
-        (Icon::Text("R"), "Read All Automation", 183.0),
+        (
+            Icon::Text("R"),
+            "Read All Track Automation (track volume)",
+            183.0,
+        ),
         (
             Icon::Text("W"),
-            "Write automation flags (recording not implemented)",
+            "Automation writing is not implemented",
             200.0,
         ),
     ];
@@ -404,27 +408,28 @@ fn sidebar(
             1 => t.solo,
             2 => t.listen,
             3 => t.automation_read,
-            _ => t.automation_write,
+            _ => false,
         });
-        if control(
+        let response = control(
             ui,
             at(7.0, y, 21.0, 15.0),
             i,
             symbol,
             active,
             false,
-            true,
+            i != 4,
             Some(tip),
-        )
-        .clicked()
-        {
+        );
+        if i != 4 && response.clicked() {
             for t in &mut project.tracks {
                 match i {
                     0 => t.muted = false,
                     1 => t.solo = false,
                     2 => t.listen = false,
-                    3 => t.automation_read = !active,
-                    _ => t.automation_write = !active,
+            3 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
+                t.automation_read = true
+            }
+                    _ => {}
                 }
             }
             *modified = true;
@@ -1123,11 +1128,16 @@ fn strip(
                 142.0,
             ),
             ("L", track.listen, "Listen", 160.0),
-            ("R", track.automation_read, "Read Automation", 183.0),
+            (
+                "R",
+                track.automation_read,
+                "Read Automation (track volume only)",
+                183.0,
+            ),
             (
                 "W",
-                track.automation_write,
-                "Write automation (recording not implemented)",
+                false,
+                "Automation writing is not implemented",
                 200.0,
             ),
         ]
@@ -1141,7 +1151,13 @@ fn strip(
                 Icon::Text(label),
                 active,
                 false,
-                !is_bus || i == 0,
+                if i == 3 {
+                    !is_bus && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
+                } else if i == 4 {
+                    false
+                } else {
+                    !is_bus || i == 0
+                },
                 Some(tip),
             )
             .clicked()
@@ -1165,7 +1181,7 @@ fn strip(
                     }
                     2 => track.listen = !track.listen,
                     3 => track.automation_read = !track.automation_read,
-                    _ => track.automation_write = !track.automation_write,
+                    _ => {}
                 }
                 modified = true;
                 requires_plan_rebuild = true;
@@ -1769,6 +1785,105 @@ fn fader_impl(
 #[cfg(test)]
 mod bus_tests {
     use super::*;
+
+    #[test]
+    fn global_write_automation_button_is_disabled() {
+        let context = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 320.0));
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(68.0, 320.0));
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        project.tracks[0].automation_write = true;
+        let run = |time, pressed, project: &mut Project| {
+            let point = Pos2::new(17.5, 207.5);
+            let events = if pressed {
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            } else {
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]
+            };
+            let mut modified = false;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| sidebar(ui, rect, project, &mut MixerView::default(), &mut modified),
+            );
+            output.textures_delta.clear();
+            modified
+        };
+        assert!(!run(0.0, false, &mut project));
+        assert!(!run(0.1, true, &mut project));
+        assert!(!run(0.2, false, &mut project));
+        assert!(project.tracks[0].automation_write);
+        assert_eq!(project.tracks[0].id, track_id);
+    }
+
+    #[test]
+    fn read_all_automation_enables_supported_tracks_without_toggling_off() {
+        let context = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 320.0));
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(68.0, 320.0));
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Midi);
+        project.tracks[0].automation_read = true;
+        let point = Pos2::new(17.5, 190.5);
+        let mut click = |time, pressed| {
+            let events = if pressed {
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            } else {
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]
+            };
+            let mut modified = false;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| sidebar(ui, rect, &mut project, &mut MixerView::default(), &mut modified),
+            );
+            output.textures_delta.clear();
+            modified
+        };
+        click(0.0, false);
+        assert!(!click(0.1, true));
+        assert!(click(0.2, false));
+        assert!(project.tracks[0].automation_read);
+        assert!(!project.tracks[1].automation_read);
+    }
+
     #[test]
     fn mixer_send_button_bypasses_sends_and_requests_plan_rebuild() {
         let context = egui::Context::default();

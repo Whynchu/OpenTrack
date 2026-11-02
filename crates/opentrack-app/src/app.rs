@@ -368,8 +368,6 @@ struct ChannelSettingsSnapshot {
     listen: bool,
     armed: bool,
     monitor: bool,
-    automation_read: bool,
-    automation_write: bool,
     input_gain_db: f32,
     input_phase_inverted: bool,
     gain: f32,
@@ -399,8 +397,6 @@ impl From<&Track> for ChannelSettingsSnapshot {
             listen: track.listen,
             armed: track.armed,
             monitor: track.monitor,
-            automation_read: track.automation_read,
-            automation_write: track.automation_write,
             input_gain_db: track.input_gain_db,
             input_phase_inverted: track.input_phase_inverted,
             gain: track.gain,
@@ -427,8 +423,6 @@ impl ChannelSettingsSnapshot {
         let bus = track.id >= opentrack_core::project::INPUT_BUS_ID;
         track.armed = !bus && self.armed;
         track.monitor = !bus && self.monitor;
-        track.automation_read = self.automation_read;
-        track.automation_write = self.automation_write;
         track.input_gain_db = self.input_gain_db;
         track.input_phase_inverted = self.input_phase_inverted;
         track.gain = self.gain;
@@ -9343,13 +9337,6 @@ impl OpenTrackApp {
         // Mirror the host editor state into the panel so the eye button can show
         // whether this slot's editor is up.
         self.channel_settings_ui.vst3_editor = self.vst3_editor_window;
-        let automation_read_before = live_channel_id.and_then(|id| {
-            self.data
-                .project
-                .channels()
-                .find(|track| track.id == id)
-                .map(|track| (id, track.automation_read))
-        });
         let send_controls_before = live_channel_id.and_then(|id| {
             self.data
                 .project
@@ -9633,14 +9620,7 @@ impl OpenTrackApp {
                                     || track.sends_bypassed != *bypassed
                             })
                     });
-            let automation_read_changed = automation_read_before.is_some_and(|(id, before)| {
-                self.data
-                    .project
-                    .channels()
-                    .find(|track| track.id == id)
-                    .is_some_and(|track| track.automation_read != before)
-            });
-            if !live_controls_changed || sends_changed || automation_read_changed {
+            if !live_controls_changed || sends_changed {
                 self.rebuild_audio_plan();
             }
             self.mark_modified();
@@ -13001,8 +12981,8 @@ fn show_project(
                 ("R", "All Automation to Read Status", true),
                 (
                     "W",
-                    "Write automation flags (recording not implemented)",
-                    true,
+                    "Automation writing is not implemented",
+                    false,
                 ),
                 ("C", "Show/Hide Track Colors", true),
             ];
@@ -13039,16 +13019,8 @@ fn show_project(
                         3 => clear_all_solo = true,
                         4 => {
                             for track in &mut project.tracks {
-                                if !track.automation_read {
+                                if track.kind != TrackKind::Group && !track.automation_read {
                                     track.automation_read = true;
-                                    modified = true;
-                                }
-                            }
-                        }
-                        5 => {
-                            for track in &mut project.tracks {
-                                if !track.automation_write {
-                                    track.automation_write = true;
                                     modified = true;
                                 }
                             }
