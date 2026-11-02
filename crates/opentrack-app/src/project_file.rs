@@ -112,6 +112,9 @@ pub(crate) struct ArrangeViewState {
     /// grid. A view preference, not project content.
     #[serde(default)]
     pub(crate) auto_grid: bool,
+    /// Show the compact whole-project overview strip.
+    #[serde(default)]
+    pub(crate) show_overview: bool,
     #[serde(default)]
     pub(crate) selected_event_color: Option<u8>,
     #[serde(default = "default_event_colors")]
@@ -171,6 +174,7 @@ impl Default for ArrangeViewState {
             autoscroll_enabled: false,
             snap_type: SnapType::Grid,
             auto_grid: false,
+            show_overview: false,
             selected_event_color: None,
             event_colors: DEFAULT_EVENT_COLORS,
             ruler_format: 0,

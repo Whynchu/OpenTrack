@@ -165,6 +165,13 @@ and measured numbers.
    in-place media surface), a MIDI part opens the MIDI editor. An empty selection
    reports instead of guessing. 1 app test. Shortcut coverage 144 -> 145.
 
+20. **Project overview.** *Delivered.* Alt+O and Window > Project Overview show a
+   compact whole-project strip: one row per track with audio events in grey and
+   MIDI parts in blue, the visible arrange window as a translucent band, and the
+   playhead. Clicking or dragging inside seeks. The flag persists with view state
+   and defaults off. 2 app tests (toggle/persistence, render plus click-seek).
+   Shortcut coverage 145 -> 146.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

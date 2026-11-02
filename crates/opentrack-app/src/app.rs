@@ -1186,6 +1186,9 @@ pub struct OpenTrackApp {
     close_project_prompt: bool,
     /// Source the Media Pool should show and highlight, set by Find in Pool.
     pool_reveal: Option<PathBuf>,
+    /// Where the overview strip was drawn last frame, for click tests.
+    #[cfg(test)]
+    last_overview_rect: Option<Rect>,
     beat_calculator: Option<project_tools::BeatCalculator>,
     /// Open numeric input dialog: what it edits and the value being typed.
     numeric_input: Option<NumericInput>,
@@ -2596,6 +2599,8 @@ impl OpenTrackApp {
             project_statistics_open: false,
             close_project_prompt: false,
             pool_reveal: None,
+            #[cfg(test)]
+            last_overview_rect: None,
             beat_calculator: None,
             numeric_input: None,
             notepad_draft: None,
@@ -3967,6 +3972,167 @@ impl OpenTrackApp {
         } else {
             format!("New project with {instantiated} global workspace preset(s)")
         };
+    }
+
+    /// Draws the compact whole-project overview strip.
+    ///
+    /// One row per track, the visible arrange window marked as a translucent
+    /// band, and the playhead. Clicking or dragging inside it seeks, so the
+    /// overview is a navigation surface rather than a static picture.
+    fn show_project_overview(&mut self, ctx: &egui::Context) {
+        if !self.arrange_view_state.show_overview || !self.project_open {
+            return;
+        }
+        let total_beats = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| {
+                let tempo = self.data.project.tempo_bpm.max(1.0);
+                track
+                    .clips
+                    .iter()
+                    .map(move |clip| clip.start_beats + clip.duration_seconds * tempo / 60.0)
+                    .chain(
+                        track
+                            .midi_parts
+                            .iter()
+                            .map(|part| part.start_beats + part.duration_beats),
+                    )
+            })
+            .fold(4.0_f64, f64::max)
+            .max(self.data.project.loop_end_beats)
+            .max(self.data.transport.position_beats)
+            .max(1.0);
+        let mut open = true;
+        let mut seek = None;
+        egui::Window::new("Project Overview")
+            .id(Id::new("project-overview"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .default_size(Vec2::new(620.0, 150.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(560.0);
+                let width = ui.available_width().max(120.0);
+                let (rect, response) = ui.allocate_exact_size(
+                    Vec2::new(width, 110.0),
+                    Sense::click_and_drag(),
+                );
+                #[cfg(test)]
+                {
+                    self.last_overview_rect = Some(rect);
+                }
+                let painter = ui.painter_at(rect);
+                let palette = theme::palette(ui);
+                painter.rect_filled(rect, egui::CornerRadius::same(2), palette.canvas);
+                let tracks = self.data.project.tracks.len().min(16).max(1);
+                let row_height = (rect.height() - 2.0) / tracks as f32;
+                let tempo = self.data.project.tempo_bpm.max(1.0);
+                let mut drawn = 0usize;
+                for (index, track) in self.data.project.tracks.iter().take(tracks).enumerate() {
+                    let y = rect.top() + index as f32 * row_height;
+                    for clip in &track.clips {
+                        if drawn >= 2_000 {
+                            break;
+                        }
+                        let start = clip.start_beats;
+                        let end = start + clip.duration_seconds * tempo / 60.0;
+                        let x0 = rect.left() + (start / total_beats) as f32 * rect.width();
+                        let x1 = rect.left() + (end / total_beats) as f32 * rect.width();
+                        if x1 - x0 >= 0.5 {
+                            painter.rect_filled(
+                                Rect::from_min_max(
+                                    Pos2::new(x0, y + 1.0),
+                                    Pos2::new(x1, (y + row_height - 1.0).max(y + 2.0)),
+                                ),
+                                egui::CornerRadius::ZERO,
+                                palette.text.gamma_multiply(0.35),
+                            );
+                            drawn += 1;
+                        }
+                    }
+                    for part in &track.midi_parts {
+                        if drawn >= 2_000 {
+                            break;
+                        }
+                        let x0 = rect.left() + (part.start_beats / total_beats) as f32 * rect.width();
+                        let x1 = rect.left()
+                            + ((part.start_beats + part.duration_beats) / total_beats) as f32
+                                * rect.width();
+                        if x1 - x0 >= 0.5 {
+                            painter.rect_filled(
+                                Rect::from_min_max(
+                                    Pos2::new(x0, y + 1.0),
+                                    Pos2::new(x1, (y + row_height - 1.0).max(y + 2.0)),
+                                ),
+                                egui::CornerRadius::ZERO,
+                                palette.accent.gamma_multiply(0.45),
+                            );
+                            drawn += 1;
+                        }
+                    }
+                }
+                // The visible arrange window, so the strip shows where the user is.
+                let bar_width = self.arrange_view_state.bar_width().max(1.0);
+                let beats_per_bar = f64::from(self.data.project.beats_per_bar.max(1));
+                let visible_start =
+                    f64::from(self.arrange_view_state.timeline_scroll_x) / f64::from(bar_width)
+                        * beats_per_bar;
+                let visible_end = visible_start
+                    + f64::from(self.arrange_view_state.last_view_width) / f64::from(bar_width)
+                        * beats_per_bar;
+                let view_x0 =
+                    rect.left() + (visible_start / total_beats).clamp(0.0, 1.0) as f32 * rect.width();
+                let view_x1 =
+                    rect.left() + (visible_end / total_beats).clamp(0.0, 1.0) as f32 * rect.width();
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(view_x0, rect.top()),
+                        Pos2::new(view_x1.max(view_x0 + 1.0), rect.bottom()),
+                    ),
+                    egui::CornerRadius::ZERO,
+                    palette.accent.gamma_multiply(0.12),
+                );
+                let playhead_x = rect.left()
+                    + (self.data.transport.position_beats.max(0.0) / total_beats).clamp(0.0, 1.0)
+                        as f32
+                        * rect.width();
+                painter.line_segment(
+                    [
+                        Pos2::new(playhead_x, rect.top()),
+                        Pos2::new(playhead_x, rect.bottom()),
+                    ],
+                    Stroke::new(1.5, palette.text),
+                );
+                painter.rect_stroke(
+                    rect,
+                    egui::CornerRadius::same(2),
+                    Stroke::new(1.0, palette.grid),
+                    egui::StrokeKind::Inside,
+                );
+                if response.clicked() || response.dragged() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        let fraction =
+                            ((pointer.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+                        seek = Some(f64::from(fraction) * total_beats);
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Whole project: click or drag to move the transport. Audio events are grey, MIDI parts blue.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+            });
+        self.arrange_view_state.show_overview = open;
+        if let Some(beat) = seek {
+            self.seek_to_beats(beat);
+            self.status_message = format!("Located to beat {beat:.3} from the overview");
+        }
     }
 
     /// Opens the selected event in the editor that fits it.
@@ -7000,6 +7166,14 @@ impl OpenTrackApp {
             "edit.paste_time" => self.paste_time(),
             "edit.edit_in_place" => self.edit_selected_event_in_place(),
             "audio.find_selected_in_pool" => self.find_selected_event_in_pool(),
+            "editors.show_hide_overview" => {
+                self.arrange_view_state.show_overview = !self.arrange_view_state.show_overview;
+                self.status_message = if self.arrange_view_state.show_overview {
+                    "Project overview shown".to_owned()
+                } else {
+                    "Project overview hidden".to_owned()
+                };
+            }
             "audio.auto_grid" => {
                 self.arrange_view_state.auto_grid = !self.arrange_view_state.auto_grid;
                 self.status_message = if self.arrange_view_state.auto_grid {
@@ -12704,6 +12878,17 @@ impl OpenTrackApp {
                         }
                     });
                     menu_command(ui, "Windows...", "", false);
+                    if ui
+                        .selectable_label(
+                            self.arrange_view_state.show_overview,
+                            "Project Overview",
+                        )
+                        .clicked()
+                    {
+                        self.arrange_view_state.show_overview =
+                            !self.arrange_view_state.show_overview;
+                        ui.close();
+                    }
                     ui.separator();
                     if ui
                         .selectable_label(true, format!("{} - Project", self.data.project.name))
@@ -15841,6 +16026,7 @@ impl eframe::App for OpenTrackApp {
         self.show_beat_calculator(&ctx);
         self.show_numeric_input(&ctx);
         self.show_close_project_prompt(&ctx);
+        self.show_project_overview(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -27826,6 +28012,167 @@ mod transport_locate_tests {
 }
 
 #[cfg(test)]
+mod overview_tests {
+    use super::*;
+    use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+
+    fn run_frame(
+        ctx: &egui::Context,
+        app: &mut OpenTrackApp,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> Vec<String> {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |_| app.show_project_overview(ctx),
+        );
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_overview_shortcut_toggles_the_persisted_flag() {
+        use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        assert!(!app.arrange_view_state.show_overview);
+
+        app.dispatch_reference_command(
+            "editors.show_hide_overview",
+            "Show/Hide Overview",
+            KeyChord::new(
+                KeyCode::Letter('O'),
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            &ctx,
+        );
+        assert!(app.arrange_view_state.show_overview);
+        assert!(app.status_message.contains("overview shown"));
+
+        app.dispatch_reference_command(
+            "editors.show_hide_overview",
+            "Show/Hide Overview",
+            KeyChord::new(
+                KeyCode::Letter('O'),
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            &ctx,
+        );
+        assert!(!app.arrange_view_state.show_overview);
+        assert!(app.status_message.contains("overview hidden"));
+
+        // The flag round-trips with view state and defaults off for older files.
+        let view = ArrangeViewState {
+            show_overview: true,
+            ..ArrangeViewState::default()
+        };
+        let encoded = serde_json::to_string(&view).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert!(restored.show_overview);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("show_overview");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
+        assert!(!legacy.show_overview);
+    }
+
+    #[test]
+    fn the_overview_renders_and_clicking_it_seeks() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 4.0)
+            .expect("clip");
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.add_midi_part(1, 8.0, 4.0).expect("part");
+        app.arrange_view_state.show_overview = true;
+
+        // Windows settle over two frames; capture the second one.
+        run_frame(&ctx, &mut app, Vec::new(), 0.0);
+        let texts = run_frame(&ctx, &mut app, Vec::new(), 0.02);
+        assert!(
+            texts.iter().any(|text| text == "Project Overview"),
+            "texts={texts:?} rect={:?}",
+            app.last_overview_rect
+        );
+        assert!(
+            texts.iter().any(|text| text.contains("Whole project")),
+            "{texts:?}"
+        );
+
+        // Click at 75% of the strip: the project runs to 16 beats, so ~12 beats.
+        let rect = app.last_overview_rect.expect("the strip was drawn");
+        let position = Pos2::new(rect.left() + rect.width() * 0.75, rect.center().y);
+        run_frame(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            0.05,
+        );
+        run_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            0.10,
+        );
+        assert!(
+            (app.data.transport.position_beats - 12.0).abs() < 1.0,
+            "the click sought to {}",
+            app.data.transport.position_beats
+        );
+        assert!(app.status_message.contains("from the overview"));
+    }
+}
+
+#[cfg(test)]
 mod marker_slot_tests {
     use super::*;
     use opentrack_core::commands::{KeyChord, KeyCode, KeyModifiers};
@@ -28571,6 +28918,7 @@ mod keyboard_coverage_tests {
             "audio.find_selected_in_pool",
             "audio.adjust_fades_to_range",
             "audio.auto_grid",
+            "editors.show_hide_overview",
             "edit.insert_silence",
             "edit.cut_time",
             "edit.delete_time",
