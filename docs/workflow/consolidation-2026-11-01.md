@@ -52,7 +52,7 @@ written to match the delivered behavior.
 Measured in `app.rs`:
 
 - 68 distinct menu commands are wired through `menu_command`.
-- 149 distinct entries are still shown disabled, across 8 `disabled_menu_commands`
+- 149 distinct entries are still shown disabled after revision 2 (159 before it), across 8 `disabled_menu_commands`
   lists (176 when this report was written; Lock/Unlock, Group/Ungroup, Repeat,
   Fill Loop, Crop, Invert, Events under Cursor, Move to Locator, Convert to Real
   Copy, Auto Select Events under Cursor, Enlarge Selected Track and Automation

@@ -1,10 +1,11 @@
 # OpenTrack roadmap revision 2: 32 tasks
 
-Status: active, 2026-11-02. Revision 1 (`roadmap-32-steps.md`) delivered its
-roadmap-named work; what remained there is either runtime evidence the user must
-supply, or the CPR adapter, which waits for real fixtures. This revision keeps
-going on work that is testable here, and marks the exact three places that need
-the user.
+Status: closed 2026-11-02 with three blocked tasks. Revision 1
+(`roadmap-32-steps.md`) delivered its roadmap-named work; what remained there is
+either runtime evidence the user must supply, or the CPR adapter, which waits for
+real fixtures. Revision 2 delivered every task that could be implemented and
+verified on this host; tasks 25, 26 and 29 remain blocked on material this host
+does not have, and task 27 is implemented but unverified on Windows.
 
 Rules that stay in force:
 
@@ -241,9 +242,11 @@ Still open from revision 1:
    48 kHz / 512 frames with three hosted tracks, a group and the output stage:
    track stages p95 62–65 µs, max 65–70 µs; output p95 39 µs, max 50 µs — under
    1% of the 10.67 ms block budget. 4 audio tests.
-29. **Linux VST3 editor embedding** — X11 embed path behind the existing host
-    boundary. **Unverified without an installed plug-in**; ships only if a test
-    plug-in can be produced in the same task, otherwise it stays planned.
+29. **Linux VST3 editor embedding.** *Not started; blocked.* The editor path is
+   `cfg(windows)` HWND code today. An X11 embed path cannot be verified without a
+   runnable Linux VST3 plug-in, and this host has none; building a test plug-in
+   needs the Steinberg SDK, which is not in the repository. It stays planned
+   rather than shipping unexercised X11 code.
 30. **Startup time and large-project load.** *Delivered.* Two tests use a
    generated 140-track project (3,000 audio events, 1,000 MIDI notes, 3.6 MB on
    disk): one times save, read and validate with generous ceilings and prints the
@@ -287,3 +290,40 @@ Every other task is implementable and testable on this machine.
 - A task that changes the audio plan states its callback cost.
 - Docs updated in the same commit: this file's task line, `current.md`, and the
   relevant task packet.
+
+## Revision 2 close-out (2026-11-02)
+
+Delivered with headless verification: tasks 1-24, 27 (compiled for Windows,
+unverified at runtime), 28, 30, 31 and this consolidation. Blocked: 25 and 26
+(CPR fixtures), 29 (no runnable Linux VST3 plug-in).
+
+| Suite | Result |
+|---|---|
+| opentrack (app) | 388 passed, 0 failed, 9 ignored |
+| opentrack-core | 112 passed |
+| opentrack-audio | 152 passed, 0 failed, 3 ignored |
+| opentrack-plugin-scan | 29 + 4 passed |
+| opentrack-plugins | 18 passed |
+| opentrack-vst3 | 14 passed, 2 ignored |
+| opentrack-win-jobs | 1 passed |
+
+Declared-but-disabled menu entries: **159 → 149**. Enabled `menu_command`
+entries: 107. Keyboard coverage: 75 of 152 bound commands have a dispatch arm
+(121 of 198 chords); the uncovered list is in
+`docs/workflow/accessibility-2026-11-02.md`.
+
+Honest limits recorded per task: device/listening review for punch, loop takes,
+monitoring, metronome, stem export and bounce; Windows runtime for job
+containment; a manual keyboard-only pass for accessibility. None of those is
+claimed as accepted.
+
+## Where revision 3 starts
+
+1. **CPR adapter and fixture harness** (25, 26) once the user supplies files.
+2. **Linux VST3 editor embedding** (29) with a purpose-built test plug-in.
+3. **Keyboard coverage**: dispatch the 77 remaining bound commands, starting with
+   the Edit and Navigate families.
+4. **Device review passes** for the runtime-only features above, converting the
+   "needs user" notes into accepted behavior or filed defects.
+5. **A second window of menu work**: the 149 disabled entries, chosen by user
+   workflow rather than by count.
