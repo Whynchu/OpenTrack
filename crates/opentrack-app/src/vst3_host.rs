@@ -972,6 +972,18 @@ impl Runtime {
         }
     }
 
+    /// Every insert that failed to load, keyed by channel and slot.
+    ///
+    /// The rack shows these so a failed plug-in is visible where the user put
+    /// it, not only in the parameter window they would have to open first.
+    pub fn failures(&self) -> &HashMap<(u64, usize), String> {
+        &self.failures
+    }
+
+    pub fn failure_count(&self) -> usize {
+        self.failures.len()
+    }
+
     pub fn failure(&self, track_id: u64, slot: usize) -> Option<&str> {
         self.failures.get(&(track_id, slot)).map(String::as_str)
     }

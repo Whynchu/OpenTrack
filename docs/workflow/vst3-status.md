@@ -90,11 +90,38 @@ process working directory.
   dedicated-thread regressions pass. Live in-app listening/visual review remains
   pending.
 
+## Failure isolation (2026-11-01)
+
+A plug-in that cannot load must not take the project with it. Current behavior,
+each step covered by a test where it is testable without a plug-in:
+
+- `Runtime::sync` records a failure per `(channel, slot)` and remembers the
+  failed class, so one broken insert is not re-instantiated on every plan rebuild
+  (that quarantine used to exist only in the runtime; it is now surfaced).
+- A failed state restore keeps the instance running and records the reason, so a
+  plug-in that loads but cannot take its saved state still passes audio.
+- The Channel Settings insert row marks the failed plug-in with a red `!` at the
+  name, shows the recorded reason on hover, and retries on click
+  (`retry_insert` → `Runtime::retry` → plan rebuild). The parameter window keeps
+  its own Retry Load button.
+- Opening a project with failures appends "N VST3 insert(s) could not be loaded
+  (marked ! in Channel Settings)" to the status line instead of failing the open.
+- Hosted processing errors are reported separately by the engine
+  ("N VST3 processing error(s); the channel fell back to dry audio").
+
+Known limits: this is isolation, not sandboxing. A plug-in that crashes the
+process still takes OpenTrack with it; scanning has no per-module timeout or
+crash attribution yet. The native editor is Windows-only; Linux builds report
+"native VST3 editors are only supported on Windows" and fall back to the
+parameter window.
+
 ## Not implemented
 
 - Hosted VST3 instruments/MIDI routing, multi-out, sidechain, surround.
 - Offline bounce/tail handling, automation lanes, true sandboxing.
 - Per-module scanner timeout/quarantine/job object, cache persistence/UI.
+- Process-level sandboxing for hosted plug-ins (isolation today is per-insert
+  quarantine inside the app process).
 - Universal compatibility. Current evidence is one installed folder.
 
 ## Tests

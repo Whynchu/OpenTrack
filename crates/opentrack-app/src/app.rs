@@ -346,6 +346,8 @@ struct ChannelSettingsUiState {
     vst3_power_off: Option<(u64, usize)>,
     /// Insert row the user removed by right-clicking it.
     remove_insert: Option<(u64, usize)>,
+    /// Insert whose failed VST3 load the user asked to retry.
+    retry_insert: Option<(u64, usize)>,
     /// Plug-in editor currently shown, mirrored from the host window state.
     vst3_editor: Option<(u64, usize)>,
     /// Rack rows the user has opened with the "+" box, per channel.
@@ -4190,6 +4192,15 @@ impl OpenTrackApp {
         // silently replaced by the stereo master during playback.
         if let Err(error) = self.data.project.validate_routing() {
             self.status_message = format!("{}; routing problem: {error}", self.status_message);
+        }
+        // Insert failures are isolated: the project still opens and every other
+        // channel plays, but the user is told how many plug-ins did not load.
+        let failed_inserts = self.vst3_runtime.failure_count();
+        if failed_inserts > 0 {
+            self.status_message = format!(
+                "{}; {failed_inserts} VST3 insert(s) could not be loaded (marked ! in Channel Settings)",
+                self.status_message
+            );
         }
     }
 
@@ -9499,6 +9510,7 @@ impl OpenTrackApp {
                             &mut self.channel_settings_window,
                             &mut self.channel_settings_ui,
                             &self.vst3_plugin_catalog,
+                            self.vst3_runtime.failures(),
                         );
                         mixer_selection_requested |= selection_requested;
                         (changed, requires_rebuild)
@@ -10144,6 +10156,7 @@ impl OpenTrackApp {
                             &mut self.channel_settings_window,
                             &mut self.channel_settings_ui,
                             &self.vst3_plugin_catalog,
+                            self.vst3_runtime.failures(),
                         );
                         modified |= changed;
                         mixer_selection_requested |= selection_requested;
@@ -10234,6 +10247,12 @@ impl OpenTrackApp {
         }
         if let Some((track_id, slot)) = self.channel_settings_ui.remove_insert.take() {
             modified |= self.remove_channel_insert(track_id, slot);
+        }
+        if let Some((track_id, slot)) = self.channel_settings_ui.retry_insert.take() {
+            // Clearing the failure lets the next plan sync try the plug-in again.
+            self.vst3_runtime.retry(track_id, slot);
+            self.rebuild_audio_plan();
+            self.status_message = "Retrying the VST3 insert".to_owned();
         }
         if modified {
             let live_controls_changed = live_controls_before
@@ -18029,6 +18048,7 @@ fn show_mixer(
     channel_settings_window: &mut NativeWindowState,
     channel_settings_ui: &mut ChannelSettingsUiState,
     vst3_plugin_catalog: &[PluginDescriptor],
+    insert_failures: &HashMap<(u64, usize), String>,
 ) -> (bool, bool, bool) {
     if show_strips {
         show_mixer_channels(
@@ -18054,6 +18074,7 @@ fn show_mixer(
                 input_meter_peaks,
                 output_meter_peaks,
                 vst3_plugin_catalog,
+                insert_failures,
             );
             (changed, false, false)
         }

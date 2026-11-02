@@ -146,6 +146,7 @@ pub(super) fn show(
     input_peaks: [f32; 2],
     output_peaks: [f32; 2],
     vst3_plugin_catalog: &[PluginDescriptor],
+    insert_failures: &HashMap<(u64, usize), String>,
 ) -> bool {
     let selected_track_id = project
         .selected_track
@@ -270,7 +271,14 @@ pub(super) fn show(
         child.spacing_mut().item_spacing = Vec2::ZERO;
         match item {
             ChannelSettingsViewItem::Inserts => {
-                changed |= inserts(&mut child, r, track, state, vst3_plugin_catalog)
+                changed |= inserts(
+                    &mut child,
+                    r,
+                    track,
+                    state,
+                    vst3_plugin_catalog,
+                    insert_failures,
+                )
             }
             ChannelSettingsViewItem::Sends | ChannelSettingsViewItem::SendRouting => {
                 if track.id >= opentrack_core::project::INPUT_BUS_ID {
@@ -616,6 +624,7 @@ fn inserts(
     track: &mut Track,
     state: &mut ChannelSettingsUiState,
     vst3_plugin_catalog: &[PluginDescriptor],
+    insert_failures: &HashMap<(u64, usize), String>,
 ) -> bool {
     let mut changed = false;
     if header(
@@ -747,13 +756,34 @@ fn inserts(
             p.muted,
         );
         if let Some(effect) = track.inserts.get(i) {
-            text(
-                ui,
-                rects.label,
-                &insert_effect_name(&effect.kind),
-                10.0,
-                Align2::RIGHT_CENTER,
-            );
+            let failure = insert_failures.get(&(track.id, i));
+            let name = insert_effect_name(&effect.kind);
+            text(ui, rects.label, &name, 10.0, Align2::RIGHT_CENTER);
+            if let Some(reason) = failure {
+                // The name is already drawn; mark the row and explain it, and
+                // let the user retry without hunting for the parameter window.
+                ui.painter().text(
+                    rects.label.left_center() + Vec2::new(1.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    "!",
+                    FontId::proportional(11.0),
+                    theme::RECORD,
+                );
+                let marker = ui.interact(
+                    Rect::from_min_size(
+                        rects.label.left_top(),
+                        Vec2::new(10.0, rects.label.height()),
+                    ),
+                    ui.id().with(("insert-failure", i)),
+                    Sense::click(),
+                );
+                marker.clone().on_hover_text(format!(
+                    "{name} could not be loaded: {reason}\nClick to retry."
+                ));
+                if marker.clicked() {
+                    state.retry_insert = Some((track.id, i));
+                }
+            }
         }
         let mut selected = None;
         menu(&list, 200.0, |ui| {
@@ -3119,6 +3149,83 @@ mod bus_tests {
         }
     }
 
+    #[test]
+    fn a_failed_vst3_insert_is_marked_in_the_rack_and_can_be_retried() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 430.0));
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        project.tracks[0]
+            .inserts
+            .push(opentrack_core::project::InsertEffect {
+                enabled: true,
+                bypassed: false,
+                kind: InsertEffectKind::Vst3 {
+                    class_id: "01010101010101010101010101010101".to_owned(),
+                    module_path: PathBuf::from(r"C:\VST3\Broken.vst3"),
+                    name: "Broken".to_owned(),
+                    vendor: "Example Audio".to_owned(),
+                    component_state: Vec::new(),
+                    controller_state: Vec::new(),
+                },
+            });
+        let failures = HashMap::from([((track_id, 0), "module load failed".to_owned())]);
+        let mut state = ChannelSettingsUiState::default();
+        let mut track = project.tracks[0].clone();
+
+        // The rack shows the marker where the plug-in sits.
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |ui| {
+                inserts(ui, rect, &mut track, &mut state, &[], &failures);
+            },
+        );
+        assert!(
+            output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "!"
+            )),
+            "the failed insert is marked in the rack"
+        );
+        output.textures_delta.clear();
+
+        // Clicking the marker asks for a retry instead of opening the window.
+        // Slot 0 starts at y=24 and is 46 px tall; the marker sits at the left
+        // edge of the name field, four pixels right of the chevron.
+        let marker = Pos2::new(26.0, 24.0 + 23.0);
+        for pressed in [true, false] {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events: vec![
+                        egui::Event::PointerMoved(marker),
+                        egui::Event::PointerButton {
+                            pos: marker,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| {
+                    inserts(ui, rect, &mut track, &mut state, &[], &failures);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert_eq!(
+            state.retry_insert,
+            Some((track_id, 0)),
+            "the marker requests a retry, not the parameter window"
+        );
+        assert!(state.vst3_parameter_slot.is_none());
+    }
+
     fn render_inserts_frame(
         context: &egui::Context,
         rect: Rect,
@@ -3126,6 +3233,7 @@ mod bus_tests {
         events: Vec<egui::Event>,
         track: &mut Track,
         state: &mut ChannelSettingsUiState,
+        insert_failures: &HashMap<(u64, usize), String>,
     ) {
         let mut output = context.run_ui(
             egui::RawInput {
@@ -3135,7 +3243,7 @@ mod bus_tests {
                 ..Default::default()
             },
             |ui| {
-                inserts(ui, rect, track, state, &[]);
+                inserts(ui, rect, track, state, &[], insert_failures);
             },
         );
         output.textures_delta.clear();
@@ -3881,7 +3989,15 @@ mod bus_tests {
         let mut state = ChannelSettingsUiState::default();
         let track_id = track.id;
         let eye = SlotRects::new(slot_cell(rect, 0), true, true).view.center();
-        render_inserts_frame(&context, rect, -0.1, Vec::new(), &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            -0.1,
+            Vec::new(),
+            &mut track,
+            &mut state,
+            &HashMap::new(),
+        );
         render_inserts_frame(
             &context,
             rect,
@@ -3892,6 +4008,7 @@ mod bus_tests {
             ],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         render_inserts_frame(
             &context,
@@ -3900,6 +4017,7 @@ mod bus_tests {
             vec![pointer_button(eye, egui::PointerButton::Primary, false)],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         assert_eq!(
             state.vst3_parameter_slot,
@@ -3917,6 +4035,7 @@ mod bus_tests {
             ],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         render_inserts_frame(
             &context,
@@ -3925,6 +4044,7 @@ mod bus_tests {
             vec![pointer_button(eye, egui::PointerButton::Primary, false)],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         assert_eq!(
             state.vst3_editor_close,
@@ -4109,9 +4229,25 @@ mod bus_tests {
                 ],
             )
         };
-        render_inserts_frame(&context, rect, -0.1, Vec::new(), &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            -0.1,
+            Vec::new(),
+            &mut track,
+            &mut state,
+            &HashMap::new(),
+        );
         let (time, events) = click(0.0, rects.bypass.center(), egui::PointerButton::Primary);
-        render_inserts_frame(&context, rect, time, events, &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            time,
+            events,
+            &mut track,
+            &mut state,
+            &HashMap::new(),
+        );
         render_inserts_frame(
             &context,
             rect,
@@ -4123,6 +4259,7 @@ mod bus_tests {
             )],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         assert!(
             track.inserts[0].bypassed,
@@ -4131,7 +4268,15 @@ mod bus_tests {
         assert!(track.inserts[0].enabled, "bypass keeps the plug-in loaded");
 
         let (time, events) = click(0.2, rects.power.center(), egui::PointerButton::Primary);
-        render_inserts_frame(&context, rect, time, events, &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            time,
+            events,
+            &mut track,
+            &mut state,
+            &HashMap::new(),
+        );
         render_inserts_frame(
             &context,
             rect,
@@ -4143,6 +4288,7 @@ mod bus_tests {
             )],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         assert!(
             !track.inserts[0].enabled,
@@ -4155,7 +4301,15 @@ mod bus_tests {
         );
 
         let (time, events) = click(0.4, rects.list.center(), egui::PointerButton::Secondary);
-        render_inserts_frame(&context, rect, time, events, &mut track, &mut state);
+        render_inserts_frame(
+            &context,
+            rect,
+            time,
+            events,
+            &mut track,
+            &mut state,
+            &HashMap::new(),
+        );
         render_inserts_frame(
             &context,
             rect,
@@ -4167,6 +4321,7 @@ mod bus_tests {
             )],
             &mut track,
             &mut state,
+            &HashMap::new(),
         );
         assert_eq!(
             state.remove_insert,
@@ -4252,6 +4407,7 @@ mod bus_tests {
                             [0.1, 0.2],
                             [0.3, 0.4],
                             &[],
+                            &HashMap::new(),
                         ));
                     },
                 );
@@ -4292,6 +4448,7 @@ mod bus_tests {
                     [0.0; 2],
                     [0.0; 2],
                     &[],
+                    &HashMap::new(),
                 );
             },
         );
