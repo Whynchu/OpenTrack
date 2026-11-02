@@ -607,7 +607,7 @@ impl OpenTrackApp {
     }
 
     /// One grid step for nudging, or a quarter bar when snap is off.
-    fn arrange_nudge_step(&self) -> f64 {
+    pub(super) fn arrange_nudge_step(&self) -> f64 {
         self.arrange_view_state
             .snap_grid_beats(self.data.project.beats_per_bar)
             .unwrap_or_else(|| f64::from(self.data.project.beats_per_bar.max(1)) / 4.0)

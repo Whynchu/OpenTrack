@@ -7076,6 +7076,24 @@ impl OpenTrackApp {
             "transport.nudge_cursor_left" => self.move_cursor_by(-0.25),
             "transport.to_left_locator" => self.seek_to_beats(self.data.project.loop_start_beats),
             "transport.to_right_locator" => self.seek_to_beats(self.data.project.loop_end_beats),
+            // Plain arrows move the cursor, but only when no widget holds
+            // keyboard focus, so a focused control keeps its own arrow handling.
+            "navigate.left" => {
+                // Plain arrows move the cursor only when no widget holds keyboard
+                // focus, so a focused control keeps its own arrow handling.
+                if ctx.memory(|memory| memory.focused().is_none()) {
+                    let step = self.arrange_nudge_step();
+                    self.move_cursor_by(-step);
+                }
+            }
+            "navigate.right" => {
+                if ctx.memory(|memory| memory.focused().is_none()) {
+                    let step = self.arrange_nudge_step();
+                    self.move_cursor_by(step);
+                }
+            }
+            "navigate.add_left" => self.extend_loop_range(true),
+            "navigate.add_right" => self.extend_loop_range(false),
             "navigate.up" => self.navigate_track(-1, false),
             "navigate.down" => self.navigate_track(1, false),
             "navigate.top" => self.navigate_track_edge(false, false),
@@ -8448,6 +8466,25 @@ impl OpenTrackApp {
             TransportLocate::PreviousEvent => self.locate_previous_event(),
             TransportLocate::PlaySelection => self.play_selection_range(),
             TransportLocate::LoopSelection => self.loop_selection(),
+        }
+    }
+
+    /// Extends one end of the locator range by a grid step.
+    fn extend_loop_range(&mut self, left: bool) {
+        let step = self.arrange_nudge_step();
+        let (start, end) = (
+            self.data.project.loop_start_beats,
+            self.data.project.loop_end_beats,
+        );
+        if left {
+            if start <= 0.0 {
+                self.status_message = "The left locator is already at the project start".to_owned();
+                return;
+            }
+            let next = (start - step).max(0.0);
+            self.apply_loop_range(next, end, "Extend the range left");
+        } else {
+            self.apply_loop_range(start, end + step, "Extend the range right");
         }
     }
 
@@ -26989,6 +27026,43 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn arrow_keys_move_the_cursor_and_shift_arrows_extend_the_range() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.arrange_view_state.snap_enabled = true;
+        app.arrange_view_state.grid_type = crate::timeline::GridType::UseQuantize;
+        app.arrange_view_state.quantize.note = crate::timeline::QuantizeNote::Quarter;
+        app.data.transport.position_beats = 4.0;
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.project_history.clear();
+
+        dispatch(&mut app, "navigate.right", &ctx);
+        assert!((app.data.transport.position_beats - 5.0).abs() < 1e-9);
+        dispatch(&mut app, "navigate.left", &ctx);
+        assert!((app.data.transport.position_beats - 4.0).abs() < 1e-9);
+        // The left edge of the project clamps instead of going negative.
+        app.data.transport.position_beats = 0.0;
+        dispatch(&mut app, "navigate.left", &ctx);
+        assert_eq!(app.data.transport.position_beats, 0.0);
+
+        // Add Left/Right extend the locator range by a step.
+        app.data.project.set_loop_range(4.0, 8.0);
+        dispatch(&mut app, "navigate.add_left", &ctx);
+        assert_eq!(app.data.project.loop_start_beats, 3.0);
+        dispatch(&mut app, "navigate.add_right", &ctx);
+        assert_eq!(app.data.project.loop_end_beats, 9.0);
+        assert!(app.status_message.contains("Extend the range right"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Set Locators");
+
+        // The left extension stops at the project start.
+        app.data.project.loop_start_beats = 0.0;
+        dispatch(&mut app, "navigate.add_left", &ctx);
+        assert_eq!(app.data.project.loop_start_beats, 0.0);
+        assert!(app.status_message.contains("already at the project start"));
+    }
+
+    #[test]
     fn cut_and_delete_time_remove_the_locator_range_and_close_the_gap() {
         let ctx = egui::Context::default();
         let mut app = app_with_track();
@@ -28068,6 +28142,10 @@ mod keyboard_coverage_tests {
             "navigate.down",
             "navigate.top",
             "navigate.bottom",
+            "navigate.left",
+            "navigate.right",
+            "navigate.add_left",
+            "navigate.add_right",
             "navigate.toggle_selection",
             "edit.left_selection_side_to_cursor",
             "edit.right_selection_side_to_cursor",

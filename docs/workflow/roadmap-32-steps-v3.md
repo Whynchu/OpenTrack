@@ -123,6 +123,12 @@ and measured numbers.
    project leaves no clipboard, transport, window or workspace state behind. 4 app
    tests. Shortcut coverage 129 -> 130.
 
+14. **Plain-arrow navigation.** *Delivered.* Navigate Left/Right move the cursor
+   by one grid step, but only while no widget holds keyboard focus, so a focused
+   control keeps its own arrow handling. Navigate Add Left/Right extend the
+   locator range by a step as one labelled "Set Locators" undo step, stopping at
+   the project start. 1 app test. Shortcut coverage 130 -> 134.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
