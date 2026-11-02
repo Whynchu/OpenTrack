@@ -4,6 +4,8 @@ mod app;
 mod crash_log;
 mod icon_system;
 mod icons;
+#[cfg(test)]
+mod menu_inventory;
 mod native_keys;
 mod native_windows;
 mod project_file;

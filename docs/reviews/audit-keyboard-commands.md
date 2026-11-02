@@ -1,5 +1,11 @@
 # Keyboard command implementation audit (Windows reference keymap)
 
+> Historical snapshot at `7b898c6` (2026-11-01). The per-row assessments below
+> are not current: many rows marked Fallback have since gained dispatch arms.
+> Use [`generated-source-inventory.md`](generated-source-inventory.md) for the
+> current 152-ID count and dispatch-arm status; this file is retained for its
+> per-command notes and constraints.
+
 - Audited revision: `7b898c68f2272c5c7be9ef9d83f763072ae25424`
 - Source: `docs/reference-keymap-windows.csv`; dispatch and key pre-handling: `crates/opentrack-app/src/app.rs` (`dispatch_reference_command`, `handle_reference_key`); ID/range generation: `crates/opentrack-core/src/commands.rs` (`KeymapProfile::windows_reference_default`).
 - Method: derived each stable ID by lowercasing and replacing non-ASCII-alphanumeric runs with `_`, prefixed by normalized category; compared each ID to the dispatcher match arms, then inspected pre-dispatch key handling for documented shortcuts. A branch is not proof of full reference-application parity; implemented means a concrete app action is dispatched.

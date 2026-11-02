@@ -1,5 +1,11 @@
 # Menu and context-menu source register
 
+> Historical snapshot: this register describes `7b898c6` (2026-11-01). It is
+> retained for its context-menu entries and annotations. Current project-open
+> main-menu and empty-shell counts come from the generated
+> [`generated-source-inventory.md`](generated-source-inventory.md); do not quote
+> this file's row statuses as current. Context menus remain curated here.
+
 Snapshot: `7b898c68f2272c5c7be9ef9d83f763072ae25424` (2026-11-01). Source-only; no running-app interaction was performed. Menu construction is concentrated in `crates/opentrack-app/src/app.rs`; supporting menus are in `project_controls.rs`, `channel_settings.rs`, `mixer.rs`, `transport_panel.rs`, and `project_inspector.rs`. References below are paths plus function/label anchors (line numbers may move); exact main-menu construction is in `show_menu` and `show_empty_project_menu` (app.rs:7623-8595).
 
 ## Main menu register

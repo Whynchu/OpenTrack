@@ -4,6 +4,10 @@ Scope: revision-2 task 31 and the revision-3 menu/keyboard slices. This records
 what was measured in the application's own code and theme, not a claim about
 assistive-technology conformance.
 
+Revised 2026-11-02 by roadmap revision 4 step 1: counts below come from the
+generated source inventory, replacing the stale 43/71 figures in the earlier
+revision of this report.
+
 ## What changed
 
 - Disabled and secondary text meets the 3:1 WCAG contrast ratio for non-text
@@ -30,28 +34,47 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **147** commands have a dispatch
-arm; **5** still do not. The menus remain the way to reach the
-uncovered features.
+numpad ranges). **147** commands have a dispatch arm; **5** still do not.
+
+The generated source inventory is the current register:
+[`generated-source-inventory.md`](../reviews/generated-source-inventory.md).
+It also measures the project-open main menu at this snapshot: **268** leaves,
+of which **37** are built available, **131** depend on project/selection state,
+**95** are literal unavailable rows and **5** are informational captions. The
+empty-project shell has **18** leaves (**6** available, **12** unavailable).
+Regenerate it with the command in that file.
 
 ## Bound commands without a dispatch arm
 
 ### Devices
 
-- Video (`F8`) — `devices.video`
+- Video (`F8`) — `devices.video` — only `Devices > Video Window` (disabled)
 
 ### Edit
 
-- Open Score Editor (`Ctrl+R`) — `edit.open_score_editor`
+- Open Score Editor (`Ctrl+R`) — `edit.open_score_editor` — `MIDI > Open Score
+  Editor` is disabled; the enabled `Scores > Open Selection` row shares the chord
+  but opens the in-place editor, not a score editor
 
 ### Project
 
-- Open Tempo Track Editor (`Ctrl+T`) — `project.open_tempo_track_editor`
+- Open Tempo Track Editor (`Ctrl+T`) — `project.open_tempo_track_editor` —
+  `Project > Tempo Track` (disabled)
 
 ### Transport
 
 - Retrospective Record (`Shift+NumpadMultiply`) — `transport.retrospective_record`
-- Use External Sync (`T`) — `transport.use_external_sync`
+  — `Transport > Retrospective Record` (disabled)
+- Use External Sync (`T`) — `transport.use_external_sync` — `Transport > Use
+  External Sync` (disabled)
+
+Four of the five have no enabled route at all. The previous version of this
+report claimed 43 undispatched shortcuts and said the menus remained a way to
+reach every uncovered command; both statements were stale and are corrected
+here. The older row-by-row register in
+[`audit-keyboard-commands.md`](../reviews/audit-keyboard-commands.md) is a
+historical snapshot of `7b898c6`, not a current count.
+
 ## Focus and labels
 
 - egui moves keyboard focus with Tab between interactive widgets in layout
@@ -66,9 +89,13 @@ uncovered features.
 
 ## Known gaps
 
-- The 43 shortcuts listed above are declared by the reference keymap
-  but not dispatched. Most need an editor or feature that does not exist yet
-  (score editor, tempo track editor, time-stretch dialogs, marker slots).
+- The five undispatched commands above are reported by the generated inventory.
+  Four are also disabled in their menus; the Open Score Editor chord reaches a
+  different editor. Reporting a dispatch arm is not proof that the resulting
+  action is complete.
+- The inventory parses the menu builder's source. It does not prove runtime
+  rendering, click success, or coverage of context-menu rows; those remain in
+  the curated `audit-menus.md` register.
 - There is no screen-reader narration beyond egui's own widget metadata, and no
   high-contrast theme selection yet.
 - Keyboard-only use is audited by source and tests, not by a manual pass in the

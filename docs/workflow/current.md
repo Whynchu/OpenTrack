@@ -1,3 +1,13 @@
+# Active planning handoff - revision 4 (2026-11-02)
+
+The user authorized serial execution of all 32 revision-4 steps on this run, with a commit and push after each verified change and `origin/main` as the publication destination. [Revision 4](roadmap-32-steps-v4.md) is the active queue; [the OpenCode handoff](opencode-revision-4-handoff.md) supplies the launch prompt. Preserve the untracked `recovery-20261028-204244/` and `stress-bench/` directories.
+
+Step 1 (menu and command inventory) is delivered in source and documentation. A test-only parser in `crates/opentrack-app/src/menu_inventory.rs` generates [the source inventory](../reviews/generated-source-inventory.md) from `show_menu`, `show_empty_project_menu` and the bundled keymap; a test fails when the committed report drifts. Measured at this checkpoint: 268 project-open main-menu leaves (37 available, 131 state-dependent, 95 unavailable, 5 informational), 18 empty-shell leaves (6 available, 12 unavailable), and 147 of 152 bound command IDs with a dispatch arm. The five uncovered IDs are `devices.video`, `edit.open_score_editor`, `project.open_tempo_track_editor`, `transport.retrospective_record` and `transport.use_external_sync`; four have no enabled menu route and the fifth reaches the in-place editor. The stale 43/71 accessibility claims are corrected. Runtime menu rendering and clicks remain unverified, and context menus remain a curated register. See [R4-01](tasks/R4-01-menu-command-inventory.md).
+
+Next ready work: revision-4 step 2, review the recent media pipeline (slices 41-56) before extending it. No revision-4 product implementation or runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+
+---
+
 # Current assignment — roadmap activation (2026-11-01)
 
 ## Paused checkpoint — 2026-11-01
