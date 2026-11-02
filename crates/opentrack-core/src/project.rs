@@ -720,6 +720,12 @@ pub struct AudioClip {
     /// A muted event keeps its place, fades and gain but produces no audio.
     #[serde(default)]
     pub muted: bool,
+    /// A locked event keeps playing but refuses move, trim, split and crop.
+    #[serde(default)]
+    pub locked: bool,
+    /// Events sharing a group id move together, like one object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u64>,
 }
 
 /// A MIDI event container arranged on the project beat timeline.
@@ -1565,6 +1571,11 @@ impl Project {
         else {
             return false;
         };
+        // A locked event is visible and audible but cannot be rewritten: move,
+        // trim and every other geometry edit arrive here.
+        if self.tracks[source].clips[index].locked && self.tracks[source].clips[index] != edited {
+            return false;
+        }
         if self.tracks[source].clips[index] == edited && source == target {
             return false;
         }
@@ -1584,9 +1595,55 @@ impl Project {
         if edits.is_empty() {
             return false;
         }
+        // A grouped event drags its members with it. The delta comes from the
+        // edited member, so the group keeps its internal spacing even when only
+        // one member is passed in.
+        let mut grouped = edits.to_vec();
+        let mut grouped_ids = edits
+            .iter()
+            .map(|(_, _, clip)| clip.id)
+            .collect::<BTreeSet<_>>();
+        for (source_track_id, _, edited) in edits {
+            let Some(original) = self
+                .tracks
+                .iter()
+                .find(|track| track.id == *source_track_id)
+                .and_then(|track| track.clips.iter().find(|clip| clip.id == edited.id))
+            else {
+                continue;
+            };
+            let Some(group) = original.group else {
+                continue;
+            };
+            let delta = edited.start_beats - original.start_beats;
+            if delta == 0.0 {
+                continue;
+            }
+            let members = self
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::Audio)
+                .flat_map(|track| {
+                    track
+                        .clips
+                        .iter()
+                        .filter(|clip| clip.group == Some(group) && clip.id != edited.id)
+                        .map(move |clip| (track.id, clip.clone()))
+                })
+                .collect::<Vec<_>>();
+            for (track_id, member) in members {
+                if member.locked || !grouped_ids.insert(member.id) {
+                    continue;
+                }
+                let mut moved = member;
+                moved.start_beats += delta;
+                grouped.push((track_id, track_id, moved));
+            }
+        }
+
         let mut ids = BTreeSet::new();
-        let mut removals = Vec::with_capacity(edits.len());
-        for (source_track_id, target_track_id, edited) in edits {
+        let mut removals = Vec::with_capacity(grouped.len());
+        for (source_track_id, target_track_id, edited) in &grouped {
             if !ids.insert(edited.id) {
                 return false;
             }
@@ -1617,8 +1674,12 @@ impl Project {
             else {
                 return false;
             };
+            if self.tracks[source].clips[index].locked {
+                return false;
+            }
             removals.push((source, index));
         }
+        let edits = &grouped;
 
         let mut candidate = self.clone();
         removals.sort_unstable_by(|a, b| b.cmp(a));
@@ -1656,6 +1717,9 @@ impl Project {
             .iter()
             .position(|c| c.id == clip_id)?;
         let original = &self.tracks[track].clips[index];
+        if original.locked {
+            return None;
+        }
         let cut = original.cut_offset_seconds(at_beats, self.tempo_bpm, self.sample_rate_hz)?;
         let mut left = original.clone();
         if left.fade_in_seconds > 0.0 || left.fade_out_seconds > 0.0 {
@@ -1902,6 +1966,15 @@ impl Project {
                 if clip_end <= start + 1e-9 || clip_start >= end - 1e-9 {
                     continue;
                 }
+                if candidate
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == track_id)
+                    .and_then(|track| track.clips.iter().find(|clip| clip.id == clip_id))
+                    .is_some_and(|clip| clip.locked)
+                {
+                    continue;
+                }
                 let mut changed = false;
                 // Trim the tail first so the head split keeps the shortened event.
                 if clip_end > end + 1e-9
@@ -1929,6 +2002,123 @@ impl Project {
         }
         *self = candidate;
         trimmed
+    }
+
+    /// Locks or unlocks the given events and reports how many changed.
+    ///
+    /// A locked event keeps its audio and its place but refuses move, trim,
+    /// split and crop, so a finished take cannot be nudged by accident.
+    pub fn set_audio_clips_locked(&mut self, ids: &[u64], locked: bool) -> usize {
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut changed = 0;
+        for track in self
+            .tracks
+            .iter_mut()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            for clip in track.clips.iter_mut() {
+                if selected.contains(&clip.id) && clip.locked != locked {
+                    clip.locked = locked;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Binds the given events into one group and returns its id.
+    ///
+    /// Two events are the minimum: a group of one has nothing to move with it,
+    /// and the user can already select one event.
+    pub fn group_audio_clips(&mut self, ids: &[u64]) -> Option<u64> {
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let members = self.member_clip_ids(&selected);
+        if members.len() < 2 {
+            return None;
+        }
+        // Continue after the highest id in use so a removed group is not reused
+        // by a later one while its old members still carry the number.
+        let next = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(|clip| clip.group)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)?;
+        let mut changed = false;
+        for track in self
+            .tracks
+            .iter_mut()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            for clip in track.clips.iter_mut() {
+                if members.contains(&clip.id) && clip.group != Some(next) {
+                    clip.group = Some(next);
+                    changed = true;
+                }
+            }
+        }
+        changed.then_some(next)
+    }
+
+    /// Removes the given events from their groups and reports how many changed.
+    ///
+    /// Selecting one member ungroups the whole group, because a group that lost
+    /// half its members would move unpredictably.
+    pub fn ungroup_audio_clips(&mut self, ids: &[u64]) -> usize {
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let groups = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| selected.contains(&clip.id))
+            .filter_map(|clip| clip.group)
+            .collect::<BTreeSet<_>>();
+        if groups.is_empty() {
+            return 0;
+        }
+        let mut changed = 0;
+        for track in self
+            .tracks
+            .iter_mut()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            for clip in track.clips.iter_mut() {
+                if clip.group.is_some_and(|group| groups.contains(&group)) {
+                    clip.group = None;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
+    /// The given events plus every member of their groups.
+    ///
+    /// Selection uses this so clicking a grouped event selects the whole object.
+    pub fn expand_selection_to_groups(&self, ids: &[u64]) -> Vec<u64> {
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        self.member_clip_ids(&selected).into_iter().collect()
+    }
+
+    fn member_clip_ids(&self, selected: &BTreeSet<u64>) -> BTreeSet<u64> {
+        let groups = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| selected.contains(&clip.id))
+            .filter_map(|clip| clip.group)
+            .collect::<BTreeSet<_>>();
+        let mut members = selected.clone();
+        for track in self.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+            for clip in &track.clips {
+                if clip.group.is_some_and(|group| groups.contains(&group)) {
+                    members.insert(clip.id);
+                }
+            }
+        }
+        members
     }
 
     /// Mutes or unmutes the given events and reports how many changed.
@@ -2123,6 +2313,8 @@ impl Project {
             fade_out_seconds: 0.0,
             gain: 1.0,
             muted: false,
+            locked: false,
+            group: None,
         });
         Some(id)
     }
@@ -4063,6 +4255,154 @@ mod sample_edit_tests {
         // Only the muted event changes, so unmuting reports one edit.
         assert_eq!(project.set_audio_clips_muted(&[first, second], false), 1);
         assert!(project.tracks[0].clips.iter().all(|clip| !clip.muted));
+    }
+
+    #[test]
+    fn a_locked_event_refuses_move_trim_split_and_crop() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 2.0)
+            .unwrap();
+        assert_eq!(project.set_audio_clips_locked(&[id], true), 1);
+        assert_eq!(
+            project.set_audio_clips_locked(&[id], true),
+            0,
+            "locking twice is not a change"
+        );
+
+        // Move to another track.
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 4.0;
+        assert!(
+            !project.move_audio_clips(&[(project.tracks[0].id, project.tracks[1].id, moved)]),
+            "a locked event does not move"
+        );
+        // Trim in place.
+        let mut trimmed = project.tracks[0].clips[0].clone();
+        trimmed.duration_seconds = 1.0;
+        assert!(
+            !project.edit_audio_clip(project.tracks[0].id, project.tracks[0].id, trimmed),
+            "a locked event does not trim"
+        );
+        // Split.
+        assert_eq!(
+            project.split_audio_clip(project.tracks[0].id, id, 1.0),
+            None
+        );
+        // Crop.
+        assert_eq!(project.crop_audio_clips_to_range(&[id], 0.0, 1.0), 0);
+
+        // Unlocking restores every operation.
+        assert_eq!(project.set_audio_clips_locked(&[id], false), 1);
+        assert!(
+            project
+                .split_audio_clip(project.tracks[0].id, id, 1.0)
+                .is_some()
+        );
+        assert_eq!(project.tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn grouped_events_move_together_and_ungrouping_releases_them() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 1.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(1, PathBuf::from("b.wav"), 4.0, 1.0)
+            .unwrap();
+
+        assert_eq!(
+            project.group_audio_clips(&[first]),
+            None,
+            "one event is not a group"
+        );
+        let group = project
+            .group_audio_clips(&[first, second])
+            .expect("two events group");
+        assert_eq!(project.tracks[0].clips[0].group, Some(group));
+        assert_eq!(project.tracks[1].clips[0].group, Some(group));
+        assert_eq!(
+            project.expand_selection_to_groups(&[first]),
+            vec![first, second],
+            "selecting one member selects the group"
+        );
+
+        // Moving one member by hand moves the other by the same delta.
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 2.0;
+        assert!(project.move_audio_clips(&[(project.tracks[0].id, project.tracks[0].id, moved)]));
+        assert!((project.tracks[1].clips[0].start_beats - 6.0).abs() < 1e-9);
+
+        // Ungrouping one member releases the whole group.
+        assert_eq!(project.ungroup_audio_clips(&[second]), 2);
+        assert!(
+            project
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .all(|clip| clip.group.is_none())
+        );
+        assert_eq!(project.ungroup_audio_clips(&[second]), 0);
+    }
+
+    #[test]
+    fn a_locked_group_member_stays_put_while_the_rest_moves() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 1.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 1.0)
+            .unwrap();
+        project.group_audio_clips(&[first, second]).expect("group");
+        project.set_audio_clips_locked(&[second], true);
+
+        let mut moved = project.tracks[0].clips[0].clone();
+        moved.start_beats = 2.0;
+        assert!(project.move_audio_clips(&[(project.tracks[0].id, project.tracks[0].id, moved)]));
+        let locked = project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == second)
+            .expect("locked member");
+        assert_eq!(
+            locked.start_beats, 4.0,
+            "a locked member keeps its place even inside a group move"
+        );
+    }
+
+    #[test]
+    fn lock_and_group_survive_a_round_trip_and_default_for_older_projects() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        project.tracks[0].clips[0].locked = true;
+        project.tracks[0].clips[0].group = Some(3);
+        let encoded = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&encoded).unwrap();
+        assert!(restored.tracks[0].clips[0].locked);
+        assert_eq!(restored.tracks[0].clips[0].group, Some(3));
+
+        // A clip written before these fields existed is unlocked and ungrouped.
+        let legacy = encoded
+            .replace(",\"locked\":true", "")
+            .replace(",\"group\":3", "");
+        let legacy: Project = serde_json::from_str(&legacy).unwrap();
+        assert!(!legacy.tracks[0].clips[0].locked);
+        assert_eq!(legacy.tracks[0].clips[0].group, None);
+        // An ungrouped clip does not store the field at all.
+        assert!(!encoded.contains("\"group\":null"));
     }
 
     #[test]

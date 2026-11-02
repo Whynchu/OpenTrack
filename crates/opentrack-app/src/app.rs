@@ -6223,6 +6223,10 @@ impl OpenTrackApp {
             "audio.crossfade" => self.crossfade_selected_audio_events(),
             "edit.move_to_cursor" => self.move_selected_audio_events_to_cursor(),
             "edit.duplicate" => self.duplicate_selected_audio_events(),
+            "edit.lock" => self.set_selected_audio_events_locked(true),
+            "edit.unlock" => self.set_selected_audio_events_locked(false),
+            "edit.group" => self.group_selected_audio_events(),
+            "edit.ungroup" => self.ungroup_selected_audio_events(),
             "edit.repeat" => self.repeat_dialog = Some(RepeatDialog { count: 2 }),
             "edit.fill_loop" => self.fill_loop_with_selected_audio_events(),
             "edit.invert" => self.invert_audio_event_selection(),
@@ -8652,14 +8656,26 @@ impl OpenTrackApp {
                         self.toggle_selected_audio_events_muted();
                         ui.close();
                     }
+                    if menu_command(ui, "Group", "Ctrl+G", can_duplicate).clicked() {
+                        self.group_selected_audio_events();
+                        ui.close();
+                    }
+                    if menu_command(ui, "Ungroup", "Ctrl+U", can_duplicate).clicked() {
+                        self.ungroup_selected_audio_events();
+                        ui.close();
+                    }
+                    if menu_command(ui, "Lock", "Ctrl+Shift+L", can_duplicate).clicked() {
+                        self.set_selected_audio_events_locked(true);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Unlock", "Ctrl+Shift+U", can_duplicate).clicked() {
+                        self.set_selected_audio_events_locked(false);
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Convert to Real Copy", ""),
-                            ("Group", "Ctrl+G"),
-                            ("Ungroup", "Ctrl+U"),
-                            ("Lock...", "Ctrl+Shift+L"),
-                            ("Unlock", "Ctrl+Shift+U"),
                             ("Project Logical Editor...", ""),
                             ("Process Project Logical Editor", ""),
                             ("Automation follows Events", ""),

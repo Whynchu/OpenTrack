@@ -77,6 +77,19 @@ pub(crate) struct State {
     group_gesture: Option<GroupGesture>,
     marquee: Option<MarqueeGesture>,
 }
+/// Selects one event, expanding the selection to its group.
+///
+/// A grouped event behaves as one object, so clicking any member selects the
+/// whole group and every gesture that follows has the same target.
+fn select_event_including_group(project: &Project, state: &mut State, clip_id: u64) {
+    let members = project.expand_selection_to_groups(&[clip_id]);
+    if members.len() > 1 {
+        state.select_many(members);
+    } else {
+        state.select_one(clip_id);
+    }
+}
+
 impl State {
     pub fn edit_drag_active(&self) -> bool {
         self.gesture.is_some() || self.group_gesture.is_some()
@@ -501,6 +514,101 @@ impl OpenTrackApp {
         self.mark_modified();
         self.status_message =
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
+    }
+
+    /// Locks or unlocks the selected events as one undo step.
+    pub(super) fn set_selected_audio_events_locked(&mut self, locked: bool) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before locking audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to lock or unlock".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.set_audio_clips_locked(&ids, locked);
+        if changed == 0 {
+            self.status_message = if locked {
+                "The selected audio events are already locked".into()
+            } else {
+                "The selected audio events are not locked".into()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot change the lock: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "{} {changed} audio event(s); Undo restores them",
+            if locked { "Locked" } else { "Unlocked" }
+        );
+    }
+
+    /// Binds the selected events so they move together.
+    pub(super) fn group_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before grouping audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        let mut candidate = self.data.project.clone();
+        let Some(group) = candidate.group_audio_clips(&ids) else {
+            self.status_message = "Select at least two audio events to group".to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot group: undo snapshot is unavailable".into();
+            return;
+        }
+        let members = candidate.expand_selection_to_groups(&ids);
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.arrange_view_state.audio_events.select_many(members);
+        self.mark_modified();
+        self.status_message =
+            format!("Grouped the selected audio events as {group}; Undo removes the group");
+    }
+
+    /// Releases the selected events (and their groups) from grouping.
+    pub(super) fn ungroup_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before ungrouping audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.ungroup_audio_clips(&ids);
+        if changed == 0 {
+            self.status_message = "The selected audio events are not grouped".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot ungroup: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message =
+            format!("Ungrouped {changed} audio event(s); Undo restores the group");
     }
 
     /// Selects the audio events that overlap the transport position.
@@ -1594,13 +1702,41 @@ fn paint(
         );
     }
     paint_event_chrome(&painter, c, r, clip, lane.color, selected, ghost);
-    if c.muted && !ghost && r.width() > 18.0 {
-        painter.with_clip_rect(clip).text(
-            r.right_top() + Vec2::new(-4.0, 0.0),
-            Align2::RIGHT_TOP,
-            "M",
-            FontId::proportional(11.0),
-            Color32::WHITE.gamma_multiply(0.8),
+    if !ghost && r.width() > 18.0 {
+        // State marks sit in the corner and never move the event itself.
+        let mark = if c.locked {
+            Some("L")
+        } else if c.muted {
+            Some("M")
+        } else {
+            None
+        };
+        if let Some(mark) = mark {
+            painter.with_clip_rect(clip).text(
+                r.right_top() + Vec2::new(-4.0, 0.0),
+                Align2::RIGHT_TOP,
+                mark,
+                FontId::proportional(11.0),
+                Color32::WHITE.gamma_multiply(0.8),
+            );
+        }
+        if c.group.is_some() && r.width() > 40.0 {
+            painter.with_clip_rect(clip).text(
+                r.right_top() + Vec2::new(-16.0, 0.0),
+                Align2::RIGHT_TOP,
+                "G",
+                FontId::proportional(11.0),
+                Color32::WHITE.gamma_multiply(0.6),
+            );
+        }
+    }
+    if c.locked && !ghost {
+        // A locked event reads as set aside: a dashed outline over the event.
+        painter.with_clip_rect(clip).rect_stroke(
+            r.shrink(2.0),
+            0.0,
+            Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.45)),
+            egui::StrokeKind::Inside,
         );
     }
 }
@@ -2416,7 +2552,7 @@ pub(super) fn show_with_tool(
                             state.extra_selected.remove(&c.id);
                         }
                     } else if !selected && !group_master {
-                        state.select_one(c.id);
+                        select_event_including_group(project, state, c.id);
                     }
                     ui.ctx().request_repaint();
                 }
@@ -2486,7 +2622,7 @@ pub(super) fn show_with_tool(
                         state.selected == Some(c.id) || state.extra_selected.contains(&c.id);
                     let modifiers = ui.input(|i| i.modifiers);
                     if !was_selected && !modifiers.shift && !modifiers.ctrl {
-                        state.select_one(c.id);
+                        select_event_including_group(project, state, c.id);
                     }
                     let tool = hit(c, event_rect(c, lane, origin, px, tempo), press, selected);
                     let selected_ids = state.selected_ids();
@@ -2529,8 +2665,16 @@ pub(super) fn show_with_tool(
                         ui.ctx().request_repaint();
                         continue;
                     }
+                    if c.locked {
+                        // Locked events refuse move, trim, fade and split, so the
+                        // press only selects instead of starting a gesture.
+                        select_event_including_group(project, state, c.id);
+                        state.message =
+                            Some("This audio event is locked; unlock it to edit".to_owned());
+                        continue;
+                    }
                     if !was_selected {
-                        state.select_one(c.id);
+                        select_event_including_group(project, state, c.id);
                     }
                     let mut g = Gesture {
                         peers: if was_selected
@@ -3610,6 +3754,105 @@ mod split_selection_tests {
             app.data.project.tracks[0].clips, before.tracks[0].clips,
             "no event was trimmed"
         );
+    }
+
+    #[test]
+    fn app_lock_group_and_ungroup_are_single_undo_steps() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let first = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 8.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+
+        // Lock the first event.
+        app.arrange_view_state.audio_events.select_many([first]);
+        app.set_selected_audio_events_locked(true);
+        assert!(app.data.project.tracks[0].clips[0].locked);
+        assert!(!app.data.project.tracks[0].clips[1].locked);
+        assert!(app.status_message.contains("Locked 1 audio event"));
+
+        // A second lock reports that nothing changed.
+        app.set_selected_audio_events_locked(true);
+        assert!(app.status_message.contains("already locked"));
+
+        // Unlock it again.
+        app.set_selected_audio_events_locked(false);
+        assert!(!app.data.project.tracks[0].clips[0].locked);
+        assert!(app.status_message.contains("Unlocked"));
+
+        // Group both, then ungroup one member (which releases both).
+        app.arrange_view_state
+            .audio_events
+            .select_many([first, second]);
+        app.group_selected_audio_events();
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.group.is_some())
+        );
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids().len(),
+            2,
+            "grouping keeps both members selected"
+        );
+        assert!(app.status_message.contains("Grouped"));
+
+        app.arrange_view_state.audio_events.select_many([second]);
+        app.ungroup_selected_audio_events();
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.group.is_none())
+        );
+        assert!(app.status_message.contains("Ungrouped 2 audio event"));
+
+        // One event alone cannot be grouped.
+        app.arrange_view_state.audio_events.select_many([first]);
+        app.group_selected_audio_events();
+        assert!(app.status_message.contains("at least two"));
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn a_locked_event_drag_selects_without_editing() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        app.data.project.set_audio_clips_locked(&[id], true);
+
+        // The core refuses the move even if a gesture built one.
+        let mut moved = app.data.project.tracks[0].clips[0].clone();
+        moved.start_beats = 6.0;
+        assert!(
+            !app.data.project.move_audio_clips(&[(
+                app.data.project.tracks[0].id,
+                app.data.project.tracks[0].id,
+                moved
+            )]),
+            "a locked event does not move"
+        );
+        assert_eq!(app.data.project.tracks[0].clips[0].start_beats, 0.0);
+        assert_eq!(app.data.project.expand_selection_to_groups(&[id]), vec![id]);
     }
 
     #[test]
