@@ -1228,6 +1228,9 @@ pub struct OpenTrackApp {
     convert_files_dialog: Option<u32>,
     /// Detect Silence dialog draft: threshold in dBFS and minimum silence in ms.
     detect_silence_dialog: Option<(f32, f64)>,
+    /// Standalone spectrum analyser window and the analyser feeding it.
+    spectrum_open: bool,
+    spectrum_state: analyzer_view::State,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2670,6 +2673,8 @@ impl OpenTrackApp {
             envelope_dialog: None,
             convert_files_dialog: None,
             detect_silence_dialog: None,
+            spectrum_open: false,
+            spectrum_state: analyzer_view::State::default(),
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -4008,6 +4013,8 @@ impl OpenTrackApp {
         self.envelope_dialog = None;
         self.convert_files_dialog = None;
         self.detect_silence_dialog = None;
+        self.spectrum_open = false;
+        self.spectrum_state.close();
         self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
@@ -13890,7 +13897,10 @@ impl OpenTrackApp {
                             self.open_detect_silence_dialog();
                             ui.close();
                         }
-                        disabled_menu_commands(ui, &[("Spectrum Analyzer...", "")]);
+                        if menu_command(ui, "Spectrum Analyzer...", "", true).clicked() {
+                            self.spectrum_open = true;
+                            ui.close();
+                        }
                     });
                 });
                 ui.menu_button("MIDI", |ui| {
@@ -15367,6 +15377,96 @@ impl OpenTrackApp {
             self.mark_modified();
         }
         removed
+    }
+
+    /// Feeds the standalone analyser from the master output tap.
+    ///
+    /// Only the output bus is offered, because that is the only tap this window
+    /// subscribes to; a channel selector that showed empty graphs would be worse
+    /// than no selector.
+    fn update_spectrum_analyzer(&mut self) {
+        if !self.spectrum_open {
+            self.spectrum_state.close();
+            return;
+        }
+        let Some(output) = self
+            .data
+            .project
+            .channels()
+            .find(|channel| channel.id == opentrack_core::project::OUTPUT_BUS_ID)
+        else {
+            self.spectrum_state.close();
+            return;
+        };
+        let choices = vec![analyzer_view::Choice {
+            id: output.id,
+            name: output.name.clone(),
+            channel_count: output.audio_channels,
+            equalizer: output.equalizer.clone(),
+        }];
+        let mut taps = std::collections::HashMap::new();
+        if let Some(engine) = &self.audio_engine {
+            taps.insert(
+                opentrack_core::project::OUTPUT_BUS_ID,
+                engine.output_meter_tap(),
+            );
+        }
+        let rate = self
+            .audio_engine
+            .as_ref()
+            .map(|engine| engine.sample_rate)
+            .unwrap_or(self.data.project.sample_rate_hz);
+        let transport_active = self.data.transport.playing || self.is_recording();
+        let position_seconds = self.audio_engine.as_ref().map_or_else(
+            || self.data.transport.position_beats * 60.0 / self.data.project.tempo_bpm.max(1.0),
+            |engine| engine.position_seconds(),
+        );
+        self.spectrum_state.update(
+            Some(opentrack_core::project::OUTPUT_BUS_ID),
+            choices,
+            taps,
+            rate,
+            transport_active,
+            position_seconds,
+        );
+    }
+
+    fn show_spectrum_window(&mut self, ctx: &egui::Context) {
+        if !self.spectrum_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Spectrum Analyzer")
+            .id(Id::new("spectrum-analyzer"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(520.0, 380.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let width = ui.available_width().max(320.0);
+                let controls_height = self.spectrum_state.controls_height(width);
+                let (controls_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(width, controls_height), egui::Sense::hover());
+                let mut scratch = opentrack_core::project::ChannelEqualizer::default();
+                let _ = self
+                    .spectrum_state
+                    .controls(ui, controls_rect, &mut scratch);
+                let (plot, _) =
+                    ui.allocate_exact_size(Vec2::new(width, 240.0), egui::Sense::hover());
+                let colour = theme::palette(ui).accent;
+                self.spectrum_state.paint(ui, plot, colour);
+                if self.audio_engine.is_none() {
+                    ui.label(
+                        egui::RichText::new(
+                            "No audio output device is open, so the analyser has no signal.",
+                        )
+                        .small()
+                        .color(theme::palette(ui).muted),
+                    );
+                }
+            });
+        self.spectrum_open = open;
     }
 
     fn show_channel_settings_window(&mut self, ctx: &egui::Context) {
@@ -17713,6 +17813,8 @@ impl eframe::App for OpenTrackApp {
             self.show_track_add_dialog(&ctx);
             self.show_event_colors_dialog(&ctx);
             self.show_channel_settings_window(&ctx);
+            self.update_spectrum_analyzer();
+            self.show_spectrum_window(&ctx);
             self.show_media_window(&ctx);
             self.show_workspace_organizer(&ctx);
             self.show_track_rename_dialog(&ctx);
@@ -30104,6 +30206,77 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+    }
+}
+
+#[cfg(test)]
+mod spectrum_window_tests {
+    use super::*;
+
+    fn run(ctx: &egui::Context, app: &mut OpenTrackApp, frame: usize) -> Vec<String> {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 800.0))),
+                time: Some(frame as f64 * 0.05),
+                ..Default::default()
+            },
+            |_| {
+                app.update_spectrum_analyzer();
+                app.show_spectrum_window(ctx);
+            },
+        );
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_spectrum_window_draws_and_says_when_there_is_no_signal_source() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.spectrum_open = true;
+
+        // The update has no device to tap and must stay calm about it.
+        app.update_spectrum_analyzer();
+        run(&ctx, &mut app, 0);
+        let texts = run(&ctx, &mut app, 1);
+        let joined = texts.join("\n");
+        assert!(joined.contains("Spectrum Analyzer"), "{joined}");
+        assert!(
+            joined.contains("No audio output device is open"),
+            "{joined}"
+        );
+        // The analyser's own controls are drawn, not a placeholder.
+        assert!(
+            joined.to_lowercase().contains("spectrum") || joined.contains("Hold"),
+            "{joined}"
+        );
+        assert!(app.spectrum_open, "the window stays open");
+
+        // Closing stops the analyser work and the window.
+        app.spectrum_open = false;
+        app.update_spectrum_analyzer();
+        let texts = run(&ctx, &mut app, 2);
+        assert!(
+            !texts.iter().any(|text| text == "Spectrum Analyzer"),
+            "{texts:?}"
+        );
     }
 }
 

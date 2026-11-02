@@ -523,5 +523,13 @@ still one commit with tests and refreshed counts.
    silence or that are entirely silent are counted and reported. 1 audio, 1 core
    and 1 app tests. Disabled entries 78 -> 77.
 
+52. **Spectrum Analyzer.** *Delivered.* Media > Advanced > Spectrum Analyzer...
+   opens a standalone window fed from the master output meter tap, reusing the
+   Channel Settings analyser (`Controls` for range/tilt/resolution/peak hold and
+   `paint` for the graph) with a second `analyzer_view::State`, so the two windows
+   keep independent settings. Only the output bus is offered, because that is the
+   only tap the window subscribes to; with no audio device it says so instead of
+   drawing a blank graph silently. 1 app test. Disabled entries 77 -> 76.
+
 Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
 Archive, then the user-dependent reviews and CPR fixtures.
