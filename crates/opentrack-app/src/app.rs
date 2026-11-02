@@ -1131,6 +1131,12 @@ pub struct OpenTrackApp {
     midi_quantize_dialog: Option<opentrack_core::midi_quantize::QuantizeOptions>,
     /// Open MIDI transpose/velocity dialog: semitones and velocity delta.
     midi_transform_dialog: Option<(i16, i16)>,
+    /// Persisted: record only between the locators.
+    punch_enabled: bool,
+    /// Armed punch range waiting for the playhead to reach its in point.
+    punch_armed: Option<(f64, f64)>,
+    /// True while a punched recording is running, so the out point can stop it.
+    punch_active: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2509,6 +2515,12 @@ impl OpenTrackApp {
             session_health_open: false,
             midi_quantize_dialog: None,
             midi_transform_dialog: None,
+            punch_enabled: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "punch-recording-v1"))
+                .unwrap_or(false),
+            punch_armed: None,
+            punch_active: false,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -7499,6 +7511,50 @@ impl OpenTrackApp {
         );
     }
 
+    /// True when an armed punch has reached its in point.
+    pub(super) fn punch_should_start(&self, position: f64) -> bool {
+        self.punch_armed
+            .is_some_and(|(in_point, _)| !self.is_recording() && position >= in_point - 1e-6)
+    }
+
+    /// True when a running punched recording has reached the out locator.
+    pub(super) fn punch_should_stop(&self, position: f64) -> bool {
+        self.punch_active
+            && self.is_recording()
+            && position >= self.data.project.loop_end_beats - 1e-6
+    }
+
+    /// Starts and stops a punched recording at the locators.
+    ///
+    /// The check runs on the control thread, so a punch lands within a frame of
+    /// the locator rather than sample-accurately; the engine is not restructured
+    /// for this, and the difference is documented rather than hidden.
+    fn advance_punch(&mut self) {
+        let position = self.data.transport.position_beats;
+        if self.punch_should_start(position) {
+            let Some((in_point, _)) = self.punch_armed else {
+                return;
+            };
+            let _ = in_point;
+            self.punch_armed = None;
+            // Start capture now: the recorder opens at the position the playhead
+            // has already reached.
+            self.toggle_recording();
+            self.punch_active = self.is_recording();
+            return;
+        }
+        if self.punch_should_stop(position) {
+            self.punch_active = false;
+            self.finish_recording();
+            // The transport keeps rolling, as a punch-out does.
+            self.set_transport_playing(true);
+            self.status_message = format!(
+                "Punch-out at beat {:.3}; recording stopped, playback continues",
+                self.data.project.loop_end_beats
+            );
+        }
+    }
+
     /// Keeps the playhead visible while the transport plays.
     ///
     /// The user's own scrolling wins: while the pointer is down or a wheel event
@@ -8500,6 +8556,34 @@ impl OpenTrackApp {
             .as_ref()
             .map(|engine| engine.position_seconds() * self.data.project.tempo_bpm / 60.0)
             .unwrap_or(self.data.transport.position_beats);
+
+        // Punch waits for the in locator instead of recording from the playhead.
+        if self.punch_enabled {
+            let (in_point, out_point) = (
+                self.data.project.loop_start_beats,
+                self.data.project.loop_end_beats,
+            );
+            if out_point <= in_point {
+                self.status_message =
+                    "Punch recording needs the locators set to a range".to_owned();
+                return;
+            }
+            if start_beats < in_point - 1e-6 {
+                self.punch_armed = Some((in_point, out_point));
+                self.data.transport.recording = true;
+                self.set_transport_playing(true);
+                self.status_message = format!(
+                    "Punch armed: recording starts at beat {in_point:.3} and stops at {out_point:.3}"
+                );
+                return;
+            }
+            if start_beats >= out_point - 1e-6 {
+                self.status_message =
+                    format!("The playhead is past the punch-out point at beat {out_point:.3}");
+                return;
+            }
+            self.punch_active = true;
+        }
         let mut audio_recorder = None;
         if !armed_audio_tracks.is_empty() {
             if !self.project_folder_managed {
@@ -9765,6 +9849,7 @@ impl OpenTrackApp {
         let position_before = self.data.transport.position_beats;
         let was_playing = self.data.transport.playing;
         self.advance_transport_inner(ctx);
+        self.advance_punch();
         // Auto Select Events under Cursor follows a seek the user made, never
         // playback: stealing the selection every frame while playing would make
         // editing impossible.
@@ -14223,6 +14308,7 @@ impl eframe::App for OpenTrackApp {
             "project-logical-editor-v1",
             &self.project_logical_editor,
         );
+        eframe::set_value(storage, "punch-recording-v1", &self.punch_enabled);
     }
 }
 
@@ -23235,6 +23321,86 @@ mod snap_type_tests {
         view.snap_type = SnapType::GridAndCursor;
         assert_eq!(view.snap_type.label(), "Grid + Cursor");
         assert_eq!(SnapType::ALL.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod punch_recording_tests {
+    use super::*;
+
+    fn app_with_locators() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].armed = true;
+        app.data.project.tracks[0].input_routing = Some("Stereo In".to_owned());
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.data.transport.position_beats = 0.0;
+        app.punch_enabled = true;
+        app
+    }
+
+    #[test]
+    fn punch_arms_when_the_playhead_is_before_the_in_point() {
+        let mut app = app_with_locators();
+        app.toggle_recording();
+        assert_eq!(app.punch_armed, Some((4.0, 8.0)));
+        assert!(
+            app.data.transport.recording,
+            "record mode is armed while the punch waits"
+        );
+        assert!(app.status_message.contains("Punch armed"));
+        assert!(!app.is_recording(), "capture has not started yet");
+    }
+
+    #[test]
+    fn punch_refuses_when_the_range_is_behind_the_playhead() {
+        let mut app = app_with_locators();
+        app.data.transport.position_beats = 9.0;
+        app.toggle_recording();
+        assert!(app.punch_armed.is_none());
+        assert!(app.status_message.contains("past the punch-out point"));
+    }
+
+    #[test]
+    fn punch_needs_a_locator_range() {
+        let mut app = app_with_locators();
+        app.data.project.loop_start_beats = 4.0;
+        app.data.project.loop_end_beats = 4.0;
+        app.toggle_recording();
+        assert!(app.status_message.contains("locators set to a range"));
+        assert!(app.punch_armed.is_none());
+    }
+
+    #[test]
+    fn the_punch_starts_at_the_in_point_and_stops_at_the_out_point() {
+        let mut app = app_with_locators();
+        app.toggle_recording();
+        // Before the in point nothing starts.
+        assert!(!app.punch_should_start(3.0));
+        // At the in point the armed punch is due.
+        assert!(app.punch_should_start(4.0));
+        // The stop rule only applies once capture is actually running.
+        assert!(!app.punch_should_stop(8.0));
+
+        app.punch_armed = None;
+        app.punch_active = true;
+        // Without a session the stop rule still waits for one, which is what
+        // keeps a failed punch from reporting a phantom punch-out.
+        assert!(!app.punch_should_stop(8.0));
+    }
+
+    #[test]
+    fn turning_punch_off_disarms_a_waiting_punch() {
+        let mut app = app_with_locators();
+        app.toggle_recording();
+        assert!(app.punch_armed.is_some());
+        app.punch_enabled = false;
+        app.punch_armed = None;
+        assert!(!app.punch_should_start(8.0));
     }
 }
 

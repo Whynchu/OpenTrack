@@ -158,7 +158,14 @@ Still open from revision 1:
 
 ### E. Recording and monitoring
 
-18. **Punch in/out recording** driven by the locators, with a persisted toggle.
+18. **Punch in/out recording.** *Delivered at control rate.* A persisted toggle
+   (Transport > Punch In/Out) records only between the locators: with the playhead
+   before the in point, record arms and the transport rolls; capture starts when
+   the playhead reaches the in locator and stops at the out locator while playback
+   continues. The decision runs on the control thread, so a punch lands within a
+   frame of the locator rather than sample-accurately — the engine was not
+   restructured for this and the difference is stated rather than hidden. 5 tests.
+   Needs device review with a real interface.
 19. **Input monitoring modes** (off/auto/on) per track, persisted, reflected in
     the plan and the mixer.
 20. **Loop recording takes.** Repeated cycle passes create take lanes instead of
