@@ -10,6 +10,8 @@ This specifies the direction for incremental work, not a claim that all boundari
 | Rendering | App views: shared state in, commands out; avoid independent copies of playback or track state |
 | Transport execution | opentrack-audio: sample clock, audible seek/cycle/skip execution; UI reads an engine transport snapshot during playback |
 | Persistence and platform services | Explicit adapters for files, device APIs, windows, plug-in ABI; keep platform specifics outside domain calculations |
+| Channel routing | opentrack-core `routing`: one typed vocabulary (`InputRoute`, `OutputRoute`, `Speaker`) parses persisted spellings, validates against the project and feeds every consumer; the app resolves it to the playback plan in one place. A route the engine cannot play is rejected or reported, never silently replaced by the master |
+| Crash and discard recovery | Persistence: the recording journal, WAV header repair and the recovery autosave live in their own modules and are applied through the normal project-history path; the UI only decides when to ask |
 
 ## Invariants to establish as features are touched
 
@@ -22,6 +24,28 @@ This specifies the direction for incremental work, not a claim that all boundari
 - Schema changes include compatibility/default handling for supported .opr/.otp/.rwp inputs. CPR compatibility requires independent evidence.
 
 Use targeted pure tests for time mapping, snap boundaries, range direction, adaptive ticks, and transport block boundaries; integration tests for commands/persistence; offline audio checks where applicable; live interaction and hardware checks for what headless tests cannot establish. Do not replace useful behavior delivery with a speculative framework rewrite.
+
+## Routing invariant (2026-11-01)
+
+A route is a value, not a string. Persisted spellings stay byte-compatible with
+existing projects, but they are parsed once by `opentrack_core::routing` and
+every consumer (send rack, group-cycle check, live-monitor tap, playback plan)
+reads the parsed value. `Project::validate_routing` reports unknown routes,
+dangling or self group targets, feedback loops and mono inputs wider than the
+capture bus. Reading a project stays permissive so an affected file still opens
+and can be re-routed; writing refuses it. A route the engine cannot honor must
+never fall back to the stereo master, because that hides a routing error behind
+audible-but-wrong playback.
+
+## Recovery invariant (2026-11-01)
+
+Recording and unsaved-project recovery are persistence concerns. The recording
+journal is written before any take file exists and settled only once the take
+belongs to the project; a WAV header that was never finalized is repaired from
+the file's real length, never guessed. A recovery autosave is written through the
+same validated atomic save path as a save and is removed by a completed save or
+an explicit discard. Restoring either kind of state goes through the normal
+project-history path, so it is one undo step and never bypasses validation.
 
 ## Sample Editor invariant (2026-10-25)
 
