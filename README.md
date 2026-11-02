@@ -31,16 +31,28 @@ OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide 
 
 OpenTrack is an early prototype under active development. Its features are still being integrated and reviewed, and some visible controls are incomplete. The following describes the current development version; availability does not imply that every workflow has completed runtime or hardware validation. The status below is refreshed with every delivered slice.
 
-### Available today
+### What works today
 
-- **Projects and arrangement:** a timeline for audio and MIDI tracks with transport and cycle playback, grid snapping (including snap to event edges and the cursor), project markers with next/previous navigation and a marker list, zoom commands, follow-playhead scrolling, event nudging, split-at-cursor, split loop, glue, range deletion, crossfades, MIDI part split/merge, and a bounded undo/redo with an undo-history window. New saves use the native OPR format at version 28; earlier `.opr`, `.otp` and `.rwp` projects remain readable, and older projects load with safe defaults for newer fields. Older OpenTrack builds through version 27 cannot reopen a version 28 save, so a file saved by this build is never silently stripped of markers, takes, monitoring modes or notes.
-- **Recording and media:** WAV import and playback, audio and MIDI recording, punch in/out driven by the locators, per-track input monitoring (Off / Auto while armed / On), loop recording that puts each cycle pass on its own take lane, a metronome with a per-beat accent pattern and a count-in, managed project folders, media consolidation into the project, missing-media relink, media-pool cleanup, multiple recovery points, and a MediaBay.
-- **Mixing:** shared Mixer and Channel Settings controls, input gain and meters, a 32-band EQ with static and dynamic bands, spectrum and tonal-reference analysis, and an insert rack. Track-volume automation records from live control movement, plays back, and supports point editing; arrange context menus can reveal tracks with stored curves.
-- **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.
-- **Editors and workspace:** a MIDI editor with notes and controller lanes plus quantize (strength and swing) and transpose/velocity tools, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
-- **Finishing:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, and Standard MIDI File export of the whole project or a selection.
-- **Project tools:** project templates, a session health check, project statistics, a beat calculator, and a project notepad saved with the file.
-- **Platform and diagnostics:** a callback-budget readout with a worst-block figure, project load measurement, and Windows job-object containment for scanner workers (implemented and compiled for Windows; runtime validation on Windows is pending).
+- **Arranging:** audio, MIDI, instrument and group tracks; transport and cycle playback; bar/beat/quantize snapping plus snapping to event edges or the cursor; zoom commands; follow-playhead scrolling; markers with next/previous navigation and a marker list; event nudge, edge nudge, split at cursor or at both locators, glue, range delete and crossfades; MIDI part split and merge; bounded undo/redo with an undo-history window.
+- **Recording:** audio and MIDI capture; punch in/out driven by the locators; per-track input monitoring (Off, Auto while armed, On); each loop pass recorded to its own take lane; a metronome with a per-beat accent pattern and a count-in.
+- **Media:** imported WAVs copied into the project; media pool; consolidation into the project folder; missing-media relink; unused and missing pool cleanup; several timestamped recovery points.
+- **Mixing:** Mixer and Channel Settings; input gain and metering; 32-band static and dynamic EQ; live spectrum and tonal-reference analysis; insert rack; up to 24 sends per channel with typed routing.
+- **Automation:** track volume records from live fader movement, plays back, and is editable as points. Automation on the input and output buses is not implemented, so those Write controls stay disabled.
+- **Plug-ins:** third-party VST3 effect hosting with native editor windows. Compatibility varies by plug-in; universal VST3 support is not claimed.
+- **Editing tools:** MIDI editor with note and controller lanes, quantize with strength and swing, transpose and velocity tools; Sample Editor with on-demand Pitch & Time analysis and editing.
+- **Delivery:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, and Standard MIDI File export of the whole project or a selection.
+- **Project tools:** templates, session health check, project statistics, beat calculator, and a notepad saved with the project.
+- **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 28); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
+
+### What still needs work
+
+- **Real-device review:** recording, punch, monitoring, loop takes, the metronome click, stem export, bounce and mixdown pass offline and headless checks but still need listening and hardware validation. Those results are not claimed yet.
+- **Automation coverage:** input/output-bus automation and its Write controls are missing; track automation still needs live-device testing.
+- **Routing:** device-bus sends and wider physical channel maps are open. Track and group sends and typed routing pass offline checks and still need live review.
+- **Interchange:** CPR is inspection-only; a real adapter waits for sample files. Other DAW formats are future work. Authored MIDI fixtures pass; comparison with DAW-produced MIDI files remains.
+- **Interface completion:** 122 menu entries are still shown disabled and 121 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
+- **Linux plug-ins:** VST3 editor embedding on Linux is not implemented.
+- **Not available:** video, surround, score editing, macOS and browser builds, and a command-line or MCP interface. Plug-in compatibility and recovery behavior need continued verification.
 
 ### Highlights
 
@@ -63,23 +75,11 @@ Channel Settings includes an EQ and analyzer for shaping and inspecting a channe
 
 These features are under active development; live listening, visual behavior and performance across audio devices still need further review.
 
-### Still needed
+### Near-term priorities
 
-- **Runtime and listening review:** recording, punch, monitoring, loop takes, the metronome click, stem export, bounce and mixdown need review with real audio and MIDI hardware. Offline and headless checks pass; device behavior and audible results are not accepted yet.
-- **Finishing and interchange:** authored format-0/1 MIDI fixtures and independent export decoding pass; in-app review and comparison with DAW-produced MIDI files remain. Project interchange with other DAWs is still future work. CPR is currently a research and inspection effort, not an importer or round-trip format.
-- **Mixing and routing:** device-bus sends and wider physical channel maps remain open. Track and group sends, typed routing and automation playback pass offline checks; live listening and real-time performance still need review.
-- **Keyboard and interface completion:** 122 declared menu entries are still shown disabled, and 121 of the 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the remaining shortcuts, the contrast measurements and the focus/label behavior. A manual keyboard-only pass is still pending.
-- **Platform and feature breadth:** Windows x64 is the primary target. Kubuntu Linux was part of development and has been built and verified; Linux VST3 editor embedding is not implemented, and other Linux distributions, macOS and browser releases are not claimed. Video, surround and score editing are not available.
-- **Command interfaces:** there is no supported command-line or MCP interface for controlling project edits.
-- **Reliability and validation:** plug-in compatibility, project recovery, visual interaction and audible results need continued verification on real hardware.
+User-side review of the recording, delivery and listening features above; the CPR adapter once real `.cpr` files are available; the remaining disabled menus and undispatched shortcuts; and a Linux VST3 editor path with a test plug-in. Windows x64 remains the primary target.
 
-OpenTrack aims to bring recording, editing, arrangement, mixing and finishing into one dependable Rust application. Future interoperability and first-party instruments and effects will be developed as separately scoped capabilities.
-
-### Near-term gaps
-
-Next work is user-side review of the recording, delivery and listening features above, followed by the CPR adapter once real `.cpr` fixtures are available, the remaining disabled menus and undispatched shortcuts, and a Linux VST3 editor path with a test plug-in. Windows x64 remains the primary target; Kubuntu Linux was part of development and has also been verified.
-
-Progress and verification are tracked in [the current workflow state](docs/workflow/current.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
+Progress and verification live in [the current workflow state](docs/workflow/current.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
 
 ## Build and run
 
