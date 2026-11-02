@@ -547,5 +547,16 @@ still one commit with tests and refreshed counts.
    snapshot. 1 app test (round trip through `workspace_state_for_save`, closing one
    while the other keeps its bounds). No entry count change.
 
+54. **Virtual Keyboard.** *Delivered.* Window > Virtual Keyboard (Alt+K) opens a
+   two-octave on-screen keyboard that acts as a live MIDI source: presses send
+   `NoteOn`/`NoteOff` on channel 1 into the engine's live-MIDI monitor, using the
+   armed MIDI/Instrument track's waveform and gain, so it plays through the same
+   path as hardware input instead of a parallel synth. It reports when no audio
+   device is open or no MIDI/Instrument track is armed, releases every held note
+   when it closes, and keeps the monitor enabled only while it is open. Key
+   messages are unit-tested for channel, pitch and clamping; the audible result
+   still needs a device review. 3 app tests. Disabled entries 74 -> 73; shortcut
+   coverage 146 -> 147 of 152.
+
 Next candidates: the Arranger (needs an arranger track kind), then OMF / Track
 Archive, then the user-dependent reviews and CPR fixtures.

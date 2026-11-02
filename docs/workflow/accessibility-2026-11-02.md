@@ -18,7 +18,7 @@ assistive-technology conformance.
   Cursor), auto punch in/out, ruler format exchange, Split Range, zoom full/
   to event, the Info view / Inspector / track-colour toggles, automation
   read/write for every track, Paste at Origin, the VST Instruments / VST
-  Performance panels, the four Nudge Start/End Left/Right edge trims, Insert Silence, Cut Time and Delete Time, typed Position / Locator / Tempo entry, Paste Time, Close Project, and plain-arrow cursor navigation with additive range keys, Find Selected in Pool, Adjust Fades to Range, the numeric marker slots (Set/To Marker 1-9 and Recall Cycle Marker), Auto Grid, Edit In-place, and the project overview.
+  Performance panels, the four Nudge Start/End Left/Right edge trims, Insert Silence, Cut Time and Delete Time, typed Position / Locator / Tempo entry, Paste Time, Close Project, and plain-arrow cursor navigation with additive range keys, Find Selected in Pool, Adjust Fades to Range, the numeric marker slots (Set/To Marker 1-9 and Recall Cycle Marker), Auto Grid, Edit In-place, the project overview, and the virtual keyboard.
 - Twelve Transport and Track Folding menu entries moved from disabled to
   working in the first slice; the later slices were keyboard-only and did not
   change the menu inventory.
@@ -30,8 +30,8 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **146** commands have a dispatch
-arm; **6** still do not. The menus remain the way to reach the
+numpad ranges). **147** commands have a dispatch
+arm; **5** still do not. The menus remain the way to reach the
 uncovered features.
 
 ## Bound commands without a dispatch arm
@@ -39,7 +39,6 @@ uncovered features.
 ### Devices
 
 - Video (`F8`) — `devices.video`
-- Virtual Keyboard (`Alt+K`) — `devices.virtual_keyboard`
 
 ### Edit
 

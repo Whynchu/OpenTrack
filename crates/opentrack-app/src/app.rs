@@ -1228,6 +1228,10 @@ pub struct OpenTrackApp {
     convert_files_dialog: Option<u32>,
     /// Detect Silence dialog draft: threshold in dBFS and minimum silence in ms.
     detect_silence_dialog: Option<(f32, f64)>,
+    /// On-screen MIDI keyboard: open state, base octave and held keys.
+    virtual_keyboard_open: bool,
+    virtual_keyboard_octave: u8,
+    virtual_keyboard_held: std::collections::BTreeSet<u8>,
     /// Standalone spectrum analyser window and the analyser feeding it.
     spectrum_open: bool,
     spectrum_state: analyzer_view::State,
@@ -2676,6 +2680,9 @@ impl OpenTrackApp {
             envelope_dialog: None,
             convert_files_dialog: None,
             detect_silence_dialog: None,
+            virtual_keyboard_open: false,
+            virtual_keyboard_octave: 3,
+            virtual_keyboard_held: std::collections::BTreeSet::new(),
             spectrum_open: false,
             spectrum_state: analyzer_view::State::default(),
             #[cfg(test)]
@@ -4048,6 +4055,8 @@ impl OpenTrackApp {
         self.envelope_dialog = None;
         self.convert_files_dialog = None;
         self.detect_silence_dialog = None;
+        self.virtual_keyboard_open = false;
+        self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
         self.spectrum_state.close();
         self.list_editor_open = false;
@@ -7668,6 +7677,7 @@ impl OpenTrackApp {
                 self.arrange_view_state.show_info_line = !self.arrange_view_state.show_info_line;
             }
             "editors.show_hide_inspector" => self.toggle_inspector_panel(),
+            "devices.virtual_keyboard" => self.toggle_virtual_keyboard(),
             "project.show_hide_track_colors" => {
                 self.arrange_view_state.show_track_colors =
                     !self.arrange_view_state.show_track_colors;
@@ -14596,13 +14606,14 @@ impl OpenTrackApp {
                         self.mixer_window_3.open = !self.mixer_window_3.open;
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Video Window", "F8"),
-                            ("Virtual Keyboard", "Alt+K"),
-                        ],
-                    );
+                    if ui
+                        .selectable_label(self.virtual_keyboard_open, "Virtual Keyboard")
+                        .clicked()
+                    {
+                        self.toggle_virtual_keyboard();
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Video Window", "F8")]);
                 });
                 ui.menu_button("Window", |ui| {
                     ui.menu_button("Workspaces", |ui| {
@@ -15477,6 +15488,241 @@ impl OpenTrackApp {
             self.mark_modified();
         }
         removed
+    }
+
+    /// Opens or closes the on-screen keyboard.
+    fn toggle_virtual_keyboard(&mut self) {
+        if self.virtual_keyboard_open {
+            self.close_virtual_keyboard();
+        } else {
+            self.set_virtual_keyboard_open(true);
+        }
+    }
+
+    fn set_virtual_keyboard_open(&mut self, open: bool) {
+        if !open {
+            self.close_virtual_keyboard();
+            return;
+        }
+        self.virtual_keyboard_open = true;
+        self.status_message = if self.audio_engine.is_none() {
+            "Virtual keyboard opened; no audio output device is open".to_owned()
+        } else if self.midi_monitor_profile().is_none() {
+            "Virtual keyboard opened; arm a MIDI or Instrument track to hear it".to_owned()
+        } else {
+            "Virtual keyboard opened".to_owned()
+        };
+    }
+
+    /// Closes the keyboard and releases anything still held.
+    fn close_virtual_keyboard(&mut self) {
+        for key in std::mem::take(&mut self.virtual_keyboard_held) {
+            self.send_virtual_key_note(key, false);
+        }
+        self.virtual_keyboard_open = false;
+        if self.midi_input_stream.is_none()
+            && let Some(engine) = &self.audio_engine
+        {
+            engine.set_live_midi_enabled(false);
+        }
+        self.status_message = "Virtual keyboard closed".to_owned();
+    }
+
+    /// Sends one key press or release, reporting why it cannot be heard.
+    fn virtual_keyboard_note(&mut self, key: u8, on: bool) {
+        if self.audio_engine.is_none() {
+            self.status_message =
+                "No audio output device is open, so the virtual keyboard cannot be heard"
+                    .to_owned();
+            return;
+        }
+        if self.midi_monitor_profile().is_none() {
+            self.status_message =
+                "Arm a MIDI or Instrument track to hear the virtual keyboard".to_owned();
+            return;
+        }
+        if self.send_virtual_key_note(key, on) {
+            if on {
+                self.virtual_keyboard_held.insert(key);
+                self.status_message = format!("Virtual keyboard note {key} on");
+            } else {
+                self.virtual_keyboard_held.remove(&key);
+                self.status_message = format!("Virtual keyboard note {key} off");
+            }
+        }
+    }
+
+    /// Pushes one note event to the engine's live MIDI monitor.
+    fn send_virtual_key_note(&mut self, key: u8, on: bool) -> bool {
+        let Some(engine) = &self.audio_engine else {
+            return false;
+        };
+        if let Some((waveform, gain)) = self.midi_monitor_profile() {
+            engine.set_live_midi_enabled(true);
+            engine.set_live_midi_waveform(waveform);
+            engine.set_live_midi_gain(gain);
+        }
+        if !engine.send_live_midi_message(virtual_keyboard_message(key, on)) {
+            self.status_message = "The MIDI monitor queue is full; the note was dropped".to_owned();
+            return false;
+        }
+        true
+    }
+
+    /// Keeps the live MIDI monitor enabled while the keyboard is open.
+    fn update_virtual_keyboard(&mut self) {
+        if !self.virtual_keyboard_open {
+            return;
+        }
+        let Some(engine) = &self.audio_engine else {
+            return;
+        };
+        let Some((waveform, gain)) = self.midi_monitor_profile() else {
+            return;
+        };
+        engine.set_live_midi_enabled(true);
+        engine.set_live_midi_waveform(waveform);
+        engine.set_live_midi_gain(gain);
+    }
+
+    fn show_virtual_keyboard(&mut self, ctx: &egui::Context) {
+        if !self.virtual_keyboard_open {
+            return;
+        }
+        let mut open = true;
+        let mut octave_delta = 0_i32;
+        let mut press = None;
+        let mut release = false;
+        egui::Window::new("Virtual Keyboard")
+            .id(Id::new("virtual-keyboard"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(560.0, 210.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Octave");
+                    if ui.small_button("-").clicked() {
+                        octave_delta = -1;
+                    }
+                    ui.label(self.virtual_keyboard_octave.to_string());
+                    if ui.small_button("+").clicked() {
+                        octave_delta = 1;
+                    }
+                    ui.label(
+                        egui::RichText::new("Arm a MIDI or Instrument track to hear the notes.")
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                });
+                let width = ui.available_width().max(320.0);
+                let (canvas, response) =
+                    ui.allocate_exact_size(Vec2::new(width, 120.0), egui::Sense::click_and_drag());
+                let palette = theme::palette(ui);
+                ui.painter()
+                    .rect_filled(canvas, egui::CornerRadius::same(2), palette.canvas);
+                let base = (u32::from(self.virtual_keyboard_octave.clamp(1, 6)) + 1) * 12;
+                let white_offsets = [0_u32, 2, 4, 5, 7, 9, 11];
+                let black_offsets = [(1_u32, 0_usize), (3, 1), (6, 3), (8, 4), (10, 5)];
+                let white_width = canvas.width() / 14.0;
+                let mut whites = Vec::new();
+                for octave in 0..2_u32 {
+                    for (index, offset) in white_offsets.iter().enumerate() {
+                        let slot = octave as usize * 7 + index;
+                        let rect = Rect::from_min_size(
+                            Pos2::new(canvas.left() + slot as f32 * white_width, canvas.top()),
+                            Vec2::new(white_width, canvas.height()),
+                        );
+                        whites.push(((base + octave * 12 + offset) as u8, rect));
+                    }
+                }
+                let mut blacks = Vec::new();
+                for octave in 0..2_u32 {
+                    for (offset, after_white) in black_offsets {
+                        let slot = octave as usize * 7 + after_white;
+                        let rect = Rect::from_min_size(
+                            Pos2::new(
+                                canvas.left() + (slot as f32 + 0.7) * white_width,
+                                canvas.top(),
+                            ),
+                            Vec2::new(white_width * 0.6, canvas.height() * 0.62),
+                        );
+                        blacks.push(((base + octave * 12 + offset) as u8, rect));
+                    }
+                }
+                for (key, rect) in &whites {
+                    let held = self.virtual_keyboard_held.contains(key);
+                    ui.painter().rect_filled(
+                        rect.shrink(1.0),
+                        egui::CornerRadius::same(2),
+                        if held {
+                            palette.accent
+                        } else {
+                            palette.text.gamma_multiply(0.9)
+                        },
+                    );
+                }
+                for (key, rect) in &blacks {
+                    let held = self.virtual_keyboard_held.contains(key);
+                    ui.painter().rect_filled(
+                        *rect,
+                        egui::CornerRadius::same(2),
+                        if held { palette.accent } else { palette.canvas },
+                    );
+                }
+                let hit = |pointer: Pos2| -> Option<u8> {
+                    blacks
+                        .iter()
+                        .find(|(_, rect)| rect.contains(pointer))
+                        .map(|(key, _)| *key)
+                        .or_else(|| {
+                            whites
+                                .iter()
+                                .find(|(_, rect)| rect.contains(pointer))
+                                .map(|(key, _)| *key)
+                        })
+                };
+                let pointer_down = ui.input(|i| i.pointer.primary_down());
+                let pointer = ui
+                    .input(|i| i.pointer.interact_pos())
+                    .filter(|pos| canvas.contains(*pos));
+                if pointer_down
+                    && let Some(key) = pointer.and_then(hit)
+                    && !self.virtual_keyboard_held.contains(&key)
+                {
+                    press = Some(key);
+                }
+                if !pointer_down && !self.virtual_keyboard_held.is_empty() {
+                    release = true;
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Click and hold a key to play; releasing stops every held note.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+            });
+        if octave_delta != 0 {
+            let octave = i32::from(self.virtual_keyboard_octave) + octave_delta;
+            self.virtual_keyboard_octave = octave.clamp(1, 6) as u8;
+        }
+        if let Some(key) = press {
+            // Moving to another key releases the previous one first.
+            for held in std::mem::take(&mut self.virtual_keyboard_held) {
+                self.send_virtual_key_note(held, false);
+            }
+            self.virtual_keyboard_note(key, true);
+        }
+        if release {
+            for key in std::mem::take(&mut self.virtual_keyboard_held) {
+                self.send_virtual_key_note(key, false);
+            }
+        }
+        if !open {
+            self.close_virtual_keyboard();
+        }
     }
 
     /// Feeds the standalone analyser from the master output tap.
@@ -17933,6 +18179,8 @@ impl eframe::App for OpenTrackApp {
             self.show_track_add_dialog(&ctx);
             self.show_event_colors_dialog(&ctx);
             self.show_channel_settings_window(&ctx);
+            self.update_virtual_keyboard();
+            self.show_virtual_keyboard(&ctx);
             self.show_extra_mixer(&ctx, 1);
             self.show_extra_mixer(&ctx, 2);
             self.update_spectrum_analyzer();
@@ -21664,6 +21912,24 @@ fn show_project(
         defer_audio_plan: arrange_view_state.audio_events.edit_drag_active(),
         automation_action: pending_automation_action,
         crossfade_requested: audio_events_crossfade_requested,
+    }
+}
+
+/// The MIDI message an on-screen key produces on channel 1.
+fn virtual_keyboard_message(key: u8, on: bool) -> MidiInputMessage {
+    let key = key.min(127);
+    if on {
+        MidiInputMessage::NoteOn {
+            channel: 0,
+            key,
+            velocity: 100,
+        }
+    } else {
+        MidiInputMessage::NoteOff {
+            channel: 0,
+            key,
+            velocity: 0,
+        }
     }
 }
 
@@ -30328,6 +30594,130 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+    }
+}
+
+#[cfg(test)]
+mod virtual_keyboard_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app
+    }
+
+    #[test]
+    fn keys_map_to_note_messages_on_channel_one() {
+        match virtual_keyboard_message(60, true) {
+            MidiInputMessage::NoteOn {
+                channel,
+                key,
+                velocity,
+            } => {
+                assert_eq!(channel, 0);
+                assert_eq!(key, 60);
+                assert_eq!(velocity, 100);
+            }
+            other => panic!("unexpected message {other:?}"),
+        }
+        match virtual_keyboard_message(60, false) {
+            MidiInputMessage::NoteOff { channel, key, .. } => {
+                assert_eq!(channel, 0);
+                assert_eq!(key, 60);
+            }
+            other => panic!("unexpected message {other:?}"),
+        }
+        // Out-of-range keys are clamped rather than sent raw.
+        match virtual_keyboard_message(200, true) {
+            MidiInputMessage::NoteOn { key, .. } => assert_eq!(key, 127),
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_keyboard_reports_why_it_cannot_be_heard_without_a_device() {
+        let mut app = app();
+        assert!(!app.virtual_keyboard_open);
+        app.toggle_virtual_keyboard();
+        assert!(app.virtual_keyboard_open);
+        assert!(
+            app.status_message
+                .contains("no audio output device is open")
+        );
+
+        // A key press with no engine reports and holds nothing, so no stuck note.
+        app.virtual_keyboard_note(60, true);
+        assert!(app.status_message.contains("cannot be heard"));
+        assert!(app.virtual_keyboard_held.is_empty());
+
+        // Closing clears the flag and says so.
+        app.toggle_virtual_keyboard();
+        assert!(!app.virtual_keyboard_open);
+        assert_eq!(app.status_message, "Virtual keyboard closed");
+
+        // The shortcut reaches the same toggle.
+        let ctx = egui::Context::default();
+        app.dispatch_reference_command(
+            "devices.virtual_keyboard",
+            "Virtual Keyboard",
+            KeyChord::new(
+                KeyCode::Letter('K'),
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            &ctx,
+        );
+        assert!(app.virtual_keyboard_open);
+    }
+
+    #[test]
+    fn the_keyboard_window_draws_keys_and_its_octave_control() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        app.virtual_keyboard_open = true;
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_virtual_keyboard(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Virtual Keyboard"), "{joined}");
+        assert!(joined.contains("Octave"), "{joined}");
+        assert!(
+            joined.contains("Arm a MIDI or Instrument track"),
+            "{joined}"
+        );
+        // The base octave starts at 3.
+        assert!(joined.contains("3"), "{joined}");
     }
 }
 
