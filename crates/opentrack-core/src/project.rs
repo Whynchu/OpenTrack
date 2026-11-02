@@ -330,6 +330,82 @@ fn shift_volume_automation_within_spans(
     shifted_lanes
 }
 
+/// Shortest edge trim, so a nudge can never collapse an event to nothing.
+pub const MIN_CLIP_EDGE_SECONDS: f64 = 0.001;
+
+/// Which edge of an audio event a nudge moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipEdge {
+    Start,
+    End,
+}
+
+/// The geometry of `clip` after one edge nudge, or `None` when nothing can move.
+///
+/// This is pure so the keymap, a future drag target and the tests all agree on
+/// the same rules: the start cannot pass the source's first sample, the end
+/// cannot pass its last, and both keep at least `min_seconds`.
+pub fn nudged_clip_edge(
+    clip: &AudioClip,
+    edge: ClipEdge,
+    delta_beats: f64,
+    tempo_bpm: f64,
+    source_duration_seconds: f64,
+    min_seconds: f64,
+) -> Option<AudioClip> {
+    if !delta_beats.is_finite() || tempo_bpm <= 0.0 {
+        return None;
+    }
+    let seconds_per_beat = 60.0 / tempo_bpm;
+    let mut next = clip.clone();
+    match edge {
+        ClipEdge::Start => {
+            let end = clip.start_beats + clip.duration_seconds / seconds_per_beat;
+            let earliest =
+                (clip.start_beats - clip.source_offset_seconds / seconds_per_beat).max(0.0);
+            let latest = (end - min_seconds / seconds_per_beat).max(earliest);
+            let start = (clip.start_beats + delta_beats).clamp(earliest, latest);
+            let applied_seconds = (start - clip.start_beats) * seconds_per_beat;
+            let duration = clip.duration_seconds - applied_seconds;
+            if duration < min_seconds {
+                return None;
+            }
+            next.start_beats = start;
+            next.source_offset_seconds = (clip.source_offset_seconds + applied_seconds).max(0.0);
+            next.duration_seconds = duration;
+            next.fade_in_seconds = clip.fade_in_seconds.min(duration);
+            next.fade_out_seconds = clip
+                .fade_out_seconds
+                .min((duration - next.fade_in_seconds).max(0.0));
+        }
+        ClipEdge::End => {
+            let source_limit =
+                if source_duration_seconds.is_finite() && source_duration_seconds > 0.0 {
+                    (source_duration_seconds - clip.source_offset_seconds).max(min_seconds)
+                } else {
+                    clip.duration_seconds
+                };
+            let duration = (clip.duration_seconds + delta_beats * seconds_per_beat)
+                .clamp(min_seconds, source_limit);
+            if (duration - clip.duration_seconds).abs() <= 1e-9 {
+                return None;
+            }
+            next.duration_seconds = duration;
+            next.fade_in_seconds = clip.fade_in_seconds.min(duration);
+            next.fade_out_seconds = clip
+                .fade_out_seconds
+                .min((duration - next.fade_in_seconds).max(0.0));
+        }
+    }
+    if (next.start_beats - clip.start_beats).abs() <= 1e-9
+        && (next.duration_seconds - clip.duration_seconds).abs() <= 1e-9
+        && (next.source_offset_seconds - clip.source_offset_seconds).abs() <= 1e-9
+    {
+        return None;
+    }
+    Some(next)
+}
+
 fn bounded_marker_name(name: String) -> String {
     let trimmed = name.trim();
     if trimmed.chars().count() <= MAX_MARKER_NAME_CHARS {
@@ -2469,6 +2545,55 @@ impl Project {
             return None;
         }
         Some(keeper.id)
+    }
+
+    /// Moves one selected event's start or end by `delta_beats`.
+    ///
+    /// Start moves carry the source offset with them, so the audio under the
+    /// remaining part does not slide; an end move only changes the duration. The
+    /// result stays inside the source media, above the minimum length and inside
+    /// the project, and a locked event is refused.
+    pub fn nudge_audio_clip_edge(
+        &mut self,
+        clip_id: u64,
+        edge: ClipEdge,
+        delta_beats: f64,
+        source_duration_seconds: f64,
+        min_seconds: f64,
+    ) -> bool {
+        let tempo = self.tempo_bpm.max(1.0);
+        let seconds_per_beat = 60.0 / tempo;
+        if !delta_beats.is_finite() || delta_beats == 0.0 || seconds_per_beat <= 0.0 {
+            return false;
+        }
+        let min_seconds = if min_seconds.is_finite() && min_seconds > 0.0 {
+            min_seconds
+        } else {
+            MIN_CLIP_EDGE_SECONDS
+        };
+        for track in self.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if clip.id != clip_id {
+                    continue;
+                }
+                if clip.locked {
+                    return false;
+                }
+                let Some(next) = nudged_clip_edge(
+                    clip,
+                    edge,
+                    delta_beats,
+                    tempo,
+                    source_duration_seconds,
+                    min_seconds,
+                ) else {
+                    return false;
+                };
+                *clip = next;
+                return true;
+            }
+        }
+        false
     }
 
     /// Applies a fade to the selected events and reports how many changed.
@@ -5555,6 +5680,129 @@ mod sample_edit_tests {
             project.media_pool.contains(&gone),
             "the event still needs it"
         );
+    }
+
+    #[test]
+    fn nudging_an_event_start_carries_the_source_offset_and_stops_at_the_source() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // Two beats at 120 BPM is one second; the media is ten seconds long.
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 4.0, 2.0)
+            .unwrap();
+
+        // Later start: trims two beats in, so the source offset advances.
+        assert!(project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::Start,
+            2.0,
+            10.0,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        let current = &project.tracks[0].clips[0];
+        assert_eq!(current.start_beats, 6.0);
+        assert!((current.source_offset_seconds - 1.0).abs() < 1e-9);
+        assert!((current.duration_seconds - 1.0).abs() < 1e-9);
+
+        // Earlier start: the source only reaches back one second, so it stops.
+        assert!(project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::Start,
+            -8.0,
+            10.0,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        let current = &project.tracks[0].clips[0];
+        assert_eq!(current.start_beats, 4.0);
+        assert!((current.source_offset_seconds - 0.0).abs() < 1e-9);
+        assert!((current.duration_seconds - 2.0).abs() < 1e-9);
+
+        // At the earliest point there is nothing more to give.
+        assert!(!project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::Start,
+            -2.0,
+            10.0,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn nudging_an_event_end_stays_inside_the_media_and_keeps_the_minimum() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 1.0)
+            .unwrap();
+
+        // Longer, up to the source's remaining 2.5 seconds.
+        assert!(project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::End,
+            6.0,
+            2.5,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        assert!((project.tracks[0].clips[0].duration_seconds - 2.5).abs() < 1e-9);
+        // Beyond the media it reports no change rather than reading past the end.
+        assert!(!project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::End,
+            1.0,
+            2.5,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        // Shorter keeps the minimum length.
+        assert!(project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::End,
+            -50.0,
+            2.5,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        assert!((project.tracks[0].clips[0].duration_seconds - MIN_CLIP_EDGE_SECONDS).abs() < 1e-9);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn locked_events_refuse_edge_nudges_and_fades_stay_inside_the_event() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 4.0, 2.0)
+            .unwrap();
+        project.tracks[0].clips[0].fade_in_seconds = 1.5;
+        project.tracks[0].clips[0].fade_out_seconds = 0.5;
+
+        // Shortening the end clamps the fades into the new length.
+        assert!(project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::End,
+            -2.0,
+            10.0,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        let current = &project.tracks[0].clips[0];
+        assert!(current.fade_in_seconds <= current.duration_seconds);
+        assert!(
+            current.fade_in_seconds + current.fade_out_seconds <= current.duration_seconds + 1e-9
+        );
+        assert!(project.validate().is_ok());
+
+        project.set_audio_clips_locked(&[clip], true);
+        let before = project.tracks[0].clips[0].clone();
+        assert!(!project.nudge_audio_clip_edge(
+            clip,
+            ClipEdge::Start,
+            2.0,
+            10.0,
+            MIN_CLIP_EDGE_SECONDS
+        ));
+        assert_eq!(project.tracks[0].clips[0], before);
     }
 
     #[test]

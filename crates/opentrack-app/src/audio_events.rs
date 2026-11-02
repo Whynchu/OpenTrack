@@ -606,6 +606,100 @@ impl OpenTrackApp {
         self.status_message = "Glued the selected audio events; Undo splits them again".to_owned();
     }
 
+    /// One grid step for nudging, or a quarter bar when snap is off.
+    fn arrange_nudge_step(&self) -> f64 {
+        self.arrange_view_state
+            .snap_grid_beats(self.data.project.beats_per_bar)
+            .unwrap_or_else(|| f64::from(self.data.project.beats_per_bar.max(1)) / 4.0)
+    }
+
+    /// Moves the selected events' start or end by one grid step.
+    ///
+    /// The start carries the source offset with it; the end only changes the
+    /// duration. Both stop at the media and at the minimum length, and a locked
+    /// event is skipped rather than half-edited.
+    pub(super) fn nudge_selected_event_edges(
+        &mut self,
+        edge: opentrack_core::project::ClipEdge,
+        right: bool,
+    ) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before nudging event edges".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to nudge their edges".to_owned();
+            return;
+        }
+        let step = self.arrange_nudge_step();
+        let delta = if right { step } else { -step };
+        let min_seconds = 1.0 / self.data.project.sample_rate_hz.max(1) as f64;
+        let mut candidate = self.data.project.clone();
+        let mut changed = 0;
+        for id in ids {
+            let Some((path, offset, duration)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                    )
+                })
+            else {
+                continue;
+            };
+            // A source that is not loaded can only be trimmed inwards: extending
+            // past the known extent would read audio that may not exist.
+            let source_duration = self
+                .data
+                .audio_sources
+                .get(&path)
+                .map(|source| source.duration_seconds())
+                .unwrap_or(offset + duration);
+            if candidate.nudge_audio_clip_edge(id, edge, delta, source_duration, min_seconds) {
+                changed += 1;
+            }
+        }
+        if changed == 0 {
+            self.status_message =
+                "No event edge could move: locked events and the media limits are respected"
+                    .to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot nudge event edges: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next(match edge {
+            opentrack_core::project::ClipEdge::Start => "Nudge Event Start",
+            opentrack_core::project::ClipEdge::End => "Nudge Event End",
+        });
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Nudged {} event {} {} by {step:.3} beat(s); Undo restores them",
+            changed,
+            if edge == opentrack_core::project::ClipEdge::Start {
+                "start"
+            } else {
+                "end"
+            },
+            if right { "right" } else { "left" }
+        );
+    }
+
     /// Applies the default fade length to the selection's leading or trailing edge.
     pub(super) fn fade_selected_audio_events(&mut self, fade_in: bool) {
         const DEFAULT_FADE_SECONDS: f64 = 0.25;

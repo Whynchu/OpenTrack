@@ -71,6 +71,19 @@ and measured numbers.
    matching the shortcut that already worked. 3 module and 2 app tests. Disabled
    entries 126 -> 123.
 
+### E. Event editing
+
+8. **Nudge Start/End Left/Right.** *Delivered.* Alt+Left/Right move the selected
+   events' start and Alt+Shift+Left/Right move their end by one grid step. Core
+   `nudged_clip_edge` is pure: a start move carries the source offset so the audio
+   does not slide and stops at the source's first sample, an end move stops at the
+   source's last sample, both keep a minimum length, fades are clamped, and a
+   locked event is refused. The app resolves each clip's source length from the
+   open audio sources and falls back to the known extent when a source is not
+   loaded. One labelled undo step per command ("Nudge Event Start"/"Nudge Event
+   End"). 3 core and 1 app tests. Shortcut coverage 117 -> 121. README numbers
+   refreshed with the slice.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

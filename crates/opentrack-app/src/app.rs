@@ -6843,6 +6843,18 @@ impl OpenTrackApp {
             "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
             "nudge.left" => self.nudge_selected_audio_events(false),
             "nudge.right" => self.nudge_selected_audio_events(true),
+            "nudge.start_left" => {
+                self.nudge_selected_event_edges(opentrack_core::project::ClipEdge::Start, false)
+            }
+            "nudge.start_right" => {
+                self.nudge_selected_event_edges(opentrack_core::project::ClipEdge::Start, true)
+            }
+            "nudge.end_left" => {
+                self.nudge_selected_event_edges(opentrack_core::project::ClipEdge::End, false)
+            }
+            "nudge.end_right" => {
+                self.nudge_selected_event_edges(opentrack_core::project::ClipEdge::End, true)
+            }
             "transport.locate_next_event" => self.run_transport_locate(TransportLocate::NextEvent),
             "transport.locate_previous_event" => {
                 self.run_transport_locate(TransportLocate::PreviousEvent)
@@ -26570,6 +26582,90 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn edge_nudge_shortcuts_trim_starts_and_ends_by_the_grid() {
+        use opentrack_core::project::ClipEdge;
+
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        // Give the event real media, so extending its end has a known limit.
+        let root =
+            std::env::temp_dir().join(format!("opentrack-edge-nudge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source_path = root.join("take.wav");
+        {
+            const FRAMES: u32 = 48_000 * 10;
+            let mut bytes = Vec::with_capacity(44 + (FRAMES as usize) * 2);
+            let data_bytes = FRAMES * 2;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for index in 0..FRAMES {
+                let sample = ((index as f32 / 48_000.0).sin() * 8000.0) as i16;
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            std::fs::write(&source_path, bytes).expect("wav");
+        }
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.data.project.tracks[0].clips[0].source_path = source_path.clone();
+        app.data.audio_sources.insert(
+            source_path.clone(),
+            opentrack_audio::AudioSource::open(&source_path).expect("open wav"),
+        );
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.arrange_view_state.snap_enabled = true;
+        app.arrange_view_state.grid_type = crate::timeline::GridType::UseQuantize;
+        app.arrange_view_state.quantize.note = crate::timeline::QuantizeNote::Quarter;
+
+        dispatch(&mut app, "nudge.start_right", &ctx);
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert!((clip.start_beats - 1.0).abs() < 1e-9);
+        assert!(
+            (clip.source_offset_seconds - 0.5).abs() < 1e-9,
+            "the audio does not slide"
+        );
+        assert!((clip.duration_seconds - 7.5).abs() < 1e-9);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Nudge Event Start");
+
+        dispatch(&mut app, "nudge.start_left", &ctx);
+        assert!((app.data.project.tracks[0].clips[0].start_beats - 0.0).abs() < 1e-9);
+
+        dispatch(&mut app, "nudge.end_left", &ctx);
+        assert!((app.data.project.tracks[0].clips[0].duration_seconds - 7.5).abs() < 1e-9);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Nudge Event End");
+
+        dispatch(&mut app, "nudge.end_right", &ctx);
+        assert!((app.data.project.tracks[0].clips[0].duration_seconds - 8.0).abs() < 1e-9);
+        assert!(app.data.project.validate().is_ok());
+
+        // A locked event is skipped and reported.
+        app.data.project.set_audio_clips_locked(&[id], true);
+        let before = app.data.project.tracks[0].clips[0].clone();
+        dispatch(&mut app, "nudge.start_right", &ctx);
+        assert_eq!(app.data.project.tracks[0].clips[0], before);
+        assert!(app.status_message.contains("No event edge could move"));
+
+        // Nothing selected is reported too.
+        app.data.project.set_audio_clips_locked(&[id], false);
+        app.arrange_view_state.audio_events.clear_selection();
+        app.nudge_selected_event_edges(ClipEdge::End, true);
+        assert!(app.status_message.contains("Select audio events"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn paste_at_origin_restores_the_copied_positions_and_devices_keys_open_panels() {
         let ctx = egui::Context::default();
         let mut app = app_with_track();
@@ -27259,6 +27355,10 @@ mod keyboard_coverage_tests {
             "midi.quantize",
             "nudge.left",
             "nudge.right",
+            "nudge.start_left",
+            "nudge.start_right",
+            "nudge.end_left",
+            "nudge.end_right",
         ] {
             assert!(
                 !unhandled.iter().any(|id| id == essential),
