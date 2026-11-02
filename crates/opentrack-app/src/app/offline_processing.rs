@@ -595,6 +595,62 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_multi_event_locked_and_reopen_behaviour() {
+        let source_root =
+            std::env::temp_dir().join(format!("opentrack-offline-src5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&source_root);
+        std::fs::create_dir_all(&source_root).expect("src");
+        let first_source = source_root.join("first.wav");
+        let second_source = source_root.join("second.wav");
+        write_flat_wav(&first_source, 24_000, 0.25);
+        write_flat_wav(&second_source, 24_000, 0.25);
+
+        let (mut app, first, root) = app_with_clip(&first_source, 0.5, "accept");
+        let second = app
+            .data
+            .project
+            .add_audio_clip(0, second_source.clone(), 1.0, 0.5)
+            .expect("second");
+        app.data
+            .project
+            .set_offline_chain(first, vec![OfflineProcess::Reverse])
+            .expect("chain");
+        app.data
+            .project
+            .set_offline_chain(second, vec![OfflineProcess::Reverse])
+            .expect("chain");
+        // A locked event keeps its chain but refuses to bake it.
+        app.data.project.set_audio_clips_locked(&[second], true);
+        app.apply_offline_chain(second);
+        assert!(
+            app.status_message
+                .contains("locked event refuses offline processing")
+        );
+
+        // An unlock lets it bake, and each event keeps its own result.
+        app.data.project.set_audio_clips_locked(&[second], false);
+        app.apply_offline_chain(first);
+        app.apply_offline_chain(second);
+        let clips = &app.data.project.tracks[0].clips;
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().all(|clip| clip.offline_chain.is_empty()));
+        assert_ne!(clips[0].source_path, clips[1].source_path);
+        assert!(clips.iter().all(|clip| clip.source_path.exists()));
+
+        // A saved chain survives serialization through the project document.
+        app.data
+            .project
+            .set_offline_chain(first, vec![OfflineProcess::GainDb { db: -6.0 }])
+            .expect("chain");
+        let encoded = serde_json::to_string(&app.data.project).expect("encode");
+        let decoded: Project = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded.offline_chain_of(first).expect("clip").len(), 1);
+        assert!(decoded.validate().is_ok());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(source_root);
+    }
+
+    #[test]
     fn the_menu_adds_and_removes_built_in_processors_undoably() {
         let source_root =
             std::env::temp_dir().join(format!("opentrack-offline-src4-{}", std::process::id()));
