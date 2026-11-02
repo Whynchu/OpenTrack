@@ -8292,6 +8292,11 @@ impl OpenTrackApp {
 
     /// Splits the selected MIDI part into one track per distinct pitch.
     fn explode_selected_midi_part_by_pitch(&mut self) {
+        self.explode_selected_midi_part(true);
+    }
+
+    /// Splits the selected MIDI part into one track per pitch or per channel.
+    fn explode_selected_midi_part(&mut self, by_pitch: bool) {
         if self.is_recording() {
             self.status_message = "Stop recording before exploding a MIDI part".to_owned();
             return;
@@ -8307,11 +8312,20 @@ impl OpenTrackApp {
             return;
         };
         let Some(part_id) = self.data.project.selected_midi_part_id else {
-            self.status_message = "Select a MIDI part to explode by pitch".to_owned();
+            self.status_message = if by_pitch {
+                "Select a MIDI part to explode by pitch".to_owned()
+            } else {
+                "Select a MIDI part to explode by channel".to_owned()
+            };
             return;
         };
         let mut candidate = self.data.project.clone();
-        let parts = match candidate.explode_midi_part_by_pitch(track_id, part_id, 16) {
+        let exploded = if by_pitch {
+            candidate.explode_midi_part_by_pitch(track_id, part_id, 16)
+        } else {
+            candidate.explode_midi_part_by_channel(track_id, part_id, 16)
+        };
+        let parts = match exploded {
             Ok(parts) => parts,
             Err(message) => {
                 self.status_message = message;
@@ -8326,7 +8340,11 @@ impl OpenTrackApp {
             self.status_message = "Cannot explode: undo snapshot is unavailable".to_owned();
             return;
         }
-        self.project_history.label_next("Explode Pitches");
+        self.project_history.label_next(if by_pitch {
+            "Explode Pitches"
+        } else {
+            "Explode"
+        });
         let first_part = parts.first().copied();
         let first_track = first_part.and_then(|wanted| {
             candidate.tracks.iter().position(|track| {
@@ -8350,8 +8368,9 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = format!(
-            "Exploded the MIDI part into {} pitch track(s); Undo restores it",
-            parts.len()
+            "Exploded the MIDI part into {} {} track(s); Undo restores it",
+            parts.len(),
+            if by_pitch { "pitch" } else { "channel" }
         );
     }
 
@@ -13582,10 +13601,20 @@ impl OpenTrackApp {
                             self.explode_selected_midi_part_by_pitch();
                             ui.close();
                         }
-                        disabled_menu_commands(
+                        if menu_command(
                             ui,
-                            &[("Explode", ""), ("Make Chord Symbols", "")],
-                        );
+                            "Explode",
+                            "",
+                            self.project_open
+                                && !self.is_recording()
+                                && self.data.project.selected_midi_part_id.is_some(),
+                        )
+                        .clicked()
+                        {
+                            self.explode_selected_midi_part(false);
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Make Chord Symbols", "")]);
                     });
                     disabled_menu_commands(ui, &[("Auto Layout...", ""), ("Reset Layout...", "")]);
                     ui.menu_button("Advanced Layout", |ui| {
@@ -29495,6 +29524,80 @@ mod timecode_tests {
         assert_eq!(ruler_label(2, 4, 4, 120.0, 48_000, 0.0), "00:00:04:00");
         assert_eq!(ruler_label(2, 0, 4, 120.0, 48_000, 3600.0), "3");
         assert_eq!(ruler_label(2, 1, 4, 120.0, 48_000, 3600.0), "00:04");
+    }
+}
+
+#[cfg(test)]
+mod explode_channel_tests {
+    use super::*;
+    use opentrack_core::project::{MidiNote, MidiPart};
+
+    fn app_with_part() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.next_midi_part_id = 2;
+        app.data.project.next_midi_note_id = 4;
+        app.data.project.tracks[0].midi_parts.push(MidiPart {
+            id: 1,
+            name: "Multi".to_owned(),
+            start_beats: 0.0,
+            duration_beats: 8.0,
+            notes: vec![
+                MidiNote {
+                    id: 1,
+                    start_beats: 0.0,
+                    duration_beats: 1.0,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                },
+                MidiNote {
+                    id: 2,
+                    start_beats: 1.0,
+                    duration_beats: 1.0,
+                    pitch: 64,
+                    channel: 3,
+                    velocity: 100,
+                },
+            ],
+            controller_events: Vec::new(),
+        });
+        app.data.project.selected_track = Some(0);
+        app.data.project.selected_midi_part_id = Some(1);
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn exploding_by_channel_makes_one_track_per_channel_as_one_undo_step() {
+        let mut app = app_with_part();
+        app.explode_selected_midi_part(false);
+        assert_eq!(app.data.project.tracks.len(), 3, "the source plus two");
+        assert!(app.data.project.tracks[0].midi_parts.is_empty());
+        let channels = app
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.midi_parts.iter())
+            .flat_map(|part| part.notes.iter())
+            .map(|note| note.channel)
+            .collect::<Vec<_>>();
+        assert_eq!(channels, vec![0, 3]);
+        assert!(app.status_message.contains("2 channel track(s)"));
+        assert_eq!(app.data.project.selected_track, Some(1));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Explode");
+
+        // The pitch variant keeps its own label and wording.
+        let mut app = app_with_part();
+        app.explode_selected_midi_part(true);
+        assert!(app.status_message.contains("2 pitch track(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Explode Pitches");
     }
 }
 

@@ -2815,6 +2815,108 @@ impl Project {
         changed
     }
 
+    /// Splits a MIDI part into one new MIDI track per MIDI channel.
+    ///
+    /// Notes and controller events keep their own channel, so a part recorded on
+    /// several channels becomes one editable track per channel. A channel that
+    /// carries only controller data still gets a part, so no controller data is
+    /// dropped. The channel count is bounded and the whole edit runs on a
+    /// candidate, so a refusal leaves the project unchanged.
+    pub fn explode_midi_part_by_channel(
+        &mut self,
+        track_id: u64,
+        part_id: u64,
+        max_channels: usize,
+    ) -> Result<Vec<u64>, String> {
+        let track_index = self
+            .tracks
+            .iter()
+            .position(|track| track.id == track_id)
+            .ok_or_else(|| "The MIDI track no longer exists".to_owned())?;
+        let part_index = self.tracks[track_index]
+            .midi_parts
+            .iter()
+            .position(|part| part.id == part_id)
+            .ok_or_else(|| "The MIDI part no longer exists".to_owned())?;
+        let original = self.tracks[track_index].midi_parts[part_index].clone();
+        let mut channels = original
+            .notes
+            .iter()
+            .map(|note| note.channel)
+            .chain(original.controller_events.iter().map(|event| event.channel))
+            .collect::<BTreeSet<_>>();
+        if channels.is_empty() {
+            return Err("The MIDI part has no notes or controller data to explode".to_owned());
+        }
+        if channels.len() > max_channels.max(1) {
+            return Err(format!(
+                "The part uses {} channels; exploding supports at most {}",
+                channels.len(),
+                max_channels.max(1)
+            ));
+        }
+        let track_name = self.tracks[track_index].name.clone();
+        let mut candidate = self.clone();
+        candidate.tracks[track_index].midi_parts.remove(part_index);
+        if candidate.selected_midi_part_id == Some(part_id) {
+            candidate.selected_midi_part_id = None;
+        }
+        let mut parts_by_channel = BTreeMap::<u8, (usize, u64)>::new();
+        let mut created = Vec::with_capacity(channels.len());
+        for channel in channels.iter().copied() {
+            candidate.add_track(TrackKind::Midi);
+            let index = candidate.tracks.len() - 1;
+            candidate.tracks[index].name = format!("{track_name} - channel {}", channel + 1);
+            let new_part = candidate
+                .add_midi_part(index, original.start_beats, original.duration_beats)
+                .ok_or_else(|| "Could not create an exploded part".to_owned())?;
+            if let Some(part) = candidate.tracks[index]
+                .midi_parts
+                .iter_mut()
+                .find(|part| part.id == new_part)
+            {
+                part.name = format!("{} (channel {})", original.name, channel + 1);
+            }
+            for note in original.notes.iter().filter(|note| note.channel == channel) {
+                candidate
+                    .add_midi_note_on_channel(
+                        index,
+                        new_part,
+                        note.start_beats,
+                        note.duration_beats,
+                        note.pitch,
+                        note.channel,
+                        note.velocity,
+                    )
+                    .ok_or_else(|| "Could not copy an exploded note".to_owned())?;
+            }
+            parts_by_channel.insert(channel, (index, new_part));
+            created.push(new_part);
+        }
+        for event in &original.controller_events {
+            // Every controller channel has a part, because the channel set is
+            // built from the controller data too.
+            let Some((index, part)) = parts_by_channel.get(&event.channel).copied() else {
+                return Err("Could not place a controller event".to_owned());
+            };
+            candidate
+                .add_midi_controller_event_on_channel(
+                    index,
+                    part,
+                    event.position_beats,
+                    event.controller,
+                    event.channel,
+                    event.value,
+                )
+                .ok_or_else(|| "Could not copy a controller event".to_owned())?;
+        }
+        candidate
+            .validate()
+            .map_err(|error| format!("The exploded part would not be valid: {error}"))?;
+        *self = candidate;
+        Ok(created)
+    }
+
     /// Splits a MIDI part into one new MIDI track per distinct pitch.
     ///
     /// Each new track receives a copy of the part containing only that pitch's
@@ -6642,6 +6744,100 @@ mod sample_edit_tests {
         // An out-of-range offset loaded from a file is rejected.
         project.timecode_offset_seconds = MAX_TIMECODE_OFFSET_SECONDS * 2.0;
         assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn exploding_channels_keeps_each_channel_together() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let part = project.add_midi_part(0, 0.0, 8.0).expect("part");
+        for (start, pitch, channel) in [(0.0, 60, 0), (1.0, 64, 2), (2.0, 67, 2)] {
+            project
+                .add_midi_note_on_channel(0, part, start, 0.5, pitch, channel, 100)
+                .expect("note");
+        }
+        project
+            .add_midi_controller_event_on_channel(0, part, 1.0, 11, 0, 64)
+            .expect("controller");
+        project
+            .add_midi_controller_event_on_channel(0, part, 1.5, 11, 2, 90)
+            .expect("controller");
+        // A controller on a channel with no notes must still be kept.
+        project
+            .add_midi_controller_event_on_channel(0, part, 2.5, 64, 5, 127)
+            .expect("controller");
+        let track_id = project.tracks[0].id;
+
+        let exploded = project
+            .explode_midi_part_by_channel(track_id, part, 16)
+            .expect("explode");
+        assert_eq!(exploded.len(), 3, "channels 0, 2 and 5");
+        assert!(project.tracks[0].midi_parts.is_empty());
+        let summary = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.midi_parts.iter())
+            .map(|part| {
+                (
+                    part.name.clone(),
+                    part.notes.len(),
+                    part.controller_events.len(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("MIDI Part 01 (channel 1)".to_owned(), 1, 1),
+                ("MIDI Part 01 (channel 3)".to_owned(), 2, 1),
+                ("MIDI Part 01 (channel 6)".to_owned(), 0, 1),
+            ],
+            "each channel keeps its own notes and controller data"
+        );
+        // Every note keeps its own channel.
+        let channels = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.midi_parts.iter())
+            .flat_map(|part| part.notes.iter())
+            .map(|note| note.channel)
+            .collect::<Vec<_>>();
+        assert_eq!(channels, vec![0, 2, 2]);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn exploding_channels_refuses_empty_or_too_wide_parts() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let empty = project.add_midi_part(0, 0.0, 4.0).expect("part");
+        let track_id = project.tracks[0].id;
+        let before = project.clone();
+        assert!(
+            project
+                .explode_midi_part_by_channel(track_id, empty, 16)
+                .is_err()
+        );
+        assert_eq!(project, before);
+
+        let part = project.add_midi_part(0, 4.0, 4.0).expect("part");
+        for channel in [0, 1, 2] {
+            project
+                .add_midi_note_on_channel(0, part, 0.0, 0.5, 60 + channel, channel, 100)
+                .expect("note");
+        }
+        let before = project.clone();
+        assert!(
+            project
+                .explode_midi_part_by_channel(track_id, part, 2)
+                .is_err()
+        );
+        assert_eq!(project, before);
+        assert!(
+            project
+                .explode_midi_part_by_channel(track_id, part, 3)
+                .is_ok()
+        );
     }
 
     #[test]

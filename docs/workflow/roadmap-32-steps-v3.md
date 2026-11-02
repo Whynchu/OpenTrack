@@ -431,5 +431,13 @@ still one commit with tests and refreshed counts.
    source-fade lineage are cleared, layers outside the destination are counted and
    reported. 1 audio and 1 app tests. Disabled entries 89 -> 88.
 
+42. **Explode (by channel).** *Delivered.* MIDI > Functions > Explode splits the
+   selected part into one MIDI track per MIDI channel through the new
+   `Project::explode_midi_part_by_channel`, keeping notes and controller events on
+   their own channel (a controller-only channel still gets a part, so nothing is
+   dropped). It shares one app path with Explode Pitches, differing only in the
+   grouping, the undo label and the wording. Bounded to 16 channels and refused
+   without half-applying. 2 core and 1 app tests. Disabled entries 88 -> 87.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.
