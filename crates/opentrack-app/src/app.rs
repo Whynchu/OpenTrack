@@ -3115,6 +3115,17 @@ impl OpenTrackApp {
         self.status_message = "Modified".to_owned();
     }
 
+    /// Expands a context-menu track to the current track multi-selection when it
+    /// contains that row; otherwise the command targets just the clicked track.
+    fn context_track_ids(&self, track_id: u64) -> Vec<u64> {
+        let selected = &self.arrange_view_state.selected_track_ids;
+        if selected.contains(&track_id) && !selected.is_empty() {
+            selected.iter().copied().collect()
+        } else {
+            vec![track_id]
+        }
+    }
+
     fn sync_arrange_track_selection(&mut self) {
         let Some(track_id) = self
             .data
@@ -13807,6 +13818,7 @@ impl OpenTrackApp {
                             ("Audio", TrackKind::Audio),
                             ("Group Channel", TrackKind::Group),
                             ("FX Channel", TrackKind::Fx),
+                            ("Folder", TrackKind::Folder),
                             ("Instrument", TrackKind::Instrument),
                             ("MIDI", TrackKind::Midi),
                         ] {
@@ -13828,7 +13840,6 @@ impl OpenTrackApp {
                             ui,
                             &[
                                 ("Arranger", ""),
-                                ("Folder", ""),
                                 ("Marker", ""),
                                 ("Ruler", ""),
                                 ("Signature", ""),
@@ -17064,6 +17075,32 @@ impl OpenTrackApp {
             Some(project_controls::Action::Remove(id)) => {
                 if can_remove {
                     self.pending_track_delete_id = Some(id);
+                }
+            }
+            Some(project_controls::Action::MoveToFolder {
+                folder_id,
+                track_id,
+            }) => {
+                let ids = self.context_track_ids(track_id);
+                if self.data.project.assign_tracks_to_folder(folder_id, &ids) {
+                    self.rebuild_audio_plan();
+                    self.mark_modified();
+                    self.status_message = format!("Moved {} track(s) into the folder", ids.len());
+                } else {
+                    self.status_message =
+                        "Cannot move those tracks into that folder; undo history is unchanged"
+                            .to_owned();
+                }
+            }
+            Some(project_controls::Action::RemoveFromFolder(track_id)) => {
+                let ids = self.context_track_ids(track_id);
+                if self.data.project.remove_tracks_from_folder(&ids) {
+                    self.rebuild_audio_plan();
+                    self.mark_modified();
+                    self.status_message =
+                        format!("Removed {} track(s) from their folder", ids.len());
+                } else {
+                    self.status_message = "The selected tracks are not in a folder".to_owned();
                 }
             }
             Some(project_controls::Action::Duplicate(id)) => {
@@ -20534,6 +20571,12 @@ fn show_project(
                 ));
             }
 
+            let folder_options = project
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::Folder)
+                .map(|track| (track.id, track.name.clone()))
+                .collect::<Vec<_>>();
             for row in 0..visible_rows {
                 let lane_height = row_heights[row];
                 if lane_height <= 0.0 {
@@ -20753,6 +20796,8 @@ fn show_project(
                         project_controls::track_has_used_automation(track),
                         arrange_view_state.automation_visible.contains(&track.id),
                         !arrange_view_state.automation_visible.is_empty(),
+                        &folder_options,
+                        track.parent_folder_id.is_some(),
                         context_action,
                     );
                     project_controls::track_menu(
@@ -20762,6 +20807,8 @@ fn show_project(
                         project_controls::track_has_used_automation(track),
                         arrange_view_state.automation_visible.contains(&track.id),
                         !arrange_view_state.automation_visible.is_empty(),
+                        &folder_options,
+                        track.parent_folder_id.is_some(),
                         context_action,
                     );
                     if arrange_response.clicked()
@@ -30872,6 +30919,31 @@ mod transport_locate_tests {
                 .iter()
                 .any(|track| track.kind == TrackKind::Fx)
         );
+    }
+
+    #[test]
+    fn moving_tracks_into_a_folder_is_one_undoable_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Folder);
+        app.data.project.add_track(TrackKind::Audio);
+        let folder = app.data.project.tracks[0].id;
+        let audio = app.data.project.tracks[1].id;
+        app.project_history.clear();
+
+        app.project_history.begin(&app.data.project, app.modified);
+        app.project_history.label_next("Move to Folder");
+        assert!(app.data.project.assign_tracks_to_folder(folder, &[audio]));
+        assert!(app.project_history.finish_frame(&app.data.project, true));
+        assert_eq!(app.project_history.counts().0, 1);
+        assert_eq!(app.data.project.tracks[1].parent_folder_id, Some(folder));
+
+        app.undo_project();
+        assert_eq!(app.data.project.tracks[1].parent_folder_id, None);
+        app.redo_project();
+        assert_eq!(app.data.project.tracks[1].parent_folder_id, Some(folder));
     }
 
     #[test]

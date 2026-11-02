@@ -1475,7 +1475,7 @@ impl Project {
                 .tracks
                 .iter()
                 .find(|track| track.id == *id)
-                .and_then(|track| track.parent_group_id);
+                .and_then(|track| track.parent_group_id.or(track.parent_folder_id));
             while let Some(parent) = parent_id {
                 if requested.contains(&parent) {
                     roots.remove(id);
@@ -1485,7 +1485,7 @@ impl Project {
                     .tracks
                     .iter()
                     .find(|track| track.id == parent)
-                    .and_then(|track| track.parent_group_id);
+                    .and_then(|track| track.parent_group_id.or(track.parent_folder_id));
             }
         }
 
@@ -1498,6 +1498,9 @@ impl Project {
                     if track
                         .parent_group_id
                         .is_some_and(|parent_id| family_ids.contains(&parent_id))
+                        || track
+                            .parent_folder_id
+                            .is_some_and(|parent_id| family_ids.contains(&parent_id))
                     {
                         family_ids.insert(track.id);
                     }
@@ -1554,6 +1557,11 @@ impl Project {
                     if duplicate.group_output_auto {
                         sync_group_default_output(&mut duplicate, Some(*duplicate_parent_id));
                     }
+                }
+                if let Some(parent_id) = source.parent_folder_id
+                    && let Some(duplicate_parent_id) = id_map.get(&parent_id)
+                {
+                    duplicate.parent_folder_id = Some(*duplicate_parent_id);
                 }
 
                 for clip in &mut duplicate.clips {
@@ -1728,6 +1736,124 @@ impl Project {
         true
     }
 
+    /// Assigns existing tracks to an organizational folder, moving each root
+    /// and its descendants together in row order. Stable IDs and routing are
+    /// preserved; folder hierarchy validation decides whether the move is legal.
+    pub fn assign_tracks_to_folder(&mut self, folder_id: u64, track_ids: &[u64]) -> bool {
+        if track_ids.is_empty()
+            || !self
+                .tracks
+                .iter()
+                .any(|track| track.id == folder_id && track.kind == TrackKind::Folder)
+        {
+            return false;
+        }
+        let unique = track_ids.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != track_ids.len()
+            || unique.contains(&folder_id)
+            || unique
+                .iter()
+                .any(|id| !self.tracks.iter().any(|track| track.id == *id))
+        {
+            return false;
+        }
+        let mut root_ids = unique.clone();
+        for id in &unique {
+            let mut parent = self
+                .tracks
+                .iter()
+                .find(|track| track.id == *id)
+                .and_then(|track| track.parent_folder_id.or(track.parent_group_id));
+            while let Some(parent_id) = parent {
+                if unique.contains(&parent_id) {
+                    root_ids.remove(id);
+                    break;
+                }
+                parent = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == parent_id)
+                    .and_then(|track| track.parent_folder_id.or(track.parent_group_id));
+            }
+        }
+        let mut moved_ids = root_ids.clone();
+        loop {
+            let previous_len = moved_ids.len();
+            for track in &self.tracks {
+                if track
+                    .parent_folder_id
+                    .is_some_and(|parent| moved_ids.contains(&parent))
+                    || track
+                        .parent_group_id
+                        .is_some_and(|parent| moved_ids.contains(&parent))
+                {
+                    moved_ids.insert(track.id);
+                }
+            }
+            if moved_ids.len() == previous_len {
+                break;
+            }
+        }
+        if moved_ids.contains(&folder_id) {
+            return false;
+        }
+
+        let mut candidate = self.clone();
+        let selected_track_id = candidate
+            .selected_track
+            .and_then(|index| candidate.tracks.get(index as usize))
+            .map(|track| track.id);
+        for track in &mut candidate.tracks {
+            if root_ids.contains(&track.id) {
+                track.parent_folder_id = Some(folder_id);
+            }
+        }
+        let mut moved = Vec::with_capacity(moved_ids.len());
+        let mut remaining = Vec::with_capacity(candidate.tracks.len() - moved_ids.len());
+        for track in candidate.tracks.drain(..) {
+            if moved_ids.contains(&track.id) {
+                moved.push(track);
+            } else {
+                remaining.push(track);
+            }
+        }
+        let folder_index = remaining
+            .iter()
+            .position(|track| track.id == folder_id)
+            .expect("folder must remain in the project");
+        remaining.splice(folder_index + 1..folder_index + 1, moved);
+        candidate.tracks = remaining;
+        candidate.selected_track = selected_track_id
+            .and_then(|id| candidate.tracks.iter().position(|track| track.id == id))
+            .and_then(|index| u32::try_from(index).ok());
+        if candidate.validate().is_err() {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
+    /// Removes the selected tracks from their folders. Folder subtrees nested
+    /// inside a selected folder remain intact.
+    pub fn remove_tracks_from_folder(&mut self, track_ids: &[u64]) -> bool {
+        if track_ids.is_empty() {
+            return false;
+        }
+        let mut candidate = self.clone();
+        let mut changed = false;
+        for track in &mut candidate.tracks {
+            if track_ids.contains(&track.id) && track.parent_folder_id.is_some() {
+                track.parent_folder_id = None;
+                changed = true;
+            }
+        }
+        if !changed || candidate.validate().is_err() {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
     /// Removes the direct children of `group_id` from that group.
     pub fn ungroup_tracks(&mut self, group_id: u64) -> bool {
         if !self
@@ -1866,7 +1992,7 @@ impl Project {
                 .tracks
                 .iter()
                 .find(|track| track.id == *id)
-                .and_then(|track| track.parent_group_id);
+                .and_then(|track| track.parent_group_id.or(track.parent_folder_id));
             while let Some(parent) = parent_id {
                 if ids.contains(&parent) {
                     root_ids.remove(id);
@@ -1876,13 +2002,13 @@ impl Project {
                     .tracks
                     .iter()
                     .find(|track| track.id == parent)
-                    .and_then(|track| track.parent_group_id);
+                    .and_then(|track| track.parent_group_id.or(track.parent_folder_id));
             }
         }
 
-        // A moved group carries its descendants in the ordered track list.
-        // Their parent links remain intact; only the dragged roots can join a
-        // different group at the destination.
+        // A moved group or folder carries its descendants in the ordered track
+        // list. Their parent links remain intact; only the dragged roots can join
+        // a different group at the destination.
         let mut moved_ids = root_ids.clone();
         loop {
             let previous_len = moved_ids.len();
@@ -1890,6 +2016,9 @@ impl Project {
                 if track
                     .parent_group_id
                     .is_some_and(|parent_id| moved_ids.contains(&parent_id))
+                    || track
+                        .parent_folder_id
+                        .is_some_and(|parent_id| moved_ids.contains(&parent_id))
                 {
                     moved_ids.insert(track.id);
                 }
@@ -9183,6 +9312,109 @@ mod sample_edit_tests {
             project.validate(),
             Err("folder nesting cannot exceed eight levels")
         );
+    }
+
+    #[test]
+    fn folder_assignment_reorders_subtrees_and_refuses_cycles() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Folder);
+        project.add_track(TrackKind::Folder);
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let outer = project.tracks[0].id;
+        let inner = project.tracks[1].id;
+        let first = project.tracks[2].id;
+        let second = project.tracks[3].id;
+
+        project.tracks[0].parent_folder_id = None;
+        project.tracks[1].parent_folder_id = Some(outer);
+        project.tracks[2].parent_folder_id = Some(inner);
+        assert_eq!(project.validate(), Ok(()));
+
+        // A nested folder in the selection is refused.
+        let before_refusal = project.clone();
+        assert!(!project.assign_tracks_to_folder(inner, &[outer]));
+        assert_eq!(
+            project, before_refusal,
+            "refusal leaves the project unchanged"
+        );
+        assert_eq!(project.validate(), Ok(()));
+
+        // Moving a folder moves its subtree and puts it directly after the target.
+        assert!(project.assign_tracks_to_folder(outer, &[inner, second]));
+        let order = project
+            .tracks
+            .iter()
+            .map(|track| track.id)
+            .collect::<Vec<_>>();
+        let outer_index = order.iter().position(|id| *id == outer).unwrap();
+        assert_eq!(order[outer_index + 1], inner, "folder follows its target");
+        let inner_index = order.iter().position(|id| *id == inner).unwrap();
+        assert_eq!(
+            order[inner_index + 1],
+            first,
+            "nested child travels with the folder"
+        );
+        assert_eq!(project.tracks[3].parent_folder_id, Some(outer));
+        assert_eq!(project.validate(), Ok(()));
+
+        // Removing a selection from a folder clears only those roots.
+        assert!(project.remove_tracks_from_folder(&[second]));
+        assert_eq!(
+            project
+                .tracks
+                .iter()
+                .find(|track| track.id == second)
+                .unwrap()
+                .parent_folder_id,
+            None
+        );
+        assert_eq!(
+            project
+                .tracks
+                .iter()
+                .find(|track| track.id == first)
+                .unwrap()
+                .parent_folder_id,
+            Some(inner),
+            "unselected children stay in place"
+        );
+
+        // Reordering a folder carries its subtree contiguously.
+        let before = project
+            .tracks
+            .iter()
+            .position(|track| track.id == outer)
+            .unwrap();
+        let end = project.tracks.len();
+        assert!(project.move_tracks_to(&[outer], end));
+        let after = project
+            .tracks
+            .iter()
+            .position(|track| track.id == outer)
+            .unwrap();
+        assert!(after > before);
+        let inner_after = project
+            .tracks
+            .iter()
+            .position(|track| track.id == inner)
+            .unwrap();
+        assert_eq!(inner_after, after + 1);
+        assert_eq!(project.validate(), Ok(()));
+
+        // Duplicating a folder copies its subtree and rewires the new parent IDs.
+        let duplicates = project
+            .duplicate_tracks(&[outer])
+            .expect("folder duplicate");
+        let duplicated_folder = duplicates[0];
+        let duplicated_inner = duplicates
+            .iter()
+            .filter(|id| **id != duplicated_folder)
+            .filter_map(|id| project.tracks.iter().find(|track| track.id == *id))
+            .find(|track| track.parent_folder_id == Some(duplicated_folder))
+            .expect("duplicated nested folder");
+        assert_eq!(duplicated_inner.parent_folder_id, Some(duplicated_folder));
+        assert_eq!(project.validate(), Ok(()));
     }
 
     #[test]

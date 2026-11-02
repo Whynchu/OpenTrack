@@ -141,6 +141,8 @@ pub(super) enum Action {
     Add(TrackKind),
     Duplicate(u64),
     Remove(u64),
+    MoveToFolder { folder_id: u64, track_id: u64 },
+    RemoveFromFolder(u64),
     ShowAutomation(u64),
     ShowUsedAutomation(Option<u64>),
     HideAllAutomation,
@@ -170,6 +172,7 @@ fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
         ("Audio", TrackKind::Audio),
         ("Group Channel", TrackKind::Group),
         ("FX Channel", TrackKind::Fx),
+        ("Folder", TrackKind::Folder),
         ("Instrument", TrackKind::Instrument),
         ("MIDI", TrackKind::Midi),
     ] {
@@ -186,7 +189,6 @@ fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
     ui.separator();
     for name in [
         "Arranger",
-        "Folder",
         "Marker",
         "Ruler",
         "Signature",
@@ -236,6 +238,8 @@ pub(super) fn track_menu(
     has_used_automation: bool,
     automation_visible: bool,
     any_automation_visible: bool,
+    folders: &[(u64, String)],
+    in_folder: bool,
     action: &mut Option<Action>,
 ) {
     response.context_menu(|ui| {
@@ -259,6 +263,28 @@ pub(super) fn track_menu(
             ui.close();
         }
         ui.add_enabled(false, egui::Button::new("Track Controls Settings..."));
+        ui.separator();
+        ui.menu_button("Move to Folder", |ui| {
+            if folders.is_empty() {
+                ui.add_enabled(false, egui::Button::new("No folders"));
+            }
+            for (folder_id, name) in folders {
+                if ui.button(name).clicked() {
+                    *action = Some(Action::MoveToFolder {
+                        folder_id: *folder_id,
+                        track_id,
+                    });
+                    ui.close();
+                }
+            }
+        });
+        if ui
+            .add_enabled(in_folder, egui::Button::new("Remove from Folder"))
+            .clicked()
+        {
+            *action = Some(Action::RemoveFromFolder(track_id));
+            ui.close();
+        }
         ui.separator();
         if ui
             .add_enabled(!automation_visible, egui::Button::new("Show Automation"))
