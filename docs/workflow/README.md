@@ -52,7 +52,7 @@ Current user instructions > AGENTS.md and this intent record > current.md and ac
 3. Before product edits, check the existing build and process state. Use `./build.ps1 -Architecture x64` for the release deliverable. Documentation/tooling-only tasks do not require an app rebuild or desktop session.
 4. Implement one packet. Change necessary foundations only. Review boundaries and introduce no unexplained dependencies. Use meaningful tests for time conversion, transport boundaries, persistence, undo/dirty state, and other failure-prone behavior.
 5. Run the packet's checks. For UI/audio work, compilation alone leaves live acceptance pending. Record exact build/source identity, environment, steps, expected/actual results, and artifacts. Re-run affected regressions after changes.
-6. Update the ledger, regenerate the report, and write a handoff. A bounded worker may finish a prepared queue, but a milestone review remains a stop boundary. Commit/push only within explicit user authorization; a publication checkpoint does not establish milestone acceptance.
+6. Update the ledger, regenerate the report, refresh `README.md` for any capability, persistence, platform or inventory change, and write a handoff. README status (`Available today`, `Still needed`, `Near-term gaps`, format version, disabled-menu and keyboard-coverage numbers) is part of the slice, not a later cleanup. A bounded worker may finish a prepared queue, but a milestone review remains a stop boundary. Commit/push only within explicit user authorization; a publication checkpoint does not establish milestone acceptance.
 
 ## Task packet contract
 

@@ -15,7 +15,8 @@ Starting measurements (2026-11-02, after revision 2):
 
 Rules stay as in revision 2: one slice per commit with source, tests, docs,
 release build and push; a feature is not accepted because it compiles; blocked
-work is named rather than approximated.
+work is named rather than approximated. Every slice also refreshes `README.md`'s status sections
+and measured numbers.
 
 ## Sequence
 

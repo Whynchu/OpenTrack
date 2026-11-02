@@ -29,16 +29,18 @@ OpenTrack is a standalone open source DAW built in Rust. Its goal is to provide 
 
 ## Development status
 
-OpenTrack is an early prototype under active development. Its features are still being integrated and reviewed, and some visible controls are incomplete. The following describes the current development version; availability does not imply that every workflow has completed runtime or hardware validation.
+OpenTrack is an early prototype under active development. Its features are still being integrated and reviewed, and some visible controls are incomplete. The following describes the current development version; availability does not imply that every workflow has completed runtime or hardware validation. The status below is refreshed with every delivered slice.
 
 ### Available today
 
-- **Projects and arrangement:** a timeline for audio and MIDI tracks, transport and cycle playback, grid snapping, audio clip editing (including split-at-cursor, move-to-cursor and crossfades), and bounded undo/redo. New saves use native format version 27; earlier `.opr`, `.otp` and `.rwp` projects remain readable. Older OpenTrack builds through version 26 cannot reopen a version 27 save.
-- **Recording and media:** WAV import and playback, audio and MIDI recording, basic track input/output selection and software monitoring, managed project folders, media relinking, and a MediaBay.
-- **Mixing:** shared Mixer and Channel Settings controls, input gain and meters, a 32-band EQ with static and dynamic bands, spectrum and tonal-reference analysis, and an insert rack. Track-volume automation curves support read playback and point editing; arrange context menus can reveal tracks with stored curves.
+- **Projects and arrangement:** a timeline for audio and MIDI tracks with transport and cycle playback, grid snapping (including snap to event edges and the cursor), project markers with next/previous navigation and a marker list, zoom commands, follow-playhead scrolling, event nudging, split-at-cursor, split loop, glue, range deletion, crossfades, MIDI part split/merge, and a bounded undo/redo with an undo-history window. New saves use native format version 27; earlier `.opr`, `.otp` and `.rwp` projects remain readable, and older projects load with safe defaults for newer fields. Older OpenTrack builds through version 26 cannot reopen a version 27 save.
+- **Recording and media:** WAV import and playback, audio and MIDI recording, punch in/out driven by the locators, per-track input monitoring (Off / Auto while armed / On), loop recording that puts each cycle pass on its own take lane, a metronome with a per-beat accent pattern and a count-in, managed project folders, media consolidation into the project, missing-media relink, media-pool cleanup, multiple recovery points, and a MediaBay.
+- **Mixing:** shared Mixer and Channel Settings controls, input gain and meters, a 32-band EQ with static and dynamic bands, spectrum and tonal-reference analysis, and an insert rack. Track-volume automation records from live control movement, plays back, and supports point editing; arrange context menus can reveal tracks with stored curves.
 - **Plug-ins:** third-party VST3 effect hosting and native editor windows, alongside existing built-in processors. Compatibility varies by plug-in; universal VST3 support is not claimed.
-- **Editors and workspace:** a MIDI editor with notes and controller lanes, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
-- **Audio and MIDI capture:** record audio and MIDI input into a project; real-device behavior still needs broad hardware validation.
+- **Editors and workspace:** a MIDI editor with notes and controller lanes plus quantize (strength and swing) and transpose/velocity tools, a Sample Editor with on-demand Pitch & Time analysis and editing, a floating transport, editable key commands, and workspace presets.
+- **Finishing:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, and Standard MIDI File export of the whole project or a selection.
+- **Project tools:** project templates, a session health check, project statistics, a beat calculator, and a project notepad saved with the file.
+- **Platform and diagnostics:** a callback-budget readout with a worst-block figure, project load measurement, and Windows job-object containment for scanner workers (implemented and compiled for Windows; runtime validation on Windows is pending).
 
 ### Highlights
 
@@ -63,18 +65,21 @@ These features are under active development; live listening, visual behavior and
 
 ### Still needed
 
-- **Finishing and interchange:** initial stereo WAV mixdown and Standard MIDI File note/controller exchange are implemented in source. Authored format-0/1 fixtures and independent export decoding pass; in-app review and comparison with DAW-produced MIDI files remain. Project interchange with other DAWs is still future work. CPR is currently a research and inspection effort, not an importer or round-trip format.
-- **Mixing and recording:** group/range splitting, broader duplicate/mute/range edits, automation writing, device-bus sends, general typed bus routing, cycle takes, and broader device channel mapping. The arrange view displays stored track-volume curves, supports snapped point insertion, dragging and removal, and plays read-enabled automation; Write controls remain disabled until capture is implemented. New mono audio tracks can select Left or Right from Stereo In; wider physical channel maps remain open. Track/group sends and automation playback pass offline checks; live listening and real-time performance still need review.
-- **Platform and feature breadth:** Windows x64 is the primary target. Kubuntu Linux was part of development and has been built and verified; other Linux distributions, macOS and browser releases are not claimed. Video, surround and score editing are not available.
+- **Runtime and listening review:** recording, punch, monitoring, loop takes, the metronome click, stem export, bounce and mixdown need review with real audio and MIDI hardware. Offline and headless checks pass; device behavior and audible results are not accepted yet.
+- **Finishing and interchange:** authored format-0/1 MIDI fixtures and independent export decoding pass; in-app review and comparison with DAW-produced MIDI files remain. Project interchange with other DAWs is still future work. CPR is currently a research and inspection effort, not an importer or round-trip format.
+- **Mixing and routing:** device-bus sends and wider physical channel maps remain open. Track and group sends, typed routing and automation playback pass offline checks; live listening and real-time performance still need review.
+- **Keyboard and interface completion:** 122 declared menu entries are still shown disabled, and 117 of the 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the remaining shortcuts, the contrast measurements and the focus/label behavior. A manual keyboard-only pass is still pending.
+- **Platform and feature breadth:** Windows x64 is the primary target. Kubuntu Linux was part of development and has been built and verified; Linux VST3 editor embedding is not implemented, and other Linux distributions, macOS and browser releases are not claimed. Video, surround and score editing are not available.
 - **Command interfaces:** there is no supported command-line or MCP interface for controlling project edits.
-- **Interface completion:** many menus, preference pages, dialogs and controls are disabled or partial. The ongoing [UI inventory](docs/reviews/ui-implementation-inventory.md) tracks source findings and outstanding review.
-- **Reliability and validation:** recording, monitoring and low-latency behavior need further testing with real audio and MIDI hardware. Plug-in compatibility, project recovery, visual interaction and audible results need continued verification.
+- **Reliability and validation:** plug-in compatibility, project recovery, visual interaction and audible results need continued verification on real hardware.
 
 OpenTrack aims to bring recording, editing, arrangement, mixing and finishing into one dependable Rust application. Future interoperability and first-party instruments and effects will be developed as separately scoped capabilities.
 
 ### Near-term gaps
 
-Next work prioritizes in-app validation of audio mixdown, MIDI file exchange, and track/group sends, followed by automation, broader audio-device routing, and recording reliability. Send processing passes offline checks; live listening and device-bus sends remain open. Windows x64 remains the primary target; Kubuntu Linux was part of development and has also been verified.
+Next work is user-side review of the recording, delivery and listening features above, followed by the CPR adapter once real `.cpr` fixtures are available, the remaining disabled menus and undispatched shortcuts, and a Linux VST3 editor path with a test plug-in. Windows x64 remains the primary target; Kubuntu Linux was part of development and has also been verified.
+
+Progress and verification are tracked in [the current workflow state](docs/workflow/current.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
 
 ## Build and run
 
