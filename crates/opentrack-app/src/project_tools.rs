@@ -14,6 +14,7 @@ pub(super) struct ProjectStatistics {
     pub instrument_tracks: usize,
     pub group_tracks: usize,
     pub fx_tracks: usize,
+    pub folder_tracks: usize,
     pub audio_events: usize,
     pub midi_parts: usize,
     pub midi_notes: usize,
@@ -40,6 +41,7 @@ pub(super) fn project_statistics(project: &Project) -> ProjectStatistics {
             TrackKind::Instrument => statistics.instrument_tracks += 1,
             TrackKind::Group => statistics.group_tracks += 1,
             TrackKind::Fx => statistics.fx_tracks += 1,
+            TrackKind::Folder => statistics.folder_tracks += 1,
         }
         statistics.audio_events += track.clips.len();
         statistics.midi_parts += track.midi_parts.len();
@@ -65,6 +67,7 @@ impl ProjectStatistics {
             ("Instrument tracks", self.instrument_tracks),
             ("Group tracks", self.group_tracks),
             ("FX channels", self.fx_tracks),
+            ("Folders", self.folder_tracks),
             ("Audio events", self.audio_events),
             ("MIDI parts", self.midi_parts),
             ("MIDI notes", self.midi_notes),
@@ -146,6 +149,7 @@ mod tests {
         project.add_track(TrackKind::Midi);
         project.add_track(TrackKind::Instrument);
         project.add_track(TrackKind::Fx);
+        project.add_track(TrackKind::Folder);
         project
             .add_audio_clip(0, std::path::PathBuf::from("/nowhere/a.wav"), 0.0, 2.0)
             .expect("clip");
@@ -168,6 +172,7 @@ mod tests {
         assert_eq!(statistics.midi_tracks, 1);
         assert_eq!(statistics.instrument_tracks, 1);
         assert_eq!(statistics.fx_tracks, 1);
+        assert_eq!(statistics.folder_tracks, 1);
         assert_eq!(statistics.audio_events, 2);
         assert_eq!(statistics.midi_parts, 1);
         assert_eq!(statistics.midi_notes, 1);
@@ -176,8 +181,8 @@ mod tests {
             statistics.missing_media, 2,
             "both sources are absent on this host"
         );
-        assert_eq!(statistics.rows().len(), 15);
-        assert_eq!(statistics.rows()[5], ("Audio events", 2));
+        assert_eq!(statistics.rows().len(), 16);
+        assert_eq!(statistics.rows()[6], ("Audio events", 2));
     }
 
     #[test]

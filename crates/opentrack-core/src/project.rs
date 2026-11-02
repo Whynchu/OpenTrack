@@ -14,6 +14,8 @@ pub enum TrackKind {
     /// Shared effect return. Holds inserts and channel controls but no
     /// timeline media, MIDI or children.
     Fx,
+    /// Organizational row. Holds no media, DSP or channel controls.
+    Folder,
     Instrument,
     Midi,
 }
@@ -28,6 +30,11 @@ impl TrackKind {
     /// Whether this kind may own MIDI parts.
     pub const fn owns_midi(self) -> bool {
         matches!(self, Self::Midi | Self::Instrument)
+    }
+
+    /// Organizational folders are excluded from the audio plan.
+    pub const fn is_folder(self) -> bool {
+        matches!(self, Self::Folder)
     }
 }
 
@@ -104,6 +111,7 @@ impl BusChannel {
             name: name.into(),
             kind: TrackKind::Audio,
             parent_group_id: None,
+            parent_folder_id: None,
             group_collapsed: false,
             group_cut_beats: Vec::new(),
             color_index: None,
@@ -149,6 +157,9 @@ pub struct Track {
     /// Owning group track, if this lane is nested in a group.
     #[serde(default)]
     pub parent_group_id: Option<u64>,
+    /// Owning organizational folder, if this lane is nested in a folder.
+    #[serde(default)]
+    pub parent_folder_id: Option<u64>,
     /// Whether Project hides a group's child rows. Persisted with the group.
     #[serde(default)]
     pub group_collapsed: bool,
@@ -1375,6 +1386,7 @@ impl Project {
             TrackKind::Audio => "Audio",
             TrackKind::Group => "Group",
             TrackKind::Fx => "FX",
+            TrackKind::Folder => "Folder",
             TrackKind::Instrument => "Instrument",
             TrackKind::Midi => "MIDI",
         };
@@ -1389,6 +1401,7 @@ impl Project {
             name: format!("{prefix} {:02}", self.next_track_number),
             kind,
             parent_group_id: None,
+            parent_folder_id: None,
             group_collapsed: false,
             group_cut_beats: Vec::new(),
             color_index: None,
@@ -1422,7 +1435,11 @@ impl Project {
             } else {
                 None
             },
-            output_routing: Some("Stereo Out".to_owned()),
+            output_routing: if kind == TrackKind::Folder {
+                None
+            } else {
+                Some("Stereo Out".to_owned())
+            },
             group_output_auto: false,
             send_routing: Vec::new(),
             send_parameters: Vec::new(),
@@ -1756,9 +1773,13 @@ impl Project {
         let removed_id = self.tracks[track_index].id;
         let removed_kind = self.tracks[track_index].kind;
         let removed_parent_id = self.tracks[track_index].parent_group_id;
+        let removed_folder_parent = self.tracks[track_index].parent_folder_id;
         for track in &mut self.tracks {
             if track.parent_group_id == Some(removed_id) {
                 track.parent_group_id = removed_parent_id;
+            }
+            if track.parent_folder_id == Some(removed_id) {
+                track.parent_folder_id = removed_folder_parent;
             }
         }
         let selected_track_id = self
@@ -4825,6 +4846,11 @@ impl Project {
             .filter(|track| track.kind == TrackKind::Group)
             .filter_map(|track| track.parent_group_id)
             .collect::<BTreeSet<u64>>();
+        let folder_ids = tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Folder)
+            .map(|track| track.id)
+            .collect::<BTreeSet<u64>>();
         let mut automation_points = 0usize;
         for track in tracks {
             if track.id == 0 || track.id >= INPUT_BUS_ID || !track_ids.insert(track.id) {
@@ -4847,6 +4873,39 @@ impl Project {
                     .any(|pair| pair[0] >= pair[1])
             {
                 return Err("group edit boundaries must be ordered nonnegative beats");
+            }
+            if let Some(parent_id) = track.parent_folder_id {
+                if track.id == parent_id || !folder_ids.contains(&parent_id) {
+                    return Err("a folder child must reference an existing folder track");
+                }
+                let mut current = Some(parent_id);
+                let mut depth = 0usize;
+                let mut visited = BTreeSet::new();
+                while let Some(id) = current {
+                    depth += 1;
+                    if depth > 8 {
+                        return Err("folder nesting cannot exceed eight levels");
+                    }
+                    if !visited.insert(id) {
+                        return Err("folder hierarchy contains a cycle");
+                    }
+                    current = tracks
+                        .iter()
+                        .find(|candidate| candidate.id == id)
+                        .and_then(|candidate| candidate.parent_folder_id);
+                }
+            }
+            if track.kind == TrackKind::Folder
+                && (track.parent_group_id.is_some()
+                    || track.input_routing.is_some()
+                    || track.output_routing.is_some()
+                    || !track.inserts.is_empty()
+                    || track.send_routing.iter().any(Option::is_some)
+                    || track.automation_read
+                    || track.automation_write
+                    || !track.automation_lanes.is_empty())
+            {
+                return Err("a folder track cannot own media, DSP or routing");
             }
             if let Some(parent_id) = track.parent_group_id {
                 let Some((TrackKind::Group, parent_parent)) = track_kinds.get(&parent_id) else {
@@ -9036,6 +9095,94 @@ mod sample_edit_tests {
         assert_eq!(project.tracks[0].send_routing, vec![None]);
         assert!(!project.tracks[0].send_parameters[0].enabled);
         assert_eq!(project.validate_routing(), Ok(()));
+    }
+
+    #[test]
+    fn folder_hierarchy_is_bounded_validated_and_deleted_by_reparenting() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Folder);
+        project.add_track(TrackKind::Folder);
+        project.add_track(TrackKind::Audio);
+        let first = project.tracks[0].id;
+        let second = project.tracks[1].id;
+        project.tracks[1].parent_folder_id = Some(first);
+        project.tracks[2].parent_folder_id = Some(second);
+        assert_eq!(project.validate(), Ok(()));
+
+        // Dangling and non-folder parents are refused.
+        project.tracks[2].parent_folder_id = Some(9999);
+        assert_eq!(
+            project.validate(),
+            Err("a folder child must reference an existing folder track")
+        );
+        project.tracks[2].parent_folder_id = Some(project.tracks[2].id);
+        assert_eq!(
+            project.validate(),
+            Err("a folder child must reference an existing folder track")
+        );
+        project.tracks[2].parent_folder_id = Some(second);
+
+        // A cycle is refused even when every id exists.
+        project.tracks[0].parent_folder_id = Some(second);
+        assert_eq!(project.validate(), Err("folder hierarchy contains a cycle"));
+        project.tracks[0].parent_folder_id = None;
+
+        // Removing a folder keeps its children and reparents them upward.
+        let removed = project.remove_track(1).expect("folder removed");
+        assert_eq!(removed.kind, TrackKind::Folder);
+        assert_eq!(project.tracks[1].parent_folder_id, Some(first));
+        assert_eq!(project.validate(), Ok(()));
+
+        // Folders cannot own channel DSP or media.
+        project.tracks[0]
+            .inserts
+            .push(crate::project::InsertEffect {
+                enabled: true,
+                bypassed: false,
+                kind: crate::project::InsertEffectKind::StereoDelay {
+                    time_ms: 100.0,
+                    feedback: 0.0,
+                    mix: 0.5,
+                },
+            });
+        assert_eq!(
+            project.validate(),
+            Err("a folder track cannot own media, DSP or routing")
+        );
+        project.tracks[0].inserts.clear();
+
+        // The persisted field defaults to none for older projects.
+        let encoded = serde_json::to_string(&project).expect("encode");
+        let restored: Project = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(restored.tracks[1].parent_folder_id, Some(first));
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy["tracks"][1]
+            .as_object_mut()
+            .expect("track")
+            .remove("parent_folder_id");
+        let legacy: Project = serde_json::from_value(legacy).expect("legacy");
+        assert_eq!(legacy.tracks[1].parent_folder_id, None);
+    }
+
+    #[test]
+    fn folder_nesting_is_limited_to_eight_levels() {
+        let mut project = Project::default();
+        for _ in 0..9 {
+            project.add_track(TrackKind::Folder);
+        }
+        for index in 1..9 {
+            let parent = project.tracks[index - 1].id;
+            project.tracks[index].parent_folder_id = Some(parent);
+        }
+        assert_eq!(project.validate(), Ok(()), "eight folder ancestors");
+
+        // A ninth folder ancestor is refused.
+        project.add_track(TrackKind::Folder);
+        project.tracks[9].parent_folder_id = Some(project.tracks[8].id);
+        assert_eq!(
+            project.validate(),
+            Err("folder nesting cannot exceed eight levels")
+        );
     }
 
     #[test]

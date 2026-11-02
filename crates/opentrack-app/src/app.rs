@@ -3502,9 +3502,13 @@ impl OpenTrackApp {
             .track_input_meter_levels
             .retain(|track_id, _| active_track_ids.contains(track_id));
         let project_tracks = &self.data.project.tracks;
+        let playback_source_tracks = project_tracks
+            .iter()
+            .filter(|track| !track.kind.is_folder())
+            .collect::<Vec<_>>();
         let track_meter_peaks = &mut self.data.track_meter_peaks;
         let vst3_runtime = &self.vst3_runtime;
-        let track_descriptors: Vec<_> = project_tracks
+        let track_descriptors: Vec<_> = playback_source_tracks
             .iter()
             .map(|track| {
                 let mut effective_muted = track.muted;
@@ -3552,7 +3556,7 @@ impl OpenTrackApp {
                     track.monitors_input() || (self.input_monitoring && track.armed),
                     track.input_routing.clone(),
                     track.output_routing.clone(),
-                    playback_sends(track, project_tracks),
+                    playback_sends(track, &playback_source_tracks),
                     automation::playback_volume_automation(track),
                     track
                         .clips
@@ -3807,7 +3811,7 @@ impl OpenTrackApp {
                 volume_automation,
                 output_route: routing::playback_output_route(
                     output_routing.as_deref(),
-                    project_tracks,
+                    &playback_source_tracks,
                 ),
             });
         }
@@ -17212,6 +17216,7 @@ impl OpenTrackApp {
             TrackKind::Audio => "Add Audio Track",
             TrackKind::Group => "Add Group Channel",
             TrackKind::Fx => "Add FX Channel",
+            TrackKind::Folder => "Add Folder",
             TrackKind::Instrument => "Add Instrument Track",
             TrackKind::Midi => "Add MIDI Track",
         };
@@ -17219,6 +17224,7 @@ impl OpenTrackApp {
             TrackKind::Audio => "Audio Track Configuration",
             TrackKind::Group => "Group Channel Configuration",
             TrackKind::Fx => "FX Channel Configuration",
+            TrackKind::Folder => "Folder Configuration",
             TrackKind::Instrument => "Instrument Track Configuration",
             TrackKind::Midi => "MIDI Track Configuration",
         };
@@ -17272,6 +17278,7 @@ impl OpenTrackApp {
                                         TrackKind::Audio => 40.0 + 6.0 + 78.0,
                                         TrackKind::Group => 40.0 + 6.0 + 78.0,
                                         TrackKind::Fx => 40.0 + 6.0 + 78.0 + 6.0 + 160.0,
+                                        TrackKind::Folder => 40.0,
                                         TrackKind::Instrument => 40.0 + 6.0 + 160.0,
                                         TrackKind::Midi => 40.0,
                                     };
@@ -17455,6 +17462,7 @@ impl OpenTrackApp {
                                                 );
                                             });
                                         }
+                                        TrackKind::Folder => {}
                                         TrackKind::Instrument => {
                                             ui.vertical(|ui| {
                                                 let instruments = self
@@ -18819,6 +18827,7 @@ fn track_kind_label(kind: TrackKind) -> &'static str {
         TrackKind::Audio => "AUDIO",
         TrackKind::Group => "GROUP",
         TrackKind::Fx => "FX",
+        TrackKind::Folder => "FOLDER",
         TrackKind::Instrument => "INSTRUMENT",
         TrackKind::Midi => "MIDI",
     }
@@ -27351,7 +27360,10 @@ mod bus_persistence_tests {
                 ..SendParameters::default()
             },
         ];
-        let sends = playback_sends(&project.tracks[0], &project.tracks);
+        let sends = playback_sends(
+            &project.tracks[0],
+            &project.tracks.iter().collect::<Vec<_>>(),
+        );
         assert_eq!(sends.len(), 3);
         assert_eq!(sends[0].destination, PlaybackOutputRoute::Stereo);
         assert!((sends[0].gain - 0.5).abs() < 0.0001);
@@ -27360,10 +27372,22 @@ mod bus_persistence_tests {
         assert_eq!(sends[1].gain, 0.0);
         assert_eq!(sends[2].destination, PlaybackOutputRoute::Group(2));
         project.tracks[0].sends_bypassed = true;
-        assert!(playback_sends(&project.tracks[0], &project.tracks).is_empty());
+        assert!(
+            playback_sends(
+                &project.tracks[0],
+                &project.tracks.iter().collect::<Vec<_>>()
+            )
+            .is_empty()
+        );
         project.tracks[0].sends_bypassed = false;
         project.tracks[0].send_parameters.clear();
-        assert!(playback_sends(&project.tracks[0], &project.tracks).is_empty());
+        assert!(
+            playback_sends(
+                &project.tracks[0],
+                &project.tracks.iter().collect::<Vec<_>>()
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -27628,12 +27652,40 @@ mod routing_model_tests {
     use opentrack_core::routing::{InputRoute, OutputRoute};
 
     #[test]
+    fn folders_are_excluded_from_playback_indices_and_routing() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Folder);
+        project.add_track(TrackKind::Group);
+        let group_id = project.tracks[2].id;
+        project.tracks[0].send_routing = vec![Some(format!("Group:{group_id}"))];
+        project.tracks[0].send_parameters = vec![opentrack_core::project::SendParameters {
+            enabled: true,
+            ..opentrack_core::project::SendParameters::default()
+        }];
+        let plan_tracks = project
+            .tracks
+            .iter()
+            .filter(|track| !track.kind.is_folder())
+            .collect::<Vec<_>>();
+        assert_eq!(plan_tracks.len(), 2);
+        let sends = playback_sends(&project.tracks[0], &plan_tracks);
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].destination, PlaybackOutputRoute::Group(1));
+        assert_eq!(
+            routing::playback_output_route(Some(&format!("Group:{group_id}")), &plan_tracks),
+            PlaybackOutputRoute::Group(1)
+        );
+        assert_eq!(project.validate_routing(), Ok(()));
+    }
+
+    #[test]
     fn the_plan_never_treats_an_unplayable_route_as_the_stereo_master() {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.add_track(TrackKind::Group);
         let group_id = project.tracks[1].id;
-        let tracks = project.tracks.clone();
+        let tracks = project.tracks.iter().collect::<Vec<_>>();
 
         // Default, speaker assignments and No Bus.
         assert_eq!(

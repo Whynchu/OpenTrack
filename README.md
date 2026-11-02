@@ -42,7 +42,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Editing tools:** MIDI editor with note and controller lanes, including a configurable single CC lane (any controller 0–127) whose choice is saved with the project; quantize with strength and swing, transpose and velocity tools; Sample Editor with on-demand Pitch & Time analysis and editing.
 - **Delivery:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, and Standard MIDI File export of the whole project or a selection.
 - **Project tools:** templates, session health check, project statistics, beat calculator, and a notepad saved with the project.
-- **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 35); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
+- **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 36); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
 
 ### What still needs work
 

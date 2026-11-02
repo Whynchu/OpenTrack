@@ -31,7 +31,7 @@ pub(super) fn output_route(track: &Track) -> OutputRoute {
 /// the master: a channel that stores something this build cannot route must not
 /// silently join the stereo mix, and [`opentrack_core::project::Project::validate_routing`]
 /// reports the same value at load time.
-pub(super) fn playback_output_route(route: Option<&str>, tracks: &[Track]) -> PlaybackOutputRoute {
+pub(super) fn playback_output_route(route: Option<&str>, tracks: &[&Track]) -> PlaybackOutputRoute {
     match route.map(OutputRoute::parse) {
         None => PlaybackOutputRoute::Stereo,
         Some(Ok(OutputRoute::StereoOut)) => PlaybackOutputRoute::Stereo,
@@ -67,7 +67,7 @@ pub(super) fn playback_input_channel(route: Option<&str>) -> Option<PlaybackInpu
 }
 
 /// Resolve persisted sends into the bounded immutable playback representation.
-pub(super) fn playback_sends(track: &Track, tracks: &[Track]) -> Vec<PlaybackSend> {
+pub(super) fn playback_sends(track: &Track, tracks: &[&Track]) -> Vec<PlaybackSend> {
     if track.sends_bypassed {
         return Vec::new();
     }

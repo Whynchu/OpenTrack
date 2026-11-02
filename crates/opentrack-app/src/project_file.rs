@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 35;
+const FORMAT_VERSION: u32 = 36;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
