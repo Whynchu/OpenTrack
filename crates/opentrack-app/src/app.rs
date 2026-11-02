@@ -10544,31 +10544,18 @@ impl OpenTrackApp {
 
     /// The union of the selected audio events and the selected MIDI part, in beats.
     fn selected_event_span(&self) -> Option<(f64, f64)> {
-        let tempo = self.data.project.tempo_bpm.max(1.0);
         let selected = self
             .arrange_view_state
             .audio_events
             .selected_ids()
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        let midi_part = self.data.project.selected_midi_part_id;
-        let mut start = f64::INFINITY;
-        let mut end = f64::NEG_INFINITY;
-        for track in &self.data.project.tracks {
-            for clip in &track.clips {
-                if selected.contains(&clip.id) {
-                    start = start.min(clip.start_beats);
-                    end = end.max(clip.start_beats + clip.duration_seconds * tempo / 60.0);
-                }
-            }
-            for part in &track.midi_parts {
-                if midi_part == Some(part.id) {
-                    start = start.min(part.start_beats);
-                    end = end.max(part.start_beats + part.duration_beats);
-                }
-            }
-        }
-        (start.is_finite() && end.is_finite() && end > start).then_some((start, end))
+        crate::transport_commands::selected_event_span(
+            &self.data.project,
+            &selected,
+            self.data.project.selected_midi_part_id,
+        )
+        .map(|span| (span.start_beats, span.end_beats))
     }
 
     fn locate_next_event(&mut self) {
@@ -30277,6 +30264,48 @@ mod transport_locate_tests {
         app.play_selection_range();
         assert!(app.data.transport.cycle);
         assert!(app.status_message.contains("Playing the selection range"));
+    }
+
+    #[test]
+    fn the_transport_menu_and_shortcut_share_the_selection_range_command() {
+        let ctx = egui::Context::default();
+        let ids_for = |app: &OpenTrackApp| {
+            [
+                app.data.project.tracks[0].clips[0].id,
+                app.data.project.tracks[0].clips[1].id,
+            ]
+        };
+        let mut via_menu = app_with_events();
+        let ids = ids_for(&via_menu);
+        via_menu.arrange_view_state.audio_events.select_many(ids);
+        via_menu.run_transport_locate(TransportLocate::PlaySelection);
+
+        let mut via_key = app_with_events();
+        let ids = ids_for(&via_key);
+        via_key.arrange_view_state.audio_events.select_many(ids);
+        via_key.dispatch_reference_command(
+            "transport.play_selection_range",
+            "Play Selection Range",
+            opentrack_core::commands::KeyChord::new(
+                opentrack_core::commands::KeyCode::Space,
+                opentrack_core::commands::KeyModifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+            ),
+            &ctx,
+        );
+
+        assert_eq!(
+            via_menu.data.project.loop_start_beats,
+            via_key.data.project.loop_start_beats
+        );
+        assert_eq!(
+            via_menu.data.project.loop_end_beats,
+            via_key.data.project.loop_end_beats
+        );
+        assert!(via_key.data.transport.cycle);
+        assert_eq!(via_menu.status_message, via_key.status_message);
     }
 
     #[test]

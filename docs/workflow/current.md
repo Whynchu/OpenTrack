@@ -6,7 +6,9 @@ Step 1 delivered the reproducible [menu/keyboard inventory](../reviews/generated
 
 Step 2 reviewed slices 41-56 and fixed two confirmed defects. New `media_paths.rs` refuses a pool destination whose existing junction/symlink resolves outside the project (verified with a real `mklink /J` on this host, including that nothing is created outside), and every import/generated-WAV writer now uses it. Pool-folder validation additionally rejects drive-relative/UNC/ADS forms, trailing dots/spaces and Windows device names. Destructive source bakes (reverse, DC removal, stereo flip, merge, detect silence, envelope, normalize) now refuse a selection containing a locked event, matching timeline edit behavior. Suites: core 146, audio 167 (3 ignored), app 497 passed/9 ignored. Plain `cargo test -p opentrack` remains blocked by the pre-existing standalone VST probe examples; `--bin opentrack` was used. No app was launched, so runtime/listening review is pending. See [R4-02](tasks/R4-02-media-pipeline-review.md).
 
-Next ready work: revision-4 step 3, establish the command boundary for this revision. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+Step 3 established the command boundary for the transport work: `transport_commands.rs` now owns the pure audio-event/MIDI-part selection span used by play-from, play-until, locate-selection and locators-to-selection; a test proves the Transport menu action and Alt+Space reach the same locators and status. App suite: 502 passed, 9 ignored. Runtime focus/desktop review remains pending. See [R4-03](tasks/R4-03-command-boundary.md).
+
+Next ready work: revision-4 step 4, the bounded pre/post-roll transport contract. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
 
 ---
 

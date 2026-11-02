@@ -14,6 +14,7 @@ mod startup_splash;
 mod system_tool_icons;
 mod theme;
 mod timeline;
+mod transport_commands;
 mod view_controls;
 
 fn main() -> eframe::Result {
