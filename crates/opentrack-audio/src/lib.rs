@@ -21,6 +21,7 @@ pub use pitch_analysis::{PitchAnalysis, PitchPoint, analyze_pitch_file, segment_
 pub use pitch_render::{
     pitch_source_identity, render_pitch_time_file, render_pitch_time_file_at_tempo,
 };
+mod audio_process;
 pub mod plugins;
 mod recording;
 mod recording_recovery;
@@ -36,6 +37,7 @@ pub use waveform::{WAVEFORM_BLOCK_FRAMES, Waveform};
 #[cfg(windows)]
 mod wasapi_backend;
 
+pub use audio_process::reverse_wav_range;
 pub use devices::{
     AudioDevice, AudioDeviceInventory, AudioOutputConfig, available_audio_devices,
     output_configurations, scan_audio_devices,

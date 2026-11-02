@@ -13220,6 +13220,10 @@ impl OpenTrackApp {
                             self.open_gain_dialog();
                             ui.close();
                         }
+                        if menu_command(ui, "Reverse", "", has_selection).clicked() {
+                            self.reverse_selected_audio_events();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
@@ -13227,7 +13231,6 @@ impl OpenTrackApp {
                                 ("Merge Clipboard", ""),
                                 ("Normalize...", ""),
                                 ("Remove DC Offset", ""),
-                                ("Reverse", ""),
                                 ("Stereo Flip", ""),
                                 ("Time Stretch...", ""),
                                 ("Resample...", ""),

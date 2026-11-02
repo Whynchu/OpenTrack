@@ -348,6 +348,19 @@ Remaining work is now almost entirely feature-scoped:
 - **User verification:** every device/listening item from revision 2 still stands;
   Windows job containment is compiled but not exercised on Windows.
 
-Revision 4 should start with the user-dependent reviews and CPR fixtures, then
-pick from interchange and audio-file processing with explicit format/version
-scopes, and only then return to the menu inventory.
+## Post-close continuation
+
+Work continues on the same inert-gap objective after the close-out; each item is
+still one commit with tests and refreshed counts.
+
+32. **Reverse.** *Delivered.* Audio > Process > Reverse writes the selected
+   events' used audio range, reversed, to new float32 media under `Audio/Imports`
+   through `opentrack_audio::reverse_wav_range` and repoints each event at it in one
+   labelled "Reverse" undo step. Position and length are preserved; pitch/time
+   analysis and source-fade lineage are cleared because they describe the old
+   source. A failed reversal deletes its partial files, and the command is bounded
+   to 64 events. 2 audio and 1 app tests. Disabled entries 100 -> 99.
+
+Next candidates in the same family: Remove DC Offset, Normalize, Stereo Flip,
+then the interchange adapters with explicit format/version scopes. Revision 4
+should still start with the user-dependent reviews and CPR fixtures.

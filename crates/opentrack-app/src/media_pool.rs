@@ -474,6 +474,133 @@ impl OpenTrackApp {
         self.status_message = status;
     }
 
+    /// Reverses the selected events' used audio into new project media.
+    ///
+    /// Each event keeps its position and length; its source becomes a new file
+    /// containing exactly the range it played, reversed. Pitch/Time analysis and
+    /// source-fade lineage belong to the old source and are cleared, because they
+    /// would describe audio that no longer exists.
+    pub(super) fn reverse_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before reversing audio events".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to reverse".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Reverse is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before reversing audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before reversing audio".to_owned();
+            return;
+        };
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut reversed = 0;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} reversed")) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            if let Err(error) =
+                opentrack_audio::reverse_wav_range(&source, offset, duration, &destination)
+            {
+                self.cleanup_created_files(&created);
+                self.status_message = format!("Could not reverse {}: {error}", name);
+                return;
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the reversed audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                reversed += 1;
+            }
+        }
+        if reversed == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = "No event could be reversed".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message = "Cannot reverse: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Reverse");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Reversed {reversed} audio event(s) into new project media; Undo restores the originals"
+        );
+    }
+
+    fn cleanup_created_files(&self, files: &[PathBuf]) {
+        for file in files {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
     /// Drops pool entries no event references, keeping the files on disk.
     pub(super) fn remove_unused_media_from_pool(&mut self) {
         if self.is_recording() {
@@ -1255,6 +1382,85 @@ mod tests {
             joined.contains("snare.wav"),
             "the other file is still listed"
         );
+    }
+
+    fn write_ramp_wav(path: &std::path::Path, frames: u32) {
+        let mut bytes = Vec::with_capacity(44 + (frames as usize) * 2);
+        let data_bytes = frames * 2;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        for index in 0..frames {
+            let sample = ((index as f32 / frames as f32) * 30_000.0) as i16;
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn reversing_the_selection_writes_new_media_and_is_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-reverse-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("ramp.wav");
+        write_ramp_wav(&source, 48_000);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 0.5)
+            .expect("clip");
+        app.data.project.tracks[0].clips[0].source_offset_seconds = 0.1;
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.reverse_selected_audio_events();
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, source, "the event moved to new media");
+        assert!(
+            clip.source_path
+                .starts_with(root.join("Audio").join("Imports")),
+            "{}",
+            clip.source_path.display()
+        );
+        assert!(clip.source_path.exists());
+        assert_eq!(clip.source_offset_seconds, 0.0);
+        assert_eq!(clip.duration_seconds, 0.5);
+        assert!(app.status_message.contains("Reversed 1 audio event(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Reverse");
+
+        // A missing source fails cleanly without leaving a new file behind.
+        let before = std::fs::read_dir(root.join("Audio").join("Imports"))
+            .expect("imports")
+            .count();
+        app.data.project.tracks[0].clips[0].source_path =
+            root.join("Audio").join("Imports").join("gone.wav");
+        app.reverse_selected_audio_events();
+        assert!(app.status_message.contains("Could not reverse"));
+        let after = std::fs::read_dir(root.join("Audio").join("Imports"))
+            .expect("imports")
+            .count();
+        assert_eq!(before, after, "failed reversal cleans up its output");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
