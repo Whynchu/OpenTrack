@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 27;
+const FORMAT_VERSION: u32 = 28;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1085,7 +1085,7 @@ mod tests {
         ));
         document.write(&path).unwrap();
         let loaded = ProjectFile::read(&path).unwrap();
-        assert_eq!(loaded.version, 27);
+        assert_eq!(loaded.version, FORMAT_VERSION);
         assert_eq!(
             loaded.project.tracks[0].automation_lanes,
             document.project.tracks[0].automation_lanes
@@ -1098,9 +1098,73 @@ mod tests {
             .remove("automation_lanes");
         fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
         let migrated = ProjectFile::read(&path).unwrap();
-        assert_eq!(migrated.version, 27);
+        assert_eq!(migrated.version, FORMAT_VERSION);
         assert!(migrated.project.tracks[0].automation_read);
         assert!(migrated.project.tracks[0].automation_lanes.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_27_file_migrates_to_28_and_defaults_the_new_fields() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Group);
+        project.tracks[0].monitor_mode = opentrack_core::project::MonitorMode::Auto;
+        project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 2.0)
+            .expect("clip");
+        project.tracks[0].clips[0].take_group = Some(3);
+        project.tracks[0].clips[0].take_active = false;
+        project.add_marker(4.0, "Chorus").expect("marker");
+        project.set_notepad("Keep the bridge quiet");
+        project.tracks[1].group_collapsed = true;
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        // Rewrite the saved file as version 27: the schema before markers, take
+        // groups, monitoring modes and the notepad joined it, so those fields are
+        // genuinely absent rather than merely relabelled.
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 27.into();
+        {
+            let project = legacy["project"].as_object_mut().expect("project");
+            project.remove("markers");
+            project.remove("next_marker_id");
+            project.remove("notepad");
+            let tracks = project["tracks"].as_array_mut().expect("tracks");
+            tracks[0]
+                .as_object_mut()
+                .expect("track")
+                .remove("monitor_mode");
+            tracks[0]["clips"][0]
+                .as_object_mut()
+                .expect("clip")
+                .remove("take_group");
+            tracks[0]["clips"][0]
+                .as_object_mut()
+                .expect("clip")
+                .remove("take_active");
+        }
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v27-migration-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        // The fields the version did not have load with their documented defaults.
+        assert!(loaded.project.markers.is_empty());
+        assert!(loaded.project.notepad.is_empty());
+        assert_eq!(
+            loaded.project.tracks[0].monitor_mode,
+            opentrack_core::project::MonitorMode::Off
+        );
+        assert_eq!(loaded.project.tracks[0].clips[0].take_group, None);
+        assert!(loaded.project.tracks[0].clips[0].take_active);
+        // Fields the version did have are preserved.
+        assert!(loaded.project.tracks[1].group_collapsed);
         fs::remove_file(path).unwrap();
     }
 
