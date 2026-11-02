@@ -46,6 +46,8 @@ mod routing;
 mod sample_editor;
 #[path = "system_stats.rs"]
 mod system_stats;
+#[path = "templates.rs"]
+mod templates;
 #[path = "transport_panel.rs"]
 mod transport_panel;
 #[path = "vst3_host.rs"]
@@ -1120,6 +1122,8 @@ pub struct OpenTrackApp {
     project_logical_editor_open: bool,
     markers_window_open: bool,
     undo_history_open: bool,
+    /// Name being typed in the Save as Template dialog.
+    template_name_draft: Option<String>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -1412,6 +1416,11 @@ enum MidiNoteDragMode {
 
 enum PendingProjectAction {
     New(PathBuf),
+    /// New project whose structure comes from a saved template.
+    NewFromTemplate {
+        parent: PathBuf,
+        path: PathBuf,
+    },
     Open(std::path::PathBuf),
     Close,
 }
@@ -2489,6 +2498,7 @@ impl OpenTrackApp {
             project_logical_editor_open: false,
             markers_window_open: false,
             undo_history_open: false,
+            template_name_draft: None,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -3702,6 +3712,20 @@ impl OpenTrackApp {
     fn apply_project_action(&mut self, action: PendingProjectAction) {
         match action {
             PendingProjectAction::New(parent) => self.reset_project(parent),
+            PendingProjectAction::NewFromTemplate { parent, path } => {
+                self.reset_project(parent);
+                match templates::load(&path) {
+                    Ok((name, project)) => {
+                        self.data.project = project;
+                        self.data.project.register_media();
+                        self.rebuild_audio_plan();
+                        self.status_message = format!("New project from the template '{name}'");
+                    }
+                    Err(error) => {
+                        self.status_message = format!("Could not read the template: {error}")
+                    }
+                }
+            }
             PendingProjectAction::Open(path) => self.begin_project_load(path),
             PendingProjectAction::Close => {}
         }
@@ -6784,6 +6808,101 @@ impl OpenTrackApp {
         self.status_message = "Removed the marker; Undo restores it".to_owned();
     }
 
+    /// Writes the current project's structure as a named template.
+    fn save_project_as_template(&mut self, name: &str) {
+        let Some(directory) = templates::templates_directory() else {
+            self.status_message =
+                "This system reports no data directory to keep templates in".to_owned();
+            return;
+        };
+        match templates::save(&directory, name, &self.data.project) {
+            Ok((name, path)) => {
+                self.status_message = format!(
+                    "Saved the template '{}' ({} track(s)) to {}",
+                    name,
+                    self.data.project.tracks.len(),
+                    path.display()
+                );
+                self.template_name_draft = None;
+            }
+            Err(error) => self.status_message = format!("Could not save the template: {error}"),
+        }
+    }
+
+    /// Starts a new project whose structure comes from a template.
+    fn new_project_from_template(&mut self, path: &std::path::Path) {
+        let (name, project) = match templates::load(path) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.status_message = format!("Could not read the template: {error}");
+                return;
+            }
+        };
+        let Some(parent) = FileDialog::new()
+            .set_title("Choose where to create the project from this template")
+            .pick_folder()
+        else {
+            return;
+        };
+        // The template is a project structure, so it goes through the same new
+        // project path as an empty one; only its content differs.
+        self.request_project_action(PendingProjectAction::NewFromTemplate {
+            parent,
+            path: path.to_path_buf(),
+        });
+        self.status_message = format!("Creating a project from the template '{name}'");
+    }
+
+    fn show_save_template_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.template_name_draft.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Save as Template")
+            .id(Id::new("save-template"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label("Template name");
+                let edit = ui.text_edit_singleline(&mut draft);
+                if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    save = true;
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "A template keeps tracks, groups, routing, gains, EQ, inserts and sends, \
+                         and leaves out events, MIDI parts, markers and the media pool.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("save-template"),
+            &mut open,
+            response.as_ref(),
+        );
+        if save {
+            self.save_project_as_template(&draft);
+        } else if !cancel && open {
+            self.template_name_draft = Some(draft);
+        }
+    }
+
     fn show_undo_history(&mut self, ctx: &egui::Context) {
         if !self.undo_history_open {
             return;
@@ -9769,6 +9888,33 @@ impl OpenTrackApp {
                     }
                     if menu_command(
                         ui,
+                        "Save as Template...",
+                        "",
+                        self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.template_name_draft =
+                            Some(self.data.project.name.clone());
+                        ui.close();
+                    }
+                    let templates = templates::templates_directory()
+                        .map(|directory| templates::list(&directory))
+                        .unwrap_or_default();
+                    ui.menu_button("New from Template", |ui| {
+                        if templates.is_empty() {
+                            ui.label("No templates yet. Save one from a project.");
+                        }
+                        for template in &templates {
+                            let label = format!("{} ({} track(s))", template.name, template.tracks);
+                            if ui.button(label).clicked() {
+                                self.new_project_from_template(&template.path);
+                                ui.close();
+                            }
+                        }
+                    });
+                    if menu_command(
+                        ui,
                         "Consolidate Media",
                         "",
                         self.project_folder_managed && !self.is_recording(),
@@ -11011,6 +11157,7 @@ impl OpenTrackApp {
             || self.project_logical_editor_open
             || self.markers_window_open
             || self.undo_history_open
+            || self.template_name_draft.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -13396,6 +13543,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_logical_editor(&ctx);
         self.show_markers_window(&ctx);
         self.show_undo_history(&ctx);
+        self.show_save_template_dialog(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);

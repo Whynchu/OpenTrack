@@ -2352,6 +2352,36 @@ impl Project {
         changed
     }
 
+    /// A copy of this project's structure with no content in it.
+    ///
+    /// A template keeps what a user sets up once — tracks, groups, routing, gains,
+    /// EQ, inserts, sends and automation lanes — and drops what belongs to a
+    /// particular song: events, MIDI parts, markers, the media pool and the
+    /// selection. Timeline positions reset so a new song starts at bar one.
+    pub fn as_template(&self) -> Project {
+        let mut template = self.clone();
+        for track in template.tracks.iter_mut() {
+            track.clips.clear();
+            track.midi_parts.clear();
+            track.armed = false;
+            track.monitor = false;
+        }
+        template.media_pool.clear();
+        template.markers.clear();
+        template.next_marker_id = first_marker_id();
+        template.next_clip_id = 1;
+        template.next_midi_part_id = 1;
+        template.next_midi_note_id = 1;
+        template.next_midi_controller_id = 1;
+        template.selected_track = None;
+        template.selected_midi_part_id = None;
+        template.loop_start_beats = default_loop_start_beats();
+        template.loop_end_beats = default_loop_end_beats();
+        template.cycle_mode = CycleMode::Loop;
+        template.name = "Untitled Project".to_owned();
+        template
+    }
+
     /// Sources the project references that are not on disk.
     ///
     /// Sorted and de-duplicated, so a caller can present and relink them once.

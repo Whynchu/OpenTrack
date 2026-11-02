@@ -115,8 +115,14 @@ Still open from revision 1:
    the rest on disk. Opening a project with points lists each one with its age and
    size, recovers the chosen copy, or discards them all; a single legacy
    `autosave.opr` is still offered. 2 tests.
-13. **Project templates.** Save the current project's structure as a template and
-    create new projects from it.
+13. **Project templates.** *Delivered.* `Project::as_template` keeps tracks,
+   groups, routing, gains, EQ, inserts, sends and automation lanes and drops
+   events, MIDI parts, markers, the media pool and the selection, resetting the
+   timeline. Project > Save as Template... names it; Project > New from Template
+   lists the saved ones with their track counts and starts a new project from the
+   chosen one. Templates live in the app data directory
+   (`templates/*.otemplate.json`, `OPENTRACK_DATA_DIR` overrides it for tests) with
+   a versioned format, sanitized names and a bounded listing. 5 tests.
 14. **Session health check.** A dialog that reports unsupported sample rates,
     missing media, dangling routes, failed inserts and oversized projects in one
     place.
