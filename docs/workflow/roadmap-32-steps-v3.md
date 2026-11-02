@@ -34,7 +34,10 @@ work is named rather than approximated.
    In/Out; ruler format exchange; Split Range; Zoom Full and Zoom to Event; the
    Info view, Inspector and track-colour toggles; and automation read/write for
    every track, each as one labelled undo step where it edits the project. Shortcut
-   coverage rises 90 -> 109 of 152 commands. 4 app tests.
+   coverage rises 90 -> 109 of 152 commands. A follow-up in the same slice added
+   the selection-side keys (E/D move the locator to the cursor), Project Setup
+   (Shift+S) and Toggle Selection (Ctrl+Space), taking coverage to 114. 6 app
+   tests.
 
 ### B. Audio event processing
 

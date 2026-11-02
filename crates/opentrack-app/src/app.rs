@@ -6911,6 +6911,26 @@ impl OpenTrackApp {
             "navigate.add_down" => self.navigate_track(1, true),
             "transport.set_left_locator" => self.set_locator_at_playhead(true),
             "transport.set_right_locator" => self.set_locator_at_playhead(false),
+            "edit.left_selection_side_to_cursor" => self.set_locator_at_playhead(true),
+            "edit.right_selection_side_to_cursor" => self.set_locator_at_playhead(false),
+            "project.setup" => self.project_setup_open = true,
+            "navigate.toggle_selection" => {
+                let Some(track_id) = self
+                    .data
+                    .project
+                    .selected_track
+                    .and_then(|index| self.data.project.tracks.get(index as usize))
+                    .map(|track| track.id)
+                else {
+                    return;
+                };
+                if self.arrange_view_state.selected_track_ids.remove(&track_id) {
+                    self.status_message = "Removed the track from the selection".to_owned();
+                } else {
+                    self.arrange_view_state.selected_track_ids.insert(track_id);
+                    self.status_message = "Added the track to the selection".to_owned();
+                }
+            }
             "project.open_browser" => {
                 self.data.selected_media = 0;
                 self.focus_tab(PanelTab::Media);
@@ -26262,6 +26282,31 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn selection_side_project_setup_and_toggle_reach_their_state() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.data.transport.position_beats = 2.0;
+        dispatch(&mut app, "edit.left_selection_side_to_cursor", &ctx);
+        assert_eq!(app.data.project.loop_start_beats, 2.0);
+        app.data.transport.position_beats = 10.0;
+        dispatch(&mut app, "edit.right_selection_side_to_cursor", &ctx);
+        assert_eq!(app.data.project.loop_end_beats, 10.0);
+
+        dispatch(&mut app, "project.setup", &ctx);
+        assert!(app.project_setup_open);
+
+        // Toggling removes the current track from the selected set, then adds it.
+        // The arrange seeds this set while drawing; the test seeds it directly.
+        let id = app.data.project.tracks[0].id;
+        app.arrange_view_state.selected_track_ids.insert(id);
+        dispatch(&mut app, "navigate.toggle_selection", &ctx);
+        assert!(!app.arrange_view_state.selected_track_ids.contains(&id));
+        dispatch(&mut app, "navigate.toggle_selection", &ctx);
+        assert!(app.arrange_view_state.selected_track_ids.contains(&id));
+    }
+
+    #[test]
     fn punch_and_ruler_shortcuts_toggle_their_state() {
         let ctx = egui::Context::default();
         let mut app = app_with_track();
@@ -26723,6 +26768,10 @@ mod keyboard_coverage_tests {
             "navigate.down",
             "navigate.top",
             "navigate.bottom",
+            "navigate.toggle_selection",
+            "edit.left_selection_side_to_cursor",
+            "edit.right_selection_side_to_cursor",
+            "project.setup",
             "zoom.zoom_full",
             "zoom.zoom_to_event",
             "edit.split_range",

@@ -29,8 +29,8 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **109** commands have a dispatch
-arm; **43** still do not. The menus remain the way to reach the
+numpad ranges). **114** commands have a dispatch
+arm; **38** still do not. The menus remain the way to reach the
 uncovered features.
 
 ## Bound commands without a dispatch arm
@@ -54,11 +54,9 @@ uncovered features.
 - Delete Time (`Shift+Backspace`) — `edit.delete_time`
 - Edit In-place (`Ctrl+Shift+I`) — `edit.edit_in_place`
 - Insert Silence (`Ctrl+Shift+E`) — `edit.insert_silence`
-- Left Selection Side to Cursor (`E`) — `edit.left_selection_side_to_cursor`
 - Open Score Editor (`Ctrl+R`) — `edit.open_score_editor`
 - Paste at Origin (`Alt+V`) — `edit.paste_at_origin`
 - Paste Time (`Ctrl+Shift+V`) — `edit.paste_time`
-- Right Selection Side to Cursor (`D`) — `edit.right_selection_side_to_cursor`
 
 ### Editors
 
@@ -67,7 +65,6 @@ uncovered features.
 ### File
 
 - Close (`Ctrl+W`) — `file.close`
-- Save New Version (`Ctrl+Alt+S`) — `file.save_new_version`
 
 ### Navigate
 
@@ -75,7 +72,6 @@ uncovered features.
 - Add Right (`Shift+Right`) — `navigate.add_right`
 - Left (`Left`) — `navigate.left`
 - Right (`Right`) — `navigate.right`
-- Toggle Selection (`Ctrl+Space`) — `navigate.toggle_selection`
 
 ### Nudge
 
@@ -87,7 +83,6 @@ uncovered features.
 ### Project
 
 - Open Tempo Track Editor (`Ctrl+T`) — `project.open_tempo_track_editor`
-- Setup (`Shift+S`) — `project.setup`
 
 ### Transport
 
@@ -104,7 +99,6 @@ uncovered features.
 - To Marker 2 (`Shift+2`) — `transport.to_marker_2`
 - To Marker 3 to 9 (`Numpad3..9; Shift+3..9`) — `transport.to_marker_3_to_9`
 - Use External Sync (`T`) — `transport.use_external_sync`
-
 ## Focus and labels
 
 - egui moves keyboard focus with Tab between interactive widgets in layout
