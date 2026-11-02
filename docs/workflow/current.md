@@ -20,7 +20,9 @@ R5-16 scoped Add Plug-in (a built-in processor submenu) and Remove Plug-in to th
 
 R5-17 accepted the offline processing path (locked refusal, per-event bakes, failure cleanup, persistence) and recorded that the chain render is synchronous with no cancel, correcting the R5-14 wording.
 
-Next ready step: R5-18, cue-sheet Audio CD import. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+R5-18 delivered cue-sheet Audio CD import (bounded parser, one event per track, one history step, unsupported commands reported).
+
+Next ready step: R5-19, backgrounding the Track Archive import. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 

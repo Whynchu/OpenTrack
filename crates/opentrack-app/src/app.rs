@@ -14,6 +14,7 @@ mod cc_automation;
 mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
+mod cue_import;
 mod drum_editor;
 mod drum_map_setup;
 mod logical_presets;
@@ -13573,9 +13574,20 @@ impl OpenTrackApp {
                             self.import_tempo_file();
                             ui.close();
                         }
+                        if menu_command(
+                            ui,
+                            "Audio CD...",
+                            "",
+                            self.project_open && !self.is_recording(),
+                        )
+                        .clicked()
+                        {
+                            self.import_audio_cd();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
-                            &[("Audio CD...", ""), ("Video File...", ""), ("OMF...", "")],
+                            &[("Video File...", ""), ("OMF...", "")],
                         );
                         if menu_command(
                             ui,
