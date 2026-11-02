@@ -8,11 +8,11 @@ Step 2 reviewed slices 41-56 and fixed two confirmed defects. New `media_paths.r
 
 Step 3 established the command boundary for the transport work: `transport_commands.rs` now owns the pure audio-event/MIDI-part selection span used by play-from, play-until, locate-selection and locators-to-selection; a test proves the Transport menu action and Alt+Space reach the same locators and status. App suite: 502 passed, 9 ignored. Runtime focus/desktop review remains pending. See [R4-03](tasks/R4-03-command-boundary.md).
 
-Step 4 added the roll contract and scheduler: independent persisted pre/post lengths (0-64 beats, default 4), pre-roll clamped at the project start and ending at the target, post-roll starting at the target. Recording, active Cycle, missing/zero-length selections and zero roll lengths are refused with reasons; stop/seek/Return-to-Zero/plain Play clear the target; no project undo step is created. **Known limit:** the stop is evaluated by the existing per-frame transport check, so a target inside an audio block can overshoot audibly; sample-accurate engine stop is a timing decision not yet made. App suite: 508 passed, 9 ignored. Menus are not enabled yet. See [R4-04](tasks/R4-04-pre-post-roll-contract.md).
+Step 4 added the roll contract and scheduler: independent persisted pre/post lengths (0-64 beats, default 4), pre-roll clamped at the project start and ending at the target, post-roll starting at the target. Recording, active Cycle, missing/zero-length selections and zero roll lengths are refused with reasons; stop/seek/Return-to-Zero/plain Play clear the target; no project undo step is created. **Known limit:** the stop is evaluated by the existing per-frame transport check, so a target inside an audio block can overshoot audibly; sample-accurate engine stop is a timing decision not yet made. App suite: 508 passed, 9 ignored. See [R4-04](tasks/R4-04-pre-post-roll-contract.md).
 
-Next ready work: revision-4 step 5, enable Pre-roll to Selection Start/End with labelled length controls. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+Step 5 enabled Transport > Pre-roll to Selection Start/End (audio events plus the selected MIDI part) and added a `Roll Lengths...` submenu with labelled pre/post fields. Missing/zero selection, target at beat 0, Cycle, recording and zero length report reasons; scheduling writes no undo step. App suite: 510 passed, 9 ignored; the generated menu inventory is now 271 leaves with 93 unavailable. See [R4-05](tasks/R4-05-pre-roll-commands.md).
 
----
+Next ready work: revision-4 step 6, enable Post-roll from Selection Start/End. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.---
 
 # Current assignment — roadmap activation (2026-11-01)
 

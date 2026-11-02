@@ -14586,10 +14586,58 @@ impl OpenTrackApp {
                         &[
                             ("Post-roll from Selection Start", ""),
                             ("Post-roll from Selection End", ""),
-                            ("Pre-roll to Selection Start", ""),
-                            ("Pre-roll to Selection End", ""),
                         ],
                     );
+                    let can_roll = self.project_open && !self.is_recording();
+                    if menu_command(ui, "Pre-roll to Selection Start", "", can_roll).clicked() {
+                        self.schedule_roll(false, false);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Pre-roll to Selection End", "", can_roll).clicked() {
+                        self.schedule_roll(false, true);
+                        ui.close();
+                    }
+                    ui.menu_button("Roll Lengths...", |ui| {
+                        ui.label("Pre-roll (beats, 0-64)");
+                        let mut pre = self.roll_lengths.pre_beats;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut pre)
+                                    .range(0.0..=crate::transport_commands::MAX_ROLL_BEATS)
+                                    .speed(0.1),
+                            )
+                            .changed()
+                        {
+                            self.roll_lengths.pre_beats =
+                                crate::transport_commands::RollLengths::from_stored(
+                                    pre,
+                                    crate::transport_commands::DEFAULT_ROLL_BEATS,
+                                );
+                        }
+                        ui.label("Post-roll (beats, 0-64)");
+                        let mut post = self.roll_lengths.post_beats;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut post)
+                                    .range(0.0..=crate::transport_commands::MAX_ROLL_BEATS)
+                                    .speed(0.1),
+                            )
+                            .changed()
+                        {
+                            self.roll_lengths.post_beats =
+                                crate::transport_commands::RollLengths::from_stored(
+                                    post,
+                                    crate::transport_commands::DEFAULT_ROLL_BEATS,
+                                );
+                        }
+                        ui.label(
+                            egui::RichText::new(
+                                "The selection is the selected audio events plus the selected MIDI part.",
+                            )
+                            .small()
+                            .color(theme::palette(ui).muted),
+                        );
+                    });
                     menu_command(ui, "Use Pre-roll", "", false);
                     menu_command(ui, "Use Post-roll", "", false);
                     menu_command(ui, "Start Record at Left Locator", "", false);
@@ -30368,6 +30416,59 @@ mod transport_locate_tests {
         app.play_selection_range();
         assert!(app.data.transport.cycle);
         assert!(app.status_message.contains("Playing the selection range"));
+    }
+
+    #[test]
+    fn pre_roll_uses_both_selection_edges_and_writes_no_history() {
+        let mut app = app_with_events();
+        let first = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([first]);
+        app.roll_lengths.pre_beats = 2.0;
+        let history_before = app.project_history.counts();
+
+        assert!(app.schedule_roll(false, false), "{}", app.status_message);
+        assert_eq!(app.data.transport.position_beats, 2.0);
+        assert_eq!(app.play_until, Some(4.0));
+        app.set_transport_playing(false);
+
+        assert!(app.schedule_roll(false, true), "{}", app.status_message);
+        assert_eq!(app.data.transport.position_beats, 6.0);
+        assert_eq!(app.play_until, Some(8.0));
+        app.set_transport_playing(false);
+
+        assert_eq!(
+            app.project_history.counts(),
+            history_before,
+            "roll scheduling must not create an undo step"
+        );
+
+        // A near-zero target clamps at the project start and still plays.
+        let near_start = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("c.wav"), 0.5, 0.25)
+            .expect("clip");
+        app.arrange_view_state
+            .audio_events
+            .select_many([near_start]);
+        assert!(app.schedule_roll(false, false), "{}", app.status_message);
+        assert_eq!(app.data.transport.position_beats, 0.0);
+        assert_eq!(app.play_until, Some(0.5));
+        app.set_transport_playing(false);
+    }
+
+    #[test]
+    fn pre_roll_refuses_a_selection_at_the_project_start() {
+        let mut app = app_with_events();
+        let at_zero = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("zero.wav"), 0.0, 0.5)
+            .expect("clip");
+        app.arrange_view_state.audio_events.select_many([at_zero]);
+        assert!(!app.schedule_roll(false, false));
+        assert!(app.status_message.contains("no room to pre-roll"));
+        assert!(!app.data.transport.playing);
     }
 
     #[test]
