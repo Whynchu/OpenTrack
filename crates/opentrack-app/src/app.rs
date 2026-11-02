@@ -472,7 +472,16 @@ struct TrackAddDialog {
     kind: TrackKind,
     count: u32,
     audio_channels: u8,
+    mono_input_right: bool,
     browse_presets: bool,
+}
+
+fn mono_track_input_routing(right_channel: bool) -> &'static str {
+    if right_channel {
+        "Right - Stereo In"
+    } else {
+        "Left - Stereo In"
+    }
 }
 
 #[derive(Clone)]
@@ -761,6 +770,17 @@ fn window_level_request_needed(
     settle_frames: u8,
 ) -> bool {
     current != Some(desired) || settle_frames > 0
+}
+
+#[cfg(test)]
+mod add_track_configuration_tests {
+    use super::mono_track_input_routing;
+
+    #[test]
+    fn mono_input_choice_maps_to_the_matching_persisted_route() {
+        assert_eq!(mono_track_input_routing(false), "Left - Stereo In");
+        assert_eq!(mono_track_input_routing(true), "Right - Stereo In");
+    }
 }
 
 #[cfg(test)]
@@ -7964,6 +7984,7 @@ impl OpenTrackApp {
                                     kind,
                                     count: 1,
                                     audio_channels: 1,
+                                    mono_input_right: false,
                                     browse_presets: true,
                                 });
                                 ui.close();
@@ -10175,6 +10196,7 @@ impl OpenTrackApp {
                     kind,
                     count: 1,
                     audio_channels: 1,
+                    mono_input_right: false,
                     browse_presets: false,
                 });
             }
@@ -10415,13 +10437,34 @@ impl OpenTrackApp {
                                                 egui::RichText::new("configuration").size(10.0),
                                             );
                                         });
-                                        ui.vertical(|ui| {
-                                            ui.add_enabled_ui(false, |ui| {
-                                                egui::Button::new("Speakers unavailable")
-                                                    .min_size(Vec2::new(120.0, 16.0))
+                                        if dialog.audio_channels == 1 {
+                                            ui.vertical(|ui| {
+                                                egui::ComboBox::from_id_salt(
+                                                    "add-mono-input-channel",
+                                                )
+                                                .width(78.0)
+                                                .selected_text(if dialog.mono_input_right {
+                                                    "Right In"
+                                                } else {
+                                                    "Left In"
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut dialog.mono_input_right,
+                                                        false,
+                                                        "Left In",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut dialog.mono_input_right,
+                                                        true,
+                                                        "Right In",
+                                                    );
+                                                });
+                                                ui.label(
+                                                    egui::RichText::new("input channel").size(10.0),
+                                                );
                                             });
-                                            ui.label(egui::RichText::new("routing").size(10.0));
-                                        });
+                                        }
                                     }
                                     TrackKind::Group => {
                                         ui.vertical(|ui| {
@@ -10518,6 +10561,11 @@ impl OpenTrackApp {
                     .data
                     .project
                     .insert_track_below_selection(dialog.kind, dialog.audio_channels);
+                if dialog.kind == TrackKind::Audio && dialog.audio_channels == 1 {
+                    self.data.project.tracks[index].input_routing = Some(
+                        mono_track_input_routing(dialog.mono_input_right).to_owned(),
+                    );
+                }
                 last_track_id = self.data.project.tracks.get(index).map(|track| track.id);
             }
             self.arrange_view_state.selected_track_ids.clear();
