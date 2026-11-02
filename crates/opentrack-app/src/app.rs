@@ -10611,11 +10611,19 @@ impl OpenTrackApp {
         };
     }
 
-    /// Moves the track selection by `delta`, clamped to the project.
+    /// Moves the track selection by `delta`, skipping rows hidden by a collapsed
+    /// group or folder. A hidden current selection stays selected but the next
+    /// visible row becomes the target.
     fn navigate_track(&mut self, delta: isize, add: bool) {
         let count = self.data.project.tracks.len();
         if count == 0 {
             self.status_message = "This project has no tracks to navigate".to_owned();
+            return;
+        }
+        let visible = (0..count)
+            .filter(|index| self.track_row_is_visible(*index))
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
             return;
         }
         let current = self
@@ -10623,18 +10631,50 @@ impl OpenTrackApp {
             .project
             .selected_track
             .map_or(0, |index| (index as usize).min(count - 1));
-        let next = (current as isize + delta).clamp(0, count as isize - 1) as usize;
-        self.select_arrange_track(next, add);
+        let next = visible
+            .iter()
+            .position(|index| *index == current)
+            .map(|position| position.saturating_add_signed(delta).min(visible.len() - 1))
+            .unwrap_or_else(|| {
+                if delta >= 0 {
+                    visible
+                        .iter()
+                        .position(|index| *index > current)
+                        .unwrap_or(visible.len() - 1)
+                } else {
+                    visible
+                        .iter()
+                        .rposition(|index| *index < current)
+                        .unwrap_or(0)
+                }
+            });
+        self.select_arrange_track(visible[next], add);
     }
 
-    /// Selects the first or last track.
+    fn track_row_is_visible(&self, index: usize) -> bool {
+        let Some(track) = self.data.project.tracks.get(index) else {
+            return false;
+        };
+        !track_hidden_by_collapsed_group(&self.data.project, track.id)
+            && !track_hidden_by_collapsed_folder(&self.data.project, track.id)
+    }
+
+    /// Selects the first or last visible track.
     fn navigate_track_edge(&mut self, bottom: bool, add: bool) {
         let count = self.data.project.tracks.len();
         if count == 0 {
             self.status_message = "This project has no tracks to navigate".to_owned();
             return;
         }
-        self.select_arrange_track(if bottom { count - 1 } else { 0 }, add);
+        let index = if bottom {
+            (0..count)
+                .rev()
+                .find(|index| self.track_row_is_visible(*index))
+        } else {
+            (0..count).find(|index| self.track_row_is_visible(*index))
+        }
+        .unwrap_or(if bottom { count - 1 } else { 0 });
+        self.select_arrange_track(index, add);
     }
 
     /// Sets one locator to the cursor as one undo step.
@@ -31023,6 +31063,31 @@ mod transport_locate_tests {
         );
         assert_eq!(app.data.project.set_all_groups_collapsed(false), 1);
         assert!(!track_hidden_by_collapsed_folder(&app.data.project, child));
+    }
+
+    #[test]
+    fn track_navigation_skips_children_hidden_by_collapsed_folders() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Folder);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Audio);
+        let folder = app.data.project.tracks[0].id;
+        app.data.project.tracks[1].parent_folder_id = Some(folder);
+        app.data.project.tracks[0].folder_collapsed = true;
+        app.select_arrange_track(0, false);
+
+        app.navigate_track(1, false);
+        assert_eq!(app.data.project.selected_track, Some(2));
+        app.navigate_track(-1, false);
+        assert_eq!(app.data.project.selected_track, Some(0));
+        app.navigate_track_edge(true, false);
+        assert_eq!(app.data.project.selected_track, Some(2));
+        app.navigate_track_edge(false, false);
+        assert_eq!(app.data.project.selected_track, Some(0));
+        assert_eq!(app.data.project.tracks.len(), 3, "hidden rows still exist");
     }
 
     #[test]

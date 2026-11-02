@@ -40,7 +40,9 @@ Step 18 enabled Add Folder in the main and context Add Track menus and added con
 
 Step 19 added folder indentation, per-folder `▤F` folding, persisted `folder_collapsed`, and folder participation in Expand/Collapse All. Collapsed folder children get zero row/lane height but remain in the project and audio/recording plan; group folding behavior is unchanged. Core suite: 159 passed; app suite: 532 passed, 9 ignored; inventory remains 271 leaves with 84 unavailable. Desktop visual/scroll review and cross-view consistency remain step 20. See [R4-19](tasks/R4-19-render-fold-folders.md).
 
-Next ready work: revision-4 step 20, review hierarchy across views. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 20 aligned folder identity across views: Mixer strips omit folders, Inspector shows an organizational notice instead of channel controls, and keyboard Up/Down/Home/End skip rows hidden by collapsed folders/groups without deleting the hidden selection. Folder subtree reorder/duplicate and the audio/recording plan are unchanged. App suite: 533 passed, 9 ignored; core 159 passed; inventory remains 271 leaves with 84 unavailable. Desktop visual/scroll and save/reopen review remain pending. See [R4-20](tasks/R4-20-hierarchy-cross-view-review.md).
+
+Next ready work: revision-4 step 21, enable a real Marker lane. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

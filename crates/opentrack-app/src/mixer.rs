@@ -186,6 +186,7 @@ pub(super) fn show_channels(
     let visible_track_count = project
         .tracks
         .iter()
+        .filter(|track| track.kind != TrackKind::Folder)
         .filter(|track| !(view.hide_audio && track.kind == TrackKind::Audio))
         .count();
     let track_area_width = area.width()
@@ -244,6 +245,9 @@ pub(super) fn show_channels(
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.horizontal_top(|ui| {
                     for (index, track) in project.tracks.iter_mut().enumerate() {
+                        if track.kind == TrackKind::Folder {
+                            continue;
+                        }
                         if view.hide_audio && track.kind == TrackKind::Audio {
                             continue;
                         }

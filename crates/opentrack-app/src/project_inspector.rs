@@ -340,6 +340,20 @@ pub(super) fn show(
         ui.label("No track selected");
         return InspectorChanges::default();
     };
+    if project.tracks[track_index].kind == TrackKind::Folder {
+        ui.spacing_mut().item_spacing = Vec2::new(0.0, 4.0);
+        ui.label(
+            egui::RichText::new(&project.tracks[track_index].name)
+                .size(11.0)
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Organizational folder. It has no channel controls, media or DSP.")
+                .small()
+                .color(theme::palette(ui).muted),
+        );
+        return InspectorChanges::default();
+    }
     let mut modified = false;
     let mut requires_plan_rebuild = false;
     let mut live_mix_changed = false;
