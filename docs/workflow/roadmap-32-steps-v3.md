@@ -398,5 +398,12 @@ still one commit with tests and refreshed counts.
    recordable from that position). Missing capacity reports "unavailable" instead
    of a guess. 2 app and 1 view-state tests. Disabled entries 95 -> 93.
 
+38. **Show Panel.** *Delivered.* Window > Show Panel is now a checkable entry bound
+   to the existing persisted `show_inspector` view flag, going through one
+   `toggle_inspector_panel` shared with the `editors.show_hide_inspector`
+   shortcut, so the menu, keymap and toolbar cannot disagree. 1 app test (both
+   entry points, status text, round trip and the legacy default). Disabled entries
+   93 -> 92.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

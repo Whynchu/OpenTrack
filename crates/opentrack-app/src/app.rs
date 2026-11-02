@@ -7574,9 +7574,7 @@ impl OpenTrackApp {
             "editors.show_hide_info_view" => {
                 self.arrange_view_state.show_info_line = !self.arrange_view_state.show_info_line;
             }
-            "editors.show_hide_inspector" => {
-                self.arrange_view_state.show_inspector = !self.arrange_view_state.show_inspector;
-            }
+            "editors.show_hide_inspector" => self.toggle_inspector_panel(),
             "project.show_hide_track_colors" => {
                 self.arrange_view_state.show_track_colors =
                     !self.arrange_view_state.show_track_colors;
@@ -8045,6 +8043,16 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
+    }
+
+    /// Shows or hides the arrange inspector panel.
+    fn toggle_inspector_panel(&mut self) {
+        self.arrange_view_state.show_inspector = !self.arrange_view_state.show_inspector;
+        self.status_message = if self.arrange_view_state.show_inspector {
+            "Inspector panel shown".to_owned()
+        } else {
+            "Inspector panel hidden".to_owned()
+        };
     }
 
     /// Shows or hides the transport time in the project readout strip.
@@ -13873,6 +13881,17 @@ impl OpenTrackApp {
                         self.toggle_time_display();
                         ui.close();
                     }
+                    if ui
+                        .selectable_label(
+                            self.arrange_view_state.show_inspector,
+                            "Show Panel",
+                        )
+                        .on_hover_text("Show or hide the inspector panel on the left of the arrange")
+                        .clicked()
+                    {
+                        self.toggle_inspector_panel();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -13880,7 +13899,6 @@ impl OpenTrackApp {
                             ("Mixer 3", ""),
                             ("Video Window", "F8"),
                             ("Virtual Keyboard", "Alt+K"),
-                            ("Show Panel", ""),
                         ],
                     );
                 });
@@ -29132,6 +29150,53 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod inspector_panel_tests {
+    use super::*;
+
+    #[test]
+    fn the_show_panel_menu_entry_and_command_share_one_toggle() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        assert!(app.arrange_view_state.show_inspector, "shown by default");
+
+        // The Window > Show Panel entry's action.
+        app.toggle_inspector_panel();
+        assert!(!app.arrange_view_state.show_inspector);
+        assert_eq!(app.status_message, "Inspector panel hidden");
+
+        // The keymap command flips the same flag, with the same status text.
+        app.dispatch_reference_command(
+            "editors.show_hide_inspector",
+            "Show/Hide Inspector",
+            KeyChord::new(
+                KeyCode::Letter('I'),
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            &ctx,
+        );
+        assert!(app.arrange_view_state.show_inspector);
+        assert_eq!(app.status_message, "Inspector panel shown");
+
+        // The flag is persisted view state, and older files show the panel.
+        let encoded = serde_json::to_string(&app.arrange_view_state).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert!(restored.show_inspector);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("show_inspector");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
+        assert!(legacy.show_inspector, "legacy projects keep the panel");
     }
 }
 
