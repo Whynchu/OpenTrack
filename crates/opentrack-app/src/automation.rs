@@ -135,7 +135,21 @@ pub(super) fn draw_lane(
         )
         && index < points.len()
     {
-        let (beat, value) = position(pos);
+        let (mut beat, value) = position(pos);
+        let lower = index
+            .checked_sub(1)
+            .and_then(|previous| points.get(previous))
+            .map(|point| point.0 + 1e-6)
+            .unwrap_or(0.0);
+        let upper = points
+            .get(index + 1)
+            .map(|point| point.0 - 1e-6)
+            .unwrap_or(f64::MAX);
+        if lower <= upper {
+            beat = beat.clamp(lower, upper);
+        } else {
+            beat = points[index].0;
+        }
         if (points[index].0 - beat).abs() > 1e-9 || (points[index].1 - value).abs() > 1e-5 {
             return Some(LaneAction::Move {
                 track_id,
