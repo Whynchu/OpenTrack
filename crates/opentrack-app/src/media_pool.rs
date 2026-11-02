@@ -259,6 +259,128 @@ impl OpenTrackApp {
         }
         .into();
     }
+    /// Copies every referenced source into the project's own `Audio` folder.
+    ///
+    /// Consolidation makes the project self-contained: a file used from a shared
+    /// library is copied once, every event that referenced it is repointed, and
+    /// one undo step covers the whole change. Sources already inside the project
+    /// are left alone, and a missing source is reported instead of silently
+    /// dropped from the project.
+    pub(super) fn consolidate_project_media(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before consolidating media".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message =
+                "Choose or create this project's folder before consolidating media".to_owned();
+            return;
+        }
+        let Some(project_root) = self
+            .project_path
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+        else {
+            self.status_message =
+                "Save this project into its folder before consolidating media".to_owned();
+            return;
+        };
+
+        let sources = self.data.project.media_paths();
+        let mut moved = std::collections::BTreeMap::<PathBuf, PathBuf>::new();
+        let mut already_local = 0;
+        let mut missing = Vec::new();
+        let mut issues = Vec::new();
+        for source in sources {
+            if !source.exists() {
+                missing.push(source);
+                continue;
+            }
+            match audio_import_destination(&source, &project_root) {
+                Ok((_, false)) => already_local += 1,
+                Ok((destination, true)) => match fs::copy(&source, &destination) {
+                    Ok(_) => {
+                        moved.insert(source, destination);
+                    }
+                    Err(error) => {
+                        issues.push(format!("could not copy {}: {error}", source.display()))
+                    }
+                },
+                Err(error) => issues.push(error),
+            }
+        }
+
+        if moved.is_empty() {
+            let mut status = if already_local > 0 {
+                format!("All {already_local} source(s) already live in this project")
+            } else {
+                "There is no media to consolidate".to_owned()
+            };
+            if !missing.is_empty() {
+                status.push_str(&format!("; {} source(s) are missing", missing.len()));
+            }
+            if !issues.is_empty() {
+                status.push_str("; ");
+                status.push_str(&issues.join(" · "));
+            }
+            self.status_message = status;
+            return;
+        }
+
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            for destination in moved.values() {
+                let _ = fs::remove_file(destination);
+            }
+            self.status_message = "Cannot consolidate: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Consolidate Media");
+        let count = moved.len();
+        for track in self.data.project.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if let Some(destination) = moved.get(&clip.source_path) {
+                    clip.source_path = destination.clone();
+                }
+            }
+        }
+        self.data.project.media_pool = self
+            .data
+            .project
+            .media_pool
+            .iter()
+            .map(|path| moved.get(path).cloned().unwrap_or_else(|| path.clone()))
+            .collect();
+        self.data.project.register_media();
+        for (source, destination) in &moved {
+            if let Some(audio) = self.data.audio_sources.remove(source) {
+                self.data.audio_sources.insert(destination.clone(), audio);
+            }
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Consolidated {count} source(s) into the project's Audio folder; Undo restores the references"
+        );
+        if already_local > 0 {
+            status.push_str(&format!("; {already_local} already inside the project"));
+        }
+        if !missing.is_empty() {
+            status.push_str(&format!("; {} source(s) are missing", missing.len()));
+        }
+        if !issues.is_empty() {
+            status.push_str("; ");
+            status.push_str(&issues.join(" · "));
+        }
+        self.status_message = status;
+    }
+
     pub(super) fn add_pool_media(&mut self, path: PathBuf) {
         if self.is_recording() {
             return;
@@ -420,5 +542,125 @@ mod tests {
         h.clear();
         fs::remove_file(path).unwrap();
         let _ = fs::remove_dir(root);
+    }
+
+    /// A minimal readable WAV so a consolidated copy can be opened.
+    fn write_wav(path: &Path, frames: usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + (frames * 8) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 8).to_le_bytes());
+        bytes.extend_from_slice(&8_u16.to_le_bytes());
+        bytes.extend_from_slice(&32_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&((frames * 8) as u32).to_le_bytes());
+        for index in 0..frames {
+            let value = (index as f32) / 48_000.0;
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&(-value).to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("write wav");
+    }
+
+    fn project_folder(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-consolidate-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Audio").join("Imports")).expect("imports");
+        std::fs::create_dir_all(root.join("Metadata")).expect("metadata");
+        root
+    }
+
+    #[test]
+    fn consolidating_copies_shared_sources_once_and_repoints_every_event() {
+        let root = project_folder("app");
+        let shared_dir =
+            std::env::temp_dir().join(format!("opentrack-consolidate-src-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&shared_dir);
+        std::fs::create_dir_all(&shared_dir).expect("shared");
+        let shared = shared_dir.join("kick.wav");
+        write_wav(&shared, 480);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, shared.clone(), 0.0, 1.0)
+            .unwrap();
+        app.data
+            .project
+            .add_audio_clip(0, shared.clone(), 4.0, 1.0)
+            .unwrap();
+        app.project_history.clear();
+
+        app.consolidate_project_media();
+
+        let destination = app.data.project.tracks[0].clips[0].source_path.clone();
+        assert_ne!(destination, shared, "the event left the shared source");
+        assert_eq!(
+            destination.parent(),
+            Some(root.join("Audio").join("Imports").as_path())
+        );
+        assert!(destination.exists(), "the copy exists");
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.source_path == destination),
+            "both events point at the one copy"
+        );
+        assert!(
+            !app.data.project.media_pool.contains(&shared),
+            "the media pool no longer references the outside file"
+        );
+        assert_eq!(
+            app.data.project.media_pool.len(),
+            1,
+            "one pool entry for the one source"
+        );
+        assert!(app.status_message.contains("Consolidated 1 source(s)"));
+
+        app.consolidate_project_media();
+        assert!(app.status_message.contains("already live in this project"));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(shared_dir);
+    }
+
+    #[test]
+    fn consolidating_reports_missing_sources_without_dropping_them() {
+        let root = project_folder("missing");
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("/nowhere/missing.wav"), 0.0, 1.0)
+            .unwrap();
+
+        app.consolidate_project_media();
+        assert!(app.status_message.contains("1 source(s) are missing"));
+        assert_eq!(app.data.project.tracks[0].clips.len(), 1);
+        assert_eq!(
+            app.data.project.tracks[0].clips[0].source_path,
+            PathBuf::from("/nowhere/missing.wav")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

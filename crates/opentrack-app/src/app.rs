@@ -9739,6 +9739,17 @@ impl OpenTrackApp {
                         self.focus_tab(PanelTab::Media);
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Consolidate Media",
+                        "",
+                        self.project_folder_managed && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.consolidate_project_media();
+                        ui.close();
+                    }
                     if menu_command(ui, "Project Setup...", "Shift+S", true).clicked() {
                         self.project_setup_open = true;
                         ui.close();

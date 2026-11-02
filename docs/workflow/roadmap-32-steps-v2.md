@@ -98,8 +98,11 @@ Still open from revision 1:
 
 ### C. Project and media robustness
 
-10. **Media pool consolidation.** Copy every referenced source into the project's
-    `Audio/` folder and repoint references, with a report of what moved.
+10. **Media pool consolidation.** *Delivered.* Project > Consolidate Media copies
+   every referenced source outside the project into `Audio/Imports` once, repoints
+   every event, rewrites the media pool and the open audio sources, and reports
+   what moved, what was already local and what is missing. Missing sources are
+   reported, never dropped. One undo step. 2 tests.
 11. **Missing media detection and relink.** Report events whose source is gone,
     search a folder for matching names, and relink as one undo step.
 12. **Multiple recovery points.** Keep the last N recovery copies and let the
