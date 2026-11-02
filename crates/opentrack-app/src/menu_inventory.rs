@@ -1004,11 +1004,10 @@ mod tests {
             );
         }
         let missing = shortcuts.iter().filter(|row| !row.dispatched).count();
-        assert_eq!(missing, 5, "bound command dispatch gap changed");
+        assert_eq!(missing, 4, "bound command dispatch gap changed");
         for (id, path) in [
             ("devices.video", "Devices > Video Window"),
             ("edit.open_score_editor", "MIDI > Open Score Editor"),
-            ("project.open_tempo_track_editor", "Project > Tempo Track"),
             (
                 "transport.retrospective_record",
                 "Transport > Retrospective Record",
@@ -1032,5 +1031,17 @@ mod tests {
                 "{path} is not a literal unavailable row"
             );
         }
+        // The tempo editor landed in revision 5, so its row must be reachable and
+        // its command dispatched; a regression back to unavailable fails here.
+        let tempo = leaves
+            .iter()
+            .find(|leaf| leaf.path == "Project > Tempo Track")
+            .expect("tempo track row missing");
+        assert_eq!(tempo.status, Status::StateDependent);
+        assert!(
+            shortcuts
+                .iter()
+                .any(|row| row.id == "project.open_tempo_track_editor" && row.dispatched)
+        );
     }
 }

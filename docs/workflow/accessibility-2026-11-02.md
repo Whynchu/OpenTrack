@@ -48,33 +48,16 @@ Regenerate it with the command in that file.
 
 ### Devices
 
-- Video (`F8`) — `devices.video` — only `Devices > Video Window` (disabled)
+- Video (`F8`) — `devices.video`
 
 ### Edit
 
-- Open Score Editor (`Ctrl+R`) — `edit.open_score_editor` — `MIDI > Open Score
-  Editor` is disabled; the enabled `Scores > Open Selection` row shares the chord
-  but opens the in-place editor, not a score editor
-
-### Project
-
-- Open Tempo Track Editor (`Ctrl+T`) — `project.open_tempo_track_editor` —
-  `Project > Tempo Track` (disabled)
+- Open Score Editor (`Ctrl+R`) — `edit.open_score_editor`
 
 ### Transport
 
 - Retrospective Record (`Shift+NumpadMultiply`) — `transport.retrospective_record`
-  — `Transport > Retrospective Record` (disabled)
-- Use External Sync (`T`) — `transport.use_external_sync` — `Transport > Use
-  External Sync` (disabled)
-
-Four of the five have no enabled route at all. The previous version of this
-report claimed 43 undispatched shortcuts and said the menus remained a way to
-reach every uncovered command; both statements were stale and are corrected
-here. The older row-by-row register in
-[`audit-keyboard-commands.md`](../reviews/audit-keyboard-commands.md) is a
-historical snapshot of `7b898c6`, not a current count.
-
+- Use External Sync (`T`) — `transport.use_external_sync`
 ## Focus and labels
 
 - egui moves keyboard focus with Tab between interactive widgets in layout

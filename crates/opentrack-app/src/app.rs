@@ -58,6 +58,7 @@ mod session_health;
 mod system_stats;
 #[path = "templates.rs"]
 mod templates;
+mod tempo_editor;
 mod track_archive;
 #[path = "transport_panel.rs"]
 mod transport_panel;
@@ -1258,6 +1259,8 @@ pub struct OpenTrackApp {
     conform_files_dialog: Option<f64>,
     /// Pool record-folder dialog draft.
     pool_record_folder_dialog: Option<String>,
+    /// Tempo Track editor draft.
+    tempo_editor: Option<tempo_editor::Draft>,
     /// On-screen MIDI keyboard: open state, base octave and held keys.
     virtual_keyboard_open: bool,
     virtual_keyboard_octave: u8,
@@ -2727,6 +2730,7 @@ impl OpenTrackApp {
             detect_silence_dialog: None,
             conform_files_dialog: None,
             pool_record_folder_dialog: None,
+            tempo_editor: None,
             virtual_keyboard_open: false,
             virtual_keyboard_octave: 3,
             virtual_keyboard_held: std::collections::BTreeSet::new(),
@@ -4280,6 +4284,7 @@ impl OpenTrackApp {
         self.detect_silence_dialog = None;
         self.conform_files_dialog = None;
         self.pool_record_folder_dialog = None;
+        self.tempo_editor = None;
         self.drum_map_setup = None;
         self.drum_editor_open = false;
         self.drum_editor_drag = None;
@@ -8092,6 +8097,7 @@ impl OpenTrackApp {
             "edit.left_selection_side_to_cursor" => self.set_locator_at_playhead(true),
             "edit.right_selection_side_to_cursor" => self.set_locator_at_playhead(false),
             "project.setup" => self.project_setup_open = true,
+            "project.open_tempo_track_editor" => self.open_tempo_editor(),
             "navigate.toggle_selection" => {
                 let Some(track_id) = self
                     .data
@@ -14242,7 +14248,10 @@ impl OpenTrackApp {
                         self.automation_panel_open = true;
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Tempo Track", "Ctrl+T")]);
+                    if menu_command(ui, "Tempo Track", "Ctrl+T", self.project_open).clicked() {
+                        self.open_tempo_editor();
+                        ui.close();
+                    }
                     ui.separator();
                     if ui
                         .add_enabled(
@@ -15972,6 +15981,7 @@ impl OpenTrackApp {
             || self.detect_silence_dialog.is_some()
             || self.conform_files_dialog.is_some()
             || self.pool_record_folder_dialog.is_some()
+            || self.tempo_editor.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -19013,6 +19023,7 @@ impl eframe::App for OpenTrackApp {
         self.show_detect_silence_dialog(&ctx);
         self.show_conform_files_dialog(&ctx);
         self.show_pool_record_folder_dialog(&ctx);
+        self.show_tempo_editor(&ctx);
         self.show_drum_map_setup(&ctx);
         self.show_drum_editor(&ctx);
         self.show_logical_presets(&ctx);
