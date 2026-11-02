@@ -84,23 +84,6 @@ if [[ -f docs/third-party-notices.md ]]; then
     install -m 0644 docs/third-party-notices.md "$destination/third-party-notices.md"
 fi
 
-# A file manager takes an executable's icon from a launcher entry; ELF files
-# carry no icon resource the way a Windows .exe does.
-launcher="$destination/OpenTrack.desktop"
-cat >"$launcher" <<LAUNCHER
-[Desktop Entry]
-Type=Application
-Name=OpenTrack
-GenericName=Digital Audio Workstation
-Comment=Open-source DAW for recording, editing, arranging and mixing
-Exec=env -u WAYLAND_DISPLAY "$destination/OpenTrack"
-Icon=$root/crates/opentrack-app/assets/opentrack-icon.svg
-Terminal=false
-StartupWMClass=opentrack
-Categories=AudioVideo;Audio;Midi;
-LAUNCHER
-chmod 0755 "$launcher"
-
 sha256="$(sha256sum "$destination/OpenTrack" | cut -d' ' -f1)"
 cat >"$build_info" <<EOF
 {

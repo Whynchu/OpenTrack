@@ -2760,16 +2760,20 @@ fn strip(
             Pos2::new(r.center().x + 41.0, r.bottom() + 27.0),
         );
         let fader_color = project_controls::track_color(track);
+        let mut displayed_gain = automation::fader_gain(ui, track.id, track.gain);
         let (edit, response) = mixer::channel_settings_fader(
             ui,
             virtual_rect,
-            &mut track.gain,
+            &mut displayed_gain,
             peak,
             track.audio_channels,
             track.id,
             held_peak,
             fader_color,
         );
+        if edit {
+            track.gain = displayed_gain;
+        }
         changed |= edit;
         context(&response, state);
     }

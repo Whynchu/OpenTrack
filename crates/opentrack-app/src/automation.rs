@@ -43,6 +43,56 @@ pub(super) enum LaneAction {
     },
 }
 
+const FOLLOW_KEY: &str = "automation-follow-gains";
+
+/// Gain a read-enabled track displays at `position_beats`.
+///
+/// The engine evaluates the same lane per sample; the fader only needs the
+/// control-rate value at the current transport position, so it reads the lane
+/// directly instead of sampling the callback.
+pub(super) fn follow_gain(track: &Track, position_beats: f64) -> Option<f32> {
+    if !track.automation_read {
+        return None;
+    }
+    let lane = track.automation_lanes.iter().find(|lane| {
+        lane.target == AutomationTarget::TrackVolume && lane.is_valid() && !lane.points.is_empty()
+    })?;
+    lane.value_at(position_beats)
+        .filter(|value| value.is_finite())
+}
+
+/// Publishes the follow gains for the faders drawn this frame.
+pub(super) fn publish_follow_gains(
+    ui: &egui::Ui,
+    project: &opentrack_core::project::Project,
+    playing: bool,
+    position_beats: f64,
+) {
+    let mut gains = std::collections::HashMap::new();
+    if playing {
+        for track in &project.tracks {
+            if let Some(gain) = follow_gain(track, position_beats) {
+                gains.insert(track.id, gain);
+            }
+        }
+    }
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(Id::new(FOLLOW_KEY), gains));
+}
+
+/// Gain a fader should draw: the automation value, unless the pointer is in use.
+///
+/// Grabbing a fader switches that strip to manual control for the gesture; the
+/// base gain is what the gesture edits, and automation resumes on release.
+pub(super) fn fader_gain(ui: &egui::Ui, track_id: u64, base: f32) -> f32 {
+    if ui.ctx().egui_is_using_pointer() {
+        return base;
+    }
+    ui.data(|data| data.get_temp::<std::collections::HashMap<u64, f32>>(Id::new(FOLLOW_KEY)))
+        .and_then(|gains| gains.get(&track_id).copied())
+        .unwrap_or(base)
+}
+
 pub(super) fn apply_lane_action(
     project: &mut opentrack_core::project::Project,
     action: LaneAction,
@@ -310,6 +360,32 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn fader_follow_reads_the_curve_only_while_read_is_enabled() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track = &mut project.tracks[0];
+        track.automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![
+                AutomationPoint {
+                    beat: 0.0,
+                    value: 0.5,
+                },
+                AutomationPoint {
+                    beat: 4.0,
+                    value: 1.0,
+                },
+            ],
+        });
+        assert_eq!(follow_gain(track, 2.0), None);
+        track.automation_read = true;
+        assert_eq!(follow_gain(track, 2.0), Some(0.75));
+        assert_eq!(follow_gain(track, 99.0), Some(1.0));
+        track.automation_lanes[0].points[0].value = f32::NAN;
+        assert_eq!(follow_gain(track, 2.0), None);
     }
 
     #[test]

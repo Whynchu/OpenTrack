@@ -1308,16 +1308,20 @@ fn strip(
             requires_plan_rebuild = true;
         }
         let fader_color = project_controls::track_color(track);
+        let mut displayed_gain = automation::fader_gain(ui, track.id, track.gain);
         let fader_changed = fader(
             ui,
             r,
-            &mut track.gain,
+            &mut displayed_gain,
             peak,
             track.audio_channels,
             true,
             held_peak,
             fader_color,
         );
+        if fader_changed {
+            track.gain = displayed_gain;
+        }
         modified |= fader_changed;
         requires_plan_rebuild |= fader_changed && track.id == opentrack_core::project::INPUT_BUS_ID;
         let name_rect = Rect::from_min_size(

@@ -8857,6 +8857,12 @@ impl OpenTrackApp {
                         );
                         (changed, changed)
                     } else {
+                        automation::publish_follow_gains(
+                            ui,
+                            &self.data.project,
+                            self.data.transport.playing,
+                            self.data.transport.position_beats,
+                        );
                         let (changed, selection_requested, requires_rebuild) = show_mixer(
                             ui,
                             &mut self.data.project,
@@ -9488,6 +9494,12 @@ impl OpenTrackApp {
                 .show(window_ctx, |ui| {
                     let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                     blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
+                        automation::publish_follow_gains(
+                            ui,
+                            &self.data.project,
+                            self.data.transport.playing,
+                            self.data.transport.position_beats,
+                        );
                         let (changed, selection_requested, _) = show_mixer(
                             ui,
                             &mut self.data.project,
