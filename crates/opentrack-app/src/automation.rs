@@ -70,7 +70,7 @@ pub(super) fn draw_lane(
     snap: Option<f64>,
 ) -> Option<LaneAction> {
     let id = Id::new(("volume-automation-lane", track_id));
-    let response = ui.interact(rect, id, Sense::click_and_drag());
+    let response = ui.interact(rect.expand(8.0), id, Sense::click_and_drag());
     let position = |pos: Pos2| {
         let beat = f64::from((pos.x - grid_left) / pixels_per_beat.max(1.0)).max(0.0);
         let beat = snap.map_or(beat, |step| crate::timeline::snap_beats_to_grid(beat, step));
@@ -102,8 +102,66 @@ pub(super) fn draw_lane(
             Color32::from_rgb(120, 225, 160),
         );
     }
-    if response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
+    let selected = ui.memory(|memory| memory.data.get_temp::<usize>(id.with("selected")));
+    if let Some((beat, value)) = selected.and_then(|index| points.get(index)) {
+        painter.circle_stroke(
+            Pos2::new(
+                grid_left + *beat as f32 * pixels_per_beat,
+                rect.top() + super::channel_gain::gain_to_position(*value) * rect.height(),
+            ),
+            7.0,
+            Stroke::new(1.5, Color32::WHITE),
+        );
+    }
+    if response.drag_started()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let radius = 9.0;
+        if let Some((index, _)) = points.iter().enumerate().find(|(_, (beat, value))| {
+            let point_pos = Pos2::new(
+                grid_left + *beat as f32 * pixels_per_beat,
+                rect.top() + super::channel_gain::gain_to_position(*value) * rect.height(),
+            );
+            point_pos.distance(pos) <= radius
+        }) {
+            ui.memory_mut(|memory| memory.data.insert_temp(id.with("dragging"), index));
+            ui.memory_mut(|memory| memory.data.insert_temp(id.with("selected"), index));
+        }
+    }
+    if response.dragged()
+        && let (Some(index), Some(pos)) = (
+            ui.memory(|memory| memory.data.get_temp::<usize>(id.with("dragging"))),
+            response.interact_pointer_pos(),
+        )
+        && index < points.len()
+    {
+        let (beat, value) = position(pos);
+        if (points[index].0 - beat).abs() > 1e-9 || (points[index].1 - value).abs() > 1e-5 {
+            return Some(LaneAction::Move {
+                track_id,
+                index,
+                beat,
+                value,
+            });
+        }
+    }
+    if response.drag_stopped() {
+        ui.memory_mut(|memory| memory.data.remove::<usize>(id.with("dragging")));
+    }
+    if response.clicked_by(egui::PointerButton::Primary)
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let radius = 9.0;
+        if let Some((index, _)) = points.iter().enumerate().find(|(_, (beat, value))| {
+            let point_pos = Pos2::new(
+                grid_left + *beat as f32 * pixels_per_beat,
+                rect.top() + super::channel_gain::gain_to_position(*value) * rect.height(),
+            );
+            point_pos.distance(pos) <= radius
+        }) {
+            ui.memory_mut(|memory| memory.data.insert_temp(id.with("selected"), index));
+        } else {
+            ui.memory_mut(|memory| memory.data.remove::<usize>(id.with("selected")));
             let (beat, value) = position(pos);
             if !points
                 .iter()
@@ -116,6 +174,23 @@ pub(super) fn draw_lane(
                 });
             }
         }
+    }
+    if response.clicked_by(egui::PointerButton::Secondary)
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let radius = 9.0;
+        if let Some((index, _)) = points.iter().enumerate().find(|(_, (beat, value))| {
+            let point_pos = Pos2::new(
+                grid_left + *beat as f32 * pixels_per_beat,
+                rect.top() + super::channel_gain::gain_to_position(*value) * rect.height(),
+            );
+            point_pos.distance(pos) <= radius
+        }) {
+            return Some(LaneAction::Remove { track_id, index });
+        }
+    }
+    if selected.is_some() {
+        response.on_hover_text("Drag to move · Right-click a point to remove");
     }
     None
 }
@@ -221,5 +296,53 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn move_and_remove_lane_actions_mutate_only_the_requested_points() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track_id = project.tracks[0].id;
+        for (beat, value) in [(1.0, 0.2), (2.0, 0.5), (3.0, 0.9)] {
+            apply_lane_action(
+                &mut project,
+                LaneAction::Set {
+                    track_id,
+                    beat,
+                    value,
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            apply_lane_action(
+                &mut project,
+                LaneAction::Move {
+                    track_id,
+                    index: 1,
+                    beat: 2.5,
+                    value: 0.7,
+                },
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            project.tracks[0].automation_lanes[0].points[1],
+            AutomationPoint {
+                beat: 2.5,
+                value: 0.7
+            }
+        );
+        assert!(
+            apply_lane_action(&mut project, LaneAction::Remove { track_id, index: 1 },).unwrap()
+        );
+        assert_eq!(
+            project.tracks[0].automation_lanes[0]
+                .points
+                .iter()
+                .map(|point| point.beat)
+                .collect::<Vec<_>>(),
+            vec![1.0, 3.0]
+        );
     }
 }
