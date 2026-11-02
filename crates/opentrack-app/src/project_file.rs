@@ -105,6 +105,9 @@ pub(crate) struct ArrangeViewState {
     pub(crate) quantize: crate::timeline::QuantizeSetting,
     #[serde(default)]
     pub(crate) autoscroll_enabled: bool,
+    /// What a snap prefers: the musical grid, event edges, or the cursor.
+    #[serde(default)]
+    pub(crate) snap_type: SnapType,
     #[serde(default)]
     pub(crate) selected_event_color: Option<u8>,
     #[serde(default = "default_event_colors")]
@@ -162,6 +165,7 @@ impl Default for ArrangeViewState {
             grid_type: Default::default(),
             quantize: Default::default(),
             autoscroll_enabled: false,
+            snap_type: SnapType::Grid,
             selected_event_color: None,
             event_colors: DEFAULT_EVENT_COLORS,
             ruler_format: 0,
@@ -179,6 +183,31 @@ impl Default for ArrangeViewState {
             pending_group_drop: None,
             pending_track_drag_ids: None,
             midi_part_drag: None,
+        }
+    }
+}
+
+/// What the arrange snaps to when snapping is on.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SnapType {
+    /// The musical grid only.
+    #[default]
+    Grid,
+    /// The grid, unless an event edge is closer.
+    GridAndEvents,
+    /// The grid, unless the transport cursor is closer.
+    GridAndCursor,
+}
+
+impl SnapType {
+    pub(crate) const ALL: [Self; 3] = [Self::Grid, Self::GridAndEvents, Self::GridAndCursor];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "Grid",
+            Self::GridAndEvents => "Grid + Events",
+            Self::GridAndCursor => "Grid + Cursor",
         }
     }
 }

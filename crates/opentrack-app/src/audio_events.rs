@@ -1889,6 +1889,35 @@ fn snap(value: f64, grid: Option<f64>) -> f64 {
         crate::timeline::snap_beats_to_grid(value, step)
     })
 }
+
+/// Snaps to a nearby event edge or the cursor when one is closer than the grid.
+///
+/// `tolerance_beats` is the same distance in beats as a few pixels, so the
+/// preference does not change with zoom. A target wins only when it is strictly
+/// closer than the grid result, so the grid stays predictable.
+fn snap_with_targets(value: f64, grid: Option<f64>, targets: &[f64], tolerance_beats: f64) -> f64 {
+    let value = value.max(0.0);
+    if targets.is_empty() || !tolerance_beats.is_finite() || tolerance_beats <= 0.0 {
+        return snap(value, grid);
+    }
+    let nearest = targets
+        .iter()
+        .copied()
+        .filter(|target| target.is_finite() && *target >= 0.0)
+        .min_by(|left, right| (value - left).abs().total_cmp(&(value - right).abs()));
+    let Some(nearest) = nearest else {
+        return snap(value, grid);
+    };
+    let distance = (value - nearest).abs();
+    if distance > tolerance_beats {
+        return snap(value, grid);
+    }
+    let grid_snapped = snap(value, grid);
+    if (value - grid_snapped).abs() <= distance {
+        return grid_snapped;
+    }
+    nearest
+}
 fn update(
     g: &mut Gesture,
     pos: Pos2,
@@ -1898,6 +1927,8 @@ fn update(
     grid: Option<f64>,
     lanes: &[Lane],
     min_seconds: f64,
+    snap_targets: &[f64],
+    snap_tolerance_beats: f64,
 ) {
     let beats = ((pos.x - origin) / px) as f64;
     let original = &g.original;
@@ -1905,7 +1936,12 @@ fn update(
     g.target = Some(g.track);
     match g.tool {
         Tool::Move => {
-            c.start_beats = snap(beats - g.grab_beats, grid);
+            c.start_beats = snap_with_targets(
+                beats - g.grab_beats,
+                grid,
+                snap_targets,
+                snap_tolerance_beats,
+            );
             let source = lanes.iter().find(|l| l.id == g.track);
             g.target = lanes
                 .iter()
@@ -1920,14 +1956,14 @@ fn update(
             let end = original.start_beats + original.duration_seconds * tempo / 60.0;
             let earliest =
                 (original.start_beats - original.source_offset_seconds * tempo / 60.0).max(0.0);
-            c.start_beats =
-                snap(beats, grid).clamp(earliest, (end - min_seconds * tempo / 60.0).max(earliest));
+            c.start_beats = snap_with_targets(beats, grid, snap_targets, snap_tolerance_beats)
+                .clamp(earliest, (end - min_seconds * tempo / 60.0).max(earliest));
             let delta = (c.start_beats - original.start_beats) * 60.0 / tempo;
             c.source_offset_seconds = (original.source_offset_seconds + delta).max(0.0);
             c.duration_seconds = (original.duration_seconds - delta).max(min_seconds);
         }
         Tool::Right => {
-            let end = snap(beats, grid);
+            let end = snap_with_targets(beats, grid, snap_targets, snap_tolerance_beats);
             c.duration_seconds = ((end - c.start_beats) * 60.0 / tempo).clamp(
                 min_seconds,
                 (g.source_duration - c.source_offset_seconds).max(min_seconds),
@@ -2181,6 +2217,7 @@ pub(super) fn show_with_tool(
     enabled: bool,
     edit_tool: &mut EditTool,
     automation_follows_events: bool,
+    snap_targets: &[f64],
 ) -> Outcome {
     toolbox(ui, visible, &mut state.toolbox, edit_tool);
     let mut split = None;
@@ -2356,6 +2393,8 @@ pub(super) fn show_with_tool(
                 grid,
                 lanes,
                 1.0 / project.sample_rate_hz.max(1) as f64,
+                snap_targets,
+                8.0 / px.max(1.0) as f64,
             );
             ui.ctx().set_cursor_icon(if g.target.is_none() {
                 egui::CursorIcon::NotAllowed
@@ -3043,6 +3082,8 @@ pub(super) fn show_with_tool(
                             grid,
                             lanes,
                             1.0 / project.sample_rate_hz.max(1) as f64,
+                            snap_targets,
+                            8.0 / px.max(1.0) as f64,
                         );
                     }
                     state.gesture = Some(g);
@@ -3457,6 +3498,7 @@ mod tests {
                         true,
                         &mut self.tool,
                         false,
+                        &[],
                     );
                     changed = result.changed;
                     crossfade_requested = result.crossfade_requested;
@@ -4145,6 +4187,29 @@ mod split_selection_tests {
                 .contains("No selected audio event overlaps")
         );
         assert!(app.modified);
+    }
+
+    #[test]
+    fn snapping_prefers_a_nearby_event_edge_over_the_grid() {
+        // Grid is a sixteenth (0.25 beat); an event edge sits at 1.10.
+        let grid = Some(0.25);
+        let targets = [1.10];
+
+        // Far from the edge: the grid wins.
+        assert_eq!(snap_with_targets(0.52, grid, &targets, 0.2), 0.5);
+        // Within tolerance and closer than the grid point: the edge wins.
+        assert_eq!(snap_with_targets(1.12, grid, &targets, 0.2), 1.10);
+        // Closer to the grid than to the edge: the grid stays predictable.
+        assert_eq!(snap_with_targets(1.05, grid, &targets, 0.2), 1.0);
+        // Beyond tolerance: back to the grid.
+        assert_eq!(snap_with_targets(1.40, grid, &targets, 0.2), 1.5);
+        // With no targets the behaviour is the plain grid snap.
+        assert_eq!(snap_with_targets(0.52, grid, &[], 0.2), 0.5);
+        // A zero tolerance keeps the grid.
+        assert_eq!(snap_with_targets(1.02, grid, &targets, 0.0), 1.0);
+        // No grid means snapping is off altogether, so targets do not apply.
+        assert_eq!(snap_with_targets(1.02, None, &targets, 0.2), 1.02);
+        assert_eq!(snap_with_targets(-3.0, None, &targets, 0.2), 0.0);
     }
 
     #[test]

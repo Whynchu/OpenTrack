@@ -1513,6 +1513,16 @@ fn project_grid_choices(ui: &mut egui::Ui, view: &mut ArrangeViewState) {
                 ui.close();
             }
         }
+        ui.separator();
+        ui.label(egui::RichText::new("Snap to").small());
+        for value in crate::project_file::SnapType::ALL {
+            if ui
+                .selectable_value(&mut view.snap_type, value, value.label())
+                .clicked()
+            {
+                ui.close();
+            }
+        }
     });
     ui.add_space(20.0);
     let quantize = toolbar_choice_with_sense(ui, &view.quantize.label(), 84.0, Sense::click())
@@ -12448,7 +12458,10 @@ impl OpenTrackApp {
                     let snap = toolbar_icon_button(
                         ui,
                         ToolbarIcon::Snap,
-                        "Snap On/Off",
+                        &format!(
+                            "Snap On/Off (snap to {})",
+                            self.arrange_view_state.snap_type.label()
+                        ),
                         self.arrange_view_state.snap_enabled,
                         true,
                     );
@@ -16170,6 +16183,27 @@ fn show_project(
                     }
                 })
                 .collect::<Vec<_>>();
+            // Snap preference: the grid alone, nearby event edges, or the cursor.
+            let snap_targets = match arrange_view_state.snap_type {
+                crate::project_file::SnapType::Grid => Vec::new(),
+                crate::project_file::SnapType::GridAndCursor => vec![*position_beats],
+                crate::project_file::SnapType::GridAndEvents => project
+                    .tracks
+                    .iter()
+                    .flat_map(|track| {
+                        track
+                            .clips
+                            .iter()
+                            .map(|clip| {
+                                clip.start_beats + clip.duration_seconds * project.tempo_bpm / 60.0
+                            })
+                            .chain(track.clips.iter().map(|clip| clip.start_beats))
+                            .chain(track.midi_parts.iter().flat_map(|part| {
+                                [part.start_beats, part.start_beats + part.duration_beats]
+                            }))
+                    })
+                    .collect(),
+            };
             let outcome = audio_events::show_with_tool(
                 ui,
                 project,
@@ -16184,6 +16218,7 @@ fn show_project(
                 can_remove,
                 edit_tool,
                 automation_follows_events,
+                &snap_targets,
             );
             modified |= outcome.changed;
             audio_events_crossfade_requested |= outcome.crossfade_requested;
@@ -22270,6 +22305,36 @@ mod add_track_instrument_tests {
             app.data.project, before,
             "there is no instrument track to load the plug-in on"
         );
+    }
+}
+
+#[cfg(test)]
+mod snap_type_tests {
+    use super::*;
+    use crate::project_file::SnapType;
+
+    #[test]
+    fn the_snap_preference_defaults_to_the_grid_and_persists() {
+        let view = ArrangeViewState::default();
+        assert_eq!(view.snap_type, SnapType::Grid);
+
+        let mut view = ArrangeViewState {
+            snap_type: SnapType::GridAndEvents,
+            ..ArrangeViewState::default()
+        };
+        let encoded = serde_json::to_string(&view).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(restored.snap_type, SnapType::GridAndEvents);
+
+        // Older view state without the field keeps the grid.
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy.as_object_mut().expect("object").remove("snap_type");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("decode legacy");
+        assert_eq!(legacy.snap_type, SnapType::Grid);
+
+        view.snap_type = SnapType::GridAndCursor;
+        assert_eq!(view.snap_type.label(), "Grid + Cursor");
+        assert_eq!(SnapType::ALL.len(), 3);
     }
 }
 

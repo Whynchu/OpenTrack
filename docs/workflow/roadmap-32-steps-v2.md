@@ -57,8 +57,13 @@ Still open from revision 1:
    the playhead leaves the middle 80% and puts it back at the left tenth;
    rewinding pages back. It stands aside while a pointer button is held or a wheel
    event is handled, and resumes on the next frame. 4 tests.
-4. **Grid and snap for the arrange beyond the current presets:** snap to events
-   and to the cursor, with the mode shown in the grid control.
+4. **Snap to events and cursor.** *Delivered.* `ArrangeViewState::snap_type`
+   persists a mode (Grid, Grid + Events, Grid + Cursor) and is chosen from the grid
+   popup, with the mode named in the snap button's tooltip. Event snaps collect
+   every clip start/end and MIDI part boundary each frame; the drag snaps to a
+   target only when it is inside an 8-pixel tolerance *and* closer than the grid
+   point, so the grid stays predictable, and an unset grid still means snapping is
+   off entirely. 2 tests.
 
 ### B. Arrangement editing depth
 
