@@ -6,7 +6,9 @@ Revision 4 is complete (steps 1-32); its [delivery handoff](handoffs/revision-4-
 
 Delivered so far: R5-01 (baseline reconciliation), R5-03 (export/delivery contract review), R5-04 (tempo/signature contract - no OPR bump needed, accents stay an application preference), R5-05 (Tempo Track Editor), R5-06 (beat/sample conversion audit across three tempo/rate combinations) and R5-08 (Ctrl+T wired). R5-07 (tempo exchange) is delivered in the same checkpoint. R5-02 is the user's runtime checklist for the manual-review fixes.
 
-Next ready step: R5-09, the transpose dialog. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+R5-09 was a verification (the transpose dialog already existed; `Add Track > Transpose` stays unavailable because it names a transpose track). R5-10 and R5-11 delivered the retrospective capture buffer and its command, so Shift+NumpadMultiply now dispatches.
+
+Next ready step: R5-12, closing the virtual-keyboard review items. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 

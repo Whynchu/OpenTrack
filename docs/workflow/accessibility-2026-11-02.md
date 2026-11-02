@@ -56,7 +56,6 @@ Regenerate it with the command in that file.
 
 ### Transport
 
-- Retrospective Record (`Shift+NumpadMultiply`) — `transport.retrospective_record`
 - Use External Sync (`T`) — `transport.use_external_sync`
 ## Focus and labels
 

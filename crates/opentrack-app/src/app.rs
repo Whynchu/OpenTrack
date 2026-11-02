@@ -48,6 +48,7 @@ mod recording_recovery;
 #[path = "recording_undo.rs"]
 mod recording_undo;
 mod region_editor;
+mod retrospective;
 #[path = "routing.rs"]
 mod routing;
 #[path = "sample_editor.rs"]
@@ -1262,6 +1263,8 @@ pub struct OpenTrackApp {
     pool_record_folder_dialog: Option<String>,
     /// Tempo Track editor draft.
     tempo_editor: Option<tempo_editor::Draft>,
+    /// Bounded retrospective MIDI buffer for the Retrospective Record command.
+    retrospective: retrospective::Capture,
     /// On-screen MIDI keyboard: open state, base octave and held keys.
     virtual_keyboard_open: bool,
     virtual_keyboard_octave: u8,
@@ -2732,6 +2735,7 @@ impl OpenTrackApp {
             conform_files_dialog: None,
             pool_record_folder_dialog: None,
             tempo_editor: None,
+            retrospective: retrospective::Capture::default(),
             virtual_keyboard_open: false,
             virtual_keyboard_octave: 3,
             virtual_keyboard_held: std::collections::BTreeSet::new(),
@@ -4286,6 +4290,7 @@ impl OpenTrackApp {
         self.conform_files_dialog = None;
         self.pool_record_folder_dialog = None;
         self.tempo_editor = None;
+        self.retrospective.clear();
         self.drum_map_setup = None;
         self.drum_editor_open = false;
         self.drum_editor_drag = None;
@@ -8099,6 +8104,7 @@ impl OpenTrackApp {
             "edit.right_selection_side_to_cursor" => self.set_locator_at_playhead(false),
             "project.setup" => self.project_setup_open = true,
             "project.open_tempo_track_editor" => self.open_tempo_editor(),
+            "transport.retrospective_record" => self.retrospective_record(),
             "navigate.toggle_selection" => {
                 let Some(track_id) = self
                     .data
@@ -11944,6 +11950,15 @@ impl OpenTrackApp {
         let tempo = self.data.project.tempo_bpm;
         let transport_beat = self.data.transport.position_beats;
         let now = Instant::now();
+        // Keep the bounded retrospective window up to date whether or not a
+        // recording session is writing notes.
+        for event in &events {
+            let age = now
+                .saturating_duration_since(event.received_at)
+                .as_secs_f64();
+            let event_beat = (transport_beat - age * tempo / 60.0).max(0.0);
+            self.capture_retrospective_event(event_beat, event.message, event.received_at);
+        }
         let mut recorded = false;
         if self.midi_recording_session.is_some() {
             for event in &events {
@@ -15069,12 +15084,22 @@ impl OpenTrackApp {
                         };
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Retrospective Record",
+                        "Shift+Num *",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.retrospective_record();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Project Synchronization Setup...", ""),
                             ("Use External Sync", "T"),
-                            ("Retrospective Record", "Shift+Num *"),
                         ],
                     );
                 });
