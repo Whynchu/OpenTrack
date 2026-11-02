@@ -1624,6 +1624,9 @@ fn project_grid_choices(ui: &mut egui::Ui, view: &mut ArrangeViewState) {
             }
         }
         ui.separator();
+        ui.checkbox(&mut view.auto_grid, "Auto Grid (follow zoom)")
+            .on_hover_text("Use the ruler's zoom-derived subdivision instead of the chosen grid");
+        ui.separator();
         ui.label(egui::RichText::new("Snap to").small());
         for value in crate::project_file::SnapType::ALL {
             if ui
@@ -6964,6 +6967,18 @@ impl OpenTrackApp {
             "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
             "edit.paste_time" => self.paste_time(),
             "audio.find_selected_in_pool" => self.find_selected_event_in_pool(),
+            "audio.auto_grid" => {
+                self.arrange_view_state.auto_grid = !self.arrange_view_state.auto_grid;
+                self.status_message = if self.arrange_view_state.auto_grid {
+                    format!(
+                        "Auto Grid is on: snapping to {:.3} beat(s) at this zoom",
+                        self.arrange_view_state
+                            .auto_grid_step_beats(self.data.project.beats_per_bar)
+                    )
+                } else {
+                    "Auto Grid is off: snapping to the selected grid".to_owned()
+                };
+            }
             "audio.adjust_fades_to_range" => self.adjust_selected_fades_to_range(),
             "devices.vst_instruments" => {
                 self.track_add_dialog = Some(TrackAddDialog {
@@ -27280,6 +27295,57 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn auto_grid_shortcut_toggles_and_changes_the_snap_step() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.arrange_view_state.grid_type = crate::timeline::GridType::UseQuantize;
+        app.arrange_view_state.quantize.note = crate::timeline::QuantizeNote::Quarter;
+        // The fixture sets a 1000-point view at zoom 1, where auto grid is a bar.
+        assert_eq!(
+            app.arrange_view_state
+                .snap_grid_beats(app.data.project.beats_per_bar),
+            Some(1.0),
+            "the default selected grid is a beat"
+        );
+        dispatch(&mut app, "audio.auto_grid", &ctx);
+        assert!(app.arrange_view_state.auto_grid);
+        assert!(app.status_message.contains("Auto Grid is on"));
+        assert_eq!(
+            app.arrange_view_state
+                .snap_grid_beats(app.data.project.beats_per_bar),
+            Some(4.0),
+            "zoomed out, auto grid snaps to a bar"
+        );
+
+        // Zooming in refines it without touching the chosen grid.
+        app.arrange_view_state.timeline_zoom = 12.0;
+        assert_eq!(
+            app.arrange_view_state
+                .snap_grid_beats(app.data.project.beats_per_bar),
+            Some(0.25)
+        );
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        dispatch(&mut app, "nudge.start_right", &ctx);
+        assert!(
+            (app.data.project.tracks[0].clips[0].start_beats - 0.25).abs() < 1e-9,
+            "the edge nudge used the auto-grid step"
+        );
+
+        let zoom = app.arrange_view_state.timeline_zoom;
+        dispatch(&mut app, "audio.auto_grid", &ctx);
+        assert!(!app.arrange_view_state.auto_grid);
+        assert!(app.status_message.contains("Auto Grid is off"));
+        assert_eq!(app.arrange_view_state.timeline_zoom, zoom);
+        assert_eq!(
+            app.arrange_view_state
+                .snap_grid_beats(app.data.project.beats_per_bar),
+            Some(1.0),
+            "turning auto off restores the selected grid"
+        );
+    }
+
+    #[test]
     fn edge_nudge_shortcuts_trim_starts_and_ends_by_the_grid() {
         use opentrack_core::project::ClipEdge;
 
@@ -28438,6 +28504,7 @@ mod keyboard_coverage_tests {
             "edit.paste_time",
             "audio.find_selected_in_pool",
             "audio.adjust_fades_to_range",
+            "audio.auto_grid",
             "edit.insert_silence",
             "edit.cut_time",
             "edit.delete_time",

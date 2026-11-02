@@ -18,7 +18,7 @@ assistive-technology conformance.
   Cursor), auto punch in/out, ruler format exchange, Split Range, zoom full/
   to event, the Info view / Inspector / track-colour toggles, automation
   read/write for every track, Paste at Origin, the VST Instruments / VST
-  Performance panels, the four Nudge Start/End Left/Right edge trims, Insert Silence, Cut Time and Delete Time, typed Position / Locator / Tempo entry, Paste Time, Close Project, and plain-arrow cursor navigation with additive range keys, Find Selected in Pool, Adjust Fades to Range, and the numeric marker slots (Set/To Marker 1-9 and Recall Cycle Marker).
+  Performance panels, the four Nudge Start/End Left/Right edge trims, Insert Silence, Cut Time and Delete Time, typed Position / Locator / Tempo entry, Paste Time, Close Project, and plain-arrow cursor navigation with additive range keys, Find Selected in Pool, Adjust Fades to Range, the numeric marker slots (Set/To Marker 1-9 and Recall Cycle Marker), and Auto Grid.
 - Twelve Transport and Track Folding menu entries moved from disabled to
   working in the first slice; the later slices were keyboard-only and did not
   change the menu inventory.
@@ -30,15 +30,11 @@ assistive-technology conformance.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **143** commands have a dispatch
-arm; **9** still do not. The menus remain the way to reach the
+numpad ranges). **144** commands have a dispatch
+arm; **8** still do not. The menus remain the way to reach the
 uncovered features.
 
 ## Bound commands without a dispatch arm
-
-### Audio
-
-- Auto Grid (`Shift+Q`) — `audio.auto_grid`
 
 ### Devices
 

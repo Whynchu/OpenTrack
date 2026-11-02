@@ -108,6 +108,10 @@ pub(crate) struct ArrangeViewState {
     /// What a snap prefers: the musical grid, event edges, or the cursor.
     #[serde(default)]
     pub(crate) snap_type: SnapType,
+    /// Snap follows the ruler's zoom-derived subdivision instead of the chosen
+    /// grid. A view preference, not project content.
+    #[serde(default)]
+    pub(crate) auto_grid: bool,
     #[serde(default)]
     pub(crate) selected_event_color: Option<u8>,
     #[serde(default = "default_event_colors")]
@@ -166,6 +170,7 @@ impl Default for ArrangeViewState {
             quantize: Default::default(),
             autoscroll_enabled: false,
             snap_type: SnapType::Grid,
+            auto_grid: false,
             selected_event_color: None,
             event_colors: DEFAULT_EVENT_COLORS,
             ruler_format: 0,
@@ -214,8 +219,27 @@ impl SnapType {
 
 impl ArrangeViewState {
     pub(crate) fn snap_grid_beats(&self, beats_per_bar: u8) -> Option<f64> {
-        self.snap_enabled
-            .then(|| self.grid_type.step_beats(beats_per_bar, self.quantize))
+        if !self.snap_enabled {
+            return None;
+        }
+        if self.auto_grid {
+            return Some(self.auto_grid_step_beats(beats_per_bar));
+        }
+        Some(self.grid_type.step_beats(beats_per_bar, self.quantize))
+    }
+
+    /// The grid Auto Grid uses: the ruler's own zoom-derived subdivision.
+    ///
+    /// At bar-level zoom that is one bar, then a beat, then eighth and sixteenth
+    /// notes as the ruler refines, so the snap matches the lines the user sees.
+    pub(crate) fn auto_grid_step_beats(&self, beats_per_bar: u8) -> f64 {
+        let beats_per_bar_f = f64::from(beats_per_bar.max(1));
+        let divisions = crate::timeline::ruler_subdivisions(self.bar_width(), beats_per_bar, 12.0);
+        if divisions == 0 {
+            beats_per_bar_f
+        } else {
+            (1.0 / divisions as f64).clamp(0.0625, beats_per_bar_f)
+        }
     }
 
     /// Bar width in points, matching the arrange drawing.
@@ -1514,6 +1538,55 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
         assert!(ProjectFile::read(&path).is_ok());
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn auto_grid_follows_the_ruler_zoom_and_falls_back_to_the_chosen_grid() {
+        use crate::timeline::{GridType, QuantizeNote, QuantizeSetting, QuantizeVariation};
+
+        let mut view = ArrangeViewState {
+            last_view_width: 980.0,
+            snap_enabled: true,
+            grid_type: GridType::UseQuantize,
+            quantize: QuantizeSetting {
+                note: QuantizeNote::Eighth,
+                variation: QuantizeVariation::Straight,
+            },
+            ..ArrangeViewState::default()
+        };
+
+        // Auto off: the selected grid, whatever the zoom.
+        view.timeline_zoom = 12.0;
+        assert_eq!(view.snap_grid_beats(4), Some(0.5));
+        view.timeline_zoom = 1.0;
+        assert_eq!(view.snap_grid_beats(4), Some(0.5));
+
+        // Auto on: the ruler's subdivision at this zoom.
+        view.auto_grid = true;
+        view.timeline_zoom = 12.0;
+        assert_eq!(view.snap_grid_beats(4), Some(0.25), "sixteenth notes");
+        view.timeline_zoom = 6.0;
+        assert_eq!(view.snap_grid_beats(4), Some(0.5), "eighth notes");
+        view.timeline_zoom = 3.0;
+        assert_eq!(view.snap_grid_beats(4), Some(1.0), "quarter notes");
+        view.timeline_zoom = 1.0;
+        assert_eq!(view.snap_grid_beats(4), Some(4.0), "one bar");
+
+        // Snap off stays off in both modes.
+        view.snap_enabled = false;
+        assert_eq!(view.snap_grid_beats(4), None);
+        view.auto_grid = false;
+        assert_eq!(view.snap_grid_beats(4), None);
+
+        // The preference round-trips and an older view state defaults it off.
+        view.auto_grid = true;
+        let encoded = serde_json::to_string(&view).expect("encode");
+        let restored: ArrangeViewState = serde_json::from_str(&encoded).expect("decode");
+        assert!(restored.auto_grid);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).expect("value");
+        legacy.as_object_mut().expect("object").remove("auto_grid");
+        let legacy: ArrangeViewState = serde_json::from_value(legacy).expect("legacy");
+        assert!(!legacy.auto_grid);
     }
 
     #[test]

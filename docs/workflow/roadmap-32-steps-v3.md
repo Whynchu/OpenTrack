@@ -152,6 +152,14 @@ and measured numbers.
    instead of dropping them; a v28 file loads with no slots. 1 core, 2 app and 1
    migration tests. Shortcut coverage 136 -> 143.
 
+18. **Auto Grid.** *Delivered.* `ArrangeViewState.auto_grid` makes snapping use
+   the ruler's own zoom-derived subdivision (bar, quarter, eighth, sixteenth)
+   instead of the chosen grid, so the snap matches the lines on screen; turning it
+   off restores the selected grid, and snap-off still disables snapping. Shift+Q
+   toggles it, the grid popup carries the checkbox, and the status names the
+   resulting step. The flag persists with view state and defaults off for older
+   projects. 1 view-state and 1 app tests. Shortcut coverage 143 -> 144.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
