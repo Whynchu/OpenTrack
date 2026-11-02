@@ -188,6 +188,41 @@ impl ArrangeViewState {
         self.snap_enabled
             .then(|| self.grid_type.step_beats(beats_per_bar, self.quantize))
     }
+
+    /// Bar width in points, matching the arrange drawing.
+    pub(crate) fn bar_width(&self) -> f32 {
+        (self.last_view_width.max(1.0) / 49.0
+            * self
+                .timeline_zoom
+                .clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM))
+        .max(4.0)
+    }
+
+    /// Scroll position that keeps `playhead_beats` visible, or `None` when it
+    /// already is.
+    ///
+    /// Autoscroll pages rather than glides: the view moves only when the playhead
+    /// reaches the right tenth of the grid (or is rewound behind the left tenth),
+    /// and then the playhead returns to the left tenth. Paging keeps the audio
+    /// timeline readable while playing instead of sliding under the pointer.
+    pub(crate) fn autoscroll_target(&self, playhead_beats: f64, beats_per_bar: u8) -> Option<f32> {
+        if !playhead_beats.is_finite() || self.last_view_width < 1.0 {
+            return None;
+        }
+        const HEADER_WIDTH: f32 = 264.0;
+        let bar_width = self.bar_width();
+        let view_width = self.last_view_width;
+        let beats_per_bar = f64::from(beats_per_bar.max(1));
+        let playhead_x = HEADER_WIDTH + (playhead_beats / beats_per_bar) as f32 * bar_width
+            - self.timeline_scroll_x;
+        let view_left = HEADER_WIDTH + view_width * 0.1;
+        let view_right = HEADER_WIDTH + view_width * 0.9;
+        if playhead_x > view_left && playhead_x < view_right {
+            return None;
+        }
+        let target = HEADER_WIDTH + (playhead_beats / beats_per_bar) as f32 * bar_width - view_left;
+        Some(target.max(0.0))
+    }
 }
 
 fn default_project_dock_fraction() -> f32 {

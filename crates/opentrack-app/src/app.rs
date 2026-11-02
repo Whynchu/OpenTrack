@@ -6664,6 +6664,41 @@ impl OpenTrackApp {
         self.status_message = "Removed the marker; Undo restores it".to_owned();
     }
 
+    /// Keeps the playhead visible while the transport plays.
+    ///
+    /// The user's own scrolling wins: while the pointer is down or a wheel event
+    /// is being handled, autoscroll stands aside and resumes on the next frame
+    /// after the gesture ends.
+    fn autoscroll_arrange(&mut self, ctx: &egui::Context) {
+        if !self.arrange_view_state.autoscroll_enabled || !self.data.transport.playing {
+            return;
+        }
+        // A held button means the user is dragging the grid or a scrollbar; a
+        // wheel event means they are scrolling. Either way, they win.
+        let (pointer_down, wheel_active) = ctx.input(|input| {
+            (
+                input.pointer.any_down(),
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::MouseWheel { .. })),
+            )
+        });
+        if pointer_down || wheel_active {
+            return;
+        }
+        let Some(scroll) = self.arrange_view_state.autoscroll_target(
+            self.data.transport.position_beats,
+            self.data.project.beats_per_bar,
+        ) else {
+            return;
+        };
+        if (scroll - self.arrange_view_state.timeline_scroll_x).abs() > f32::EPSILON {
+            self.arrange_view_state.timeline_scroll_x = scroll;
+            ctx.request_repaint();
+        }
+    }
+
     /// Moves the transport to a beat and seeks the engine with it.
     fn seek_to_beats(&mut self, beat: f64) {
         let beat = if beat.is_finite() { beat.max(0.0) } else { 0.0 };
@@ -13030,6 +13065,7 @@ impl eframe::App for OpenTrackApp {
         self.handle_shortcuts(&ctx);
         self.handle_close_request(&ctx);
         self.advance_transport(&ctx);
+        self.autoscroll_arrange(&ctx);
         self.handle_midi_input_events(&ctx);
         self.release_exclusive_audio_if_idle();
         self.report_streaming_issues();
@@ -22233,6 +22269,134 @@ mod add_track_instrument_tests {
         assert_eq!(
             app.data.project, before,
             "there is no instrument track to load the plug-in on"
+        );
+    }
+}
+
+#[cfg(test)]
+mod autoscroll_tests {
+    use super::*;
+
+    fn app_with_view() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.arrange_view_state.last_view_width = 1000.0;
+        app.arrange_view_state.timeline_zoom = 1.0;
+        app.arrange_view_state.timeline_scroll_x = 0.0;
+        app
+    }
+
+    #[test]
+    fn the_page_rule_leaves_the_playhead_alone_while_it_is_visible() {
+        let mut app = app_with_view();
+        // 20.4 px per bar at zoom 1: beat 20 sits well inside the view.
+        assert_eq!(
+            app.arrange_view_state
+                .autoscroll_target(20.0, app.data.project.beats_per_bar),
+            None
+        );
+    }
+
+    #[test]
+    fn the_page_rule_brings_the_playhead_back_to_the_left_tenth() {
+        let mut app = app_with_view();
+        // Beat 400 is far right of the view.
+        let target = app
+            .arrange_view_state
+            .autoscroll_target(400.0, app.data.project.beats_per_bar)
+            .expect("the playhead is off screen");
+        let bar_width = app.arrange_view_state.bar_width();
+        let playhead_x = 264.0 + (400.0 / 4.0) * bar_width - target;
+        assert!(
+            (playhead_x - (264.0 + 100.0)).abs() < 0.01,
+            "the playhead lands at the left tenth: {playhead_x}"
+        );
+
+        // A rewind behind the left tenth scrolls back too.
+        app.arrange_view_state.timeline_scroll_x = target;
+        let back = app
+            .arrange_view_state
+            .autoscroll_target(4.0, app.data.project.beats_per_bar)
+            .expect("the playhead is behind the view");
+        assert!(back < target, "rewinding scrolls left: {back} < {target}");
+        assert!(back >= 0.0);
+    }
+
+    #[test]
+    fn autoscroll_follows_playback_only_when_enabled() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_view();
+        app.data.transport.position_beats = 400.0;
+        app.data.transport.playing = true;
+
+        // Off: nothing moves.
+        app.autoscroll_arrange(&ctx);
+        assert_eq!(app.arrange_view_state.timeline_scroll_x, 0.0);
+
+        // On while playing: the view pages.
+        app.arrange_view_state.autoscroll_enabled = true;
+        app.autoscroll_arrange(&ctx);
+        assert!(
+            app.arrange_view_state.timeline_scroll_x > 0.0,
+            "the view followed the playhead"
+        );
+
+        // Stopped: a seek does not move the view.
+        let scrolled = app.arrange_view_state.timeline_scroll_x;
+        app.data.transport.playing = false;
+        app.data.transport.position_beats = 900.0;
+        app.autoscroll_arrange(&ctx);
+        assert_eq!(app.arrange_view_state.timeline_scroll_x, scrolled);
+    }
+
+    #[test]
+    fn the_users_own_scrolling_wins_while_the_pointer_is_down() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_view();
+        app.arrange_view_state.autoscroll_enabled = true;
+        app.data.transport.playing = true;
+        app.data.transport.position_beats = 400.0;
+
+        // A held pointer means the user is dragging the grid.
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 600.0))),
+            events: vec![egui::Event::PointerButton {
+                pos: Pos2::new(500.0, 300.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        raw.time = Some(0.05);
+        let mut output = ctx.run_ui(raw, |_| app.autoscroll_arrange(&ctx));
+        output.textures_delta.clear();
+        assert_eq!(
+            app.arrange_view_state.timeline_scroll_x, 0.0,
+            "autoscroll stands aside while the user drags"
+        );
+
+        // Releasing the pointer lets it resume on the next frame.
+        let mut released = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 600.0))),
+            events: vec![egui::Event::PointerButton {
+                pos: Pos2::new(500.0, 300.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        released.time = Some(0.10);
+        let mut output = ctx.run_ui(released, |_| app.autoscroll_arrange(&ctx));
+        output.textures_delta.clear();
+        assert!(
+            app.arrange_view_state.timeline_scroll_x > 0.0,
+            "autoscroll resumes after the gesture"
         );
     }
 }

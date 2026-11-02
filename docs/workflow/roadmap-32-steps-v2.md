@@ -52,9 +52,11 @@ Still open from revision 1:
    Insert Marker (Insert), Locate Next (Shift+N), Locate Previous (Shift+B) and
    Project > Markers (Ctrl+M, a list window with locate/rename/remove) are wired;
    markers draw a line and their name in the ruler. 2 core and 5 app tests.
-3. **Follow playhead.** A persisted toggle plus scroll behaviour that keeps the
-   playhead visible during playback, and stops fighting the user while they
-   drag-scroll.
+3. **Follow playhead.** *Delivered.* The existing persisted `autoscroll_enabled`
+   toggle now drives real paging: while the transport plays, the view scrolls when
+   the playhead leaves the middle 80% and puts it back at the left tenth;
+   rewinding pages back. It stands aside while a pointer button is held or a wheel
+   event is handled, and resumes on the next frame. 4 tests.
 4. **Grid and snap for the arrange beyond the current presets:** snap to events
    and to the cursor, with the mode shown in the grid control.
 
