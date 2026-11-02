@@ -484,6 +484,17 @@ struct TrackRenameDialog {
     draft: String,
 }
 
+/// One Zoom-menu command, shared by the menu and the reference keymap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZoomCommand {
+    In,
+    Out,
+    InVertically,
+    OutVertically,
+    ToSelection,
+    ToProject,
+}
+
 /// The Project Logical Editor's saved query and the change it applies.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
@@ -1098,6 +1109,7 @@ pub struct OpenTrackApp {
     /// Project Logical Editor state: the saved query and the transform it applies.
     project_logical_editor: ProjectLogicalEditor,
     project_logical_editor_open: bool,
+    markers_window_open: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2385,6 +2397,7 @@ impl OpenTrackApp {
                 })
                 .unwrap_or_default(),
             project_logical_editor_open: false,
+            markers_window_open: false,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -6468,6 +6481,10 @@ impl OpenTrackApp {
             "edit.lock" => self.set_selected_audio_events_locked(true),
             "edit.unlock" => self.set_selected_audio_events_locked(false),
             "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
+            "transport.insert_marker" => self.add_marker_at_playhead(),
+            "transport.locate_next_marker" => self.locate_next_marker(),
+            "transport.locate_previous_marker" => self.locate_previous_marker(),
+            "project.open_markers" => self.markers_window_open = true,
             "edit.project_logical_editor" => self.project_logical_editor_open = true,
             "edit.process_project_logical_editor" => self.process_logical_editor(),
             "edit.automation_follows_events" => {
@@ -6546,6 +6563,12 @@ impl OpenTrackApp {
                     track.solo_defeat = false;
                 }
             }),
+            "zoom.zoom_in" => self.run_zoom_command(ZoomCommand::In),
+            "zoom.zoom_out" => self.run_zoom_command(ZoomCommand::Out),
+            "zoom.zoom_in_vertically" => self.run_zoom_command(ZoomCommand::InVertically),
+            "zoom.zoom_out_vertically" => self.run_zoom_command(ZoomCommand::OutVertically),
+            "zoom.zoom_to_selection" => self.run_zoom_command(ZoomCommand::ToSelection),
+            "zoom.zoom_to_project" => self.run_zoom_command(ZoomCommand::ToProject),
             "zoom.zoom_in_tracks" => self.zoom_tracks(1.2),
             "zoom.zoom_out_tracks" => self.zoom_tracks(1.0 / 1.2),
             "zoom.zoom_tracks_exclusive" => self.toggle_zoom_tracks_exclusive(),
@@ -6573,6 +6596,352 @@ impl OpenTrackApp {
             _ => {
                 self.status_message = format!("Not implemented yet: {label}");
             }
+        }
+    }
+
+    /// Adds a marker at the transport position as one undo step.
+    fn add_marker_at_playhead(&mut self) {
+        let beat = self.data.transport.position_beats;
+        let number = self.data.project.markers.len() + 1;
+        let mut candidate = self.data.project.clone();
+        let Some(id) = candidate.add_marker(beat, format!("Marker {number}")) else {
+            self.status_message = "Cannot add another marker at this position".to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot add a marker: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!("Added marker {id} at beat {beat:.3}");
+    }
+
+    /// Renames a marker as one undo step.
+    fn rename_marker(&mut self, id: u64, name: String) {
+        let mut candidate = self.data.project.clone();
+        if !candidate.rename_marker(id, name) {
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot rename the marker: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+    }
+
+    fn remove_marker(&mut self, id: u64) {
+        let mut candidate = self.data.project.clone();
+        if !candidate.remove_marker(id) {
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot remove the marker: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = "Removed the marker; Undo restores it".to_owned();
+    }
+
+    /// Moves the transport to a beat and seeks the engine with it.
+    fn seek_to_beats(&mut self, beat: f64) {
+        let beat = if beat.is_finite() { beat.max(0.0) } else { 0.0 };
+        self.data.transport.position_beats = beat;
+        if let Some(engine) = &self.audio_engine {
+            engine.seek_seconds(beat * 60.0 / self.data.project.tempo_bpm.max(1.0));
+        }
+    }
+
+    fn locate_marker(&mut self, beat: f64) {
+        self.seek_to_beats(beat);
+        if let Some(marker) = self
+            .data
+            .project
+            .markers
+            .iter()
+            .find(|marker| (marker.beat - beat).abs() < 1e-9)
+        {
+            self.status_message = format!("Located to {}", marker.name);
+        }
+    }
+
+    fn locate_next_marker(&mut self) {
+        let beat = self.data.transport.position_beats;
+        let Some(marker) = self.data.project.next_marker_after(beat, true).cloned() else {
+            self.status_message = "This project has no markers".to_owned();
+            return;
+        };
+        self.locate_marker(marker.beat);
+    }
+
+    fn locate_previous_marker(&mut self) {
+        let beat = self.data.transport.position_beats;
+        let Some(marker) = self
+            .data
+            .project
+            .previous_marker_before(beat, true)
+            .cloned()
+        else {
+            self.status_message = "This project has no markers".to_owned();
+            return;
+        };
+        self.locate_marker(marker.beat);
+    }
+
+    fn show_markers_window(&mut self, ctx: &egui::Context) {
+        if !self.markers_window_open {
+            return;
+        }
+        let mut open = true;
+        let mut add = false;
+        let mut locate = None;
+        let mut remove = None;
+        let mut rename = None;
+        let markers = self.data.project.markers.clone();
+        let response = egui::Window::new("Markers")
+            .id(Id::new("project-markers"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(360.0, 320.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Insert at Playhead")
+                        .on_hover_text("Insert marker (Insert key)")
+                        .clicked()
+                    {
+                        add = true;
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{} marker(s)", markers.len()))
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                });
+                ui.separator();
+                if markers.is_empty() {
+                    ui.label("No markers yet. Insert one at the playhead.");
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("project-markers-list")
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        for marker in &markers {
+                            ui.horizontal(|ui| {
+                                if ui.small_button("→").on_hover_text("Locate").clicked() {
+                                    locate = Some(marker.beat);
+                                }
+                                let mut name = marker.name.clone();
+                                if ui
+                                    .add(egui::TextEdit::singleline(&mut name).desired_width(150.0))
+                                    .lost_focus()
+                                    && name != marker.name
+                                {
+                                    rename = Some((marker.id, name));
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!("beat {:.3}", marker.beat))
+                                        .small()
+                                        .color(theme::palette(ui).muted),
+                                );
+                                if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                                    remove = Some(marker.id);
+                                }
+                            });
+                        }
+                    });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-markers"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.markers_window_open = open;
+        if add {
+            self.add_marker_at_playhead();
+        }
+        if let Some(beat) = locate {
+            self.locate_marker(beat);
+        }
+        if let Some((id, name)) = rename {
+            self.rename_marker(id, name);
+        }
+        if let Some(id) = remove {
+            self.remove_marker(id);
+        }
+    }
+
+    /// Width of the arrange grid in points, as drawn last frame.
+    fn arrange_view_width(&self) -> f32 {
+        self.arrange_view_state.last_view_width.max(120.0)
+    }
+
+    /// Bar width in points for a zoom value, matching the arrange drawing.
+    fn bar_width_for_zoom(&self, zoom: f32) -> f32 {
+        (self.arrange_view_width() / 49.0
+            * zoom.clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM))
+        .max(4.0)
+    }
+
+    /// Zooms the timeline by `factor` without moving the beat under the anchor.
+    ///
+    /// The anchor is the playhead when it is on screen, otherwise the centre of
+    /// the visible grid, so a zoom never throws the user somewhere else.
+    fn zoom_timeline(&mut self, factor: f32) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        let width = self.arrange_view_width();
+        let header = 264.0;
+        let beats_per_bar = f64::from(self.data.project.beats_per_bar.max(1));
+        let previous_zoom = self.arrange_view_state.timeline_zoom;
+        let next_zoom =
+            (previous_zoom * factor).clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM);
+        if (next_zoom - previous_zoom).abs() <= f32::EPSILON {
+            return;
+        }
+        let previous_bar_width = self.bar_width_for_zoom(previous_zoom);
+        let next_bar_width = self.bar_width_for_zoom(next_zoom);
+        let scroll = self.arrange_view_state.timeline_scroll_x;
+        // Where the playhead sits now, in viewport points.
+        let playhead_x = header
+            + ((self.data.transport.position_beats / beats_per_bar) as f32) * previous_bar_width
+            - scroll;
+        let anchor_x = if playhead_x >= header && playhead_x <= header + width {
+            playhead_x
+        } else {
+            header + width * 0.5
+        };
+        let anchor_beat = crate::timeline::ruler_position_beats(
+            anchor_x,
+            header - scroll,
+            previous_bar_width,
+            self.data.project.beats_per_bar.max(1),
+        );
+        self.arrange_view_state.timeline_zoom = next_zoom;
+        let next_scroll =
+            header + ((anchor_beat / beats_per_bar) as f32) * next_bar_width - anchor_x;
+        self.arrange_view_state.timeline_scroll_x = next_scroll.max(0.0);
+        self.status_message = if factor >= 1.0 {
+            format!("Zoomed timeline in to {next_zoom:.2}x")
+        } else {
+            format!("Zoomed timeline out to {next_zoom:.2}x")
+        };
+    }
+
+    /// Fits a beat range into the visible grid.
+    fn zoom_timeline_to_range(&mut self, start_beats: f64, end_beats: f64, margin: f32) {
+        let beats_per_bar = f64::from(self.data.project.beats_per_bar.max(1));
+        let width = self.arrange_view_width();
+        if !start_beats.is_finite() || !end_beats.is_finite() || end_beats <= start_beats {
+            return;
+        }
+        let span_bars = ((end_beats - start_beats) / beats_per_bar).max(0.25) as f32;
+        let target_bar_width = (width * (1.0 - margin * 2.0).max(0.2)) / span_bars;
+        let zoom = (target_bar_width * 49.0 / width)
+            .clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM);
+        self.arrange_view_state.timeline_zoom = zoom;
+        let bar_width = self.bar_width_for_zoom(zoom);
+        let margin_points = width * margin;
+        let scroll = 264.0 + (((start_beats / beats_per_bar) as f32) * bar_width) - margin_points;
+        self.arrange_view_state.timeline_scroll_x = scroll.max(0.0);
+    }
+
+    /// Fits the whole project content into the view.
+    fn zoom_to_project(&mut self) {
+        let beats_per_bar = f64::from(self.data.project.beats_per_bar.max(1));
+        let end = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| {
+                track
+                    .clips
+                    .iter()
+                    .map(|clip| {
+                        clip.start_beats
+                            + clip.duration_seconds * self.data.project.tempo_bpm / 60.0
+                    })
+                    .chain(
+                        track
+                            .midi_parts
+                            .iter()
+                            .map(|part| part.start_beats + part.duration_beats),
+                    )
+            })
+            .fold(0.0_f64, f64::max)
+            .max(beats_per_bar * 4.0)
+            .max(self.data.project.loop_end_beats);
+        self.zoom_timeline_to_range(0.0, end, 0.02);
+        self.status_message = "Zoomed to the whole project".to_owned();
+    }
+
+    /// Fits the selected events, or the loop range when nothing is selected.
+    fn zoom_to_selection(&mut self) {
+        let tempo = self.data.project.tempo_bpm;
+        let selected = self.arrange_view_state.audio_events.selected_ids();
+        let mut start = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        if !selected.is_empty() {
+            for track in self.data.project.tracks.iter() {
+                for clip in &track.clips {
+                    if selected.contains(&clip.id) {
+                        start = start.min(clip.start_beats);
+                        end = end.max(clip.start_beats + clip.duration_seconds * tempo / 60.0);
+                    }
+                }
+                for part in &track.midi_parts {
+                    if self.data.project.selected_midi_part_id == Some(part.id) {
+                        start = start.min(part.start_beats);
+                        end = end.max(part.start_beats + part.duration_beats);
+                    }
+                }
+            }
+        }
+        if !start.is_finite() || end <= start {
+            start = self.data.project.loop_start_beats;
+            end = self.data.project.loop_end_beats;
+        }
+        if !start.is_finite() || end <= start {
+            self.status_message =
+                "Select events, or set a loop range, before zooming to a selection".to_owned();
+            return;
+        }
+        self.zoom_timeline_to_range(start, end, 0.05);
+        self.status_message = "Zoomed to the selection".to_owned();
+    }
+
+    fn run_zoom_command(&mut self, command: ZoomCommand) {
+        match command {
+            ZoomCommand::In => self.zoom_timeline(1.25),
+            ZoomCommand::Out => self.zoom_timeline(1.0 / 1.25),
+            ZoomCommand::InVertically => self.zoom_tracks(1.2),
+            ZoomCommand::OutVertically => self.zoom_tracks(1.0 / 1.2),
+            ZoomCommand::ToSelection => self.zoom_to_selection(),
+            ZoomCommand::ToProject => self.zoom_to_project(),
         }
     }
 
@@ -9035,17 +9404,19 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.menu_button("Zoom", |ui| {
-                        disabled_menu_commands(
-                            ui,
-                            &[
-                                ("Zoom In", "H"),
-                                ("Zoom Out", "G"),
-                                ("Zoom In Vertically", "Shift+F"),
-                                ("Zoom Out Vertically", "Alt+S"),
-                                ("Zoom to Selection", "Shift+E"),
-                                ("Zoom to Project", "Alt+Down"),
-                            ],
-                        );
+                        for (label, shortcut, action) in [
+                            ("Zoom In", "H", ZoomCommand::In),
+                            ("Zoom Out", "G", ZoomCommand::Out),
+                            ("Zoom In Vertically", "Shift+F", ZoomCommand::InVertically),
+                            ("Zoom Out Vertically", "Alt+S", ZoomCommand::OutVertically),
+                            ("Zoom to Selection", "Shift+E", ZoomCommand::ToSelection),
+                            ("Zoom to Project", "Alt+Down", ZoomCommand::ToProject),
+                        ] {
+                            if menu_command(ui, label, shortcut, self.project_open).clicked() {
+                                self.run_zoom_command(action);
+                                ui.close();
+                            }
+                        }
                     });
                     menu_command(ui, "Macros", "", false);
                     ui.separator();
@@ -9124,10 +9495,13 @@ impl OpenTrackApp {
                         self.project_setup_open = true;
                         ui.close();
                     }
+                    if menu_command(ui, "Markers", "Ctrl+M", self.project_open).clicked() {
+                        self.markers_window_open = true;
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Markers", "Ctrl+M"),
                             ("Tempo Track", "Ctrl+T"),
                             ("Browser", "Ctrl+B"),
                             ("Automation Panel", ""),
@@ -10332,6 +10706,7 @@ impl OpenTrackApp {
             || self.project_recovery.is_some()
             || self.repeat_dialog.is_some()
             || self.project_logical_editor_open
+            || self.markers_window_open
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -12711,6 +13086,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_recovery(&ctx);
         self.show_repeat_dialog(&ctx);
         self.show_project_logical_editor(&ctx);
+        self.show_markers_window(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -13548,6 +13924,7 @@ fn show_project(
     crate::view_controls::apply_solid_scrollbars(ui);
     let scroll_parent = ui.available_rect_before_wrap();
     let timeline_view_width = (scroll_parent.width() - lane_header_width - 34.0).max(1.0);
+    arrange_view_state.last_view_width = timeline_view_width;
     let bar_width = (timeline_view_width / 49.0
         * arrange_view_state
             .timeline_zoom
@@ -14530,6 +14907,31 @@ fn show_project(
                         );
                     }
                 }
+            }
+
+            // Markers: a full-height line in the ruler and a short name, drawn
+            // over the grid so they never hide behind bar lines.
+            for marker in &project.markers {
+                let x = grid_left + (marker.beat / beats_per_bar_f64) as f32 * bar_width;
+                if x < grid_clip.left() - 2.0 || x > grid_clip.right() + 2.0 {
+                    continue;
+                }
+                ruler_grid_painter.line_segment(
+                    [Pos2::new(x, ruler.top()), Pos2::new(x, ruler.bottom())],
+                    Stroke::new(1.5, palette.text),
+                );
+                let name = if marker.name.trim().is_empty() {
+                    format!("Marker {}", marker.id)
+                } else {
+                    marker.name.clone()
+                };
+                ruler_grid_painter.text(
+                    Pos2::new(x + 3.0, ruler.bottom() - 1.0),
+                    Align2::LEFT_BOTTOM,
+                    name,
+                    ruler_font.clone(),
+                    palette.text,
+                );
             }
 
             // Quantize grid positions include triplets/dotted values and stay
@@ -21823,6 +22225,273 @@ mod add_track_instrument_tests {
             app.data.project, before,
             "there is no instrument track to load the plug-in on"
         );
+    }
+}
+
+#[cfg(test)]
+mod marker_command_tests {
+    use super::*;
+
+    fn app_with_markers() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_marker(8.0, "Verse").expect("marker");
+        app.data.project.add_marker(16.0, "Chorus").expect("marker");
+        app.project_history.clear();
+        app
+    }
+
+    #[test]
+    fn inserting_a_marker_uses_the_playhead_and_one_undo_step() {
+        let mut app = app_with_markers();
+        app.data.transport.position_beats = 24.0;
+        app.add_marker_at_playhead();
+        assert_eq!(app.data.project.markers.len(), 3);
+        let added = app
+            .data
+            .project
+            .markers
+            .iter()
+            .find(|marker| (marker.beat - 24.0).abs() < 1e-9)
+            .expect("the marker is at the playhead");
+        assert_eq!(added.name, "Marker 3");
+        assert!(app.modified);
+        assert!(app.status_message.contains("Added marker"));
+    }
+
+    #[test]
+    fn locating_markers_wraps_in_both_directions() {
+        let mut app = app_with_markers();
+        app.data.transport.position_beats = 0.0;
+        app.locate_next_marker();
+        assert_eq!(app.data.transport.position_beats, 8.0);
+        app.locate_next_marker();
+        assert_eq!(app.data.transport.position_beats, 16.0);
+        // Past the last marker it wraps to the first.
+        app.locate_next_marker();
+        assert_eq!(app.data.transport.position_beats, 8.0);
+        // And backwards from the first it wraps to the last.
+        app.locate_previous_marker();
+        assert_eq!(app.data.transport.position_beats, 16.0);
+        assert!(app.status_message.contains("Chorus"));
+    }
+
+    #[test]
+    fn markers_without_any_report_instead_of_moving() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.transport.position_beats = 4.0;
+        app.locate_next_marker();
+        assert_eq!(app.data.transport.position_beats, 4.0);
+        assert_eq!(app.status_message, "This project has no markers");
+    }
+
+    #[test]
+    fn renaming_and_removing_markers_are_undoable() {
+        let mut app = app_with_markers();
+        let verse = app.data.project.markers[0].id;
+        app.rename_marker(verse, "Verse A".to_owned());
+        assert_eq!(app.data.project.markers[0].name, "Verse A");
+        app.remove_marker(verse);
+        assert_eq!(app.data.project.markers.len(), 1);
+        assert!(app.status_message.contains("Removed the marker"));
+    }
+
+    #[test]
+    fn the_ruler_draws_each_marker_name() {
+        let mut app = app_with_markers();
+        app.data.project.add_track(TrackKind::Audio);
+        app.arrange_view_state.last_view_width = 900.0;
+
+        let ctx = egui::Context::default();
+        let mut found = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 600.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = show_project(
+                        ui,
+                        &mut app.edit_tool,
+                        &mut app.data.project,
+                        &mut app.data.transport.position_beats,
+                        true,
+                        4,
+                        44_100,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        None,
+                        &mut app.arrange_view_state,
+                        &mut false,
+                        &mut None,
+                        &mut NativeWindowState::default(),
+                        &mut None,
+                        true,
+                        &mut None,
+                        false,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            found.clear();
+            for shape in &output.shapes {
+                collect(&shape.shape, &mut found);
+            }
+        }
+        assert!(found.iter().any(|text| text == "Verse"), "{found:?}");
+        assert!(found.iter().any(|text| text == "Chorus"), "{found:?}");
+    }
+}
+
+#[cfg(test)]
+mod zoom_command_tests {
+    use super::*;
+
+    fn app_with_event() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        // 8 s at 120 BPM is 16 beats.
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 8.0)
+            .unwrap();
+        app.arrange_view_state.last_view_width = 1000.0;
+        app
+    }
+
+    /// Beat drawn at a viewport x, using the same transform as the arrange.
+    fn beat_at(app: &OpenTrackApp, x: f32) -> f64 {
+        let bar_width = (1000.0 / 49.0
+            * app
+                .arrange_view_state
+                .timeline_zoom
+                .clamp(crate::timeline::MIN_ZOOM, crate::timeline::MAX_ZOOM))
+        .max(4.0);
+        crate::timeline::ruler_position_beats(
+            x,
+            264.0 - app.arrange_view_state.timeline_scroll_x,
+            bar_width,
+            app.data.project.beats_per_bar.max(1),
+        )
+    }
+
+    #[test]
+    fn zooming_in_and_out_keeps_the_anchor_beat_in_place() {
+        let mut app = app_with_event();
+        app.arrange_view_state.timeline_zoom = 1.0;
+        app.arrange_view_state.timeline_scroll_x = 0.0;
+        app.data.transport.position_beats = 0.0;
+
+        // The playhead is the anchor when it is on screen.
+        app.data.transport.position_beats = 24.0;
+        let anchor_x = 264.0 + (24.0 / 4.0) as f32 * (1000.0 / 49.0);
+        let before = beat_at(&app, anchor_x);
+        let start_zoom = app.arrange_view_state.timeline_zoom;
+
+        app.run_zoom_command(ZoomCommand::In);
+        assert!(app.arrange_view_state.timeline_zoom > start_zoom);
+        let after = beat_at(&app, anchor_x);
+        assert!(
+            (before - 24.0).abs() < 0.01,
+            "the anchor starts on the playhead: {before}"
+        );
+        assert!(
+            (after - before).abs() < 0.15,
+            "the anchor moved: {before} -> {after}"
+        );
+
+        app.run_zoom_command(ZoomCommand::Out);
+        assert!(
+            (app.arrange_view_state.timeline_zoom - start_zoom).abs() < 1e-4,
+            "in then out returns to the same zoom"
+        );
+        assert!((beat_at(&app, anchor_x) - before).abs() < 0.15);
+    }
+
+    #[test]
+    fn zooming_stops_at_the_supported_limits() {
+        let mut app = app_with_event();
+        app.arrange_view_state.timeline_zoom = crate::timeline::MAX_ZOOM;
+        app.run_zoom_command(ZoomCommand::In);
+        assert_eq!(
+            app.arrange_view_state.timeline_zoom,
+            crate::timeline::MAX_ZOOM
+        );
+        app.arrange_view_state.timeline_zoom = crate::timeline::MIN_ZOOM;
+        app.run_zoom_command(ZoomCommand::Out);
+        assert_eq!(
+            app.arrange_view_state.timeline_zoom,
+            crate::timeline::MIN_ZOOM
+        );
+    }
+
+    #[test]
+    fn zoom_to_project_shows_the_whole_content() {
+        let mut app = app_with_event();
+        // Sixteen beats at four per bar is four bars.
+        app.run_zoom_command(ZoomCommand::ToProject);
+        let end_beat = 16.0;
+        let end_x = 264.0
+            + (end_beat / 4.0) as f32
+                * (1000.0 / 49.0 * app.arrange_view_state.timeline_zoom).max(4.0)
+            - app.arrange_view_state.timeline_scroll_x;
+        assert!(
+            end_x <= 264.0 + 1000.0,
+            "the project end is inside the view: {end_x}"
+        );
+        assert!(end_x > 264.0, "the project end is right of the header");
+        assert_eq!(app.status_message, "Zoomed to the whole project");
+    }
+
+    #[test]
+    fn zoom_to_selection_uses_the_selection_then_the_loop() {
+        let mut app = app_with_event();
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.run_zoom_command(ZoomCommand::ToSelection);
+        assert_eq!(app.status_message, "Zoomed to the selection");
+        let selected_zoom = app.arrange_view_state.timeline_zoom;
+
+        // Nothing selected and no loop: the command refuses instead of guessing.
+        app.arrange_view_state.audio_events.clear_selection();
+        app.data.project.loop_start_beats = 4.0;
+        app.data.project.loop_end_beats = 4.0;
+        app.run_zoom_command(ZoomCommand::ToSelection);
+        assert!(
+            app.status_message.contains("before zooming to a selection"),
+            "status was {}",
+            app.status_message
+        );
+
+        // With a loop range it falls back to the loop.
+        app.data.project.loop_end_beats = 8.0;
+        app.run_zoom_command(ZoomCommand::ToSelection);
+        assert_eq!(app.status_message, "Zoomed to the selection");
+        assert!(app.arrange_view_state.timeline_zoom > selected_zoom);
     }
 }
 

@@ -280,6 +280,14 @@ fn shift_volume_automation_within_spans(
     shifted_lanes
 }
 
+fn bounded_marker_name(name: String) -> String {
+    let trimmed = name.trim();
+    if trimmed.chars().count() <= MAX_MARKER_NAME_CHARS {
+        return trimmed.to_owned();
+    }
+    trimmed.chars().take(MAX_MARKER_NAME_CHARS).collect()
+}
+
 fn rename_clip(project: &mut Project, track_id: u64, from: u64, to: u64) {
     if let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id)
         && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == from)
@@ -870,6 +878,28 @@ pub struct Project {
     pub loop_end_beats: f64,
     #[serde(default)]
     pub cycle_mode: CycleMode,
+    /// Timeline markers, ordered by beat. Older projects have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+    #[serde(default = "first_marker_id")]
+    pub next_marker_id: u64,
+}
+
+/// A named position on the project timeline, used for navigation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Marker {
+    pub id: u64,
+    pub beat: f64,
+    pub name: String,
+}
+
+/// Bound on markers per project, so a runaway script cannot grow the file.
+pub const MAX_MARKERS: usize = 1024;
+/// Bound on a marker name, in characters.
+pub const MAX_MARKER_NAME_CHARS: usize = 96;
+
+fn first_marker_id() -> u64 {
+    1
 }
 
 /// The locator direction determines whether Cycle repeats or skips the range.
@@ -955,6 +985,8 @@ impl Default for Project {
             loop_start_beats: default_loop_start_beats(),
             loop_end_beats: default_loop_end_beats(),
             cycle_mode: CycleMode::Loop,
+            markers: Vec::new(),
+            next_marker_id: first_marker_id(),
         }
     }
 }
@@ -2105,6 +2137,83 @@ impl Project {
         }
         *self = candidate;
         trimmed
+    }
+
+    /// Adds a marker at `beat` and returns its id.
+    ///
+    /// A marker is a navigation bookmark, so duplicates at the same beat are
+    /// allowed but bounded in count and name length.
+    pub fn add_marker(&mut self, beat: f64, name: impl Into<String>) -> Option<u64> {
+        if !beat.is_finite() || beat < 0.0 || beat > MAX_LOOP_BEATS {
+            return None;
+        }
+        if self.markers.len() >= MAX_MARKERS || self.next_marker_id == u64::MAX {
+            return None;
+        }
+        let id = self.next_marker_id;
+        self.next_marker_id += 1;
+        self.markers.push(Marker {
+            id,
+            beat,
+            name: bounded_marker_name(name.into()),
+        });
+        self.markers
+            .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+        Some(id)
+    }
+
+    /// Renames a marker and reports whether it changed.
+    pub fn rename_marker(&mut self, id: u64, name: impl Into<String>) -> bool {
+        let Some(marker) = self.markers.iter_mut().find(|marker| marker.id == id) else {
+            return false;
+        };
+        let name = bounded_marker_name(name.into());
+        if marker.name == name {
+            return false;
+        }
+        marker.name = name;
+        true
+    }
+
+    /// Moves a marker to another beat and keeps the list ordered.
+    pub fn move_marker(&mut self, id: u64, beat: f64) -> bool {
+        if !beat.is_finite() || beat < 0.0 || beat > MAX_LOOP_BEATS {
+            return false;
+        }
+        let Some(marker) = self.markers.iter_mut().find(|marker| marker.id == id) else {
+            return false;
+        };
+        if marker.beat == beat {
+            return false;
+        }
+        marker.beat = beat;
+        self.markers
+            .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+        true
+    }
+
+    /// Removes a marker and reports whether it existed.
+    pub fn remove_marker(&mut self, id: u64) -> bool {
+        let before = self.markers.len();
+        self.markers.retain(|marker| marker.id != id);
+        self.markers.len() != before
+    }
+
+    /// The next marker strictly after `beat`, or the first one when wrapping.
+    pub fn next_marker_after(&self, beat: f64, wrap: bool) -> Option<&Marker> {
+        self.markers
+            .iter()
+            .find(|marker| marker.beat > beat + 1e-9)
+            .or_else(|| wrap.then(|| self.markers.first()).flatten())
+    }
+
+    /// The previous marker strictly before `beat`, or the last one when wrapping.
+    pub fn previous_marker_before(&self, beat: f64, wrap: bool) -> Option<&Marker> {
+        self.markers
+            .iter()
+            .rev()
+            .find(|marker| marker.beat < beat - 1e-9)
+            .or_else(|| wrap.then(|| self.markers.last()).flatten())
     }
 
     /// Locks or unlocks the given events and reports how many changed.
@@ -4501,6 +4610,117 @@ mod sample_edit_tests {
         assert_eq!(project.tracks[0].automation_lanes[0].points[0].beat, 4.0);
         assert_eq!(project.tracks[0].clips.len(), 0);
         assert_eq!(project.tracks[1].clips[0].id, id);
+    }
+
+    #[test]
+    fn markers_add_rename_move_remove_and_navigate_in_order() {
+        let mut project = Project::default();
+        let intro = project.add_marker(0.0, "Intro").expect("intro");
+        let chorus = project.add_marker(16.0, "Chorus").expect("chorus");
+        let verse = project.add_marker(8.0, "Verse").expect("verse");
+        // The list stays ordered by beat however the markers were added.
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|marker| marker.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Intro", "Verse", "Chorus"]
+        );
+
+        assert!(project.rename_marker(verse, "Verse 1"));
+        assert!(!project.rename_marker(verse, "Verse 1"), "no change twice");
+        assert!(project.move_marker(chorus, 4.0));
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|marker| marker.beat)
+                .collect::<Vec<_>>(),
+            vec![0.0, 4.0, 8.0]
+        );
+
+        // Navigation is strict: a marker exactly at the cursor is not "next".
+        assert_eq!(
+            project
+                .next_marker_after(0.0, false)
+                .map(|marker| marker.id),
+            Some(chorus)
+        );
+        assert_eq!(
+            project
+                .previous_marker_before(8.0, false)
+                .map(|marker| marker.id),
+            Some(chorus)
+        );
+        assert_eq!(project.next_marker_after(16.0, false), None);
+        assert_eq!(
+            project
+                .next_marker_after(16.0, true)
+                .map(|marker| marker.id),
+            Some(intro),
+            "wrapping goes back to the first marker"
+        );
+        assert_eq!(
+            project
+                .previous_marker_before(0.0, true)
+                .map(|marker| marker.id),
+            Some(verse),
+            "wrapping goes to the last marker"
+        );
+
+        assert!(project.remove_marker(verse));
+        assert!(!project.remove_marker(verse));
+        assert_eq!(project.markers.len(), 2);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn markers_are_bounded_and_round_trip_with_a_legacy_default() {
+        use crate::project::{MAX_MARKER_NAME_CHARS, MAX_MARKERS};
+
+        let mut project = Project::default();
+        let id = project
+            .add_marker(4.0, "x".repeat(MAX_MARKER_NAME_CHARS * 3))
+            .expect("marker");
+        assert_eq!(
+            project.markers[0].name.chars().count(),
+            MAX_MARKER_NAME_CHARS,
+            "the name is bounded"
+        );
+        assert!(project.add_marker(f64::NAN, "bad").is_none());
+        assert!(project.add_marker(-1.0, "bad").is_none());
+        assert!(project.add_marker(1_000_001.0, "bad").is_none());
+
+        let encoded = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.markers, project.markers);
+        assert_eq!(restored.next_marker_id, project.next_marker_id);
+        assert_eq!(restored.markers[0].id, id);
+
+        // A project saved before markers existed loads with none.
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        legacy.as_object_mut().expect("object").remove("markers");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("next_marker_id");
+        let legacy: Project = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.markers.is_empty());
+        assert_eq!(legacy.next_marker_id, 1, "ids restart safely");
+        // A project without markers does not store the empty list.
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("\"markers\"")
+        );
+
+        // The count is bounded.
+        let mut full = Project::default();
+        for index in 0..MAX_MARKERS {
+            assert!(full.add_marker(index as f64, "m").is_some());
+        }
+        assert!(full.add_marker(0.0, "overflow").is_none());
     }
 
     #[test]

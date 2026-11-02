@@ -72,6 +72,13 @@ pub(crate) struct ProjectFile {
 pub(crate) struct ArrangeViewState {
     #[serde(skip)]
     pub(crate) audio_events: crate::app::audio_events::State,
+    /// Width of the arrange grid seen last frame, in points.
+    ///
+    /// Zoom commands need the visible width to keep an anchor in place, but it is
+    /// only known while drawing. It is not persisted: a saved width from another
+    /// window size would put the anchor in the wrong place.
+    #[serde(skip)]
+    pub(crate) last_view_width: f32,
     #[serde(default = "default_project_dock_fraction")]
     pub(crate) project_dock_fraction: f32,
     #[serde(default = "default_timeline_zoom")]
@@ -144,6 +151,7 @@ impl Default for ArrangeViewState {
     fn default() -> Self {
         Self {
             audio_events: Default::default(),
+            last_view_width: 0.0,
             project_dock_fraction: default_project_dock_fraction(),
             timeline_zoom: default_timeline_zoom(),
             track_vertical_zoom: default_track_vertical_zoom(),
