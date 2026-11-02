@@ -1209,6 +1209,12 @@ pub struct OpenTrackApp {
     pool_reveal: Option<PathBuf>,
     /// Pool row the user clicked, used by Select in Project.
     pool_selected: Option<PathBuf>,
+    /// Media Pool folder filter, folder assignment request and New Folder request.
+    pool_folder_filter: Option<String>,
+    pool_folder_assign: Option<Option<String>>,
+    pool_folder_create: bool,
+    /// New Folder dialog draft name.
+    media_folder_dialog: Option<String>,
     /// Where the overview strip was drawn last frame, for click tests.
     #[cfg(test)]
     last_overview_rect: Option<Rect>,
@@ -2640,6 +2646,10 @@ impl OpenTrackApp {
             auto_fades_settings_open: false,
             pool_reveal: None,
             pool_selected: None,
+            pool_folder_filter: None,
+            pool_folder_assign: None,
+            pool_folder_create: false,
+            media_folder_dialog: None,
             #[cfg(test)]
             last_overview_rect: None,
             beat_calculator: None,
@@ -3967,6 +3977,10 @@ impl OpenTrackApp {
         self.close_project_prompt = false;
         self.pool_reveal = None;
         self.pool_selected = None;
+        self.pool_folder_filter = None;
+        self.pool_folder_assign = None;
+        self.pool_folder_create = false;
+        self.media_folder_dialog = None;
         self.list_editor_open = false;
         self.pool_search.clear();
         self.pool_search_focus = false;
@@ -8063,6 +8077,131 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = format!("Removed {removed} MIDI note(s); Undo restores them");
+    }
+
+    /// Opens the New Folder dialog for the Media Pool.
+    fn open_media_folder_dialog(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to organise its media".to_owned();
+            return;
+        }
+        self.media_folder_dialog = Some(String::new());
+    }
+
+    /// Creates a Media Pool folder as one undo step.
+    fn apply_media_folder_name(&mut self, name: &str) {
+        if !self.project_open {
+            self.status_message = "Open a project to organise its media".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let created = match candidate.create_media_folder(name) {
+            Ok(created) => created,
+            Err(message) => {
+                self.status_message = message;
+                return;
+            }
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot create the folder: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Create Folder");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!("Created the Media Pool folder {created}");
+    }
+
+    /// Files the selected pool source into a folder, or back into the root.
+    fn assign_selected_pool_media_to_folder(&mut self, folder: Option<String>) {
+        let Some(path) = self.pool_selected.clone() else {
+            self.status_message = "Choose a file in the Media Pool first".to_owned();
+            return;
+        };
+        let mut candidate = self.data.project.clone();
+        let changed = match candidate.assign_media_to_folder(&[path.clone()], folder.as_deref()) {
+            Ok(changed) => changed,
+            Err(message) => {
+                self.status_message = message;
+                return;
+            }
+        };
+        if changed == 0 {
+            self.status_message = "That source is already in that folder".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot move the media: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Move Media to Folder");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        self.status_message = match folder {
+            Some(folder) => format!("Moved {name} into {folder}"),
+            None => format!("Moved {name} back to the pool root"),
+        };
+    }
+
+    fn show_media_folder_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut name) = self.media_folder_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("New Media Pool Folder")
+            .id(Id::new("media-folder-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.label("Folders group the sources this project already references.");
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .desired_width(240.0)
+                        .hint_text("Folder name"),
+                );
+                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Create").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("media-folder-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_media_folder_name(&name);
+        } else if !cancel && open {
+            self.media_folder_dialog = Some(name);
+        }
     }
 
     /// Lists the selected MIDI part's events in a table.
@@ -13851,6 +13990,10 @@ impl OpenTrackApp {
                         self.remove_missing_media_from_pool();
                         ui.close();
                     }
+                    if menu_command(ui, "Create Folder", "", self.project_open).clicked() {
+                        self.open_media_folder_dialog();
+                        ui.close();
+                    }
                     if menu_command(
                         ui,
                         "Prepare Archive...",
@@ -13882,7 +14025,6 @@ impl OpenTrackApp {
                             ("Conform Files...", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
-                            ("Create Folder", ""),
                             ("Set Pool Record Folder", ""),
                         ],
                     );
@@ -14900,6 +15042,7 @@ impl OpenTrackApp {
             || self.tuplet_dialog.is_some()
             || self.timecode_dialog.is_some()
             || self.list_editor_open
+            || self.media_folder_dialog.is_some()
             || self.automation_panel_open
             || self.normalize_dialog.is_some()
             || self.notepad_draft.is_some()
@@ -15534,6 +15677,11 @@ impl OpenTrackApp {
             egui::CentralPanel::default().show(window_ctx, |ui| {
                 let pointer_blocked = self.dialog_owns_input() || self.menu_open;
                 blocked_input_scope(ui, pointer_blocked, self.modal_dialog_open(), |ui| {
+                    let mut folders = media_pool::PoolFolders {
+                        filter: &mut self.pool_folder_filter,
+                        assign: &mut self.pool_folder_assign,
+                        create: &mut self.pool_folder_create,
+                    };
                     insert = media_pool::show(
                         ui,
                         &self.data.project,
@@ -15541,10 +15689,18 @@ impl OpenTrackApp {
                         &mut self.pool_search,
                         &mut self.pool_search_focus,
                         &mut self.pool_selected,
+                        &mut folders,
                     );
                 });
             });
             self.media_window.popup_active = popup_behavior::close_when_pointer_leaves(window_ctx);
+            if let Some(assign) = self.pool_folder_assign.take() {
+                self.assign_selected_pool_media_to_folder(assign);
+            }
+            if self.pool_folder_create {
+                self.pool_folder_create = false;
+                self.open_media_folder_dialog();
+            }
             if self.media_window.popup_active
                 && !egui::Popup::is_any_open(ctx)
                 && !self.channel_settings_window.popup_active
@@ -17319,6 +17475,7 @@ impl eframe::App for OpenTrackApp {
         self.show_tuplet_dialog(&ctx);
         self.show_timecode_dialog(&ctx);
         self.show_list_editor(&ctx);
+        self.show_media_folder_dialog(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);

@@ -447,5 +447,15 @@ still one commit with tests and refreshed counts.
    selected part and reports when none is selected. 2 app tests. Disabled entries
    87 -> 86.
 
+44. **Media Pool folders.** *Delivered.* `MediaFolders` (up to 32 named folders and
+   a source-to-folder map, OPR version 31 with a v30 migration test) organises the
+   pool without touching media: creating, renaming, deleting and filing are project
+   content, refusals leave the project unchanged, and a source that leaves the pool
+   loses its assignment. Media > Create Folder opens a name dialog (one labelled
+   "Create Folder" undo step); the pool gained a Folder column, a folder filter, a
+   "Move to" control for the clicked row (one labelled "Move Media to Folder" step)
+   and a New Folder button. 3 core, 1 project, 1 migration and 2 app tests.
+   Disabled entries 86 -> 85.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

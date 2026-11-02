@@ -6,6 +6,7 @@ pub mod automation;
 pub mod commands;
 pub mod cpr;
 pub mod event_query;
+pub mod media_folders;
 pub mod midi_file;
 pub mod midi_quantize;
 pub mod midi_transform;

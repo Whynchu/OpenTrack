@@ -171,6 +171,24 @@ pub(super) fn media_matches(path: &Path, search: &str) -> bool {
         || path.to_string_lossy().to_lowercase().contains(&search)
 }
 
+/// One-shot state the pool's folder controls report back to the app.
+pub(super) struct PoolFolders<'a> {
+    /// Folder shown, or `None` for every folder.
+    pub filter: &'a mut Option<String>,
+    /// Folder chosen for the selected row, when the user picked one.
+    pub assign: &'a mut Option<Option<String>>,
+    /// True when the user asked for the New Folder dialog.
+    pub create: &'a mut bool,
+}
+
+/// True when `path` should be listed under the folder filter.
+pub(super) fn media_matches_folder(project: &Project, path: &Path, filter: Option<&str>) -> bool {
+    match filter {
+        None => true,
+        Some(folder) => project.media_folder_of(path) == Some(folder),
+    }
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     project: &Project,
@@ -178,6 +196,7 @@ pub(super) fn show(
     search: &mut String,
     focus_search: &mut bool,
     selected: &mut Option<PathBuf>,
+    folders: &mut PoolFolders<'_>,
 ) -> Option<PathBuf> {
     let mut insert = None;
     ui.heading("Media Pool");
@@ -197,13 +216,68 @@ pub(super) fn show(
             search.clear();
         }
     });
+    {
+        let names = project.media_folders.names.clone();
+        ui.horizontal(|ui| {
+            ui.label("Folder");
+            let current = folders
+                .filter
+                .clone()
+                .unwrap_or_else(|| "All folders".to_owned());
+            egui::ComboBox::from_id_salt("media-pool-folder-filter")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(folders.filter.is_none(), "All folders")
+                        .clicked()
+                    {
+                        *folders.filter = None;
+                    }
+                    for name in &names {
+                        if ui
+                            .selectable_label(
+                                folders.filter.as_deref() == Some(name.as_str()),
+                                name,
+                            )
+                            .clicked()
+                        {
+                            *folders.filter = Some(name.clone());
+                        }
+                    }
+                });
+            if ui.button("New Folder…").clicked() {
+                *folders.create = true;
+            }
+            if let Some(folder_name) = selected
+                .as_deref()
+                .and_then(|path| project.media_folder_of(path))
+            {
+                ui.weak(format!("Selected: {folder_name}"));
+            }
+            if let Some(path) = selected.as_deref() {
+                let current = project.media_folder_of(path).unwrap_or("(none)").to_owned();
+                egui::ComboBox::from_id_salt("media-pool-folder-move")
+                    .selected_text(format!("Move to: {current}"))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current == "(none)", "(none)").clicked() {
+                            *folders.assign = Some(None);
+                        }
+                        for name in &names {
+                            if ui.selectable_label(current == *name, name).clicked() {
+                                *folders.assign = Some(Some(name.clone()));
+                            }
+                        }
+                    });
+            }
+        });
+    }
     ui.separator();
     egui::ScrollArea::both().show(ui, |ui| {
         egui::Grid::new("project-media-pool")
             .striped(true)
             .spacing([16.0, 7.0])
             .show(ui, |ui| {
-                for heading in ["File", "Usage", "Location", ""] {
+                for heading in ["File", "Folder", "Usage", "Location", ""] {
                     ui.strong(heading);
                 }
                 ui.end_row();
@@ -212,6 +286,7 @@ pub(super) fn show(
                     .media_paths()
                     .into_iter()
                     .filter(|path| media_matches(path, search))
+                    .filter(|path| media_matches_folder(project, path, folders.filter.as_deref()))
                 {
                     shown += 1;
                     let uses = project
@@ -257,6 +332,7 @@ pub(super) fn show(
                             egui::StrokeKind::Outside,
                         );
                     }
+                    ui.label(project.media_folder_of(&path).unwrap_or("—"));
                     ui.label(if path.is_file() {
                         format!("{uses} event(s)")
                     } else {
@@ -271,7 +347,7 @@ pub(super) fn show(
                     }
                     ui.end_row();
                 }
-                if shown == 0 && !search.trim().is_empty() {
+                if shown == 0 && folders.filter.is_none() && !search.trim().is_empty() {
                     ui.weak("No media matches this search.");
                     ui.end_row();
                 }
@@ -2175,8 +2251,25 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
+                    let mut filter = None;
+                    let mut assign = None;
+                    let mut create = false;
+                    let mut folders = PoolFolders {
+                        filter: &mut filter,
+                        assign: &mut assign,
+                        create: &mut create,
+                    };
                     assert!(
-                        show(ui, &project, None, &mut search, &mut focus, &mut selected).is_none()
+                        show(
+                            ui,
+                            &project,
+                            None,
+                            &mut search,
+                            &mut focus,
+                            &mut selected,
+                            &mut folders
+                        )
+                        .is_none()
                     );
                 },
             );
@@ -2231,6 +2324,14 @@ mod tests {
                     let mut search = String::new();
                     let mut focus = false;
                     let mut selected = None;
+                    let mut filter = None;
+                    let mut assign = None;
+                    let mut create = false;
+                    let mut folders = PoolFolders {
+                        filter: &mut filter,
+                        assign: &mut assign,
+                        create: &mut create,
+                    };
                     assert!(
                         show(
                             ui,
@@ -2238,7 +2339,8 @@ mod tests {
                             Some(revealed.as_path()),
                             &mut search,
                             &mut focus,
-                            &mut selected
+                            &mut selected,
+                            &mut folders
                         )
                         .is_none()
                     );
@@ -2318,7 +2420,26 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                assert!(show(ui, project, None, &mut search, &mut focus, selected).is_none());
+                let mut filter = None;
+                let mut assign = None;
+                let mut create = false;
+                let mut folders = PoolFolders {
+                    filter: &mut filter,
+                    assign: &mut assign,
+                    create: &mut create,
+                };
+                assert!(
+                    show(
+                        ui,
+                        project,
+                        None,
+                        &mut search,
+                        &mut focus,
+                        selected,
+                        &mut folders
+                    )
+                    .is_none()
+                );
             },
         );
         output.textures_delta.clear();
@@ -2396,6 +2517,94 @@ mod tests {
         // The chosen row is the one Select in Project uses.
         let _ = pool_frame(&ctx, &project, &mut selected, Vec::new(), 0.2);
         assert_eq!(selected, Some(PathBuf::from("/media/kick.wav")));
+    }
+
+    #[test]
+    fn creating_and_filling_a_pool_folder_are_undo_steps() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        let kick = PathBuf::from("/media/kick.wav");
+        app.data
+            .project
+            .add_audio_clip(0, kick.clone(), 0.0, 1.0)
+            .expect("clip");
+        app.data.project.register_media();
+        app.project_history.clear();
+
+        app.open_media_folder_dialog();
+        assert_eq!(app.media_folder_dialog, Some(String::new()));
+        app.apply_media_folder_name("  Drums  ");
+        assert_eq!(
+            app.data.project.media_folders.names,
+            vec!["Drums".to_owned()],
+            "the name is trimmed"
+        );
+        assert!(
+            app.status_message
+                .contains("Created the Media Pool folder Drums")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Create Folder");
+
+        // Duplicates and blank names are refused without another step.
+        let steps = app.project_history.counts().0;
+        app.apply_media_folder_name("Drums");
+        assert!(app.status_message.contains("already exists"));
+        app.apply_media_folder_name("   ");
+        assert!(app.status_message.contains("needs a name"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // Filing the clicked pool row is its own labelled step.
+        app.pool_selected = Some(kick.clone());
+        app.assign_selected_pool_media_to_folder(Some("Drums".to_owned()));
+        assert_eq!(app.data.project.media_folder_of(&kick), Some("Drums"));
+        assert!(app.status_message.contains("Moved kick.wav into Drums"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Move Media to Folder");
+
+        // Moving it again is a no-op, and the root move clears the assignment.
+        let steps = app.project_history.counts().0;
+        app.assign_selected_pool_media_to_folder(Some("Drums".to_owned()));
+        assert!(app.status_message.contains("already in that folder"));
+        assert_eq!(app.project_history.counts().0, steps);
+        app.assign_selected_pool_media_to_folder(None);
+        assert_eq!(app.data.project.media_folder_of(&kick), None);
+        assert!(app.status_message.contains("back to the pool root"));
+
+        // With no clicked row it reports instead of guessing.
+        app.pool_selected = None;
+        app.assign_selected_pool_media_to_folder(None);
+        assert!(
+            app.status_message
+                .contains("Choose a file in the Media Pool first")
+        );
+        assert!(app.data.project.validate().is_ok());
+    }
+
+    #[test]
+    fn the_folder_filter_matches_only_sources_filed_in_that_folder() {
+        let mut project = Project::default();
+        let kick = PathBuf::from("/media/kick.wav");
+        let snare = PathBuf::from("/media/snare.wav");
+        project.media_pool.insert(kick.clone());
+        project.media_pool.insert(snare.clone());
+        project.create_media_folder("Drums").expect("folder");
+        project
+            .assign_media_to_folder(&[kick.clone()], Some("Drums"))
+            .expect("assign");
+
+        assert!(media_matches_folder(&project, &kick, Some("Drums")));
+        assert!(!media_matches_folder(&project, &snare, Some("Drums")));
+        // No filter lists everything, including unfiled sources.
+        assert!(media_matches_folder(&project, &snare, None));
+        assert!(media_matches_folder(
+            &project,
+            &PathBuf::from("/media/other.wav"),
+            None
+        ));
     }
 
     #[test]

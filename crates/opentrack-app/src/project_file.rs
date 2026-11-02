@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 30;
+const FORMAT_VERSION: u32 = 31;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1266,6 +1266,42 @@ mod tests {
         let loaded = ProjectFile::read(&path).unwrap();
         assert_eq!(loaded.version, FORMAT_VERSION);
         assert_eq!(loaded.project.timecode_offset_seconds, 0.0);
+        assert!(loaded.project.validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_30_file_without_pool_folders_loads_with_none() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("/media/kick.wav"), 0.0, 1.0)
+            .expect("clip");
+        project.register_media();
+        project.create_media_folder("Drums").expect("folder");
+        project
+            .assign_media_to_folder(&[PathBuf::from("/media/kick.wav")], Some("Drums"))
+            .expect("assign");
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 30.into();
+        legacy["project"]
+            .as_object_mut()
+            .expect("project")
+            .remove("media_folders");
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v30-folders-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert!(loaded.project.media_folders.is_empty());
+        assert_eq!(loaded.project.media_pool.len(), 1);
         assert!(loaded.project.validate().is_ok());
         fs::remove_file(path).unwrap();
     }

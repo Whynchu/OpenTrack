@@ -1,7 +1,7 @@
 //! The application's native, version-independent project domain model.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,7 @@ pub use crate::automation::{
     MAX_AUTOMATION_LANES_PER_TRACK, MAX_AUTOMATION_POINTS_PER_LANE,
     MAX_AUTOMATION_POINTS_PER_PROJECT,
 };
+pub use crate::media_folders::{MAX_MEDIA_FOLDER_NAME_CHARS, MAX_MEDIA_FOLDERS, MediaFolders};
 
 /// Reuses the existing channel-strip settings and editor without adding an arrange lane.
 /// Bus strips cannot contain media, arm recording, or monitor themselves.
@@ -980,6 +981,9 @@ pub struct Project {
     pub tracks: Vec<Track>,
     #[serde(default)]
     pub media_pool: BTreeSet<PathBuf>,
+    /// Named pool folders. Organisation only: the pool still lists the sources.
+    #[serde(default, skip_serializing_if = "MediaFolders::is_empty")]
+    pub media_folders: MediaFolders,
     #[serde(default = "BusChannel::input")]
     pub input_channel: BusChannel,
     #[serde(default = "BusChannel::output")]
@@ -1130,6 +1134,7 @@ impl Default for Project {
             name: "Untitled Project".to_owned(),
             tracks: Vec::new(),
             media_pool: BTreeSet::new(),
+            media_folders: MediaFolders::default(),
             input_channel: BusChannel::input(),
             output_channel: BusChannel::output(),
             selected_track: None,
@@ -4388,6 +4393,7 @@ impl Project {
         if self.notepad.chars().count() > MAX_NOTEPAD_CHARS {
             return Err("project notepad is too long");
         }
+        self.media_folders.is_valid()?;
         {
             let mut slots = BTreeSet::new();
             for marker in &self.markers {
@@ -6841,6 +6847,60 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn pool_folders_round_trip_and_prune_with_the_pool() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("/media/kick.wav"), 0.0, 1.0)
+            .expect("clip");
+        project.register_media();
+        assert_eq!(
+            project.create_media_folder("  Drums  ").as_deref(),
+            Ok("Drums")
+        );
+        assert_eq!(
+            project.assign_media_to_folder(&[PathBuf::from("/media/kick.wav")], Some("Drums")),
+            Ok(1)
+        );
+        assert_eq!(
+            project.media_folder_of(Path::new("/media/kick.wav")),
+            Some("Drums")
+        );
+        assert!(project.validate().is_ok());
+
+        // Folders and assignments are project content, so they round trip.
+        let encoded = serde_json::to_value(&project).expect("encode");
+        let decoded: Project = serde_json::from_value(encoded.clone()).expect("decode");
+        assert_eq!(decoded.media_folders, project.media_folders);
+        // An older file simply has none.
+        let mut legacy = encoded;
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("media_folders");
+        let legacy: Project = serde_json::from_value(legacy).expect("legacy");
+        assert!(legacy.media_folders.is_empty());
+        assert!(legacy.validate().is_ok());
+
+        // Repointing the event and emptying the pool drops the stale assignment
+        // but keeps the folder itself.
+        project.tracks[0].clips[0].source_path = PathBuf::from("/media/snare.wav");
+        project.media_pool.clear();
+        project.register_media();
+        assert!(
+            project
+                .media_folder_of(Path::new("/media/kick.wav"))
+                .is_none()
+        );
+        assert_eq!(project.media_folders.names, vec!["Drums".to_owned()]);
+        // Deleting the folder leaves the pool and events untouched.
+        assert_eq!(project.delete_media_folder("Drums"), 0);
+        assert!(project.media_folders.names.is_empty());
+        assert_eq!(project.media_pool.len(), 1);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
     fn exploding_pitches_makes_one_track_per_pitch_and_keeps_controllers_once() {
         let mut project = Project::default();
         project.tempo_bpm = 120.0;
@@ -8394,6 +8454,39 @@ impl Project {
 
     pub fn register_media(&mut self) {
         self.media_pool = self.media_paths();
+        // A source that left the pool cannot keep its folder assignment.
+        self.media_folders.retain_paths(&self.media_pool);
+    }
+
+    /// Creates an empty Media Pool folder and returns its trimmed name.
+    pub fn create_media_folder(&mut self, name: &str) -> Result<String, String> {
+        let name = self.media_folders.create(name)?;
+        Ok(name)
+    }
+
+    /// Renames a Media Pool folder, reporting how many sources moved with it.
+    pub fn rename_media_folder(&mut self, from: &str, to: &str) -> Result<usize, String> {
+        self.media_folders.rename(from, to)
+    }
+
+    /// Deletes a Media Pool folder, leaving its sources in the pool root.
+    pub fn delete_media_folder(&mut self, name: &str) -> usize {
+        self.media_folders.remove(name)
+    }
+
+    /// Files sources into a folder, or back into the pool root when `folder` is
+    /// `None`.
+    pub fn assign_media_to_folder(
+        &mut self,
+        paths: &[PathBuf],
+        folder: Option<&str>,
+    ) -> Result<usize, String> {
+        self.media_folders.assign(paths, folder)
+    }
+
+    /// The folder one source sits in, if any.
+    pub fn media_folder_of(&self, path: &Path) -> Option<&str> {
+        self.media_folders.folder_of(path)
     }
 }
 
