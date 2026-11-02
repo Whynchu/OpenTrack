@@ -447,6 +447,19 @@ impl ProjectFile {
                 }
             }
         }
+        // Monitoring became a three-state mode. A project that only has the old
+        // boolean keeps the behavior it was saved with: on stays on.
+        for track in document
+            .project
+            .tracks
+            .iter_mut()
+            .chain(std::iter::once(&mut document.project.input_channel.strip))
+        {
+            if track.monitor_mode == opentrack_core::project::MonitorMode::Off && track.monitor {
+                track.monitor_mode = opentrack_core::project::MonitorMode::On;
+            }
+            track.monitor = false;
+        }
         document.project.register_media();
         document.format = FILE_FORMAT.to_owned();
         document.validate()?;

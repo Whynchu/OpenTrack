@@ -377,7 +377,7 @@ struct ChannelSettingsSnapshot {
     solo_defeat: bool,
     listen: bool,
     armed: bool,
-    monitor: bool,
+    monitor_mode: opentrack_core::project::MonitorMode,
     input_gain_db: f32,
     input_phase_inverted: bool,
     gain: f32,
@@ -406,7 +406,7 @@ impl From<&Track> for ChannelSettingsSnapshot {
             solo_defeat: track.solo_defeat,
             listen: track.listen,
             armed: track.armed,
-            monitor: track.monitor,
+            monitor_mode: track.monitor_mode,
             input_gain_db: track.input_gain_db,
             input_phase_inverted: track.input_phase_inverted,
             gain: track.gain,
@@ -432,7 +432,12 @@ impl ChannelSettingsSnapshot {
         track.listen = self.listen;
         let bus = track.id >= opentrack_core::project::INPUT_BUS_ID;
         track.armed = !bus && self.armed;
-        track.monitor = !bus && self.monitor;
+        track.monitor_mode = if bus {
+            opentrack_core::project::MonitorMode::Off
+        } else {
+            self.monitor_mode
+        };
+        track.monitor = false;
         track.input_gain_db = self.input_gain_db;
         track.input_phase_inverted = self.input_phase_inverted;
         track.gain = self.gain;
@@ -3286,7 +3291,7 @@ impl OpenTrackApp {
                     track.inserts_bypassed,
                     vst3_runtime.hosted_inserts(track),
                     track.instrument_waveform,
-                    track.monitor || (self.input_monitoring && track.armed),
+                    track.monitors_input() || (self.input_monitoring && track.armed),
                     track.input_routing.clone(),
                     track.output_routing.clone(),
                     playback_sends(track, project_tracks),
@@ -7955,7 +7960,7 @@ impl OpenTrackApp {
     fn project_input_monitor_requested(&self) -> bool {
         self.data.project.tracks.iter().any(|track| {
             track.kind == TrackKind::Audio
-                && (track.monitor || (self.input_monitoring && track.armed))
+                && (track.monitors_input() || (self.input_monitoring && track.armed))
                 && track.input_routing.as_deref() != Some("No Bus")
         })
     }
@@ -16733,9 +16738,17 @@ fn show_project(
                         ("R", track.armed, theme::RECORD, "Record Enable"),
                         (
                             "MON",
-                            track.monitor,
+                            track.monitor_mode != opentrack_core::project::MonitorMode::Off,
                             theme::palette(ui).surface_raised,
-                            "Monitor",
+                            if track.monitor_mode == opentrack_core::project::MonitorMode::On {
+                                "Input Monitoring: On (always). Click for Off."
+                            } else if track.monitor_mode
+                                == opentrack_core::project::MonitorMode::Auto
+                            {
+                                "Input Monitoring: Auto (while armed). Click for On."
+                            } else {
+                                "Input Monitoring: Off. Click for Auto."
+                            },
                         ),
                         (
                             "E",
@@ -16816,7 +16829,10 @@ fn show_project(
                                     modified = true;
                                 }
                                 3 => {
-                                    track.monitor = !track.monitor;
+                                    // Off -> Auto -> On, so the three states are
+                                    // reachable from the one control the strip has.
+                                    track.monitor_mode = track.monitor_mode.next();
+                                    track.monitor = false;
                                     modified = true;
                                 }
                                 4 => {
@@ -23321,6 +23337,108 @@ mod snap_type_tests {
         view.snap_type = SnapType::GridAndCursor;
         assert_eq!(view.snap_type.label(), "Grid + Cursor");
         assert_eq!(SnapType::ALL.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod monitor_mode_tests {
+    use super::*;
+    use opentrack_core::project::MonitorMode;
+
+    #[test]
+    fn the_channel_settings_snapshot_carries_the_monitor_mode() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        project.tracks[0].monitor_mode = MonitorMode::Auto;
+        let snapshot = ChannelSettingsSnapshot::from(&project.tracks[0]);
+
+        let mut target = Project::default();
+        target.add_track(TrackKind::Audio);
+        snapshot.apply_to(&mut target.tracks[0]);
+        assert_eq!(target.tracks[0].monitor_mode, MonitorMode::Auto);
+
+        // The device bus strip cannot monitor, so applying there forces Off.
+        let mut bus = Project::default();
+        let mut strip = bus.input_channel.strip.clone();
+        snapshot.apply_to(&mut strip);
+        assert_eq!(
+            strip.monitor_mode,
+            MonitorMode::Off,
+            "bus strips never monitor"
+        );
+    }
+
+    #[test]
+    fn a_project_saved_with_the_old_monitor_flag_loads_as_monitoring_on() {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-monitor-migration-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let path = root.join("Song.opr");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        let document = app.project_file().expect("document");
+        document.write(&path).expect("write");
+
+        // Rewrite the track the way an older build stored it.
+        let text = std::fs::read_to_string(&path).expect("read");
+        // The document stores objects with sorted keys, so the input bus strip's
+        // fields come before the tracks'; rewrite the last occurrence, which is
+        // the audio track's.
+        let marker = "\"monitor\": false";
+        let track_at = text.rfind(marker).expect("the track stores the flag");
+        let mut legacy = text.clone();
+        legacy.replace_range(track_at..track_at + marker.len(), "\"monitor\": true");
+        let mode_marker = "\"monitor_mode\": \"off\",";
+        let mode_at = legacy
+            .rfind(mode_marker)
+            .expect("the track stores the mode");
+        legacy.replace_range(mode_at..mode_at + mode_marker.len(), "");
+        std::fs::write(&path, legacy).expect("write legacy");
+
+        let restored = ProjectFile::read(&path).expect("read legacy");
+        eprintln!(
+            "PROBE tracks={} monitor={:?} mode={:?}",
+            restored.project.tracks.len(),
+            restored
+                .project
+                .tracks
+                .iter()
+                .map(|t| t.monitor)
+                .collect::<Vec<_>>(),
+            restored
+                .project
+                .tracks
+                .iter()
+                .map(|t| t.monitor_mode)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            restored.project.tracks[0].monitor_mode,
+            MonitorMode::On,
+            "the old boolean's on state becomes monitoring On"
+        );
+        assert!(
+            !restored.project.tracks[0].monitor,
+            "the legacy flag is cleared"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_monitor_control_cycles_off_auto_on() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        for expected in [MonitorMode::Auto, MonitorMode::On, MonitorMode::Off] {
+            project.tracks[0].monitor_mode = project.tracks[0].monitor_mode.next();
+            assert_eq!(project.tracks[0].monitor_mode, expected);
+        }
     }
 }
 

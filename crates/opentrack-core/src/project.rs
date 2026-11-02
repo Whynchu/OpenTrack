@@ -96,6 +96,7 @@ impl BusChannel {
             listen: false,
             armed: false,
             monitor: false,
+            monitor_mode: MonitorMode::Off,
             automation_read: false,
             automation_write: false,
             automation_lanes: Vec::new(),
@@ -151,9 +152,13 @@ pub struct Track {
     #[serde(default)]
     pub listen: bool,
     pub armed: bool,
-    /// Input monitoring toggle presented by the audio channel strip.
+    /// Legacy boolean monitoring flag, kept so older projects decode. Reading it
+    /// directly is deprecated: use [`Self::monitors_input`].
     #[serde(default)]
     pub monitor: bool,
+    /// How this channel monitors its input: never, only while armed, or always.
+    #[serde(default)]
+    pub monitor_mode: MonitorMode,
     /// Automation Read control state; processing remains a separate feature.
     #[serde(default)]
     pub automation_read: bool,
@@ -215,6 +220,51 @@ pub struct Track {
     /// Arrangeable MIDI parts on MIDI and instrument tracks.
     #[serde(default)]
     pub midi_parts: Vec<MidiPart>,
+}
+
+/// How a channel passes its live input to its meters and the mix.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorMode {
+    /// Input is never monitored.
+    #[default]
+    Off,
+    /// Input is monitored while the track is record-enabled.
+    Auto,
+    /// Input is monitored whether or not the track is armed.
+    On,
+}
+
+impl MonitorMode {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Auto, Self::On];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Auto => "Auto",
+            Self::On => "On",
+        }
+    }
+
+    /// The next mode in the Off → Auto → On cycle.
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Auto,
+            Self::Auto => Self::On,
+            Self::On => Self::Off,
+        }
+    }
+}
+
+impl Track {
+    /// True when this channel should pass its live input to the mix right now.
+    pub fn monitors_input(&self) -> bool {
+        match self.monitor_mode {
+            MonitorMode::Off => false,
+            MonitorMode::Auto => self.armed,
+            MonitorMode::On => true,
+        }
+    }
 }
 
 fn default_audio_channels() -> u8 {
@@ -1115,6 +1165,7 @@ impl Project {
             listen: false,
             armed: false,
             monitor: false,
+            monitor_mode: MonitorMode::Off,
             automation_read: false,
             automation_write: false,
             automation_lanes: Vec::new(),
@@ -5112,6 +5163,43 @@ mod sample_edit_tests {
         // An empty mapping is a no-op.
         assert_eq!(project.relink_media(&BTreeMap::new()), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn monitoring_modes_decide_whether_live_input_reaches_the_mix() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track = &mut project.tracks[0];
+
+        assert_eq!(track.monitor_mode, MonitorMode::Off);
+        assert!(!track.monitors_input(), "off never monitors");
+
+        track.monitor_mode = MonitorMode::Auto;
+        assert!(!track.monitors_input(), "auto waits for record enable");
+        track.armed = true;
+        assert!(track.monitors_input());
+
+        track.monitor_mode = MonitorMode::On;
+        track.armed = false;
+        assert!(track.monitors_input(), "on monitors without arming");
+
+        // The strip's one control cycles through the three states.
+        assert_eq!(MonitorMode::Off.next(), MonitorMode::Auto);
+        assert_eq!(MonitorMode::Auto.next(), MonitorMode::On);
+        assert_eq!(MonitorMode::On.next(), MonitorMode::Off);
+
+        // The mode round-trips and an older project without it reads as off.
+        project.tracks[0].monitor_mode = MonitorMode::Auto;
+        let encoded = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.tracks[0].monitor_mode, MonitorMode::Auto);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        legacy["tracks"][0]
+            .as_object_mut()
+            .expect("track object")
+            .remove("monitor_mode");
+        let legacy: Project = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.tracks[0].monitor_mode, MonitorMode::Off);
     }
 
     #[test]

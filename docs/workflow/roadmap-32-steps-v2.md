@@ -166,8 +166,13 @@ Still open from revision 1:
    frame of the locator rather than sample-accurately — the engine was not
    restructured for this and the difference is stated rather than hidden. 5 tests.
    Needs device review with a real interface.
-19. **Input monitoring modes** (off/auto/on) per track, persisted, reflected in
-    the plan and the mixer.
+19. **Input monitoring modes.** *Delivered.* `Track::monitor_mode` persists Off,
+   Auto (while armed) or On, and `monitors_input` is what the playback plan and the
+   input-monitor request read, replacing the old boolean. The strip's MON control
+   cycles the three states and names the current one on hover; the Channel Settings
+   snapshot carries the mode and forces Off on device bus strips. A project saved
+   with the old `monitor` flag loads as On, so no one loses monitoring on upgrade.
+   3 app and 1 core test.
 20. **Loop recording takes.** Repeated cycle passes create take lanes instead of
     overlapping events, with a way to pick the active take.
 21. **Metronome configuration** (accent pattern, level, count-in) persisted and
