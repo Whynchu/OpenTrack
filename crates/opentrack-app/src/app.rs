@@ -1,5 +1,6 @@
 #[path = "analyzer_view.rs"]
 mod analyzer_view;
+mod arranger_editor;
 #[path = "audio_configuration.rs"]
 mod audio_configuration;
 #[path = "audio_events.rs"]
@@ -1299,6 +1300,7 @@ pub struct OpenTrackApp {
     logical_preset_dialog: Option<logical_presets::LogicalPresetDialog>,
     cc_automation_setup: Option<cc_automation::CcAutomationSetup>,
     region_editor: Option<region_editor::RegionEditor>,
+    arranger_editor: Option<arranger_editor::ArrangerEditor>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2793,6 +2795,7 @@ impl OpenTrackApp {
             logical_preset_dialog: None,
             cc_automation_setup: None,
             region_editor: None,
+            arranger_editor: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4121,6 +4124,7 @@ impl OpenTrackApp {
         self.logical_preset_dialog = None;
         self.cc_automation_setup = None;
         self.region_editor = None;
+        self.arranger_editor = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -18702,6 +18706,7 @@ impl eframe::App for OpenTrackApp {
         self.show_logical_presets(&ctx);
         self.show_cc_automation_setup(&ctx);
         self.show_region_editor(&ctx);
+        self.show_arranger_editor(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
@@ -31481,6 +31486,65 @@ mod transport_locate_tests {
             "invalid range leaves project alone"
         );
         assert!(app.status_message.contains("must end after"));
+    }
+
+    #[test]
+    fn arranger_editor_applies_sections_and_sequence_as_one_undoable_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, std::path::PathBuf::from("a.wav"), 0.0, 2.0)
+            .expect("clip");
+        let clips_before = app.data.project.tracks[0].clips.clone();
+        app.data.project.loop_start_beats = 4.0;
+        app.data.project.loop_end_beats = 12.0;
+        app.project_history.clear();
+
+        app.open_arranger_editor();
+        let editor = app.arranger_editor.as_mut().expect("editor");
+        let section = editor
+            .draft
+            .add_section("Verse", 4.0, 12.0)
+            .expect("section");
+        assert!(editor.draft.append_sequence(section, 2));
+        editor.selected_section = Some(section);
+        let draft = editor.draft.clone();
+        app.apply_arranger_editor(&crate::app::arranger_editor::ArrangerEditor {
+            draft,
+            selected_section: Some(section),
+            region_choice: 0,
+            sequence_section: Some(section),
+        });
+        assert_eq!(app.data.project.arranger.sections.len(), 1);
+        assert_eq!(app.data.project.arranger.sequence[0].repeats, 2);
+        assert_eq!(app.data.project.tracks[0].clips, clips_before);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Edit Arranger");
+        app.undo_project();
+        assert!(app.data.project.arranger.is_empty());
+
+        // A missing section reference is refused without changing the project.
+        let mut invalid = crate::app::arranger_editor::ArrangerEditor {
+            draft: app.data.project.arranger.clone(),
+            selected_section: None,
+            region_choice: 0,
+            sequence_section: None,
+        };
+        invalid
+            .draft
+            .sequence
+            .push(opentrack_core::arranger::ArrangerSequenceItem {
+                section_id: 9999,
+                repeats: 1,
+            });
+        let before = app.data.project.clone();
+        app.apply_arranger_editor(&invalid);
+        assert_eq!(app.data.project, before);
+        assert!(app.status_message.contains("invalid"));
     }
 
     #[test]
