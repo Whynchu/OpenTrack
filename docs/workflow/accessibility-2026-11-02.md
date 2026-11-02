@@ -34,7 +34,7 @@ revision of this report.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **147** commands have a dispatch arm; **5** still do not.
+numpad ranges). **149** commands have a dispatch arm; **3** still do not.
 
 The generated source inventory is the current register:
 [`generated-source-inventory.md`](../reviews/generated-source-inventory.md).
@@ -83,3 +83,10 @@ Regenerate it with the command in that file.
 - Keyboard-only use is audited by source and tests, not by a manual pass in the
   running application; that review remains.
 
+## Dialog keyboard ownership (revision 5)
+
+A dialog that owns input also owns the keyboard: `handle_shortcuts` returns before
+dispatching when `modal_dialog_open()` or `dialog_owns_input()` is true, and the
+Regions and Arranger editors are included in that set. Before this, pressing Delete
+in an open editor could delete the audio events behind it. A test presses Delete
+with the Regions and tempo editors open and asserts the project is untouched.

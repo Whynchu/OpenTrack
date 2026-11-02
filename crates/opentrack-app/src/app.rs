@@ -7635,6 +7635,11 @@ impl OpenTrackApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        // A dialog that owns input also owns the keyboard: typing or pressing
+        // Delete in an editor must never reach the arrange behind it.
+        if self.modal_dialog_open() || self.dialog_owns_input() {
+            return;
+        }
         let chords = if use_native_key_events {
             native_key_events
                 .into_iter()
@@ -16117,6 +16122,8 @@ impl OpenTrackApp {
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
+            || self.region_editor.is_some()
+            || self.arranger_editor.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -32499,6 +32506,75 @@ mod timecode_tests {
         // Samples follow the current project rate and ignore the timecode offset.
         assert_eq!(ruler_label(2, 3, 4, 120.0, 48_000, 3600.0), "192000");
         assert_eq!(ruler_label(2, 3, 4, 120.0, 44_100, 3600.0), "176400");
+    }
+}
+
+#[cfg(test)]
+mod shortcut_guard_tests {
+    use super::*;
+
+    fn app_with_clip() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        let clip = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 1.0)
+            .unwrap();
+        app.arrange_view_state.audio_events.select_many([clip]);
+        app.project_history.clear();
+        app
+    }
+
+    fn press_delete(ctx: &egui::Context, app: &mut OpenTrackApp) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Delete,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(ctx),
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_dialog_that_owns_input_also_owns_the_keyboard() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_clip();
+        // Baseline: Delete removes the selected event when no dialog is open.
+        press_delete(&ctx, &mut app);
+        assert!(
+            app.data.project.tracks[0].clips.is_empty(),
+            "the plain Delete reaches the arrange"
+        );
+
+        // With the Regions editor open the same key must not touch the arrange.
+        let mut app = app_with_clip();
+        app.region_editor = Some(region_editor::RegionEditor::from_project(&app.data.project));
+        let before = app.data.project.clone();
+        let status = app.status_message.clone();
+        press_delete(&ctx, &mut app);
+        assert_eq!(
+            app.data.project, before,
+            "no shortcut may reach the project while an editor owns input"
+        );
+        assert_eq!(app.status_message, status);
+
+        // The same holds for the tempo editor.
+        let mut app = app_with_clip();
+        app.tempo_editor = Some(tempo_editor::Draft::from_project(&app.data.project));
+        let before = app.data.project.clone();
+        press_delete(&ctx, &mut app);
+        assert_eq!(app.data.project, before);
     }
 }
 
