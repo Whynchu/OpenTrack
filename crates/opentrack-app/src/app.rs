@@ -6889,6 +6889,8 @@ impl OpenTrackApp {
             }
             "edit.split_range" => self.split_audio_events_at_loop(),
             "edit.insert_silence" => self.insert_silence_at_cursor(),
+            "edit.cut_time" => self.remove_time_range_at_locators(false),
+            "edit.delete_time" => self.remove_time_range_at_locators(true),
             "transport.auto_punch_in" => {
                 self.punch_enabled = true;
                 self.status_message =
@@ -8158,6 +8160,82 @@ impl OpenTrackApp {
             TransportLocate::PlaySelection => self.play_selection_range(),
             TransportLocate::LoopSelection => self.loop_selection(),
         }
+    }
+
+    /// Removes the locator range and closes the gap.
+    ///
+    /// Cut Time edits every track and moves global markers; Delete Time edits
+    /// only the selected tracks and leaves the markers where they are.
+    fn remove_time_range_at_locators(&mut self, selected_tracks_only: bool) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before removing time".to_owned();
+            return;
+        }
+        let (start, end) = (
+            self.data.project.loop_start_beats,
+            self.data.project.loop_end_beats,
+        );
+        if !start.is_finite() || !end.is_finite() || end <= start {
+            self.status_message = "Set the locators to a range before removing time".to_owned();
+            return;
+        }
+        let track_ids = if selected_tracks_only {
+            let mut ids = self
+                .arrange_view_state
+                .selected_track_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            if ids.is_empty()
+                && let Some(track) = self
+                    .data
+                    .project
+                    .selected_track
+                    .and_then(|index| self.data.project.tracks.get(index as usize))
+            {
+                ids.push(track.id);
+            }
+            if ids.is_empty() {
+                self.status_message = "Select the track(s) to remove time from".to_owned();
+                return;
+            }
+            ids
+        } else {
+            Vec::new()
+        };
+        let mut candidate = self.data.project.clone();
+        let Some(changed) = candidate.remove_time_range(start, end, &track_ids) else {
+            self.status_message =
+                "Nothing could be removed: a locked event overlaps the range, or no track has \
+                 content there"
+                    .to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot remove time: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next(if selected_tracks_only {
+            "Delete Time"
+        } else {
+            "Cut Time"
+        });
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "{} {start:.3} to {end:.3}: closed the gap, {changed} item(s) changed",
+            if selected_tracks_only {
+                "Deleted time from the selected tracks"
+            } else {
+                "Cut time across the project"
+            }
+        );
     }
 
     /// Inserts one bar of silence at the cursor across the project.
@@ -26615,6 +26693,85 @@ mod shortcut_dispatch_tests {
     }
 
     #[test]
+    fn cut_and_delete_time_remove_the_locator_range_and_close_the_gap() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_track();
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(1, PathBuf::from("b.wav"), 0.0, 8.0)
+            .unwrap();
+        app.data.project.add_marker(10.0, "After").unwrap();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.project_history.clear();
+
+        // Cut Time edits the whole project, so both tracks lose the range and
+        // the marker moves with the closed gap.
+        dispatch(&mut app, "edit.cut_time", &ctx);
+        for track in &app.data.project.tracks {
+            let spans = track
+                .clips
+                .iter()
+                .map(|clip| {
+                    (
+                        clip.start_beats,
+                        clip.start_beats + clip.duration_seconds * 2.0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(spans, vec![(0.0, 4.0), (4.0, 12.0)], "{spans:?}");
+        }
+        assert_eq!(app.data.project.markers[0].beat, 6.0);
+        assert!(app.status_message.contains("Cut time across the project"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Cut Time");
+
+        // Delete Time edits only the selected track and keeps markers in place.
+        let mut app = app_with_track();
+        app.data.project.add_track(TrackKind::Audio);
+        let other = app
+            .data
+            .project
+            .add_audio_clip(1, PathBuf::from("b.wav"), 0.0, 8.0)
+            .unwrap();
+        app.data.project.add_marker(10.0, "After").unwrap();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.arrange_view_state
+            .selected_track_ids
+            .insert(app.data.project.tracks[0].id);
+        app.project_history.clear();
+
+        dispatch(&mut app, "edit.delete_time", &ctx);
+        assert_eq!(app.data.project.tracks[0].clips.len(), 2);
+        let untouched = app.data.project.tracks[1]
+            .clips
+            .iter()
+            .find(|clip| clip.id == other)
+            .expect("other");
+        assert_eq!(untouched.start_beats, 0.0);
+        assert_eq!(untouched.duration_seconds, 8.0);
+        assert_eq!(app.data.project.markers[0].beat, 10.0);
+        assert!(app.status_message.contains("selected tracks"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Delete Time");
+
+        // Without a selected track Delete Time refuses instead of guessing.
+        app.arrange_view_state.selected_track_ids.clear();
+        app.data.project.selected_track = None;
+        dispatch(&mut app, "edit.delete_time", &ctx);
+        assert!(app.status_message.contains("Select the track(s)"));
+
+        // A locked event inside the range refuses the edit.
+        app.data.project.set_loop_range(0.0, 4.0);
+        let locked = app.data.project.tracks[0].clips[0].id;
+        app.data.project.set_audio_clips_locked(&[locked], true);
+        let before = app.data.project.clone();
+        dispatch(&mut app, "edit.cut_time", &ctx);
+        assert_eq!(app.data.project, before);
+        assert!(app.status_message.contains("locked event overlaps"));
+    }
+
+    #[test]
     fn insert_silence_adds_one_bar_at_the_cursor_as_one_undo_step() {
         let ctx = egui::Context::default();
         let mut app = app_with_track();
@@ -27419,6 +27576,8 @@ mod keyboard_coverage_tests {
             "edit.split_range",
             "edit.paste_at_origin",
             "edit.insert_silence",
+            "edit.cut_time",
+            "edit.delete_time",
             "devices.vst_instruments",
             "devices.vst_performance",
             "midi.quantize",

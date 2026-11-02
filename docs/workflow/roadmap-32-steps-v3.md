@@ -91,6 +91,14 @@ and measured numbers.
    crosses it. One labelled undo step ("Insert Silence"). 2 core and 1 app tests.
    Shortcut coverage 121 -> 122.
 
+10. **Cut Time and Delete Time.** *Delivered.* Core `remove_time_range` removes
+   `[start, end)`, splits events and MIDI parts at both boundaries, closes the gap,
+   shifts later clips, parts, automation and (for whole-project edits) markers,
+   and refuses when a locked event overlaps the range. Ctrl+Shift+X (Cut Time)
+   edits every track; Shift+Backspace (Delete Time) edits only the selected
+   tracks and leaves markers alone. One labelled undo step each. 2 core and 1 app
+   tests. Shortcut coverage 122 -> 124.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

@@ -2547,6 +2547,160 @@ impl Project {
         Some(keeper.id)
     }
 
+    /// Removes `[start, end)` from the timeline and closes the gap.
+    ///
+    /// With an empty `track_ids` the whole project is edited and global markers
+    /// move with it; with track ids only those tracks lose the time, leaving
+    /// markers alone. Events and MIDI parts crossing either boundary are split so
+    /// the surviving material keeps its audio, then everything later shifts left
+    /// by the removed length. A locked event overlapping the range refuses the
+    /// whole edit; a locked event after it moves with the timeline.
+    pub fn remove_time_range(&mut self, start: f64, end: f64, track_ids: &[u64]) -> Option<usize> {
+        if !start.is_finite()
+            || !end.is_finite()
+            || start < 0.0
+            || end <= start
+            || end > MAX_LOOP_BEATS
+        {
+            return None;
+        }
+        let gap = end - start;
+        let all_tracks = track_ids.is_empty();
+        let scope = if all_tracks {
+            self.tracks.iter().map(|track| track.id).collect::<Vec<_>>()
+        } else {
+            track_ids.to_vec()
+        };
+        let mut candidate = self.clone();
+        let mut changed = 0;
+        for track_id in scope {
+            let track_index = candidate
+                .tracks
+                .iter()
+                .position(|track| track.id == track_id)?;
+            let tempo = candidate.tempo_bpm.max(1.0);
+            let end_of = |clip: &AudioClip| clip.start_beats + clip.duration_seconds * tempo / 60.0;
+            if candidate.tracks[track_index].clips.iter().any(|clip| {
+                clip.locked && clip.start_beats < end - 1e-9 && end_of(clip) > start + 1e-9
+            }) {
+                return None;
+            }
+            // Split at the range start, then at the range end, so the pieces that
+            // remain are ordinary events with intact audio.
+            let crosses_start = candidate.tracks[track_index]
+                .clips
+                .iter()
+                .filter(|clip| clip.start_beats < start - 1e-9 && end_of(clip) > start + 1e-9)
+                .map(|clip| clip.id)
+                .collect::<Vec<_>>();
+            for clip_id in crosses_start {
+                candidate.split_audio_clip(track_id, clip_id, start)?;
+                changed += 1;
+            }
+            let crosses_end = candidate.tracks[track_index]
+                .clips
+                .iter()
+                .filter(|clip| {
+                    clip.start_beats >= start - 1e-9
+                        && clip.start_beats < end - 1e-9
+                        && end_of(clip) > end + 1e-9
+                })
+                .map(|clip| clip.id)
+                .collect::<Vec<_>>();
+            for clip_id in crosses_end {
+                candidate.split_audio_clip(track_id, clip_id, end)?;
+                changed += 1;
+            }
+            let track = &mut candidate.tracks[track_index];
+            let before = track.clips.len();
+            // Everything that starts inside the range goes; pieces that begin at
+            // the end boundary are kept and shifted below.
+            track
+                .clips
+                .retain(|clip| clip.start_beats < start - 1e-9 || clip.start_beats >= end - 1e-9);
+            changed += before - track.clips.len();
+            for clip in track.clips.iter_mut() {
+                if clip.start_beats >= end - 1e-9 {
+                    clip.start_beats = (clip.start_beats - gap).max(0.0);
+                    changed += 1;
+                }
+            }
+
+            // MIDI parts follow the same rules; they are not individually locked.
+            let part_crosses_start = track
+                .midi_parts
+                .iter()
+                .filter(|part| {
+                    part.start_beats < start - 1e-9
+                        && part.start_beats + part.duration_beats > start + 1e-9
+                })
+                .map(|part| part.id)
+                .collect::<Vec<_>>();
+            for part_id in part_crosses_start {
+                candidate.split_midi_part(track_id, part_id, start)?;
+                changed += 1;
+            }
+            let track = &mut candidate.tracks[track_index];
+            let part_crosses_end = track
+                .midi_parts
+                .iter()
+                .filter(|part| {
+                    part.start_beats >= start - 1e-9
+                        && part.start_beats < end - 1e-9
+                        && part.start_beats + part.duration_beats > end + 1e-9
+                })
+                .map(|part| part.id)
+                .collect::<Vec<_>>();
+            for part_id in part_crosses_end {
+                candidate.split_midi_part(track_id, part_id, end)?;
+                changed += 1;
+            }
+            let track = &mut candidate.tracks[track_index];
+            let before = track.midi_parts.len();
+            track
+                .midi_parts
+                .retain(|part| part.start_beats < start - 1e-9 || part.start_beats >= end - 1e-9);
+            changed += before - track.midi_parts.len();
+            for part in track.midi_parts.iter_mut() {
+                if part.start_beats >= end - 1e-9 {
+                    part.start_beats = (part.start_beats - gap).max(0.0);
+                    changed += 1;
+                }
+            }
+
+            for lane in track.automation_lanes.iter_mut() {
+                let before = lane.points.len();
+                lane.points
+                    .retain(|point| point.beat < start - 1e-9 || point.beat >= end - 1e-9);
+                changed += before - lane.points.len();
+                for point in lane.points.iter_mut() {
+                    if point.beat >= end - 1e-9 {
+                        point.beat = (point.beat - gap).max(0.0);
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        if all_tracks {
+            let before = candidate.markers.len();
+            candidate
+                .markers
+                .retain(|marker| marker.beat < start - 1e-9 || marker.beat >= end - 1e-9);
+            changed += before - candidate.markers.len();
+            for marker in candidate.markers.iter_mut() {
+                if marker.beat >= end - 1e-9 {
+                    marker.beat = (marker.beat - gap).max(0.0);
+                    changed += 1;
+                }
+            }
+        }
+        if changed == 0 || candidate.validate().is_err() {
+            return None;
+        }
+        *self = candidate;
+        Some(changed)
+    }
+
     /// Inserts `beats` of silence at `beat` and reports how many items moved.
     ///
     /// Events and MIDI parts that cross the insertion point are split first, so
@@ -5775,6 +5929,165 @@ mod sample_edit_tests {
             project.media_pool.contains(&gone),
             "the event still needs it"
         );
+    }
+
+    #[test]
+    fn removing_a_time_range_splits_crossers_and_closes_the_gap() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Midi);
+        // 8 s at 120 BPM spans 16 beats and crosses the 4..8 range on both ends.
+        project
+            .add_audio_clip(0, PathBuf::from("long.wav"), 0.0, 8.0)
+            .unwrap();
+        // Fully inside the range: removed.
+        project
+            .add_audio_clip(0, PathBuf::from("inside.wav"), 4.0, 1.0)
+            .unwrap();
+        // Fully after: shifts left by the four-beat gap.
+        project
+            .add_audio_clip(0, PathBuf::from("after.wav"), 16.0, 1.0)
+            .unwrap();
+        let midi = project.add_midi_part(1, 0.0, 16.0).unwrap();
+        project.add_marker(2.0, "Intro").unwrap();
+        project.add_marker(6.0, "Inside").unwrap();
+        project.add_marker(10.0, "After").unwrap();
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackVolume,
+            points: vec![
+                AutomationPoint {
+                    beat: 2.0,
+                    value: 0.5,
+                },
+                AutomationPoint {
+                    beat: 6.0,
+                    value: 0.6,
+                },
+                AutomationPoint {
+                    beat: 10.0,
+                    value: 0.7,
+                },
+            ],
+        });
+
+        let changed = project
+            .remove_time_range(4.0, 8.0, &[])
+            .expect("time removed");
+        assert!(changed > 0);
+
+        let spans = project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| {
+                (
+                    clip.start_beats,
+                    clip.start_beats + clip.duration_seconds * 2.0,
+                    clip.source_path.to_string_lossy().into_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        // The long event survives as 0..4 and 4..12 (its post-gap half moved
+        // left by the four-beat gap); the inside event is gone; the after event
+        // moved from 16..18 to 12..14.
+        assert_eq!(spans.len(), 3);
+        assert!(spans.iter().any(|(start, end, path)| path.contains("long")
+            && (*start - 0.0).abs() < 1e-9
+            && (*end - 4.0).abs() < 1e-9));
+        assert!(spans.iter().any(|(start, end, path)| path.contains("long")
+            && (*start - 4.0).abs() < 1e-9
+            && (*end - 12.0).abs() < 1e-9));
+        assert!(spans.iter().any(|(start, end, path)| path.contains("after")
+            && (*start - 12.0).abs() < 1e-9
+            && (*end - 14.0).abs() < 1e-9));
+        assert!(!spans.iter().any(|(_, _, path)| path.contains("inside")));
+
+        // The MIDI part was cut and its right half moved into the gap.
+        let parts = project.tracks[1]
+            .midi_parts
+            .iter()
+            .map(|part| (part.start_beats, part.start_beats + part.duration_beats))
+            .collect::<Vec<_>>();
+        assert!(parts.contains(&(0.0, 4.0)));
+        assert!(parts.contains(&(4.0, 12.0)), "{parts:?}");
+        assert_eq!(
+            project.tracks[1].midi_parts[0].id, midi,
+            "the left half keeps the original identity"
+        );
+
+        // Markers inside the range go, later markers move.
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|marker| (marker.name.as_str(), marker.beat))
+                .collect::<Vec<_>>(),
+            vec![("Intro", 2.0), ("After", 6.0)]
+        );
+        // Automation follows the same rule.
+        let points = project.tracks[0].automation_lanes[0]
+            .points
+            .iter()
+            .map(|point| point.beat)
+            .collect::<Vec<_>>();
+        assert_eq!(points, vec![2.0, 6.0]);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn removing_time_honours_locks_scopes_and_invalid_ranges() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let inside = project
+            .add_audio_clip(0, PathBuf::from("inside.wav"), 4.0, 1.0)
+            .unwrap();
+        let after = project
+            .add_audio_clip(0, PathBuf::from("after.wav"), 16.0, 1.0)
+            .unwrap();
+        let other = project
+            .add_audio_clip(1, PathBuf::from("other.wav"), 16.0, 1.0)
+            .unwrap();
+
+        // A locked event inside the range refuses the edit.
+        project.set_audio_clips_locked(&[inside], true);
+        let before = project.clone();
+        assert_eq!(project.remove_time_range(4.0, 8.0, &[]), None);
+        assert_eq!(project, before);
+        project.set_audio_clips_locked(&[inside], false);
+
+        // A scoped removal edits one track and leaves the other alone, and does
+        // not move global markers.
+        project.add_marker(10.0, "After").unwrap();
+        let track_id = project.tracks[0].id;
+        assert!(project.remove_time_range(4.0, 8.0, &[track_id]).is_some());
+        assert!(!project.tracks[0].clips.iter().any(|clip| clip.id == inside));
+        assert_eq!(
+            project.tracks[0]
+                .clips
+                .iter()
+                .find(|clip| clip.id == after)
+                .expect("after")
+                .start_beats,
+            12.0
+        );
+        assert_eq!(
+            project.tracks[1]
+                .clips
+                .iter()
+                .find(|clip| clip.id == other)
+                .expect("other")
+                .start_beats,
+            16.0,
+            "the other track keeps its timing"
+        );
+        assert_eq!(project.markers[0].beat, 10.0, "scoped edits keep markers");
+
+        // Invalid ranges are refused.
+        assert_eq!(project.remove_time_range(8.0, 8.0, &[]), None);
+        assert_eq!(project.remove_time_range(-1.0, 4.0, &[]), None);
+        assert_eq!(project.remove_time_range(0.0, 4.0, &[9_999]), None);
     }
 
     #[test]
