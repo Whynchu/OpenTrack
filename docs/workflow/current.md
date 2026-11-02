@@ -58,7 +58,9 @@ Step 27 connected a playback-only arranger preview through the existing engine p
 
 Step 28 enabled Add Arranger from the main and context menus to open the existing single editor (no fake track). Arranger OPR save/reopen shares the same sections/sequence used by preview and the offline transformer. App suite: 541 passed, 9 ignored; inventory is 274 leaves with 83 unavailable. Live sequence playback, export comparison and listening remain runtime-pending. See [R4-28](tasks/R4-28-add-arranger.md).
 
-Next ready work: revision-4 step 29, specify and export OpenTrack Track Archive v1. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
+Step 29 added OpenTrack Track Archive v1 export: a documented directory package with manifest/version, selected tracks plus owning hierarchy, deduplicated copied media, external route/plug-in reports, staging/rename publication and a background task. Existing destinations and missing media refuse without publishing. App suite: 543 passed, 9 ignored; inventory is 275 leaves with 83 unavailable. Import and a real round trip remain step 30. See [R4-29](tasks/R4-29-track-archive-export.md).
+
+Next ready work: revision-4 step 30, enable Import Track Archive with a real round trip. User decisions for the remaining run: one project-persisted CC lane visible at a time; content edits are undoable; FX channels are shared returns with cycle rejection; arranger edits are undoable and preview is playback-only; folders are organizational; hold changes to existing behavior for user review. User authorized push after each completed feature. No revision-4 runtime acceptance has occurred.
 
 ---
 

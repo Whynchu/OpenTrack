@@ -58,6 +58,7 @@ mod session_health;
 mod system_stats;
 #[path = "templates.rs"]
 mod templates;
+mod track_archive;
 #[path = "transport_panel.rs"]
 mod transport_panel;
 #[path = "vst3_host.rs"]
@@ -1319,6 +1320,8 @@ pub struct OpenTrackApp {
     region_editor: Option<region_editor::RegionEditor>,
     arranger_editor: Option<arranger_editor::ArrangerEditor>,
     arranger_preview: Option<ArrangerPreview>,
+    track_archive_task:
+        Option<std::sync::mpsc::Receiver<Result<track_archive::ArchiveReport, String>>>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2815,6 +2818,7 @@ impl OpenTrackApp {
             region_editor: None,
             arranger_editor: None,
             arranger_preview: None,
+            track_archive_task: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4284,6 +4288,7 @@ impl OpenTrackApp {
         self.region_editor = None;
         self.arranger_editor = None;
         self.arranger_preview = None;
+        self.track_archive_task = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -13602,6 +13607,17 @@ impl OpenTrackApp {
                             });
                             ui.close();
                         }
+                        if menu_command(
+                            ui,
+                            "Track Archive (OpenTrack)...",
+                            "",
+                            self.project_open && self.track_archive_task.is_none(),
+                        )
+                        .clicked()
+                        {
+                            self.export_track_archive();
+                            ui.close();
+                        }
                     });
                     menu_command(ui, "Replace Audio in Video File...", "", false);
                     menu_command(ui, "Cleanup...", "", false);
@@ -18774,6 +18790,7 @@ impl eframe::App for OpenTrackApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         self.poll_audio_export_task();
+        self.poll_track_archive_task();
         self.poll_bounce_task();
         self.poll_midi_file_task();
         self.show_midi_export_dialog(&ctx);

@@ -40,7 +40,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Automation:** track volume records from live fader movement, plays back, and is editable as points. An Automation Panel lists stored lanes and toggles their arrange visibility. Automation on the input and output buses is not implemented, so those Write controls stay disabled.
 - **Plug-ins:** third-party VST3 effect hosting with native editor windows. Compatibility varies by plug-in; universal VST3 support is not claimed.
 - **Editing tools:** MIDI editor with note and controller lanes, including a configurable single CC lane (any controller 0–127) whose choice is saved with the project; quantize with strength and swing, transpose and velocity tools; Sample Editor with on-demand Pitch & Time analysis and editing.
-- **Delivery:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, and Standard MIDI File export of the whole project or a selection.
+- **Delivery:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, Standard MIDI File export of the whole project or a selection, and an OpenTrack Track Archive v1 directory package with manifest, hierarchy, routing reports and copied media.
 - **Project tools:** templates, session health check, project statistics, beat calculator, and a notepad saved with the project.
 - **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 37); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
 
