@@ -5,6 +5,7 @@
 pub mod automation;
 pub mod commands;
 pub mod cpr;
+pub mod event_query;
 pub mod midi_file;
 pub mod pitch_time;
 pub mod project;

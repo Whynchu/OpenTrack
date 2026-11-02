@@ -484,6 +484,14 @@ struct TrackRenameDialog {
     draft: String,
 }
 
+/// The Project Logical Editor's saved query and the change it applies.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+struct ProjectLogicalEditor {
+    query: opentrack_core::event_query::EventQuery,
+    transform: opentrack_core::event_query::EventTransform,
+}
+
 /// Bounded count for Edit > Repeat.
 struct RepeatDialog {
     count: u32,
@@ -1087,6 +1095,9 @@ pub struct OpenTrackApp {
     auto_select_events_under_cursor: bool,
     /// Carry the volume automation under an event when the event moves.
     automation_follows_events: bool,
+    /// Project Logical Editor state: the saved query and the transform it applies.
+    project_logical_editor: ProjectLogicalEditor,
+    project_logical_editor_open: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2367,6 +2378,13 @@ impl OpenTrackApp {
                     eframe::get_value::<bool>(storage, "automation-follows-events-v1")
                 })
                 .unwrap_or(false),
+            project_logical_editor: creation
+                .storage
+                .and_then(|storage| {
+                    eframe::get_value::<ProjectLogicalEditor>(storage, "project-logical-editor-v1")
+                })
+                .unwrap_or_default(),
+            project_logical_editor_open: false,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -5264,6 +5282,216 @@ impl OpenTrackApp {
         }
     }
 
+    /// Selects every event the saved query matches.
+    fn select_logical_query_matches(&mut self) {
+        let mut query = self.project_logical_editor.query.clone();
+        query.sanitize();
+        let ids = self.data.project.matching_event_ids(&query);
+        if ids.is_empty() {
+            self.status_message = "The Project Logical Editor query matched no events".to_owned();
+            return;
+        }
+        let count = ids.len();
+        self.arrange_view_state.audio_events.select_many(ids);
+        self.mark_modified();
+        self.status_message = format!("Selected {count} event(s) matching the logical query");
+    }
+
+    /// Applies the saved transform to every event the saved query matches.
+    fn process_logical_editor(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before processing events".to_owned();
+            return;
+        }
+        let mut query = self.project_logical_editor.query.clone();
+        query.sanitize();
+        let ids = self.data.project.matching_event_ids(&query);
+        if ids.is_empty() {
+            self.status_message = "The Project Logical Editor query matched no events".to_owned();
+            return;
+        }
+        let transform = self.project_logical_editor.transform;
+        let mut candidate = self.data.project.clone();
+        let changed = opentrack_core::event_query::apply_transform(&mut candidate, &ids, transform);
+        if changed == 0 {
+            self.status_message = format!(
+                "{} matched {} event(s), but all of them already had that state",
+                transform.label(),
+                ids.len()
+            );
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot process: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "{} {changed} event(s) matched by the logical query; Undo restores them",
+            transform.label()
+        );
+    }
+
+    fn show_project_logical_editor(&mut self, ctx: &egui::Context) {
+        if !self.project_logical_editor_open {
+            return;
+        }
+        let mut open = true;
+        let mut select = false;
+        let mut process = false;
+        let mut reset = false;
+        let matches = {
+            let mut query = self.project_logical_editor.query.clone();
+            query.sanitize();
+            self.data.project.matching_event_ids(&query).len()
+        };
+        let response = egui::Window::new("Project Logical Editor")
+            .id(Id::new("project-logical-editor"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label(
+                    "Filters audio events by name, track, state and position, then selects them \\
+                     or applies one change.",
+                );
+                ui.separator();
+                egui::Grid::new("logical-editor-query")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Event name contains");
+                        ui.text_edit_singleline(
+                            &mut self.project_logical_editor.query.name_contains,
+                        );
+                        ui.end_row();
+
+                        ui.label("Track name contains");
+                        ui.text_edit_singleline(
+                            &mut self.project_logical_editor.query.track_contains,
+                        );
+                        ui.end_row();
+
+                        ui.label("State");
+                        egui::ComboBox::from_id_salt("logical-editor-state")
+                            .selected_text(self.project_logical_editor.query.state.label())
+                            .show_ui(ui, |ui| {
+                                for state in opentrack_core::event_query::EventStateFilter::ALL {
+                                    ui.selectable_value(
+                                        &mut self.project_logical_editor.query.state,
+                                        state,
+                                        state.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("Start between (beats)");
+                        ui.horizontal(|ui| {
+                            // An unset bound means "no limit", which is different
+                            // from a limit of zero, so each bound has its own toggle.
+                            let mut from_on =
+                                self.project_logical_editor.query.from_beats.is_some();
+                            if ui.checkbox(&mut from_on, "from").changed() {
+                                self.project_logical_editor.query.from_beats =
+                                    from_on.then_some(0.0);
+                            }
+                            if let Some(from) =
+                                self.project_logical_editor.query.from_beats.as_mut()
+                            {
+                                ui.add(
+                                    egui::DragValue::new(from)
+                                        .range(0.0..=1_000_000.0)
+                                        .speed(0.25),
+                                );
+                            }
+                            let mut to_on = self.project_logical_editor.query.to_beats.is_some();
+                            if ui.checkbox(&mut to_on, "to").changed() {
+                                self.project_logical_editor.query.to_beats = to_on.then_some(16.0);
+                            }
+                            if let Some(to) = self.project_logical_editor.query.to_beats.as_mut() {
+                                ui.add(
+                                    egui::DragValue::new(to)
+                                        .range(0.0..=1_000_000.0)
+                                        .speed(0.25),
+                                );
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Apply");
+                        egui::ComboBox::from_id_salt("logical-editor-transform")
+                            .selected_text(self.project_logical_editor.transform.label())
+                            .show_ui(ui, |ui| {
+                                for transform in opentrack_core::event_query::EventTransform::ALL {
+                                    ui.selectable_value(
+                                        &mut self.project_logical_editor.transform,
+                                        transform,
+                                        transform.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    });
+                ui.label(
+                    egui::RichText::new(format!("{matches} event(s) match this query"))
+                        .small()
+                        .color(theme::palette(ui).muted),
+                );
+                if self.project_logical_editor.query.matches_everything() {
+                    ui.colored_label(
+                        theme::WARNING,
+                        "This query matches every audio event; add a filter to narrow it.",
+                    );
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Select Matching")
+                        .on_hover_text("Select the events the query matches")
+                        .clicked()
+                    {
+                        select = true;
+                    }
+                    if ui
+                        .add_enabled(matches > 0, egui::Button::new("Process Matching"))
+                        .on_hover_text("Apply the change to every matching event, as one undo step")
+                        .clicked()
+                    {
+                        process = true;
+                    }
+                    if ui.button("Reset Query").clicked() {
+                        reset = true;
+                    }
+                });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("project-logical-editor"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.project_logical_editor_open = open;
+        if select {
+            self.select_logical_query_matches();
+        }
+        if process {
+            self.process_logical_editor();
+        }
+        if reset {
+            self.project_logical_editor = ProjectLogicalEditor::default();
+        }
+    }
+
     /// Edit > Repeat: a bounded count, applied to the current event selection.
     fn show_repeat_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.repeat_dialog.take() else {
@@ -6240,6 +6468,8 @@ impl OpenTrackApp {
             "edit.lock" => self.set_selected_audio_events_locked(true),
             "edit.unlock" => self.set_selected_audio_events_locked(false),
             "edit.convert_to_real_copy" => self.convert_selected_events_to_real_copy(),
+            "edit.project_logical_editor" => self.project_logical_editor_open = true,
+            "edit.process_project_logical_editor" => self.process_logical_editor(),
             "edit.automation_follows_events" => {
                 self.automation_follows_events = !self.automation_follows_events;
                 self.status_message = if self.automation_follows_events {
@@ -8788,13 +9018,22 @@ impl OpenTrackApp {
                         };
                         ui.close();
                     }
-                    disabled_menu_commands(
+                    if menu_command(ui, "Project Logical Editor...", "", self.project_open).clicked()
+                    {
+                        self.project_logical_editor_open = true;
+                        ui.close();
+                    }
+                    if menu_command(
                         ui,
-                        &[
-                            ("Project Logical Editor...", ""),
-                            ("Process Project Logical Editor", ""),
-                        ],
-                    );
+                        "Process Project Logical Editor",
+                        "",
+                        self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.process_logical_editor();
+                        ui.close();
+                    }
                     ui.menu_button("Zoom", |ui| {
                         disabled_menu_commands(
                             ui,
@@ -10092,6 +10331,7 @@ impl OpenTrackApp {
             || self.recording_recovery.is_some()
             || self.project_recovery.is_some()
             || self.repeat_dialog.is_some()
+            || self.project_logical_editor_open
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -12470,6 +12710,7 @@ impl eframe::App for OpenTrackApp {
         self.show_recording_recovery(&ctx);
         self.show_project_recovery(&ctx);
         self.show_repeat_dialog(&ctx);
+        self.show_project_logical_editor(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -12585,6 +12826,11 @@ impl eframe::App for OpenTrackApp {
             storage,
             "automation-follows-events-v1",
             &self.automation_follows_events,
+        );
+        eframe::set_value(
+            storage,
+            "project-logical-editor-v1",
+            &self.project_logical_editor,
         );
     }
 }

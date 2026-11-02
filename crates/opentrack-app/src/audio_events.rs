@@ -4075,6 +4075,199 @@ mod split_selection_tests {
     }
 
     #[test]
+    fn the_project_logical_editor_selects_and_processes_matches_as_one_step() {
+        use opentrack_core::event_query::{EventQuery, EventStateFilter, EventTransform};
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].name = "Drums".to_owned();
+        app.data.project.tracks[1].name = "Bass".to_owned();
+        let kick = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("kick.wav"), 0.0, 2.0)
+            .unwrap();
+        let snare = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("snare.wav"), 8.0, 2.0)
+            .unwrap();
+        let bass = app
+            .data
+            .project
+            .add_audio_clip(1, PathBuf::from("bass.wav"), 4.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+
+        // Select every event on the Drums track.
+        app.project_logical_editor = ProjectLogicalEditor {
+            query: EventQuery {
+                track_contains: "drums".to_owned(),
+                ..EventQuery::default()
+            },
+            transform: EventTransform::Mute,
+        };
+        app.select_logical_query_matches();
+        let mut selected = app.arrange_view_state.audio_events.selected_ids();
+        selected.sort_unstable();
+        assert_eq!(selected, vec![kick, snare]);
+        assert_eq!(
+            app.data.project.tracks[1].clips[0].id, bass,
+            "the other track is untouched"
+        );
+
+        // Process mutes exactly those events, as one undo step.
+        app.process_logical_editor();
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| clip.muted)
+        );
+        assert!(!app.data.project.tracks[1].clips[0].muted);
+        assert!(
+            app.status_message.contains("Mute") && app.status_message.contains("2 event(s)"),
+            "status was {}",
+            app.status_message
+        );
+
+        // Running it again reports that nothing changed.
+        app.process_logical_editor();
+        assert!(app.status_message.contains("already had that state"));
+
+        // A state query finds the events the previous pass muted.
+        app.project_logical_editor.query = EventQuery {
+            state: EventStateFilter::Muted,
+            ..EventQuery::default()
+        };
+        app.project_logical_editor.transform = EventTransform::Unmute;
+        app.process_logical_editor();
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| !clip.muted)
+        );
+
+        // A query that matches nothing says so instead of changing anything.
+        app.project_logical_editor.query.name_contains = "no such take".to_owned();
+        app.process_logical_editor();
+        assert!(app.status_message.contains("matched no events"));
+    }
+
+    #[test]
+    fn the_project_logical_editor_dialog_renders_its_query() {
+        use opentrack_core::event_query::EventQuery;
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("kick.wav"), 0.0, 2.0)
+            .unwrap();
+        app.project_logical_editor.query = EventQuery {
+            name_contains: "kick".to_owned(),
+            ..EventQuery::default()
+        };
+        app.project_logical_editor_open = true;
+
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_project_logical_editor(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(
+            joined.contains("Project Logical Editor"),
+            "the dialog is titled: {joined}"
+        );
+        assert!(
+            joined.contains("1 event(s) match this query"),
+            "the live match count is shown: {joined}"
+        );
+        assert!(joined.contains("Select Matching"), "{joined}");
+        assert!(joined.contains("Process Matching"), "{joined}");
+    }
+
+    #[test]
+    fn the_project_logical_editor_query_persists() {
+        use opentrack_core::event_query::{EventQuery, EventStateFilter, EventTransform};
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_logical_editor = ProjectLogicalEditor {
+            query: EventQuery {
+                name_contains: "take 2".to_owned(),
+                track_contains: "guitar".to_owned(),
+                state: EventStateFilter::Locked,
+                from_beats: Some(4.0),
+                to_beats: Some(24.0),
+            },
+            transform: EventTransform::Lock,
+        };
+
+        #[derive(Default)]
+        struct Storage {
+            values: std::collections::HashMap<String, String>,
+        }
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.values.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.values.insert(key.to_owned(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.values.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let mut storage = Storage::default();
+        eframe::set_value(
+            &mut storage,
+            "project-logical-editor-v1",
+            &app.project_logical_editor,
+        );
+        let restored =
+            eframe::get_value::<ProjectLogicalEditor>(&storage, "project-logical-editor-v1")
+                .expect("the query persists");
+        assert_eq!(restored, app.project_logical_editor);
+        assert_eq!(restored.transform, EventTransform::Lock);
+        assert_eq!(restored.query.from_beats, Some(4.0));
+    }
+
+    #[test]
     fn automation_follows_events_decides_whether_the_curve_travels() {
         let ctx = egui::Context::default();
         let creation = eframe::CreationContext::_new_kittest(ctx);
