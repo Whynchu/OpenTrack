@@ -22,7 +22,9 @@ Step 9 enabled MIDI > Drum Map Setup with a draft dialog (add/rename/reorder/rem
 
 Step 10 enabled MIDI > Open Drum Editor over the selected MIDI part: map-ordered rows plus unmapped sounding pitches, snapped add, Ctrl multi-select, drag move on release, Escape cancel, Delete, velocity and Close, each content change as a labelled history step. Shared note-ID selection is used. App suite: 521 passed, 9 ignored; inventory is 271 leaves with 88 unavailable. Desktop pointer/visual review pending. See [R4-10](tasks/R4-10-open-drum-editor.md).
 
-Next ready work: revision-4 step 11, bounded Logical Presets. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+Step 11 enabled MIDI > Logical Presets with three bounded operations: select by pitch range, select by velocity range and set selected-note MIDI channel. Selection presets leave project/history untouched; Set Channel is one labelled atomic step and preserves other notes and CC. App suite: 524 passed, 9 ignored; inventory is 271 leaves with 87 unavailable. See [R4-11](tasks/R4-11-logical-presets.md).
+
+Next ready work: revision-4 step 12, CC Automation Setup. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
 
 ---
 

@@ -14,6 +14,7 @@ mod channel_gain;
 mod channel_settings;
 mod drum_editor;
 mod drum_map_setup;
+mod logical_presets;
 #[path = "media_names.rs"]
 pub(crate) mod media_names;
 #[path = "media_pool.rs"]
@@ -1291,6 +1292,7 @@ pub struct OpenTrackApp {
     drum_editor_open: bool,
     drum_editor_drag: Option<drum_editor::DrumEditorDrag>,
     drum_editor_velocity: u8,
+    logical_preset_dialog: Option<logical_presets::LogicalPresetDialog>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2782,6 +2784,7 @@ impl OpenTrackApp {
             drum_editor_open: false,
             drum_editor_drag: None,
             drum_editor_velocity: 96,
+            logical_preset_dialog: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4092,6 +4095,7 @@ impl OpenTrackApp {
         self.drum_map_setup = None;
         self.drum_editor_open = false;
         self.drum_editor_drag = None;
+        self.logical_preset_dialog = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -14213,11 +14217,21 @@ impl OpenTrackApp {
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Logical Presets", ""),
                             ("VST Expression", ""),
                             ("CC Automation Setup...", ""),
                         ],
                     );
+                    if menu_command(
+                        ui,
+                        "Logical Presets",
+                        "",
+                        self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.open_logical_presets();
+                        ui.close();
+                    }
                     if menu_command(ui, "Drum Map Setup...", "", self.project_open).clicked() {
                         self.open_drum_map_setup();
                         ui.close();
@@ -18460,6 +18474,7 @@ impl eframe::App for OpenTrackApp {
         self.show_pool_record_folder_dialog(&ctx);
         self.show_drum_map_setup(&ctx);
         self.show_drum_editor(&ctx);
+        self.show_logical_presets(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);
