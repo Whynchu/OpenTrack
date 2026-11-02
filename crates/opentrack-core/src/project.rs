@@ -11,8 +11,24 @@ use serde::{Deserialize, Serialize};
 pub enum TrackKind {
     Audio,
     Group,
+    /// Shared effect return. Holds inserts and channel controls but no
+    /// timeline media, MIDI or children.
+    Fx,
     Instrument,
     Midi,
+}
+
+impl TrackKind {
+    /// A bus receives other channels instead of owning timeline events. Group
+    /// and FX channels share the engine's bus DSP but remain distinct kinds.
+    pub const fn is_bus(self) -> bool {
+        matches!(self, Self::Group | Self::Fx)
+    }
+
+    /// Whether this kind may own MIDI parts.
+    pub const fn owns_midi(self) -> bool {
+        matches!(self, Self::Midi | Self::Instrument)
+    }
 }
 
 /// Maximum persisted channel gain, approximately +6 dB.
@@ -1358,11 +1374,12 @@ impl Project {
         let prefix = match kind {
             TrackKind::Audio => "Audio",
             TrackKind::Group => "Group",
+            TrackKind::Fx => "FX",
             TrackKind::Instrument => "Instrument",
             TrackKind::Midi => "MIDI",
         };
 
-        let audio_channels = if matches!(kind, TrackKind::Audio | TrackKind::Group) {
+        let audio_channels = if matches!(kind, TrackKind::Audio) || kind.is_bus() {
             audio_channels.clamp(1, 2)
         } else {
             2
@@ -4338,7 +4355,7 @@ impl Project {
             return None;
         }
         let track = self.tracks.get_mut(track_index)?;
-        if !matches!(track.kind, TrackKind::Midi | TrackKind::Instrument) {
+        if !track.kind.owns_midi() {
             return None;
         }
 
@@ -4801,6 +4818,14 @@ impl Project {
                 if track.kind == TrackKind::Group && groups_with_group_children.contains(&track.id)
                 {
                     return Err("a nested group cannot contain another group");
+                }
+            }
+            if track.kind == TrackKind::Fx {
+                if track.parent_group_id.is_some() {
+                    return Err("an FX channel cannot be nested in a group");
+                }
+                if track.input_routing.is_some() {
+                    return Err("an FX channel cannot have an input route");
                 }
             }
             if track.automation_lanes.len() > MAX_AUTOMATION_LANES_PER_TRACK {
@@ -8782,6 +8807,100 @@ mod sample_edit_tests {
         // Breaking the loop makes the project routable again.
         project.tracks[1].output_routing = Some("Stereo Out".to_owned());
         assert_eq!(project.validate_routing(), Ok(()));
+    }
+
+    #[test]
+    fn fx_channels_are_distinct_buses_without_media_and_round_trip() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Fx);
+        let fx_id = project.tracks[0].id;
+        {
+            let fx = &mut project.tracks[0];
+            assert_eq!(fx.kind, TrackKind::Fx);
+            assert!(fx.kind.is_bus());
+            assert_eq!(fx.name, "FX 01");
+            assert!(fx.clips.is_empty());
+            assert!(fx.midi_parts.is_empty());
+            assert_eq!(fx.input_routing, None);
+            assert_eq!(fx.output_routing.as_deref(), Some("Stereo Out"));
+            fx.gain = 0.5;
+            fx.pan = -0.25;
+            fx.equalizer.bands[0].gain_db = 3.0;
+        }
+        assert!(
+            project
+                .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+                .is_none()
+        );
+        assert!(project.add_midi_part(0, 0.0, 4.0).is_none());
+        assert_eq!(project.validate(), Ok(()));
+
+        let duplicates = project
+            .duplicate_tracks(&[fx_id])
+            .expect("FX channel duplicate");
+        let duplicate = project
+            .tracks
+            .iter()
+            .find(|track| track.id == duplicates[0])
+            .expect("duplicate exists");
+        assert_eq!(duplicate.kind, TrackKind::Fx);
+        assert_eq!(duplicate.gain, 0.5);
+        assert_eq!(duplicate.equalizer.bands[0].gain_db, 3.0);
+
+        let encoded = serde_json::to_string(&project).expect("encode");
+        let restored: Project = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(restored.tracks[0].kind, TrackKind::Fx);
+        assert_eq!(restored.tracks[0].pan, -0.25);
+
+        project.remove_track(0);
+        assert!(!project.tracks.iter().any(|track| track.id == fx_id));
+    }
+
+    #[test]
+    fn fx_channels_reject_media_midi_and_hierarchy() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Fx);
+        let group_id = project.tracks[0].id;
+        project.tracks[1].parent_group_id = Some(group_id);
+        assert_eq!(
+            project.validate(),
+            Err("an FX channel cannot be nested in a group")
+        );
+        project.tracks[1].parent_group_id = None;
+
+        project.tracks[1].input_routing = Some("Stereo In".to_owned());
+        assert_eq!(
+            project.validate(),
+            Err("an FX channel cannot have an input route")
+        );
+        project.tracks[1].input_routing = None;
+
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(2, PathBuf::from("a.wav"), 0.0, 2.0)
+            .expect("audio clip");
+        let clip = project.tracks[2].clips[0].clone();
+        project.tracks[1].clips.push(clip);
+        assert_eq!(
+            project.validate(),
+            Err("audio clips must be stored on audio tracks")
+        );
+        project.tracks[1].clips.clear();
+
+        project.add_track(TrackKind::Midi);
+        let part_id = project.add_midi_part(3, 0.0, 4.0).expect("part");
+        let part = project.tracks[3]
+            .midi_parts
+            .iter()
+            .find(|part| part.id == part_id)
+            .expect("part exists")
+            .clone();
+        project.tracks[1].midi_parts.push(part);
+        assert_eq!(
+            project.validate(),
+            Err("MIDI parts must be stored on MIDI or instrument tracks")
+        );
     }
 
     #[test]

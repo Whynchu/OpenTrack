@@ -3532,7 +3532,7 @@ impl OpenTrackApp {
                 );
                 (
                     meter_peak,
-                    track.kind == TrackKind::Group,
+                    track.kind.is_bus(),
                     track.audio_channels,
                     track.gain,
                     track.pan,
@@ -17204,12 +17204,14 @@ impl OpenTrackApp {
         let title = match dialog.kind {
             TrackKind::Audio => "Add Audio Track",
             TrackKind::Group => "Add Group Channel",
+            TrackKind::Fx => "Add FX Channel",
             TrackKind::Instrument => "Add Instrument Track",
             TrackKind::Midi => "Add MIDI Track",
         };
         let configuration = match dialog.kind {
             TrackKind::Audio => "Audio Track Configuration",
             TrackKind::Group => "Group Channel Configuration",
+            TrackKind::Fx => "FX Channel Configuration",
             TrackKind::Instrument => "Instrument Track Configuration",
             TrackKind::Midi => "MIDI Track Configuration",
         };
@@ -17255,6 +17257,7 @@ impl OpenTrackApp {
                                         }
                                         TrackKind::Audio => 40.0 + 6.0 + 78.0,
                                         TrackKind::Group => 40.0 + 6.0 + 78.0,
+                                        TrackKind::Fx => 40.0 + 6.0 + 78.0,
                                         TrackKind::Instrument => 40.0 + 6.0 + 160.0,
                                         TrackKind::Midi => 40.0,
                                     };
@@ -17344,6 +17347,34 @@ impl OpenTrackApp {
                                             ui.vertical(|ui| {
                                                 egui::ComboBox::from_id_salt(
                                                     "add-group-channel-configuration",
+                                                )
+                                                .width(78.0)
+                                                .selected_text(if dialog.audio_channels == 1 {
+                                                    "Mono"
+                                                } else {
+                                                    "Stereo"
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut dialog.audio_channels,
+                                                        1,
+                                                        "Mono",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut dialog.audio_channels,
+                                                        2,
+                                                        "Stereo",
+                                                    );
+                                                });
+                                                ui.label(
+                                                    egui::RichText::new("configuration").size(10.0),
+                                                );
+                                            });
+                                        }
+                                        TrackKind::Fx => {
+                                            ui.vertical(|ui| {
+                                                egui::ComboBox::from_id_salt(
+                                                    "add-fx-channel-configuration",
                                                 )
                                                 .width(78.0)
                                                 .selected_text(if dialog.audio_channels == 1 {
@@ -18706,6 +18737,7 @@ fn track_kind_label(kind: TrackKind) -> &'static str {
     match kind {
         TrackKind::Audio => "AUDIO",
         TrackKind::Group => "GROUP",
+        TrackKind::Fx => "FX",
         TrackKind::Instrument => "INSTRUMENT",
         TrackKind::Midi => "MIDI",
     }
@@ -20037,7 +20069,7 @@ fn show_project(
                         3 => clear_all_solo = true,
                         4 => {
                             for track in &mut project.tracks {
-                                if track.kind != TrackKind::Group && !track.automation_read {
+                                if !track.kind.is_bus() && !track.automation_read {
                                     track.automation_read = true;
                                     modified = true;
                                 }
@@ -21000,6 +21032,8 @@ fn show_project(
                         TrackKind::Audio => "stereo",
                         TrackKind::Group if track.audio_channels == 1 => "mono group",
                         TrackKind::Group => "stereo group",
+                        TrackKind::Fx if track.audio_channels == 1 => "mono FX",
+                        TrackKind::Fx => "stereo FX",
                         _ => track_kind_label(track.kind),
                     };
                     if !take_lanes_expanded {

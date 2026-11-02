@@ -2797,7 +2797,7 @@ fn strip(
         if edit {
             track.gain = displayed_gain;
         }
-        if track.automation_write && !matches!(track.kind, TrackKind::Group) {
+        if track.automation_write && !track.kind.is_bus() {
             automation::capture_fader_write(ui, track.id, &response, track.gain);
         }
         changed |= edit;

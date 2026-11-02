@@ -344,7 +344,7 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
         ));
     } else {
         let icon = match track.kind {
-            TrackKind::Group => crate::icon_system::IconId::Channel,
+            TrackKind::Group | TrackKind::Fx => crate::icon_system::IconId::Channel,
             TrackKind::Instrument => crate::icon_system::IconId::TrackMidi,
             TrackKind::Midi => crate::icon_system::IconId::TrackInstrument,
             TrackKind::Audio => unreachable!("audio icon is drawn above"),
@@ -355,6 +355,7 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
         .on_hover_text(match track.kind {
             TrackKind::Audio => "Audio Track",
             TrackKind::Group => "Group Channel",
+            TrackKind::Fx => "FX Channel",
             TrackKind::Instrument => "Instrument Track",
             TrackKind::Midi => "MIDI Track",
         });

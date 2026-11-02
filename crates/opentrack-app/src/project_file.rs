@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 34;
+const FORMAT_VERSION: u32 = 35;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1810,6 +1810,29 @@ mod tests {
         let mut out_of_range: ArrangeViewState = serde_json::from_value(out_of_range).unwrap();
         out_of_range.normalize();
         assert_eq!(out_of_range.cc_lane_controller, 127);
+    }
+
+    #[test]
+    fn fx_channel_kind_round_trips_through_the_native_document() {
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Fx);
+        project.tracks[0].name = "Reverb Return".to_owned();
+        project.tracks[0].gain = 0.7;
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-fx-kind-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        document.write(&path).unwrap();
+        let restored = ProjectFile::read(&path).unwrap();
+        assert_eq!(restored.version, FORMAT_VERSION);
+        assert_eq!(restored.project.tracks[0].kind, TrackKind::Fx);
+        assert_eq!(restored.project.tracks[0].name, "Reverb Return");
+        assert_eq!(restored.project.validate(), Ok(()));
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]
