@@ -467,5 +467,13 @@ still one commit with tests and refreshed counts.
    than guessing. Create Regions stays disabled because there is no multi-range
    region model. 1 audio and 1 app tests. Disabled entries 85 -> 83.
 
+46. **Resample.** *Delivered.* Audio > Process > Resample... opens a rate dialog
+   seeded from the project rate; `opentrack_audio::resample_wav_range` converts the
+   event's used range with linear interpolation, keeping duration and pitch, and
+   refuses a source already at the target rate or an out-of-range target. Repointed
+   events clear pitch analysis and source-fade lineage and commit one labelled
+   "Resample" undo step; failures clean up their files. 1 audio and 1 app tests.
+   Disabled entries 83 -> 82.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.

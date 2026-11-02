@@ -1167,6 +1167,220 @@ impl OpenTrackApp {
         );
     }
 
+    /// Opens the Resample dialog seeded from the project rate.
+    pub(super) fn open_resample_dialog(&mut self) {
+        if self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .is_empty()
+        {
+            self.resample_dialog = None;
+            self.status_message = "Select audio events to resample".to_owned();
+            return;
+        }
+        self.resample_dialog = Some(self.data.project.sample_rate_hz.clamp(8_000, 192_000));
+    }
+
+    /// Rewrites the selected events' used audio at the dialog's sample rate.
+    pub(super) fn apply_resample(&mut self, target_rate: u32) {
+        if !(8_000..=192_000).contains(&target_rate) {
+            self.status_message = "The target rate must be between 8 kHz and 192 kHz".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before resampling audio".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to resample".to_owned();
+            return;
+        }
+        if ids.len() > 64 {
+            self.status_message = "Resample is limited to 64 events at a time".to_owned();
+            return;
+        }
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before resampling audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before resampling audio".to_owned();
+            return;
+        };
+        let mut candidate = self.data.project.clone();
+        let mut created = Vec::<PathBuf>::new();
+        let mut opened = Vec::<(PathBuf, AudioSource)>::new();
+        let mut resampled = 0;
+        let mut already = 0;
+        for id in ids {
+            let Some((source, offset, duration, name)) = candidate
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == id)
+                .map(|clip| {
+                    (
+                        clip.source_path.clone(),
+                        clip.source_offset_seconds,
+                        clip.duration_seconds,
+                        clip.name.clone(),
+                    )
+                })
+            else {
+                self.cleanup_created_files(&created);
+                self.status_message = "The selected event is no longer in the project".to_owned();
+                return;
+            };
+            let destination =
+                match super::audio_export::unique_wav_path(&root, &format!("{name} {target_rate}"))
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.cleanup_created_files(&created);
+                        self.status_message = error;
+                        return;
+                    }
+                };
+            match opentrack_audio::resample_wav_range(
+                &source,
+                offset,
+                duration,
+                target_rate,
+                &destination,
+            ) {
+                Ok(_) => {}
+                Err(error) if error.contains("already at") => {
+                    already += 1;
+                    continue;
+                }
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not resample {name}: {error}");
+                    return;
+                }
+            }
+            created.push(destination.clone());
+            match AudioSource::open(&destination) {
+                Ok(audio) => opened.push((destination.clone(), audio)),
+                Err(error) => {
+                    self.cleanup_created_files(&created);
+                    self.status_message = format!("Could not open the resampled audio: {error}");
+                    return;
+                }
+            }
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.clips.iter().any(|clip| clip.id == id))
+                && let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == id)
+            {
+                clip.source_path = destination;
+                clip.source_offset_seconds = 0.0;
+                clip.pitch_time = None;
+                clip.source_fades.clear();
+                clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+                clip.fade_out_seconds = clip
+                    .fade_out_seconds
+                    .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+                resampled += 1;
+            }
+        }
+        if resampled == 0 {
+            self.cleanup_created_files(&created);
+            self.status_message = if already > 0 {
+                format!("{already} event(s) are already at {target_rate} Hz")
+            } else {
+                "No event could be resampled".to_owned()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.cleanup_created_files(&created);
+            self.status_message = "Cannot resample: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Resample");
+        self.data.project = candidate;
+        for (path, source) in opened {
+            self.data.audio_sources.insert(path, source);
+        }
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Resampled {resampled} event(s) to {target_rate} Hz; Undo restores the originals"
+        );
+        if already > 0 {
+            status.push_str(&format!("; {already} were already at that rate"));
+        }
+        self.status_message = status;
+    }
+
+    pub(super) fn show_resample_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut rate) = self.resample_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let response = egui::Window::new("Resample")
+            .id(Id::new("resample-dialog"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label("New sample rate for the selected events' used audio");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut rate)
+                            .range(8_000..=192_000)
+                            .speed(100.0)
+                            .suffix(" Hz"),
+                    );
+                    if ui.button("Project rate").clicked() {
+                        rate = self.data.project.sample_rate_hz.clamp(8_000, 192_000);
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "Duration and pitch are preserved; the audio is converted with linear interpolation.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        super::dismiss_window_on_outside_click(
+            ctx,
+            Id::new("resample-dialog"),
+            &mut open,
+            response.as_ref(),
+        );
+        if apply {
+            self.apply_resample(rate);
+        } else if !cancel && open {
+            self.resample_dialog = Some(rate);
+        }
+    }
+
     /// Opens the normalize dialog with the default peak ceiling.
     pub(super) fn open_normalize_dialog(&mut self) {
         if self
@@ -2541,6 +2755,84 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn resampling_repoints_events_and_reports_a_matching_rate() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-resample-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("44k.wav");
+        {
+            let mut bytes = Vec::new();
+            // 44.1 kHz, one second.
+            let frames: u32 = 44_100;
+            let data_bytes = frames * 2;
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVE");
+            bytes.extend_from_slice(b"fmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&44_100_u32.to_le_bytes());
+            bytes.extend_from_slice(&(44_100_u32 * 2).to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for frame in 0..frames {
+                let sample = if (frame / 220) % 2 == 0 { 8_000_i16 } else { 0 };
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            std::fs::write(&source, bytes).expect("wav");
+        }
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 0.0, 0.5)
+            .expect("clip");
+        app.project_history.clear();
+        app.arrange_view_state.audio_events.select_many([id]);
+
+        app.open_resample_dialog();
+        assert_eq!(app.resample_dialog, Some(48_000), "seeded from the project");
+        app.apply_resample(48_000);
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, source);
+        assert!(clip.source_path.exists());
+        assert_eq!(clip.source_offset_seconds, 0.0);
+        assert!(
+            app.status_message
+                .contains("Resampled 1 event(s) to 48000 Hz")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Resample");
+
+        // A second pass finds the event already at that rate.
+        let steps = app.project_history.counts().0;
+        app.apply_resample(48_000);
+        assert!(app.status_message.contains("already at 48000 Hz"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // Out-of-range rates and an empty selection report.
+        app.apply_resample(1_000);
+        assert!(app.status_message.contains("between 8 kHz and 192 kHz"));
+        app.arrange_view_state.audio_events.clear_selection();
+        app.apply_resample(44_100);
+        assert!(app.status_message.contains("Select audio events"));
+        app.open_resample_dialog();
+        assert!(app.resample_dialog.is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

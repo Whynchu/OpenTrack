@@ -124,6 +124,47 @@ pub fn merge_wav_range(
     Ok(base.frames)
 }
 
+/// Rewrites the used range at `target_rate`, keeping its duration and pitch.
+///
+/// Conversion is linear interpolation, which is honest about being a straightforward
+/// sample-rate conversion rather than a band-limited one. A source already at the
+/// target rate is reported instead of being rewritten.
+pub fn resample_wav_range(
+    source: &Path,
+    offset_seconds: f64,
+    duration_seconds: f64,
+    target_rate: u32,
+    destination: &Path,
+) -> Result<u64, String> {
+    if !(8_000..=192_000).contains(&target_rate) {
+        return Err("the target sample rate must be between 8 kHz and 192 kHz".to_owned());
+    }
+    let range = read_range(source, offset_seconds, duration_seconds, false)?;
+    if range.sample_rate == target_rate {
+        return Err(format!("the source is already at {target_rate} Hz"));
+    }
+    let channels = usize::from(range.channels);
+    let ratio = f64::from(target_rate) / f64::from(range.sample_rate);
+    let output_frames = ((range.frames as f64) * ratio).round().max(1.0) as u64;
+    let mut samples = Vec::with_capacity(output_frames as usize * channels);
+    let last_frame = range.frames.saturating_sub(1);
+    for frame in 0..output_frames {
+        let position = frame as f64 / ratio;
+        let base = position.floor() as u64;
+        let fraction = position - base as f64;
+        let left = base.min(last_frame) as usize;
+        let right = (base + 1).min(last_frame) as usize;
+        for channel in 0..channels {
+            let a = f64::from(range.samples[left * channels + channel]);
+            let b = f64::from(range.samples[right * channels + channel]);
+            let value = a + (b - a) * fraction;
+            samples.push(value.clamp(-1.0, 1.0) as f32);
+        }
+    }
+    write_float_wav(destination, range.channels, target_rate, &samples)?;
+    Ok(output_frames)
+}
+
 /// Bound on hitpoints one detection pass may return.
 pub const MAX_HITPOINTS: usize = 2_048;
 
@@ -577,6 +618,50 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resampling_keeps_the_duration_and_refuses_the_same_rate() {
+        let root = std::env::temp_dir().join(format!("opentrack-resample-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let source = root.join("44k.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&source, spec).expect("writer");
+            for frame in 0..44_100 {
+                // A 100 Hz square so the conversion has something to preserve.
+                let value = if (frame / 220) % 2 == 0 { 0.25 } else { -0.25 };
+                writer.write_sample(value as f32).expect("sample");
+            }
+            writer.finalize().expect("finalize");
+        }
+        let destination = root.join("48k.wav");
+        let frames = resample_wav_range(&source, 0.0, 1.0, 48_000, &destination).expect("resample");
+        assert_eq!(frames, 48_000);
+        let mut reader = hound::WavReader::open(&destination).expect("reader");
+        assert_eq!(reader.spec().sample_rate, 48_000);
+        let samples = reader
+            .samples::<f32>()
+            .map(|sample| sample.expect("sample"))
+            .collect::<Vec<_>>();
+        assert_eq!(samples.len(), 48_000);
+        // The first block stays positive and the second negative, so the
+        // waveform survived the conversion.
+        assert!(samples[100] > 0.2, "{}", samples[100]);
+        assert!(samples[400] < -0.2, "{}", samples[400]);
+
+        // A matching rate and an out-of-range target are refused.
+        assert!(
+            resample_wav_range(&destination, 0.0, 1.0, 48_000, &root.join("same.wav")).is_err()
+        );
+        assert!(resample_wav_range(&source, 0.0, 1.0, 1_000, &root.join("low.wav")).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 
