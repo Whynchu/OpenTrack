@@ -244,8 +244,16 @@ Still open from revision 1:
 29. **Linux VST3 editor embedding** — X11 embed path behind the existing host
     boundary. **Unverified without an installed plug-in**; ships only if a test
     plug-in can be produced in the same task, otherwise it stays planned.
-30. **Startup time and large-project load.** Measure and improve the load path
-    with a generated large project fixture.
+30. **Startup time and large-project load.** *Delivered.* Two tests use a
+   generated 140-track project (3,000 audio events, 1,000 MIDI notes, 3.6 MB on
+   disk): one times save, read and validate with generous ceilings and prints the
+   numbers; the other times application startup. The load path itself improved:
+   `Project::validate` no longer deep-clones the whole project twice to validate
+   the two device bus strips (it validates just the cloned strip, and skips the id
+   counters that describe the project rather than the strip), and the group
+   nesting rule is now a precomputed set lookup instead of a scan of every track
+   per group. Measured here (debug test binary): write 145 ms, read 88 ms,
+   validate 2.5 ms, app startup 374 ms. 2 app tests.
 
 ### H. Consolidation
 

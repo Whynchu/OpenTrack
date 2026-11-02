@@ -3596,31 +3596,65 @@ impl Project {
                     "device buses must be stereo channel strips without arrange media or recording controls",
                 );
             }
-            let mut validation = self.clone();
-            validation.tracks = vec![bus.strip.clone()];
-            validation.tracks[0].id = 1;
-            validation.selected_track = None;
-            validation.selected_midi_part_id = None;
-            validation.next_track_number = 1;
-            validation.next_track_id = 2;
-            validation.validate_track_data()?;
+            // Only the strip is checked, so a large project is not cloned twice
+            // just to validate two device channels.
+            let mut strip = bus.strip.clone();
+            strip.id = 1;
+            // The strip has no media, so the project's id counters do not
+            // describe it; only its shape is checked.
+            self.validate_track_data(std::slice::from_ref(&strip), false)?;
         }
-        self.validate_track_data()
+        self.validate_track_data(&self.tracks, true)?;
+        // The selection is a property of the whole project, so it is checked
+        // here rather than while validating one track list (or a bus strip).
+        if self.selected_midi_part_id.is_some_and(|id| {
+            !self
+                .tracks
+                .iter()
+                .flat_map(|track| track.midi_parts.iter())
+                .any(|part| part.id == id)
+        }) {
+            return Err("selected MIDI part is outside the project");
+        }
+        if let Some(selected_part_id) = self.selected_midi_part_id {
+            let selected_track = self
+                .selected_track
+                .and_then(|index| self.tracks.get(index as usize));
+            if !selected_track.is_some_and(|track| {
+                track
+                    .midi_parts
+                    .iter()
+                    .any(|part| part.id == selected_part_id)
+            }) {
+                return Err("selected MIDI part is not on the selected track");
+            }
+        }
+        Ok(())
     }
 
-    fn validate_track_data(&self) -> Result<(), &'static str> {
+    fn validate_track_data(
+        &self,
+        tracks: &[Track],
+        check_counters: bool,
+    ) -> Result<(), &'static str> {
         let mut track_ids = BTreeSet::new();
         let mut clip_ids = BTreeSet::new();
         let mut midi_part_ids = BTreeSet::new();
         let mut midi_note_ids = BTreeSet::new();
         let mut midi_controller_ids = BTreeSet::new();
-        let track_kinds = self
-            .tracks
+        let track_kinds = tracks
             .iter()
             .map(|track| (track.id, (track.kind, track.parent_group_id)))
             .collect::<std::collections::BTreeMap<_, _>>();
+        // One pass builds the parents that contain a group, so the nesting check
+        // below is a set lookup instead of a scan of every track per group.
+        let groups_with_group_children = tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Group)
+            .filter_map(|track| track.parent_group_id)
+            .collect::<BTreeSet<u64>>();
         let mut automation_points = 0usize;
-        for track in &self.tracks {
+        for track in tracks {
             if track.id == 0 || track.id >= INPUT_BUS_ID || !track_ids.insert(track.id) {
                 return Err("track IDs must be nonzero and unique");
             }
@@ -3651,10 +3685,7 @@ impl Project {
                 {
                     return Err("group nesting cannot exceed two levels");
                 }
-                if track.kind == TrackKind::Group
-                    && self.tracks.iter().any(|child| {
-                        child.parent_group_id == Some(track.id) && child.kind == TrackKind::Group
-                    })
+                if track.kind == TrackKind::Group && groups_with_group_children.contains(&track.id)
                 {
                     return Err("a nested group cannot contain another group");
                 }
@@ -3951,7 +3982,7 @@ impl Project {
             }
         }
         let mut group_routes = std::collections::BTreeMap::new();
-        for track in &self.tracks {
+        for track in tracks {
             let Some(group_id) = track
                 .output_routing
                 .as_deref()
@@ -3963,8 +3994,7 @@ impl Project {
                 .parse::<u64>()
                 .map_err(|_| "group output route has an invalid ID")?;
             if track.id == group_id
-                || !self
-                    .tracks
+                || !tracks
                     .iter()
                     .any(|candidate| candidate.id == group_id && candidate.kind == TrackKind::Group)
             {
@@ -3972,7 +4002,7 @@ impl Project {
             }
             group_routes.insert(track.id, group_id);
         }
-        for track in &self.tracks {
+        for track in tracks {
             let mut visited = BTreeSet::new();
             let mut current = track.id;
             while let Some(next) = group_routes.get(&current).copied() {
@@ -3989,7 +4019,7 @@ impl Project {
         for (&source, &destination) in &group_routes {
             route_edges.entry(source).or_default().push(destination);
         }
-        for track in &self.tracks {
+        for track in tracks {
             for route in track.send_routing.iter().flatten() {
                 let Some(id) = route.strip_prefix("Group:") else {
                     continue;
@@ -4037,56 +4067,42 @@ impl Project {
                 return Err("send and output routing cannot contain cycles");
             }
         }
-        if track_ids
-            .last()
-            .is_some_and(|maximum_id| self.next_track_id <= *maximum_id)
+        if check_counters
+            && track_ids
+                .last()
+                .is_some_and(|maximum_id| self.next_track_id <= *maximum_id)
         {
             return Err("next track ID must be greater than every existing track ID");
         }
-        if clip_ids
-            .last()
-            .is_some_and(|maximum_id| self.next_clip_id <= *maximum_id)
+        if check_counters
+            && clip_ids
+                .last()
+                .is_some_and(|maximum_id| self.next_clip_id <= *maximum_id)
         {
             return Err("next clip ID must be greater than every existing clip ID");
         }
-        if midi_part_ids
-            .last()
-            .is_some_and(|maximum_id| self.next_midi_part_id <= *maximum_id)
+        if check_counters
+            && midi_part_ids
+                .last()
+                .is_some_and(|maximum_id| self.next_midi_part_id <= *maximum_id)
         {
             return Err("next MIDI part ID must be greater than every existing part ID");
         }
-        if midi_note_ids
-            .last()
-            .is_some_and(|maximum_id| self.next_midi_note_id <= *maximum_id)
+        if check_counters
+            && midi_note_ids
+                .last()
+                .is_some_and(|maximum_id| self.next_midi_note_id <= *maximum_id)
         {
             return Err("next MIDI note ID must be greater than every existing note ID");
         }
-        if midi_controller_ids
-            .last()
-            .is_some_and(|maximum_id| self.next_midi_controller_id <= *maximum_id)
+        if check_counters
+            && midi_controller_ids
+                .last()
+                .is_some_and(|maximum_id| self.next_midi_controller_id <= *maximum_id)
         {
             return Err(
                 "next MIDI controller event ID must be greater than every existing event ID",
             );
-        }
-        if self
-            .selected_midi_part_id
-            .is_some_and(|id| !midi_part_ids.contains(&id))
-        {
-            return Err("selected MIDI part is outside the project");
-        }
-        if let Some(selected_part_id) = self.selected_midi_part_id {
-            let selected_track = self
-                .selected_track
-                .and_then(|index| self.tracks.get(index as usize));
-            if !selected_track.is_some_and(|track| {
-                track
-                    .midi_parts
-                    .iter()
-                    .any(|part| part.id == selected_part_id)
-            }) {
-                return Err("selected MIDI part is not on the selected track");
-            }
         }
 
         Ok(())

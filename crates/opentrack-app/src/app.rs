@@ -25534,3 +25534,106 @@ mod outside_click_window_tests {
         assert!(!open, "outside click should dismiss the transient window");
     }
 }
+
+#[cfg(test)]
+mod large_project_load_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    use opentrack_core::project::{Project, TrackKind};
+
+    /// A project large enough to exercise the load path: 120 audio tracks with
+    /// 3,000 events and 20 MIDI tracks with 1,000 notes.
+    fn large_project() -> Project {
+        let mut project = Project::default();
+        project.name = "Large Project".to_owned();
+        for _ in 0..120 {
+            project.add_track(TrackKind::Audio);
+        }
+        for track in 0..120 {
+            for event in 0..25 {
+                project
+                    .add_audio_clip(
+                        track,
+                        std::path::PathBuf::from(format!("/media/take-{track}-{event}.wav")),
+                        f64::from(event) * 8.0,
+                        4.0,
+                    )
+                    .expect("clip");
+            }
+        }
+        for _ in 0..20 {
+            project.add_track(TrackKind::Midi);
+        }
+        for track in 120..140 {
+            let part = project.add_midi_part(track, 0.0, 64.0).expect("midi part");
+            for note in 0..50 {
+                project
+                    .add_midi_note_on_channel(track, part, f64::from(note) / 4.0, 0.5, 60, 0, 100)
+                    .expect("note");
+            }
+        }
+        project
+    }
+
+    #[test]
+    fn a_large_project_saves_and_loads_within_a_practical_budget() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-large-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("project layout");
+        let path = root.join("Large.opr");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        let started = Instant::now();
+        app.data.project = large_project();
+        let generate = started.elapsed();
+        assert_eq!(app.data.project.tracks.len(), 140);
+        assert_eq!(app.data.project.tracks[0].clips.len(), 25);
+
+        let document = app.project_file().expect("document");
+        let started = Instant::now();
+        document.write(&path).expect("write");
+        let write = started.elapsed();
+        let bytes = std::fs::metadata(&path).expect("metadata").len();
+
+        let started = Instant::now();
+        let restored = ProjectFile::read(&path).expect("read");
+        let read = started.elapsed();
+        let started = Instant::now();
+        restored.project.validate().expect("valid");
+        let validate = started.elapsed();
+
+        assert_eq!(restored.project.tracks.len(), 140);
+        assert_eq!(restored.project.tracks[0].clips.len(), 25);
+        assert_eq!(restored.project.tracks[120].midi_parts[0].notes.len(), 50);
+
+        eprintln!(
+            "large project: {bytes} bytes, generate {generate:?}, write {write:?}, read {read:?}, validate {validate:?}"
+        );
+        // A generous ceiling that still catches an accidental quadratic path.
+        assert!(
+            read < Duration::from_secs(3),
+            "loading the large project took {read:?}"
+        );
+        assert!(
+            validate < Duration::from_secs(1),
+            "validating the large project took {validate:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn application_startup_stays_within_a_practical_budget() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let started = Instant::now();
+        let app = OpenTrackApp::new_internal(&creation, false);
+        let startup = started.elapsed();
+        eprintln!("app startup: {startup:?}");
+        assert!(!app.project_open);
+        assert!(startup < Duration::from_secs(5), "startup took {startup:?}");
+    }
+}
