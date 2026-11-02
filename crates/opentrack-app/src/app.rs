@@ -44,6 +44,8 @@ mod recording_undo;
 mod routing;
 #[path = "sample_editor.rs"]
 mod sample_editor;
+#[path = "session_health.rs"]
+mod session_health;
 #[path = "system_stats.rs"]
 mod system_stats;
 #[path = "templates.rs"]
@@ -1124,6 +1126,7 @@ pub struct OpenTrackApp {
     undo_history_open: bool,
     /// Name being typed in the Save as Template dialog.
     template_name_draft: Option<String>,
+    session_health_open: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2499,6 +2502,7 @@ impl OpenTrackApp {
             markers_window_open: false,
             undo_history_open: false,
             template_name_draft: None,
+            session_health_open: false,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -6808,6 +6812,99 @@ impl OpenTrackApp {
         self.status_message = "Removed the marker; Undo restores it".to_owned();
     }
 
+    /// Collects the session's issues for the health window.
+    fn session_health_issues(&self) -> Vec<session_health::HealthIssue> {
+        let failures = self
+            .vst3_runtime
+            .failures()
+            .iter()
+            .map(|((track_id, slot), reason)| {
+                let channel = self
+                    .data
+                    .project
+                    .channels()
+                    .find(|channel| channel.id == *track_id)
+                    .map(|channel| channel.name.clone())
+                    .unwrap_or_else(|| format!("channel {track_id}"));
+                (channel, format!("slot {slot}: {reason}"))
+            })
+            .collect::<Vec<_>>();
+        let mut notes = Vec::new();
+        if let Some(root) = self.project_root() {
+            notes.push((
+                format!("Project folder: {}", root.display()),
+                if session_health::is_managed(&root) {
+                    "Managed: recordings and metadata live beside the project.".to_owned()
+                } else {
+                    "Unmanaged: recording is unavailable until the folder is set up.".to_owned()
+                },
+            ));
+        }
+        if let Some(path) = self.project_path.as_deref() {
+            notes.push((
+                format!("Project file: {}", path.display()),
+                "Saving writes this file; recovery copies live in Metadata/Recovery.".to_owned(),
+            ));
+        }
+        session_health::review(session_health::HealthInput {
+            project: &self.data.project,
+            insert_failures: &failures,
+            snapshot_bytes: serde_json::to_vec(&self.data.project)
+                .map(|bytes| bytes.len())
+                .unwrap_or(0),
+            snapshot_limit: ProjectHistory::MAX_SNAPSHOT_BYTES,
+            notes,
+        })
+    }
+
+    fn show_session_health(&mut self, ctx: &egui::Context) {
+        if !self.session_health_open {
+            return;
+        }
+        let issues = self.session_health_issues();
+        let mut open = true;
+        let response = egui::Window::new("Session Health")
+            .id(Id::new("session-health"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(520.0, 380.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(session_health::summary(&issues));
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("session-health-list")
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for issue in &issues {
+                            let color = match issue.severity {
+                                session_health::HealthSeverity::Error => theme::RECORD,
+                                session_health::HealthSeverity::Warning => theme::WARNING,
+                                session_health::HealthSeverity::Info => theme::palette(ui).muted,
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(color, issue.severity.label());
+                                ui.label(egui::RichText::new(&issue.summary).strong());
+                            });
+                            ui.label(
+                                egui::RichText::new(&issue.detail)
+                                    .small()
+                                    .color(theme::palette(ui).muted),
+                            );
+                            ui.add_space(4.0);
+                        }
+                    });
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("session-health"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.session_health_open = open;
+    }
+
     /// Writes the current project's structure as a named template.
     fn save_project_as_template(&mut self, name: &str) {
         let Some(directory) = templates::templates_directory() else {
@@ -9886,6 +9983,10 @@ impl OpenTrackApp {
                         self.focus_tab(PanelTab::Media);
                         ui.close();
                     }
+                    if menu_command(ui, "Session Health...", "", self.project_open).clicked() {
+                        self.session_health_open = true;
+                        ui.close();
+                    }
                     if menu_command(
                         ui,
                         "Save as Template...",
@@ -11158,6 +11259,7 @@ impl OpenTrackApp {
             || self.markers_window_open
             || self.undo_history_open
             || self.template_name_draft.is_some()
+            || self.session_health_open
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -13544,6 +13646,7 @@ impl eframe::App for OpenTrackApp {
         self.show_markers_window(&ctx);
         self.show_undo_history(&ctx);
         self.show_save_template_dialog(&ctx);
+        self.show_session_health(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -22734,6 +22837,84 @@ mod snap_type_tests {
         view.snap_type = SnapType::GridAndCursor;
         assert_eq!(view.snap_type.label(), "Grid + Cursor");
         assert_eq!(SnapType::ALL.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod session_health_window_tests {
+    use super::*;
+
+    #[test]
+    fn the_window_lists_the_sessions_issues() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("/nowhere/kick.wav"), 0.0, 2.0)
+            .expect("clip");
+        app.data.project.tracks[0].output_routing = Some("Surround 5.1".to_owned());
+        app.session_health_open = true;
+
+        let issues = app.session_health_issues();
+        assert!(issues.iter().any(|issue| issue.summary.contains("missing")));
+        assert!(issues.iter().any(|issue| issue.summary.contains("routing")));
+
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_session_health(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Session Health"), "{joined}");
+        assert!(
+            joined.contains("Error"),
+            "the routing error is listed: {joined}"
+        );
+        assert!(
+            joined.contains("Relink Missing Media"),
+            "the fix is named: {joined}"
+        );
+    }
+
+    #[test]
+    fn a_clean_project_reports_nothing_to_fix() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        let issues = app.session_health_issues();
+        assert_eq!(
+            session_health::summary(&issues),
+            "Session health: nothing to fix"
+        );
     }
 }
 

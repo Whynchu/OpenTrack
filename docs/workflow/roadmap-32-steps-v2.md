@@ -123,9 +123,12 @@ Still open from revision 1:
    chosen one. Templates live in the app data directory
    (`templates/*.otemplate.json`, `OPENTRACK_DATA_DIR` overrides it for tests) with
    a versioned format, sanitized names and a bounded listing. 5 tests.
-14. **Session health check.** A dialog that reports unsupported sample rates,
-    missing media, dangling routes, failed inserts and oversized projects in one
-    place.
+14. **Session health check.** *Delivered.* Project > Session Health... collects
+   the checks OpenTrack already performs — save validation, routing validation,
+   missing media (with the relink command named), failed VST3 inserts, an undo
+   snapshot approaching its limit, a stale insert failure from a deleted channel —
+   plus a summary of tracks/events/parts/markers and the project folder and file,
+   ordered errors → warnings → info with a one-line status. 6 tests.
 
 ### D. MIDI depth
 
