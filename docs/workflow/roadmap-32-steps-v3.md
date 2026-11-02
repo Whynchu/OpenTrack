@@ -246,6 +246,12 @@ and measured numbers.
    bars and seconds do not. 1 core, 1 migration and 2 app tests. Disabled entries
    102 -> 101.
 
+31. **Automation Panel.** *Delivered.* Project > Automation Panel lists every
+   track with stored automation (plus the selected track), shows each lane's target
+   and point count, and toggles that track's lane visibility in the arrange through
+   the same `automation_visible` state the arrange reads, with a Hide All action.
+   2 app tests. Disabled entries 101 -> 100.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
@@ -300,3 +306,48 @@ and measured numbers.
 
 12. **Close revision 3.** Re-measure the menu inventory, the shortcut coverage and
     the suites; choose revision 4.
+
+## Revision 3 close-out (2026-11-02)
+
+Delivered in this revision: the transport locate family, track folding, nudge and
+selection keys, Insert Silence, Cut/Delete Time, typed position/locator/tempo,
+Paste Time, Close Project, plain-arrow navigation, Find Selected in Pool, Adjust
+Fades to Range, marker slots (OPR 29), Auto Grid, Edit In-place, the project
+overview, the Gain dialog and editor entries, Auto Fades Settings, Play from
+Selection, Play-until commands, menu aliases, Search Media, Import/Export Pool,
+Insert Velocities, Build N-Tuplet, Explode Pitches, Set Timecode at Cursor
+(OPR 30), and this Automation Panel — 31 functional slices plus this
+consolidation.
+
+Final measurements:
+
+| Suite | Result |
+|---|---|
+| opentrack (app) | 463 passed, 0 failed, 9 ignored |
+| opentrack-core | 134 passed |
+| opentrack-audio | 152 passed, 0 failed, 3 ignored |
+| opentrack-plugin-scan | 29 + 4 passed |
+| opentrack-plugins | 18 passed |
+| opentrack-vst3 | 14 passed, 2 ignored |
+| opentrack-win-jobs | 1 passed |
+
+- Declared-but-disabled menu entries: **159 (revision-2 start) -> 100**
+- Keymap-bound commands with a working shortcut: **75 -> 146 of 152**
+- Native format: **OPR version 30**; versions 1-29 migrate on open.
+
+Remaining work is now almost entirely feature-scoped:
+
+- **Shortcuts without a target (6):** Video, Virtual Keyboard, Open Score Editor,
+  Open Tempo Track Editor, Retrospective Record, Use External Sync.
+- **Interchange:** CPR (needs real fixtures), MusicXML, OMF, Track Archive, Audio CD.
+- **Audio-file processing:** resample, conform, minimize, prepare archive, DC
+  offset, reverse, stereo flip, time stretch.
+- **Absent features:** score editor, tempo track, video, external sync,
+  retrospective capture, control room, MIDI device manager, pool folders, extra
+  mixers, time/remaining-time displays.
+- **User verification:** every device/listening item from revision 2 still stands;
+  Windows job containment is compiled but not exercised on Windows.
+
+Revision 4 should start with the user-dependent reviews and CPR fixtures, then
+pick from interchange and audio-file processing with explicit format/version
+scopes, and only then return to the menu inventory.

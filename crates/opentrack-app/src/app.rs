@@ -1196,6 +1196,7 @@ pub struct OpenTrackApp {
     tuplet_dialog: Option<(u8, f64)>,
     /// Set Timecode dialog draft, in seconds.
     timecode_dialog: Option<f64>,
+    automation_panel_open: bool,
     /// Media Pool search term and whether the field should take focus next frame.
     pool_search: String,
     pool_search_focus: bool,
@@ -2619,6 +2620,7 @@ impl OpenTrackApp {
             insert_velocities: None,
             tuplet_dialog: None,
             timecode_dialog: None,
+            automation_panel_open: false,
             pool_search: String::new(),
             pool_search_focus: false,
             default_fade_seconds: creation
@@ -8042,6 +8044,121 @@ impl OpenTrackApp {
         self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
     }
 
+    /// Shows or hides one track's automation lane in the arrange.
+    fn toggle_automation_lane_visibility(&mut self, track_id: u64) -> bool {
+        if self.arrange_view_state.automation_visible.remove(&track_id) {
+            return false;
+        }
+        self.arrange_view_state.automation_visible.insert(track_id);
+        true
+    }
+
+    fn show_automation_panel(&mut self, ctx: &egui::Context) {
+        if !self.automation_panel_open {
+            return;
+        }
+        let mut open = true;
+        let mut toggle = None;
+        let mut hide_all = false;
+        let rows = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| {
+                !track.automation_lanes.is_empty()
+                    || self.data.project.selected_track
+                        == self
+                            .data
+                            .project
+                            .tracks
+                            .iter()
+                            .position(|candidate| candidate.id == track.id)
+                            .map(|index| index as u32)
+            })
+            .map(|track| {
+                (
+                    track.id,
+                    track.name.clone(),
+                    track
+                        .automation_lanes
+                        .iter()
+                        .map(|lane| {
+                            let label = match lane.target {
+                                opentrack_core::automation::AutomationTarget::TrackVolume => {
+                                    "Volume"
+                                }
+                            };
+                            (label, lane.points.len())
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let response = egui::Window::new("Automation Panel")
+            .id(Id::new("automation-panel"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(380.0, 300.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Lanes found on the selected tracks and every track with stored automation.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.separator();
+                if rows.is_empty() {
+                    ui.label("No track has an automation lane yet.");
+                }
+                for (track_id, name, lanes) in &rows {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(name).strong());
+                        let visible = self
+                            .arrange_view_state
+                            .automation_visible
+                            .contains(track_id);
+                        if ui
+                            .small_button(if visible { "Hide in Arrange" } else { "Show in Arrange" })
+                            .clicked()
+                        {
+                            toggle = Some(*track_id);
+                        }
+                    });
+                    if lanes.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No lanes yet. Draw one in the arrange.")
+                                .small()
+                                .color(theme::palette(ui).muted),
+                        );
+                    }
+                    for (label, points) in lanes {
+                        ui.label(format!("    {label}: {points} point(s)"));
+                    }
+                }
+                ui.separator();
+                if ui.button("Hide All").clicked() {
+                    hide_all = true;
+                }
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("automation-panel"),
+            &mut open,
+            response.as_ref(),
+        );
+        self.automation_panel_open = open;
+        if let Some(track_id) = toggle {
+            self.toggle_automation_lane_visibility(track_id);
+        }
+        if hide_all {
+            self.arrange_view_state.automation_visible.clear();
+        }
+    }
+
     /// Opens the timecode dialog seeded from the timecode at the cursor.
     fn open_timecode_dialog(&mut self) {
         let cursor = self.data.transport.position_beats.max(0.0);
@@ -13044,13 +13161,11 @@ impl OpenTrackApp {
                         self.open_timecode_dialog();
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Tempo Track", "Ctrl+T"),
-                            ("Automation Panel", ""),
-                        ],
-                    );
+                    if menu_command(ui, "Automation Panel", "", self.project_open).clicked() {
+                        self.automation_panel_open = true;
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Tempo Track", "Ctrl+T")]);
                     ui.separator();
                     if ui
                         .add_enabled(
@@ -14497,6 +14612,7 @@ impl OpenTrackApp {
             || self.insert_velocities.is_some()
             || self.tuplet_dialog.is_some()
             || self.timecode_dialog.is_some()
+            || self.automation_panel_open
             || self.notepad_draft.is_some()
             || self.midi_quantize_dialog.is_some()
             || self.midi_transform_dialog.is_some()
@@ -16908,6 +17024,7 @@ impl eframe::App for OpenTrackApp {
         self.show_insert_velocities_dialog(&ctx);
         self.show_tuplet_dialog(&ctx);
         self.show_timecode_dialog(&ctx);
+        self.show_automation_panel(&ctx);
         self.show_notepad(&ctx);
         self.show_midi_quantize_dialog(&ctx);
         self.show_midi_transform_dialog(&ctx);
@@ -28898,6 +29015,113 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod automation_panel_tests {
+    use super::*;
+    use opentrack_core::automation::{AutomationLane, AutomationPoint, AutomationTarget};
+
+    fn app_with_lane() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].name = "Vocal".to_owned();
+        app.data.project.tracks[0]
+            .automation_lanes
+            .push(AutomationLane {
+                target: AutomationTarget::TrackVolume,
+                points: vec![
+                    AutomationPoint {
+                        beat: 1.0,
+                        value: 0.5,
+                    },
+                    AutomationPoint {
+                        beat: 3.0,
+                        value: 0.8,
+                    },
+                ],
+            });
+        app.data.project.selected_track = Some(0);
+        app
+    }
+
+    fn run(ctx: &egui::Context, app: &mut OpenTrackApp, frame: usize) -> Vec<String> {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                time: Some(frame as f64 * 0.05),
+                ..Default::default()
+            },
+            |_| app.show_automation_panel(ctx),
+        );
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_panel_lists_lanes_and_toggles_their_visibility() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_lane();
+        app.automation_panel_open = true;
+        let track_id = app.data.project.tracks[0].id;
+
+        // The toggle is the same state the arrange reads.
+        assert!(app.toggle_automation_lane_visibility(track_id));
+        assert!(
+            app.arrange_view_state
+                .automation_visible
+                .contains(&track_id)
+        );
+        assert!(!app.toggle_automation_lane_visibility(track_id));
+        assert!(
+            !app.arrange_view_state
+                .automation_visible
+                .contains(&track_id)
+        );
+
+        run(&ctx, &mut app, 0);
+        let texts = run(&ctx, &mut app, 1);
+        let joined = texts.join("\n");
+        assert!(joined.contains("Automation Panel"), "{joined}");
+        assert!(joined.contains("Vocal"), "{joined}");
+        assert!(joined.contains("Volume: 2 point(s)"), "{joined}");
+        assert!(joined.contains("Show in Arrange"), "{joined}");
+    }
+
+    #[test]
+    fn an_empty_project_says_there_are_no_lanes() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.automation_panel_open = true;
+        run(&ctx, &mut app, 0);
+        let texts = run(&ctx, &mut app, 1);
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("No track has an automation lane")),
+            "{texts:?}"
+        );
     }
 }
 
