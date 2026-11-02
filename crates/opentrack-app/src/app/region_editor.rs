@@ -30,7 +30,12 @@ impl RegionDraft {
 
 pub(super) struct RegionEditor {
     pub drafts: Vec<RegionDraft>,
-    pub selected: Option<u64>,
+    /// Selected draft indices, so a new (id 0) draft can be selected too.
+    pub selected: std::collections::BTreeSet<usize>,
+    /// Keyboard cursor, moved with the arrow keys.
+    pub cursor: usize,
+    /// True while the delete confirmation is showing.
+    pub confirm_delete: bool,
     pub locate: Option<f64>,
 }
 
@@ -49,9 +54,66 @@ impl RegionEditor {
                     original: Some((region.name.clone(), region.start_beats, region.end_beats)),
                 })
                 .collect(),
-            selected: None,
+            selected: std::collections::BTreeSet::new(),
+            cursor: 0,
+            confirm_delete: false,
             locate: None,
         }
+    }
+
+    /// Selects one row, extending the selection when `additive`.
+    pub(super) fn toggle(&mut self, index: usize, additive: bool) {
+        if index >= self.drafts.len() {
+            return;
+        }
+        if additive {
+            if !self.selected.insert(index) {
+                self.selected.remove(&index);
+            }
+        } else {
+            self.selected.clear();
+            self.selected.insert(index);
+        }
+        self.cursor = index;
+        self.confirm_delete = false;
+    }
+
+    pub(super) fn select_all(&mut self) {
+        self.selected = (0..self.drafts.len()).collect();
+        self.confirm_delete = false;
+    }
+
+    pub(super) fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.confirm_delete = false;
+    }
+
+    /// Moves the keyboard cursor within the rows.
+    pub(super) fn move_cursor(&mut self, delta: isize, extend: bool) {
+        if self.drafts.is_empty() {
+            return;
+        }
+        let next = (self.cursor as isize + delta).clamp(0, self.drafts.len() as isize - 1) as usize;
+        self.cursor = next;
+        if extend {
+            self.selected.insert(next);
+        }
+        self.confirm_delete = false;
+    }
+
+    /// Marks every selected draft for removal and reports the count.
+    pub(super) fn mark_selected_removed(&mut self) -> usize {
+        let mut removed = 0;
+        for index in std::mem::take(&mut self.selected) {
+            if let Some(draft) = self.drafts.get_mut(index)
+                && !draft.removed
+            {
+                draft.removed = true;
+                removed += 1;
+            }
+        }
+        self.confirm_delete = false;
+        removed
     }
 }
 
@@ -138,12 +200,51 @@ impl OpenTrackApp {
             .default_size(Vec2::new(560.0, 340.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    editor.move_cursor(1, ui.input(|i| i.modifiers.shift));
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    editor.move_cursor(-1, ui.input(|i| i.modifiers.shift));
+                }
+                if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A)) {
+                    editor.select_all();
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    editor.clear_selection();
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Space))
+                    && editor.selected.is_empty()
+                    && !editor.drafts.is_empty()
+                {
+                    editor.toggle(editor.cursor, false);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Delete)) && !editor.selected.is_empty() {
+                    editor.confirm_delete = true;
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Add Region").clicked() {
                         add = true;
                     }
                     if ui.button("From Locators").clicked() {
                         from_locators = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            !editor.drafts.is_empty(),
+                            egui::Button::new("Select All"),
+                        )
+                        .clicked()
+                    {
+                        editor.select_all();
+                    }
+                    if ui
+                        .add_enabled(
+                            !editor.selected.is_empty(),
+                            egui::Button::new("Delete Selected"),
+                        )
+                        .clicked()
+                    {
+                        editor.confirm_delete = true;
                     }
                     ui.label(
                         egui::RichText::new(format!("{} region(s)", editor.drafts.len()))
@@ -160,20 +261,22 @@ impl OpenTrackApp {
                 );
                 ui.separator();
                 let mut locate = None;
+                let mut toggle = None;
                 egui::ScrollArea::vertical()
                     .id_salt("project-regions-list")
                     .max_height(240.0)
                     .show(ui, |ui| {
-                        for draft in &mut editor.drafts {
+                        for (index, draft) in editor.drafts.iter_mut().enumerate() {
+                            let selected = editor.selected.contains(&index);
                             ui.horizontal(|ui| {
-                                let selected = editor.selected == Some(draft.id)
-                                    && draft.id != 0;
+                                let additive =
+                                    ui.input(|i| i.modifiers.command || i.modifiers.shift);
                                 if ui
                                     .selectable_label(selected, "◆")
-                                    .on_hover_text("Select region")
+                                    .on_hover_text("Select region (Ctrl/Shift adds)")
                                     .clicked()
                                 {
-                                    editor.selected = (draft.id != 0).then_some(draft.id);
+                                    toggle = Some((index, additive));
                                 }
                                 if ui
                                     .add_enabled(
@@ -218,10 +321,30 @@ impl OpenTrackApp {
                             });
                         }
                     });
+                if let Some((index, additive)) = toggle {
+                    editor.toggle(index, additive);
+                }
                 if let Some(beat) = locate {
                     editor.locate = Some(beat);
                 }
                 ui.separator();
+                if editor.confirm_delete {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Delete {} selected region(s)?",
+                            editor.selected.len()
+                        ));
+                        if ui.button("Delete").clicked() {
+                            let removed = editor.mark_selected_removed();
+                            self.status_message = format!(
+                                "Marked {removed} region(s) for removal; Apply commits it"
+                            );
+                        }
+                        if ui.button("Keep").clicked() {
+                            editor.confirm_delete = false;
+                        }
+                    });
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Apply").clicked() {
                         apply = true;
@@ -267,5 +390,134 @@ impl OpenTrackApp {
             }
             self.region_editor = Some(editor);
         }
+    }
+}
+
+#[cfg(test)]
+mod polish_tests {
+    use super::*;
+
+    fn app_with_regions() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_region(0.0, 4.0, "Intro").unwrap();
+        app.data.project.add_region(4.0, 8.0, "Verse").unwrap();
+        app.data.project.add_region(8.0, 12.0, "Chorus").unwrap();
+        // An audio event selection that regions must never disturb.
+        app.data.project.add_track(TrackKind::Audio);
+        let clip = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 1.0)
+            .unwrap();
+        app.arrange_view_state.audio_events.select_many([clip]);
+        app
+    }
+
+    #[test]
+    fn multi_select_and_keyboard_navigation_are_separate_from_event_selection() {
+        let mut app = app_with_regions();
+        let events_before = app.arrange_view_state.audio_events.selected_ids();
+        app.open_region_editor();
+        let editor = app.region_editor.as_mut().expect("editor");
+        assert_eq!(editor.drafts.len(), 3);
+
+        // Plain click selects one row; additive clicks extend the set.
+        editor.toggle(0, false);
+        assert_eq!(editor.selected.iter().copied().collect::<Vec<_>>(), vec![0]);
+        editor.toggle(2, true);
+        assert_eq!(
+            editor.selected.iter().copied().collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        editor.select_all();
+        assert_eq!(editor.selected.len(), 3);
+        editor.clear_selection();
+        assert!(editor.selected.is_empty());
+
+        // Arrow keys move the cursor and can extend the selection.
+        editor.cursor = 0;
+        editor.move_cursor(1, false);
+        assert_eq!(editor.cursor, 1);
+        assert!(editor.selected.is_empty());
+        editor.move_cursor(1, true);
+        assert_eq!(editor.cursor, 2);
+        assert!(editor.selected.contains(&2));
+        editor.move_cursor(10, false);
+        assert_eq!(editor.cursor, 2, "the cursor stops at the last row");
+
+        // Deleting asks for confirmation first; only confirming marks drafts.
+        editor.toggle(1, true);
+        assert!(editor.selected.contains(&1));
+        editor.confirm_delete = true;
+        let removed = editor.mark_selected_removed();
+        assert_eq!(removed, 2);
+        assert!(editor.drafts[1].removed && editor.drafts[2].removed);
+        assert!(!editor.drafts[0].removed);
+        assert!(editor.selected.is_empty(), "the selection is consumed");
+
+        // Applying removes exactly the marked regions and leaves events alone.
+        let editor = app.region_editor.take().expect("editor");
+        app.apply_region_editor(&editor);
+        let names = app
+            .data
+            .project
+            .regions
+            .iter()
+            .map(|region| region.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Intro"]);
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            events_before,
+            "region selection never touches audio events"
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Edit Regions");
+    }
+
+    #[test]
+    fn the_confirmation_prompt_appears_in_the_window() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_regions();
+        app.region_editor = Some(RegionEditor {
+            confirm_delete: true,
+            selected: [0_usize, 1].into_iter().collect(),
+            ..RegionEditor::from_project(&app.data.project)
+        });
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_region_editor(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Delete 2 selected region(s)?"), "{joined}");
+        assert!(joined.contains("Keep"), "{joined}");
     }
 }
