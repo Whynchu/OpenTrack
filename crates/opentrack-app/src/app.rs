@@ -1188,6 +1188,8 @@ pub struct OpenTrackApp {
     gain_dialog: Option<f64>,
     /// Default fade length used by Fade In/Out, in seconds.
     default_fade_seconds: f64,
+    /// Beat where playback should stop itself, set by the Play until commands.
+    play_until: Option<f64>,
     auto_fades_settings_open: bool,
     /// Source the Media Pool should show and highlight, set by Find in Pool.
     pool_reveal: Option<PathBuf>,
@@ -2604,6 +2606,7 @@ impl OpenTrackApp {
             project_statistics_open: false,
             close_project_prompt: false,
             gain_dialog: None,
+            play_until: None,
             default_fade_seconds: creation
                 .storage
                 .and_then(|storage| eframe::get_value::<f64>(storage, "default-fade-seconds"))
@@ -3808,6 +3811,9 @@ impl OpenTrackApp {
             self.finish_recording();
         }
         self.data.transport.playing = playing;
+        if !playing {
+            self.play_until = None;
+        }
         if let Some(engine) = &self.audio_engine {
             engine.set_playing(playing);
         }
@@ -4193,6 +4199,57 @@ impl OpenTrackApp {
             response.as_ref(),
         );
         self.auto_fades_settings_open = open && self.auto_fades_settings_open;
+    }
+
+    /// Starts playback that stops itself at `target`.
+    fn play_until_beat(&mut self, target: f64, label: &str) {
+        let cursor = self.data.transport.position_beats.max(0.0);
+        if !target.is_finite() || target <= cursor + 1e-6 {
+            self.status_message = format!("{label} is not ahead of the transport cursor");
+            return;
+        }
+        self.play_until = Some(target);
+        self.set_transport_playing(true);
+        self.status_message = format!("Playing until {label} at beat {target:.3}");
+    }
+
+    /// Plays until the start or end of the selected events or MIDI part.
+    fn play_until_selection_edge(&mut self, end: bool) {
+        let Some((start, selection_end)) = self.selected_event_span() else {
+            self.status_message =
+                "Select an event or a MIDI part to play until its edge".to_owned();
+            return;
+        };
+        let (target, label) = if end {
+            (selection_end, "the selection end")
+        } else {
+            (start, "the selection start")
+        };
+        self.play_until_beat(target, label);
+    }
+
+    /// Plays until the next marker after the cursor.
+    fn play_until_next_marker(&mut self) {
+        let cursor = self.data.transport.position_beats;
+        let Some(marker) = self.data.project.next_marker_after(cursor, false).cloned() else {
+            self.status_message = "There is no marker after the cursor".to_owned();
+            return;
+        };
+        self.play_until_beat(marker.beat, "the next marker");
+    }
+
+    /// Stops playback at the Play-until target once the playhead reaches it.
+    fn advance_play_until(&mut self) {
+        let Some(target) = self.play_until else {
+            return;
+        };
+        if !self.data.transport.playing {
+            return;
+        }
+        if self.data.transport.position_beats >= target - 1e-6 {
+            self.set_transport_playing(false);
+            self.status_message = format!("Playback stopped at beat {target:.3}");
+        }
     }
 
     /// Plays from the start or end of the selected events or MIDI part.
@@ -11703,6 +11760,7 @@ impl OpenTrackApp {
         self.advance_transport_inner(ctx);
         self.advance_count_in();
         self.advance_punch();
+        self.advance_play_until();
         // Auto Select Events under Cursor follows a seek the user made, never
         // playback: stealing the selection every frame while playing would make
         // editing impossible.
@@ -12972,6 +13030,22 @@ impl OpenTrackApp {
                         self.play_from_selection_edge(true);
                         ui.close();
                     }
+                    if menu_command(ui, "Play until Selection Start", "", self.project_open)
+                        .clicked()
+                    {
+                        self.play_until_selection_edge(false);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Play until Selection End", "", self.project_open).clicked()
+                    {
+                        self.play_until_selection_edge(true);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Play until Next Marker", "", self.project_open).clicked()
+                    {
+                        self.play_until_next_marker();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -12979,9 +13053,6 @@ impl OpenTrackApp {
                             ("Post-roll from Selection End", ""),
                             ("Pre-roll to Selection Start", ""),
                             ("Pre-roll to Selection End", ""),
-                            ("Play until Selection Start", ""),
-                            ("Play until Selection End", ""),
-                            ("Play until Next Marker", ""),
                         ],
                     );
                     menu_command(ui, "Use Pre-roll", "", false);
@@ -28250,6 +28321,96 @@ mod transport_locate_tests {
                 .all(|track| !track.group_collapsed)
         );
         assert!(app.status_message.contains("Expanded 2 group track(s)"));
+    }
+}
+
+#[cfg(test)]
+mod play_until_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 4.0, 2.0)
+            .expect("clip");
+        app.data.project.add_marker(16.0, "Chorus").expect("marker");
+        app
+    }
+
+    #[test]
+    fn the_commands_choose_the_selection_and_marker_targets() {
+        let mut app = app();
+        let id = app.data.project.tracks[0].clips[0].id;
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.data.transport.position_beats = 0.0;
+
+        app.play_until_selection_edge(false);
+        assert_eq!(app.play_until, Some(4.0));
+        assert!(app.status_message.contains("selection start"));
+
+        app.data.transport.position_beats = 0.0;
+        app.play_until_selection_edge(true);
+        // Two seconds at 120 BPM is four beats after the start.
+        assert_eq!(app.play_until, Some(8.0));
+        assert!(app.status_message.contains("selection end"));
+
+        app.data.transport.position_beats = 0.0;
+        app.play_until_next_marker();
+        assert_eq!(app.play_until, Some(16.0));
+        assert!(app.status_message.contains("next marker"));
+    }
+
+    #[test]
+    fn missing_targets_and_a_past_target_report_instead_of_starting() {
+        let mut app = app();
+        app.data.transport.position_beats = 0.0;
+        app.play_until_selection_edge(false);
+        assert!(app.status_message.contains("Select an event"));
+        assert!(app.play_until.is_none());
+
+        app.play_until_next_marker();
+        assert_eq!(app.play_until, Some(16.0), "the marker is ahead");
+
+        // From past the marker there is nothing ahead to play until.
+        app.play_until = None;
+        app.data.transport.position_beats = 20.0;
+        app.play_until_next_marker();
+        assert!(app.status_message.contains("no marker after"));
+        assert!(app.play_until.is_none());
+
+        // A target behind the cursor is refused.
+        app.play_until_beat(10.0, "that beat");
+        assert!(app.status_message.contains("not ahead"));
+        assert!(app.play_until.is_none());
+    }
+
+    #[test]
+    fn playback_stops_itself_at_the_target() {
+        let mut app = app();
+        app.data.transport.playing = true;
+        app.data.transport.position_beats = 3.0;
+        app.play_until = Some(4.0);
+        app.advance_play_until();
+        assert!(app.data.transport.playing, "still before the target");
+        assert_eq!(app.play_until, Some(4.0));
+
+        app.data.transport.position_beats = 4.0;
+        app.advance_play_until();
+        assert!(!app.data.transport.playing, "stopped at the target");
+        assert!(app.play_until.is_none());
+        assert!(app.status_message.contains("stopped at beat 4.000"));
+
+        // A manual stop clears any leftover target.
+        app.data.transport.playing = true;
+        app.play_until = Some(9.0);
+        app.set_transport_playing(false);
+        assert!(app.play_until.is_none());
     }
 }
 

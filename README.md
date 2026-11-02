@@ -33,7 +33,7 @@ OpenTrack is an early prototype under active development. Its features are still
 
 ### What works today
 
-- **Arranging:** audio, MIDI, instrument and group tracks; transport and cycle playback; bar/beat/quantize snapping plus snapping to event edges or the cursor; zoom commands; follow-playhead scrolling; markers with next/previous navigation and a marker list; event nudge, edge nudge, split at cursor or at both locators, glue, range delete and crossfades; MIDI part split and merge; bounded undo/redo with an undo-history window.
+- **Arranging:** audio, MIDI, instrument and group tracks; transport and cycle playback, including play-from and play-until selection/marker commands; bar/beat/quantize snapping plus snapping to event edges or the cursor; zoom commands; follow-playhead scrolling; markers with next/previous navigation and a marker list; event nudge, edge nudge, split at cursor or at both locators, glue, range delete and crossfades; MIDI part split and merge; bounded undo/redo with an undo-history window.
 - **Recording:** audio and MIDI capture; punch in/out driven by the locators; per-track input monitoring (Off, Auto while armed, On); each loop pass recorded to its own take lane; a metronome with a per-beat accent pattern and a count-in.
 - **Media:** imported WAVs copied into the project; media pool; consolidation into the project folder; missing-media relink; unused and missing pool cleanup; several timestamped recovery points.
 - **Mixing:** Mixer and Channel Settings; input gain and metering; 32-band static and dynamic EQ; live spectrum and tonal-reference analysis; insert rack; up to 24 sends per channel with typed routing.
@@ -50,7 +50,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Automation coverage:** input/output-bus automation and its Write controls are missing; track automation still needs live-device testing.
 - **Routing:** device-bus sends and wider physical channel maps are open. Track and group sends and typed routing pass offline checks and still need live review.
 - **Interchange:** CPR is inspection-only; a real adapter waits for sample files. Other DAW formats are future work. Authored MIDI fixtures pass; comparison with DAW-produced MIDI files remains.
-- **Interface completion:** 116 menu entries are still shown disabled and 146 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
+- **Interface completion:** 113 menu entries are still shown disabled and 146 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
 - **Linux plug-ins:** VST3 editor embedding on Linux is not implemented.
 - **Not available:** video, surround, score editing, macOS and browser builds, and a command-line or MCP interface. Plug-in compatibility and recovery behavior need continued verification.
 

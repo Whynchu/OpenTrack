@@ -187,6 +187,13 @@ and measured numbers.
    playback, reporting when nothing is selected. 2 app tests. Disabled entries
    119 -> 116.
 
+23. **Play until Selection Start/End and Play until Next Marker.**
+   *Delivered.* Transport > Play until... starts playback with a transient stop
+   target; `advance_play_until` stops the transport when the playhead reaches it,
+   and any manual stop clears the target. Targets behind the cursor, a missing
+   selection and a missing marker report instead of starting. 3 app tests.
+   Disabled entries 116 -> 113.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded
