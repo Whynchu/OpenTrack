@@ -107,6 +107,14 @@ and measured numbers.
    out-of-range values are refused without editing. 2 app tests. Shortcut
    coverage 124 -> 128.
 
+12. **Paste Time.** *Delivered.* Ctrl+Shift+V computes the clipboard's span,
+   ripple-inserts that span at the cursor through `Project::insert_silence_at`,
+   then pastes the clipboard there as one labelled undo step ("Paste Time"). It
+   refuses when a locked event crosses the cursor and leaves the project
+   unchanged. The paste destination logic is now a shared `build_paste` used by
+   the ordinary, at-origin and time pastes. 2 app tests. Shortcut coverage
+   128 -> 129.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

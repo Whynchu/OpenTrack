@@ -6825,6 +6825,7 @@ impl OpenTrackApp {
             }
             "file.save_new_version" => self.save_new_project_version(),
             "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
+            "edit.paste_time" => self.paste_time(),
             "devices.vst_instruments" => {
                 self.track_add_dialog = Some(TrackAddDialog {
                     kind: TrackKind::Instrument,
@@ -27862,6 +27863,7 @@ mod keyboard_coverage_tests {
             "zoom.zoom_to_event",
             "edit.split_range",
             "edit.paste_at_origin",
+            "edit.paste_time",
             "edit.insert_silence",
             "edit.cut_time",
             "edit.delete_time",

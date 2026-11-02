@@ -1664,9 +1664,102 @@ impl OpenTrackApp {
             self.status_message = "Stop recording before pasting audio events".into();
             return;
         }
+        let paste = match self.build_paste(base_beats) {
+            Ok(paste) => paste,
+            Err(message) => {
+                self.status_message = message;
+                return;
+            }
+        };
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Undo history is unavailable for this project size".into();
+            return;
+        }
+        let Some(new_ids) = self.data.project.paste_audio_clips(&paste) else {
+            self.status_message = "Could not paste the selected audio events".into();
+            return;
+        };
+        self.arrange_view_state.audio_events.select_many(new_ids);
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Pasted {} audio event(s); Undo restores the previous arrangement",
+            paste.len()
+        );
+    }
+
+    /// Pastes the clipboard at the cursor and inserts its length first.
+    ///
+    /// The ripple and the paste are one undo step: the material after the cursor
+    /// moves to make room, and the copied events land at the cursor rather than
+    /// over what was already there.
+    pub(super) fn paste_time(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before pasting audio events".into();
+            return;
+        }
         let Some(clipboard) = self.audio_event_clipboard.clone() else {
             self.status_message = "Copy audio events before pasting".into();
             return;
+        };
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        let span = clipboard
+            .items
+            .iter()
+            .map(|item| item.clip.start_beats + item.clip.duration_seconds * tempo / 60.0)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - clipboard.anchor_beat;
+        if !span.is_finite() || span <= 0.0 {
+            self.status_message = "The copied events have no length to paste".into();
+            return;
+        }
+        let base = self.data.transport.position_beats.max(0.0);
+        let paste = match self.build_paste(base) {
+            Ok(paste) => paste,
+            Err(message) => {
+                self.status_message = message;
+                return;
+            }
+        };
+        let mut candidate = self.data.project.clone();
+        if candidate.insert_silence_at(base, span).is_none()
+            && has_content_overlapping_or_after(&candidate, base)
+        {
+            self.status_message = "Cannot paste time: a locked event crosses the cursor".into();
+            return;
+        }
+        let Some(new_ids) = candidate.paste_audio_clips(&paste) else {
+            self.status_message = "Could not paste the selected audio events".into();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Undo history is unavailable for this project size".into();
+            return;
+        }
+        self.project_history.label_next("Paste Time");
+        self.data.project = candidate;
+        self.arrange_view_state.audio_events.select_many(new_ids);
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Inserted {span:.3} beat(s) and pasted {} audio event(s); Undo restores both",
+            paste.len()
+        );
+    }
+
+    /// Resolves the clipboard's destinations for a paste based at `base_beats`.
+    fn build_paste(&self, base_beats: f64) -> Result<Vec<(usize, AudioClip)>, String> {
+        let Some(clipboard) = self.audio_event_clipboard.as_ref() else {
+            return Err("Copy audio events before pasting".into());
         };
         let selected_track = self
             .data
@@ -1702,6 +1795,9 @@ impl OpenTrackApp {
                 .map(|track| track.id)
                 .collect::<Vec<_>>()
         });
+        if target_group_id.is_some() && group_destinations.as_ref().is_none_or(Vec::is_empty) {
+            return Err("The destination group has no audio tracks".into());
+        }
         let anchor_index = selected_track
             .filter(|track| track.kind == TrackKind::Audio)
             .and_then(|track| {
@@ -1718,10 +1814,6 @@ impl OpenTrackApp {
                     .iter()
                     .position(|track| track.id == clipboard.anchor_track_id)
             });
-        if target_group_id.is_some() && group_destinations.as_ref().is_none_or(Vec::is_empty) {
-            self.status_message = "The destination group has no audio tracks".into();
-            return;
-        }
         let Some(anchor_index) = anchor_index.or_else(|| {
             group_destinations
                 .as_ref()
@@ -1734,16 +1826,13 @@ impl OpenTrackApp {
                         .position(|t| t.id == *track_id)
                 })
         }) else {
-            self.status_message = "Choose an audio track to paste onto".into();
-            return;
+            return Err("Choose an audio track to paste onto".into());
         };
         let mut paste = Vec::with_capacity(clipboard.items.len());
         for item in &clipboard.items {
             let destination_track_id = if let Some(destinations) = &group_destinations {
                 let Some(track_id) = destinations.get(item.track_offset) else {
-                    self.status_message =
-                        "The destination group does not have enough audio tracks".into();
-                    return;
+                    return Err("The destination group does not have enough audio tracks".into());
                 };
                 Some(*track_id)
             } else {
@@ -1759,44 +1848,24 @@ impl OpenTrackApp {
                 })
                 .or_else(|| anchor_index.checked_add(item.track_offset))
             else {
-                self.status_message =
-                    "The selected destination tracks do not match the copied events".into();
-                return;
+                return Err(
+                    "The selected destination tracks do not match the copied events".into(),
+                );
             };
             let Some(track) = self.data.project.tracks.get(track_index) else {
-                self.status_message =
-                    "The selected destination tracks do not match the copied events".into();
-                return;
+                return Err(
+                    "The selected destination tracks do not match the copied events".into(),
+                );
             };
             if track.kind != TrackKind::Audio || track.audio_channels != item.channels {
-                self.status_message =
-                    "Paste requires audio tracks with matching channel widths".into();
-                return;
+                return Err("Paste requires audio tracks with matching channel widths".into());
             }
             let mut clip = item.clip.clone();
             clip.start_beats =
                 base_beats.max(0.0) + (item.clip.start_beats - clipboard.anchor_beat);
             paste.push((track_index, clip));
         }
-        if !self
-            .project_history
-            .begin(&self.data.project, self.modified)
-        {
-            self.status_message = "Undo history is unavailable for this project size".into();
-            return;
-        }
-        let Some(new_ids) = self.data.project.paste_audio_clips(&paste) else {
-            self.status_message = "Could not paste the selected audio events".into();
-            return;
-        };
-        self.arrange_view_state.audio_events.select_many(new_ids);
-        self.project_history.commit_after_frame = true;
-        self.rebuild_audio_plan();
-        self.mark_modified();
-        self.status_message = format!(
-            "Pasted {} audio event(s); Undo restores the previous arrangement",
-            paste.len()
-        );
+        Ok(paste)
     }
 }
 
@@ -2153,6 +2222,28 @@ fn cursor(tool: Tool) -> egui::CursorIcon {
         _ => egui::CursorIcon::ResizeHorizontal,
     }
 }
+/// True when anything on the timeline crosses or follows `beat`.
+///
+/// A crossing event matters as much as a later one: inserting time through it
+/// splits it, so a locked crossing event must block the ripple.
+fn has_content_overlapping_or_after(project: &Project, beat: f64) -> bool {
+    let tempo = project.tempo_bpm.max(1.0);
+    project.tracks.iter().any(|track| {
+        track.clips.iter().any(|clip| {
+            clip.start_beats >= beat - 1e-9
+                || clip.start_beats + clip.duration_seconds * tempo / 60.0 > beat + 1e-9
+        }) || track.midi_parts.iter().any(|part| {
+            part.start_beats >= beat - 1e-9 || part.start_beats + part.duration_beats > beat + 1e-9
+        }) || track
+            .automation_lanes
+            .iter()
+            .any(|lane| lane.points.iter().any(|point| point.beat >= beat - 1e-9))
+    }) || project
+        .markers
+        .iter()
+        .any(|marker| marker.beat >= beat - 1e-9)
+}
+
 fn snap(value: f64, grid: Option<f64>) -> f64 {
     grid.map_or(value.max(0.0), |step| {
         crate::timeline::snap_beats_to_grid(value, step)
@@ -4469,6 +4560,105 @@ mod split_selection_tests {
         app.glue_selected_audio_events();
         assert!(app.status_message.contains("contiguous pieces"));
         assert_eq!(app.data.project.tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn paste_time_makes_room_then_pastes_as_one_undo_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        // The source event is two seconds (four beats); a later event marks the
+        // material that must move out of the way.
+        let source = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("source.wav"), 0.0, 2.0)
+            .unwrap();
+        let later = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("later.wav"), 8.0, 2.0)
+            .unwrap();
+        app.arrange_view_state.audio_events.select_many([source]);
+        app.copy_selected_audio_events();
+        // The cursor sits in the gap between the source and the later event, so
+        // only the later event has to move.
+        app.data.transport.position_beats = 6.0;
+        app.project_history.clear();
+
+        app.paste_time();
+        assert!(app.status_message.contains("Inserted 4.000 beat(s)"));
+        let mut starts = app.data.project.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| {
+                (
+                    clip.start_beats,
+                    clip.source_path.to_string_lossy().into_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        starts.sort_by(|left, right| left.0.total_cmp(&right.0));
+        // The source stays at 0; the copy lands at the cursor (6..10); the later
+        // event moved from 8..12 to 12..16 to make room.
+        assert_eq!(starts[0], (0.0, "source.wav".to_owned()));
+        assert_eq!(starts[1], (6.0, "source.wav".to_owned()));
+        assert_eq!(starts[2], (12.0, "later.wav".to_owned()));
+        assert!(
+            starts
+                .iter()
+                .any(|(start, path)| *start == 12.0 && path == "later.wav")
+        );
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .any(|clip| clip.id == later && (clip.start_beats - 12.0).abs() < 1e-9)
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Paste Time");
+
+        // Undo restores the single-step arrangement.
+        let restored = app
+            .project_history
+            .undo(&app.data.project)
+            .expect("undo paste time");
+        let starts = restored.tracks[0]
+            .clips
+            .iter()
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec![0.0, 8.0]);
+    }
+
+    #[test]
+    fn paste_time_refuses_an_empty_clipboard_and_a_locked_crossing() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        app.paste_time();
+        assert!(app.status_message.contains("Copy audio events"));
+
+        let clip = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        app.arrange_view_state.audio_events.select_many([clip]);
+        app.copy_selected_audio_events();
+        app.data.project.set_audio_clips_locked(&[clip], true);
+        app.data.transport.position_beats = 1.0;
+        let before = app.data.project.clone();
+        app.paste_time();
+        assert!(
+            app.status_message.contains("locked event crosses"),
+            "status was: {}",
+            app.status_message
+        );
+        assert_eq!(app.data.project, before);
     }
 
     #[test]
