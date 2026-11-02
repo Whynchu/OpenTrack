@@ -1269,6 +1269,8 @@ pub struct OpenTrackApp {
     retrospective: retrospective::Capture,
     /// Direct Offline Processing draft for one event's chain.
     offline_chain_draft: Option<offline_processing::ChainDraft>,
+    /// Running offline chain render.
+    offline_chain_task: Option<offline_processing::ChainRenderTask>,
     /// On-screen MIDI keyboard: open state, base octave and held keys.
     virtual_keyboard_open: bool,
     virtual_keyboard_octave: u8,
@@ -2742,6 +2744,7 @@ impl OpenTrackApp {
             tempo_editor: None,
             retrospective: retrospective::Capture::default(),
             offline_chain_draft: None,
+            offline_chain_task: None,
             virtual_keyboard_open: false,
             virtual_keyboard_octave: 3,
             virtual_keyboard_held: std::collections::BTreeSet::new(),
@@ -4299,6 +4302,7 @@ impl OpenTrackApp {
         self.tempo_editor = None;
         self.retrospective.clear();
         self.offline_chain_draft = None;
+        self.offline_chain_task = None;
         self.drum_map_setup = None;
         self.drum_editor_open = false;
         self.drum_editor_drag = None;
@@ -19055,6 +19059,7 @@ impl eframe::App for OpenTrackApp {
         self.poll_audio_export_task();
         self.poll_track_archive_task();
         self.poll_track_archive_import();
+        self.poll_offline_chain();
         self.poll_bounce_task();
         self.poll_midi_file_task();
         self.show_midi_export_dialog(&ctx);

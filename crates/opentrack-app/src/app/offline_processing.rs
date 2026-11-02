@@ -50,7 +50,14 @@ fn file_seconds(path: &Path) -> Result<f64, String> {
 
 impl OpenTrackApp {
     /// Bakes one event's offline chain into new media as one history step.
+    ///
+    /// The render runs on a worker thread so a long file cannot stall the frame;
+    /// the project is only touched when the result arrives.
     pub(super) fn apply_offline_chain(&mut self, clip_id: u64) {
+        if self.offline_chain_task.is_some() {
+            self.status_message = "An offline chain is already rendering".to_owned();
+            return;
+        }
         if self.is_recording() {
             self.status_message = "Stop recording before processing offline".to_owned();
             return;
@@ -84,62 +91,106 @@ impl OpenTrackApp {
                 "Save this project into its folder before processing offline".to_owned();
             return;
         };
-        let subfolder = self.pool_import_subfolder();
         let chain = clip.offline_chain.clone();
         let source = clip.source_path.clone();
         let offset = clip.source_offset_seconds;
         let duration = clip.duration_seconds;
         let name = clip.name.clone();
+        let status_name = name.clone();
         let factor = duration_factor(&chain);
-        let mut staging = Staging {
-            files: Vec::new(),
-            directory: root.clone(),
-        };
+        let subfolder = self.pool_import_subfolder();
+        let steps = chain.len() as u64;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::Mutex::new((0_u64, steps)));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_cancel = std::sync::Arc::clone(&cancel);
+        let worker_progress = std::sync::Arc::clone(&progress);
+        let spawned = std::thread::Builder::new()
+            .name("opentrack-offline-chain".to_owned())
+            .spawn(move || {
+                let result = render_chain(
+                    &chain,
+                    &source,
+                    offset,
+                    duration,
+                    &name,
+                    &root,
+                    &subfolder,
+                    &worker_cancel,
+                    &worker_progress,
+                );
+                let _ = sender.send(result);
+            });
+        if spawned.is_err() {
+            self.status_message = "Could not start the offline render worker".to_owned();
+            return;
+        }
+        self.offline_chain_task = Some(ChainRenderTask {
+            clip_id,
+            steps,
+            factor,
+            duration,
+            receiver,
+            cancel,
+            progress,
+        });
+        self.status_message =
+            format!("Rendering {steps} offline processor(s) for {status_name}...");
+    }
 
-        let mut current = source.clone();
-        let mut current_offset = offset;
-        let mut current_duration = duration;
-        let mut staged_media = false;
-        for (index, process) in chain.iter().enumerate() {
-            let destination =
-                match staging.path_for(&root, &subfolder, &format!("{name} step{}", index + 1)) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        staging.clean();
-                        self.status_message = error;
-                        return;
-                    }
-                };
-            let step = if staged_media {
-                let seconds = match file_seconds(&current) {
-                    Ok(seconds) => seconds,
-                    Err(error) => {
-                        staging.clean();
-                        self.status_message = error;
-                        return;
-                    }
-                };
-                (0.0, seconds)
-            } else {
-                (current_offset, current_duration)
-            };
-            let result = run_processor(process, &current, step.0, step.1, &destination, &staging);
-            if let Err(error) = result {
-                staging.clean();
-                self.status_message =
-                    format!("Offline processing failed at {}: {error}", process.label());
+    /// Polls the chain renderer and publishes a complete result.
+    pub(super) fn poll_offline_chain(&mut self) {
+        let Some(task) = &self.offline_chain_task else {
+            return;
+        };
+        let (done, total) = task.progress.lock().map(|state| *state).unwrap_or((0, 0));
+        let result = match task.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if total > 0 {
+                    self.status_message =
+                        format!("Rendering offline chain: stage {done} of {total}");
+                }
                 return;
             }
-            current = destination;
-            current_offset = 0.0;
-            current_duration = step.1;
-            staged_media = true;
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Offline render stopped unexpectedly".to_owned())
+            }
+        };
+        let task = self.offline_chain_task.take().expect("the task is present");
+        match result {
+            Ok(path) => self.publish_offline_chain(
+                task.clip_id,
+                path,
+                task.factor,
+                task.duration,
+                task.steps,
+            ),
+            Err(error) => self.status_message = error,
         }
+    }
 
-        let audio = match AudioSource::open(&current) {
+    /// Cancels a running chain render.
+    pub(super) fn cancel_offline_chain(&mut self) {
+        if let Some(task) = self.offline_chain_task.take() {
+            task.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.status_message = "Cancelling the offline render...".to_owned();
+        }
+    }
+
+    fn publish_offline_chain(
+        &mut self,
+        clip_id: u64,
+        path: PathBuf,
+        factor: f64,
+        duration: f64,
+        steps: u64,
+    ) {
+        let audio = match AudioSource::open(&path) {
             Ok(audio) => audio,
             Err(error) => {
-                staging.clean();
+                let _ = std::fs::remove_file(&path);
                 self.status_message = format!("Could not open the processed audio: {error}");
                 return;
             }
@@ -149,7 +200,7 @@ impl OpenTrackApp {
             .project_history
             .begin(&self.data.project, self.modified)
         {
-            staging.clean();
+            let _ = std::fs::remove_file(&path);
             self.status_message = "Cannot process offline: undo snapshot is unavailable".to_owned();
             return;
         }
@@ -162,7 +213,7 @@ impl OpenTrackApp {
             .flat_map(|track| track.clips.iter_mut())
             .find(|clip| clip.id == clip_id)
         {
-            clip.source_path = current.clone();
+            clip.source_path = path.clone();
             clip.source_offset_seconds = 0.0;
             clip.duration_seconds = duration * factor;
             clip.offline_chain.clear();
@@ -173,15 +224,99 @@ impl OpenTrackApp {
                 .fade_out_seconds
                 .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
         }
-        self.data.audio_sources.insert(current.clone(), audio);
+        self.data.audio_sources.insert(path.clone(), audio);
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = format!(
-            "Applied {} offline processor(s) to {name}; Undo restores the original",
-            chain.len()
+            "Applied {steps} offline processor(s) into {}; Undo restores the original",
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
         );
     }
+}
+
+/// A running chain render, cancelled when dropped.
+pub(super) struct ChainRenderTask {
+    clip_id: u64,
+    steps: u64,
+    factor: f64,
+    duration: f64,
+    receiver: std::sync::mpsc::Receiver<Result<PathBuf, String>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    progress: std::sync::Arc<std::sync::Mutex<(u64, u64)>>,
+}
+
+impl Drop for ChainRenderTask {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Runs every stage of the chain and returns the final file.
+fn render_chain(
+    chain: &[OfflineProcess],
+    source: &Path,
+    offset: f64,
+    duration: f64,
+    name: &str,
+    root: &Path,
+    subfolder: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &std::sync::Mutex<(u64, u64)>,
+) -> Result<PathBuf, String> {
+    let mut staging = Staging {
+        files: Vec::new(),
+        directory: root.to_path_buf(),
+    };
+    let mut current = source.to_path_buf();
+    let mut current_offset = offset;
+    let mut current_duration = duration;
+    let mut staged_media = false;
+    for (index, process) in chain.iter().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            staging.clean();
+            return Err("Offline chain render cancelled".to_owned());
+        }
+        let destination =
+            match staging.path_for(root, subfolder, &format!("{name} step{}", index + 1)) {
+                Ok(path) => path,
+                Err(error) => {
+                    staging.clean();
+                    return Err(error);
+                }
+            };
+        let step = if staged_media {
+            let seconds = match file_seconds(&current) {
+                Ok(seconds) => seconds,
+                Err(error) => {
+                    staging.clean();
+                    return Err(error);
+                }
+            };
+            (0.0, seconds)
+        } else {
+            (current_offset, current_duration)
+        };
+        if let Err(error) = run_processor(process, &current, step.0, step.1, &destination, &staging)
+        {
+            staging.clean();
+            return Err(format!(
+                "Offline processing failed at {}: {error}",
+                process.label()
+            ));
+        }
+        current = destination;
+        current_offset = 0.0;
+        current_duration = step.1;
+        staged_media = true;
+        if let Ok(mut state) = progress.lock() {
+            state.0 = (index as u64 + 1).min(state.1);
+        }
+    }
+    Ok(current)
 }
 
 /// Runs one processor stage, writing `destination`.
@@ -567,6 +702,21 @@ mod tests {
         std::fs::write(path, bytes).expect("wav");
     }
 
+    /// Runs a chain and waits for the background worker to publish.
+    fn run_chain(app: &mut OpenTrackApp, clip: u64) {
+        use std::time::{Duration, Instant};
+        app.apply_offline_chain(clip);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.offline_chain_task.is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.poll_offline_chain();
+        }
+        assert!(
+            app.offline_chain_task.is_none(),
+            "the offline render finished"
+        );
+    }
+
     fn app_with_clip(
         source: &std::path::Path,
         duration: f64,
@@ -621,7 +771,7 @@ mod tests {
             .expect("chain");
         // A locked event keeps its chain but refuses to bake it.
         app.data.project.set_audio_clips_locked(&[second], true);
-        app.apply_offline_chain(second);
+        run_chain(&mut app, second);
         assert!(
             app.status_message
                 .contains("locked event refuses offline processing")
@@ -629,8 +779,8 @@ mod tests {
 
         // An unlock lets it bake, and each event keeps its own result.
         app.data.project.set_audio_clips_locked(&[second], false);
-        app.apply_offline_chain(first);
-        app.apply_offline_chain(second);
+        run_chain(&mut app, first);
+        run_chain(&mut app, second);
         let clips = &app.data.project.tracks[0].clips;
         assert_eq!(clips.len(), 2);
         assert!(clips.iter().all(|clip| clip.offline_chain.is_empty()));
@@ -764,7 +914,7 @@ mod tests {
         );
 
         // Applying the saved chain bakes it as its own step.
-        app.apply_offline_chain(clip);
+        run_chain(&mut app, clip);
         assert!(
             app.data
                 .project
@@ -776,6 +926,30 @@ mod tests {
             app.status_message
                 .contains("Applied 2 offline processor(s)")
         );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn a_cancelled_chain_render_publishes_nothing() {
+        let source_root =
+            std::env::temp_dir().join(format!("opentrack-offline-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&source_root);
+        std::fs::create_dir_all(&source_root).expect("src");
+        let source = source_root.join("flat.wav");
+        write_flat_wav(&source, 24_000, 0.25);
+        let (mut app, clip, root) = app_with_clip(&source, 0.5, "cancel");
+        app.data
+            .project
+            .set_offline_chain(clip, vec![OfflineProcess::Reverse])
+            .expect("chain");
+        let before = app.data.project.clone();
+        app.apply_offline_chain(clip);
+        // Cancelling drops the task, which sets its cancel flag.
+        app.cancel_offline_chain();
+        assert!(app.offline_chain_task.is_none());
+        assert_eq!(app.data.project, before);
+        assert!(app.status_message.contains("Cancelling"));
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(source_root);
     }
@@ -797,7 +971,7 @@ mod tests {
                 vec![OfflineProcess::GainDb { db: -6.0 }, OfflineProcess::Reverse],
             )
             .expect("chain");
-        app.apply_offline_chain(clip);
+        run_chain(&mut app, clip);
 
         let processed = app.data.project.tracks[0].clips[0].clone();
         assert_ne!(processed.source_path, source);
@@ -836,7 +1010,7 @@ mod tests {
             .project
             .set_offline_chain(clip, vec![OfflineProcess::TimeStretch { percent: 200.0 }])
             .expect("chain");
-        app.apply_offline_chain(clip);
+        run_chain(&mut app, clip);
         assert!((app.data.project.tracks[0].clips[0].duration_seconds - 1.0).abs() < 1e-6);
 
         // A mono event refuses Stereo Flip, and nothing is published.
@@ -848,7 +1022,7 @@ mod tests {
         let imports_before = std::fs::read_dir(root.join("Audio").join("Imports"))
             .expect("imports")
             .count();
-        app.apply_offline_chain(clip);
+        run_chain(&mut app, clip);
         assert!(app.status_message.contains("failed at Stereo Flip"));
         assert_eq!(app.data.project, before);
         let imports_after = std::fs::read_dir(root.join("Audio").join("Imports"))
@@ -861,7 +1035,7 @@ mod tests {
             .project
             .set_offline_chain(clip, Vec::new())
             .expect("clear");
-        app.apply_offline_chain(clip);
+        run_chain(&mut app, clip);
         assert!(app.status_message.contains("Add at least one processor"));
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(source_root);
