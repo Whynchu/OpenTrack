@@ -9256,6 +9256,13 @@ impl OpenTrackApp {
                         self.split_audio_events_at_loop();
                         ui.close();
                     }
+                    let can_glue = self.project_open
+                        && !self.is_recording()
+                        && self.arrange_view_state.audio_events.selected_ids().len() >= 2;
+                    if menu_command(ui, "Glue", "", can_glue).clicked() {
+                        self.glue_selected_audio_events();
+                        ui.close();
+                    }
                     let can_delete_audio = self.project_open
                         && !self.is_recording()
                         && media_pool::selection_target(

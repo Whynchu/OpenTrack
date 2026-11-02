@@ -2352,6 +2352,92 @@ impl Project {
         changed
     }
 
+    /// Joins contiguous pieces of one source into a single event.
+    ///
+    /// Glue only claims what it can do without rendering: the pieces must sit on
+    /// one track, share the source file and gain, be contiguous in both timeline
+    /// beats and source seconds, and carry no Pitch & Time edit (whose analysis is
+    /// tied to the piece). Anything else is refused, because joining two different
+    /// sources would need a bounce, which is a separate command.
+    pub fn glue_audio_clips(&mut self, ids: &[u64]) -> Option<u64> {
+        if ids.len() < 2 {
+            return None;
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut track_index = None;
+        let mut pieces = Vec::new();
+        for (index, track) in self.tracks.iter().enumerate() {
+            if track.kind != TrackKind::Audio {
+                continue;
+            }
+            for clip in &track.clips {
+                if !selected.contains(&clip.id) {
+                    continue;
+                }
+                if track_index.is_some_and(|found| found != index) {
+                    return None;
+                }
+                track_index = Some(index);
+                pieces.push(clip.clone());
+            }
+        }
+        let track_index = track_index?;
+        if pieces.len() != ids.len() || pieces.iter().any(|clip| clip.locked) {
+            return None;
+        }
+        let source = pieces[0].source_path.clone();
+        let gain = pieces[0].gain;
+        if pieces.iter().any(|clip| {
+            clip.source_path != source
+                || clip.gain != gain
+                || clip.pitch_time.is_some()
+                // A split records the event's fades in the source-fade lineage;
+                // merging across a boundary would need that lineage recomputed,
+                // so faded pieces are refused instead of silently losing fades.
+                || !clip.source_fades.is_empty()
+                || clip.fade_in_seconds > 0.0
+                || clip.fade_out_seconds > 0.0
+        }) {
+            return None;
+        }
+        pieces.sort_by(|left, right| left.start_beats.total_cmp(&right.start_beats));
+        let tempo = self.tempo_bpm;
+        let beats = |clip: &AudioClip| clip.duration_seconds * tempo / 60.0;
+        for pair in pieces.windows(2) {
+            let (left, right) = (&pair[0], &pair[1]);
+            let contiguous_beats =
+                (left.start_beats + beats(left) - right.start_beats).abs() < 1e-6;
+            let contiguous_source = (left.source_offset_seconds + left.duration_seconds
+                - right.source_offset_seconds)
+                .abs()
+                < 1e-6;
+            if !contiguous_beats || !contiguous_source {
+                return None;
+            }
+        }
+        let first = pieces.first()?.clone();
+        let last = pieces.last()?;
+        let mut merged = first.clone();
+        merged.duration_seconds =
+            (last.start_beats + beats(last) - first.start_beats) * 60.0 / tempo;
+        // The outer fades belong to the joined event; inner ones disappear with
+        // the boundary they softened.
+        merged.fade_in_seconds = 0.0;
+        merged.fade_out_seconds = 0.0;
+        merged.source_fades.clear();
+        let keep = merged.id;
+        let track = &mut self.tracks[track_index];
+        track.clips.retain(|clip| !selected.contains(&clip.id));
+        track.clips.push(merged);
+        track
+            .clips
+            .sort_by(|left, right| left.start_beats.total_cmp(&right.start_beats));
+        if self.validate().is_err() {
+            return None;
+        }
+        Some(keep)
+    }
+
     /// Removes the material inside `[start, end)` from the given events.
     ///
     /// Each crossing event is split at both boundaries and the middle piece is
@@ -4742,6 +4828,127 @@ mod sample_edit_tests {
         assert_eq!(project.tracks[0].automation_lanes[0].points[0].beat, 4.0);
         assert_eq!(project.tracks[0].clips.len(), 0);
         assert_eq!(project.tracks[1].clips[0].id, id);
+    }
+
+    #[test]
+    fn gluing_contiguous_pieces_restores_one_event() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 4 s at 120 BPM is 8 beats; split it in the middle.
+        let original = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 4.0)
+            .unwrap();
+        let track_id = project.tracks[0].id;
+        let right = project
+            .split_audio_clip(track_id, original, 4.0)
+            .expect("split");
+        assert_eq!(project.tracks[0].clips.len(), 2);
+
+        let merged = project
+            .glue_audio_clips(&[original, right])
+            .expect("contiguous pieces glue");
+        assert_eq!(merged, original, "the earliest piece keeps the identity");
+        assert_eq!(project.tracks[0].clips.len(), 1);
+        let clip = &project.tracks[0].clips[0];
+        assert!((clip.start_beats - 0.0).abs() < 1e-9);
+        assert!((clip.duration_seconds - 4.0).abs() < 1e-9);
+        assert!((clip.source_offset_seconds - 0.0).abs() < 1e-9);
+        assert_eq!(clip.source_path, PathBuf::from("take.wav"));
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn glue_refuses_pieces_it_cannot_join_without_rendering() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        // A gap between the pieces.
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let apart = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 8.0, 2.0)
+            .unwrap();
+        assert_eq!(project.glue_audio_clips(&[first, apart]), None);
+
+        // Different sources.
+        let other = project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 2.0)
+            .unwrap();
+        assert_eq!(project.glue_audio_clips(&[first, other]), None);
+
+        // Different tracks.
+        let elsewhere = project
+            .add_audio_clip(1, PathBuf::from("a.wav"), 4.0, 2.0)
+            .unwrap();
+        assert_eq!(project.glue_audio_clips(&[first, elsewhere]), None);
+
+        // One piece is not a glue.
+        assert_eq!(project.glue_audio_clips(&[first]), None);
+
+        // A locked piece blocks the join.
+        let right = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 4.0, 2.0)
+            .unwrap();
+        project.set_audio_clips_locked(&[right], true);
+        assert_eq!(project.glue_audio_clips(&[first, right]), None);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn glue_refuses_faded_pieces_and_mismatched_gain() {
+        // A split of a faded event leaves its fades in the source-fade lineage,
+        // which glue cannot recompute, so it refuses instead of dropping them.
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let original = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 4.0)
+            .unwrap();
+        project.tracks[0].clips[0].fade_in_seconds = 0.25;
+        project.tracks[0].clips[0].fade_out_seconds = 0.5;
+        let track_id = project.tracks[0].id;
+        let right = project
+            .split_audio_clip(track_id, original, 4.0)
+            .expect("split");
+        assert_eq!(project.glue_audio_clips(&[original, right]), None);
+
+        // The same split without fades glues, and the result carries no fades.
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let plain = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 4.0)
+            .unwrap();
+        let track_id = project.tracks[0].id;
+        let right = project
+            .split_audio_clip(track_id, plain, 4.0)
+            .expect("split");
+        let merged = project.glue_audio_clips(&[plain, right]).expect("glue");
+        let clip = project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == merged)
+            .expect("merged");
+        assert_eq!(clip.fade_in_seconds, 0.0);
+        assert_eq!(clip.fade_out_seconds, 0.0);
+        assert!(clip.source_fades.is_empty());
+
+        // A gain difference would need rendering, so it is refused.
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let a = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 2.0)
+            .unwrap();
+        let b = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 4.0, 2.0)
+            .unwrap();
+        project.tracks[0].clips[1].gain = 0.5;
+        project.tracks[0].clips[1].source_offset_seconds = 2.0;
+        assert_eq!(project.glue_audio_clips(&[a, b]), None);
     }
 
     #[test]

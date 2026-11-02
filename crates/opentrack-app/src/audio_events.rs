@@ -529,6 +529,39 @@ impl OpenTrackApp {
             format!("Cropped {trimmed} audio event(s) to the loop range; Undo restores them");
     }
 
+    /// Joins contiguous pieces of one source into a single event.
+    pub(super) fn glue_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before gluing audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.len() < 2 {
+            self.status_message = "Select at least two audio events to glue".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let Some(merged) = candidate.glue_audio_clips(&ids) else {
+            self.status_message =
+                "Glue needs contiguous pieces of one un-faded source on the same track".to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot glue: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.data.project = candidate;
+        self.arrange_view_state.audio_events.select_many([merged]);
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "Glued the selected audio events; Undo splits them again".to_owned();
+    }
+
     /// Removes the loop range from the selected events, as one undo step.
     pub(super) fn delete_loop_range_from_selected_events(&mut self) {
         if self.is_recording() {
@@ -4148,6 +4181,56 @@ mod split_selection_tests {
             bytes.extend_from_slice(&(-value).to_le_bytes());
         }
         std::fs::write(path, bytes).expect("write wav");
+    }
+
+    #[test]
+    fn gluing_selected_pieces_is_one_undo_step_and_refuses_otherwise() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let original = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 4.0)
+            .unwrap();
+        let track_id = app.data.project.tracks[0].id;
+        let right = app
+            .data
+            .project
+            .split_audio_clip(track_id, original, 4.0)
+            .expect("split");
+        app.project_history.clear();
+
+        app.arrange_view_state
+            .audio_events
+            .select_many([original, right]);
+        app.glue_selected_audio_events();
+        assert_eq!(app.data.project.tracks[0].clips.len(), 1);
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            vec![original],
+            "the joined event is selected"
+        );
+        assert!(app.status_message.contains("Glued"));
+
+        // A single event is not glue, and two unrelated events are refused.
+        app.arrange_view_state.audio_events.select_many([original]);
+        app.glue_selected_audio_events();
+        assert!(app.status_message.contains("at least two"));
+
+        let apart = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 12.0, 2.0)
+            .unwrap();
+        app.arrange_view_state
+            .audio_events
+            .select_many([original, apart]);
+        app.glue_selected_audio_events();
+        assert!(app.status_message.contains("contiguous pieces"));
+        assert_eq!(app.data.project.tracks[0].clips.len(), 2);
     }
 
     #[test]

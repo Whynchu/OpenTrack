@@ -76,8 +76,12 @@ Still open from revision 1:
    audio event crossing either locator (an event spanning the whole loop becomes
    three), skipping locked events, and the Edit menu command is one undo step.
    2 core and 1 app tests.
-7. **Glue events.** Join adjacent or overlapping events on one track into a
-   single event that keeps both sources' audio readable.
+7. **Glue events.** *Delivered for what needs no rendering.*
+   `Project::glue_audio_clips` joins contiguous pieces of one source on one track:
+   same source file, equal gain, no Pitch & Time edit, no fade lineage, and
+   contiguous in both timeline beats and source seconds. The earliest piece keeps
+   the identity, the outer fades are zero, and Edit > Glue is one undo step.
+   Joining *different* sources would need a bounce, which is task 23.
 8. **Range delete and trim to range.** *Delete range delivered.*
    `Project::delete_range_from_audio_clips` removes `[start, end)` from the
    selected events: an event spanning the range keeps both outer parts, one that
