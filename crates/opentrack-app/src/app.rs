@@ -32468,6 +32468,26 @@ mod timecode_tests {
     }
 
     #[test]
+    fn the_second_ruler_reads_the_same_clock_at_any_sample_rate() {
+        // Bar 4 at 120 BPM is 16 beats = eight seconds, whatever the rate.
+        assert_eq!(ruler_label(4, 1, 4, 120.0, 44_100, 0.0), "00:08");
+        assert_eq!(ruler_label(4, 1, 4, 120.0, 96_000, 0.0), "00:08");
+        assert_eq!(
+            ruler_label(4, 2, 4, 120.0, 44_100, 0.0),
+            ruler_label(4, 2, 4, 120.0, 96_000, 0.0)
+        );
+        // Timecode with an offset is rate-independent too.
+        assert_eq!(ruler_label(4, 2, 4, 120.0, 44_100, 3600.0), "01:00:08:00");
+        assert_eq!(ruler_label(4, 2, 4, 120.0, 96_000, 3600.0), "01:00:08:00");
+        assert_eq!(ruler_label(4, 4, 4, 120.0, 44_100, 0.0), "00:00:08:00");
+        // Samples are the one format that must scale with the rate.
+        assert_eq!(ruler_label(4, 3, 4, 120.0, 44_100, 0.0), "352800");
+        assert_eq!(ruler_label(4, 3, 4, 120.0, 96_000, 0.0), "768000");
+        // Bars stay bars.
+        assert_eq!(ruler_label(4, 0, 4, 120.0, 48_000, 0.0), "5");
+    }
+
+    #[test]
     fn the_timecode_ruler_label_applies_the_project_offset() {
         // Timecode formats 2 and 4 carry the offset; bars and seconds do not.
         // Bar 2 is eight beats, which is four seconds at 120 BPM.
