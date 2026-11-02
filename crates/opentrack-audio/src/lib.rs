@@ -23,6 +23,7 @@ pub use pitch_render::{
 };
 pub mod plugins;
 mod recording;
+mod recording_recovery;
 mod spectrum;
 mod streaming;
 mod wav_export;
@@ -45,6 +46,7 @@ pub use recording::{
     AudioInputDevice, AudioInputFormat, AudioInputProbe, AudioMonitorBuffer, AudioRecordRoute,
     AudioRecorder, RecordingSummary,
 };
+pub use recording_recovery::{RecoveredTake, repair_take};
 pub use streaming::{
     AudioFileMetadata, AudioSource, PlaybackSource, StreamedWav, StreamingPlayback,
     audio_file_metadata,

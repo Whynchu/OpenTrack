@@ -34,6 +34,8 @@ mod project_controls;
 mod project_inspector;
 #[path = "project_rate.rs"]
 mod project_rate;
+#[path = "recording_recovery.rs"]
+mod recording_recovery;
 #[path = "recording_undo.rs"]
 mod recording_undo;
 #[path = "routing.rs"]
@@ -1158,6 +1160,7 @@ pub struct OpenTrackApp {
     project_open: bool,
     project_folder_managed: bool,
     project_folder_setup: Option<ProjectFolderSetup>,
+    recording_recovery: Option<RecordingRecoveryPrompt>,
     saved_project_fingerprint: Vec<u8>,
     saved_workspace_fingerprint: Vec<u8>,
     modified: bool,
@@ -1170,6 +1173,13 @@ pub struct OpenTrackApp {
     realtime_diagnostic_refreshed_at: Option<Instant>,
     realtime_diagnostics_open: bool,
     project_open_error: Option<String>,
+}
+
+/// Takes an interrupted recording left behind, awaiting a restore/discard choice.
+struct RecordingRecoveryPrompt {
+    project_root: std::path::PathBuf,
+    takes: Vec<recording_recovery::PendingTake>,
+    error: Option<String>,
 }
 
 struct RecordingSession {
@@ -2433,6 +2443,7 @@ impl OpenTrackApp {
             project_open: false,
             project_folder_managed: false,
             project_folder_setup: None,
+            recording_recovery: None,
             saved_project_fingerprint: Vec::new(),
             saved_workspace_fingerprint: Vec::new(),
             modified: false,
@@ -4164,6 +4175,39 @@ impl OpenTrackApp {
         }
         self.rebuild_audio_plan();
         self.mark_saved();
+        self.detect_interrupted_recording(path);
+    }
+
+    /// Offers to recover takes an abnormal exit left in the recording folder.
+    fn detect_interrupted_recording(&mut self, project_path: std::path::PathBuf) {
+        self.recording_recovery = None;
+        if !self.project_folder_managed {
+            return;
+        }
+        let Some(root) = project_path.parent() else {
+            return;
+        };
+        match recording_recovery::pending(root, &self.data.project) {
+            Ok(takes) if !takes.is_empty() => {
+                self.status_message = format!(
+                    "{} take(s) from an interrupted recording can be recovered",
+                    takes.len()
+                );
+                self.recording_recovery = Some(RecordingRecoveryPrompt {
+                    project_root: root.to_path_buf(),
+                    takes,
+                    error: None,
+                });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                self.recording_recovery = Some(RecordingRecoveryPrompt {
+                    project_root: root.to_path_buf(),
+                    takes: Vec::new(),
+                    error: Some(error),
+                });
+            }
+        }
     }
 
     fn save_project(&mut self) -> bool {
@@ -4326,6 +4370,235 @@ impl OpenTrackApp {
             }
             None => {}
         }
+    }
+
+    fn show_recording_recovery(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.recording_recovery.as_ref() else {
+            return;
+        };
+        let error = prompt.error.clone();
+        let mut decisions: Vec<(recording_recovery::PendingTake, bool)> = Vec::new();
+        let mut dismiss = false;
+        let mut open = true;
+        egui::Window::new("Recover Interrupted Recording")
+            .id(Id::new("recording-recovery"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(520.0);
+                if let Some(error) = error.as_ref() {
+                    ui.colored_label(theme::RECORD, error);
+                    ui.label("The recording journal could not be read, so nothing was changed.");
+                    if ui.button("Dismiss").clicked() {
+                        dismiss = true;
+                    }
+                    return;
+                }
+                ui.label(
+                    "OpenTrack stopped while recording. These takes are on disk but were never \
+                     added to the project.",
+                );
+                ui.label(
+                    "Restoring repairs the WAV header and places the take at its recorded \
+                     position. Discarding moves the file to Metadata/Recording/Discarded.",
+                );
+                ui.separator();
+                for take in &prompt.takes {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&take.file_name).strong());
+                        ui.label(format!(
+                            "{} · beat {:.2} · {:.1} MB",
+                            take.take.track_name,
+                            take.take.start_beats,
+                            take.bytes as f64 / (1024.0 * 1024.0)
+                        ));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        if ui.button("Restore").clicked() {
+                            decisions.push((take.clone(), true));
+                        }
+                        if ui.button("Discard").clicked() {
+                            decisions.push((take.clone(), false));
+                        }
+                    });
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Restore All").clicked() {
+                        for take in &prompt.takes {
+                            decisions.push((take.clone(), true));
+                        }
+                    }
+                    if ui.button("Discard All").clicked() {
+                        for take in &prompt.takes {
+                            decisions.push((take.clone(), false));
+                        }
+                    }
+                    if ui.button("Decide Later").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+
+        if dismiss || !open {
+            self.recording_recovery = None;
+            self.status_message = "Interrupted recording left in Audio/Recordings".to_owned();
+            return;
+        }
+        if decisions.is_empty() {
+            return;
+        }
+        for (take, restore) in decisions {
+            if restore {
+                if let Err(error) = self.restore_recovered_take(&take) {
+                    self.status_message = format!("Could not recover {}: {error}", take.file_name);
+                    continue;
+                }
+            } else if let Err(error) = self.discard_recovered_take(&take) {
+                self.status_message = format!("Could not discard {}: {error}", take.file_name);
+                continue;
+            }
+        }
+        self.refresh_recording_recovery();
+    }
+
+    /// Re-reads the journal so the dialog reflects what is left to decide.
+    fn refresh_recording_recovery(&mut self) {
+        let Some(prompt) = self.recording_recovery.as_mut() else {
+            return;
+        };
+        let root = prompt.project_root.clone();
+        match recording_recovery::pending(&root, &self.data.project) {
+            Ok(takes) if takes.is_empty() => self.recording_recovery = None,
+            Ok(takes) => {
+                if let Some(prompt) = self.recording_recovery.as_mut() {
+                    prompt.takes = takes;
+                }
+            }
+            Err(error) => {
+                if let Some(prompt) = self.recording_recovery.as_mut() {
+                    prompt.takes.clear();
+                    prompt.error = Some(error);
+                }
+            }
+        }
+    }
+
+    /// Repairs a crashed take and places it on its track as one undo step.
+    fn restore_recovered_take(
+        &mut self,
+        take: &recording_recovery::PendingTake,
+    ) -> Result<(), String> {
+        let repaired = opentrack_audio::repair_take(&take.take.path)?;
+        let source = AudioSource::open(&take.take.path)?;
+        let duration = source.duration_seconds();
+        if duration <= 0.0 {
+            return Err("the take contains no audio".to_owned());
+        }
+        self.project_history
+            .begin(&self.data.project, self.modified);
+        let project = &mut self.data.project;
+        let (track_index, note) = match project
+            .tracks
+            .iter()
+            .position(|track| track.id == take.take.track_id && track.kind == TrackKind::Audio)
+        {
+            Some(index) => (index, None),
+            None => match project
+                .tracks
+                .iter()
+                .position(|track| track.kind == TrackKind::Audio)
+            {
+                Some(index) => (
+                    index,
+                    Some(format!(
+                        "its original track {} no longer exists",
+                        take.take.track_name
+                    )),
+                ),
+                None => {
+                    project.add_track(TrackKind::Audio);
+                    let index = project.tracks.len() - 1;
+                    project.tracks[index].name = "Recovered Take".to_owned();
+                    (index, Some("a new audio track was created".to_owned()))
+                }
+            },
+        };
+        let track_name = project.tracks[track_index].name.clone();
+        if project
+            .add_audio_clip(
+                track_index,
+                take.take.path.clone(),
+                take.take.start_beats,
+                duration,
+            )
+            .is_none()
+        {
+            self.restore_after_failed_write();
+            return Err("the take could not be placed on a track".to_owned());
+        }
+        self.data
+            .audio_sources
+            .insert(take.take.path.clone(), source);
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.rebuild_audio_plan();
+        // The take now belongs to the project, so the journal entry is settled.
+        let journal_note = take
+            .take
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .and_then(|root| {
+                recording_recovery::settle(&root, &take.take.path)
+                    .err()
+                    .map(|error| format!("could not update the recording journal: {error}"))
+            });
+        let mut status = format!(
+            "Recovered {} ({duration:.2} s, {} frame(s)) on {track_name}",
+            take.file_name, repaired.frames
+        );
+        if repaired.repaired {
+            status.push_str("; its WAV header was rebuilt");
+        }
+        if let Some(note) = note {
+            status.push_str("; ");
+            status.push_str(&note);
+        }
+        if let Some(note) = journal_note {
+            status.push_str("; ");
+            status.push_str(&note);
+        }
+        self.status_message = status;
+        Ok(())
+    }
+
+    fn discard_recovered_take(
+        &mut self,
+        take: &recording_recovery::PendingTake,
+    ) -> Result<(), String> {
+        let root = self.recovery_root();
+        let moved = recording_recovery::discard_file(&root, &take.take.path)?;
+        recording_recovery::settle(&root, &take.take.path)?;
+        self.status_message = format!(
+            "Discarded {}; the file is kept at {}",
+            take.file_name,
+            moved.display()
+        );
+        Ok(())
+    }
+
+    fn recovery_root(&self) -> std::path::PathBuf {
+        self.recording_recovery
+            .as_ref()
+            .map(|prompt| prompt.project_root.clone())
+            .unwrap_or_default()
     }
 
     fn show_project_folder_setup(&mut self, ctx: &egui::Context) {
@@ -6486,6 +6759,20 @@ impl OpenTrackApp {
                 .iter()
                 .filter_map(|(_, _, route)| *route)
                 .collect();
+            // The journal is written before any file exists, so a crash during
+            // the take still leaves a record of what to recover.
+            let journal_takes = paths
+                .iter()
+                .cloned()
+                .zip(armed_audio_tracks.iter())
+                .map(|(path, (track_id, track_name, _))| {
+                    (path, *track_id, track_name.clone(), start_beats)
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = recording_recovery::begin(&project_root, &journal_takes) {
+                self.status_message = format!("Could not start audio recording: {error}");
+                return;
+            }
             self.device_test_active = false;
             self.audio_input_probe = None;
             if let Some(engine) = &self.audio_engine {
@@ -6502,6 +6789,7 @@ impl OpenTrackApp {
             ) {
                 Ok(recorder) => Some(recorder),
                 Err(error) => {
+                    let _ = recording_recovery::clear(&project_root);
                     self.status_message = format!("Could not start audio recording: {error}");
                     self.update_input_capture_state();
                     return;
@@ -6651,6 +6939,11 @@ impl OpenTrackApp {
             }
         };
         self.update_input_capture_state();
+        let project_root = recording_path
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf);
         let mut recorded_names = Vec::new();
         let mut recorded_paths = Vec::new();
         let mut issues = Vec::new();
@@ -6667,6 +6960,9 @@ impl OpenTrackApp {
             input_timestamp_errors = input_timestamp_errors.max(summary.input_timestamp_errors);
             if summary.frames_written == 0 {
                 let _ = std::fs::remove_file(&summary.path);
+                if let Some(root) = project_root.as_deref() {
+                    let _ = recording_recovery::settle(root, &summary.path);
+                }
                 continue;
             }
 
@@ -6710,6 +7006,11 @@ impl OpenTrackApp {
                 ));
                 continue;
             }
+            if let Some(root) = project_root.as_deref()
+                && let Err(error) = recording_recovery::settle(root, &summary.path)
+            {
+                issues.push(format!("could not update the recording journal: {error}"));
+            }
             recorded_paths.push(summary.path.clone());
             recorded_names.push(
                 summary
@@ -6730,10 +7031,8 @@ impl OpenTrackApp {
             return;
         }
 
-        let undo_root = recording_path
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
+        let undo_root = project_root
+            .as_ref()
             .map(|p| p.join("Metadata").join("Undo"))
             .unwrap_or_else(|| std::env::temp_dir().join("OpenTrack-Undo"));
         self.project_history
@@ -9359,6 +9658,7 @@ impl OpenTrackApp {
             || self.pending_track_delete_id.is_some()
             || self.project_rate_change.is_some()
             || self.project_folder_setup.is_some()
+            || self.recording_recovery.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -11641,6 +11941,7 @@ impl eframe::App for OpenTrackApp {
         self.show_media_operation_error(&ctx);
         self.show_audio_export(&ctx);
         self.show_project_folder_setup(&ctx);
+        self.show_recording_recovery(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -20358,6 +20659,173 @@ mod plugin_catalog_tests {
                 .expect("catalog round-trip");
         assert_eq!(restored_folders, folders);
         assert_eq!(restored_catalog, catalog);
+    }
+}
+
+#[cfg(test)]
+mod recording_recovery_tests {
+    use super::*;
+
+    /// Writes the exact state an abnormal exit leaves: a valid `fmt ` chunk, a
+    /// data chunk whose length still says zero, and the samples after it.
+    fn write_crashed_take(path: &Path, frames: usize) {
+        let channels: u16 = 2;
+        let sample_rate: u32 = 48_000;
+        let block_align = channels * 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&36_u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u16.to_le_bytes()); // IEEE float
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * u32::from(block_align)).to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&32_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        for index in 0..frames {
+            let value = (index as f32) / 48_000.0;
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&(-value).to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("write crashed take");
+    }
+
+    fn recovery_fixture(name: &str) -> (PathBuf, OpenTrackApp, recording_recovery::PendingTake) {
+        let root = std::env::temp_dir().join(format!(
+            "opentrack-recovery-app-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Audio").join("Recordings")).expect("recordings");
+        std::fs::create_dir_all(root.join("Metadata")).expect("metadata");
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project = Project::default();
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].name = "Audio 1".to_owned();
+        let track_id = app.data.project.tracks[0].id;
+
+        let path = root.join("Audio").join("Recordings").join("Take 001.wav");
+        write_crashed_take(&path, 24_000);
+        recording_recovery::begin(
+            &root,
+            &[(path.clone(), track_id, "Audio 1".to_owned(), 4.0)],
+        )
+        .expect("journal");
+        let takes = recording_recovery::pending(&root, &app.data.project).expect("pending");
+        assert_eq!(takes.len(), 1);
+        (root, app, takes.into_iter().next().expect("one take"))
+    }
+
+    #[test]
+    fn a_crashed_take_is_unreadable_until_recovery_repairs_it() {
+        let (root, _app, take) = recovery_fixture("unreadable");
+        assert!(
+            AudioSource::open(&take.take.path).is_err(),
+            "a header that was never finalized hides the audio, which is why recovery is needed"
+        );
+        let repaired = opentrack_audio::repair_take(&take.take.path).expect("repair");
+        assert!(repaired.repaired);
+        assert_eq!(repaired.frames, 24_000);
+        let source = AudioSource::open(&take.take.path).expect("readable after repair");
+        assert!((source.duration_seconds() - 0.5).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restoring_a_take_repairs_the_header_places_a_clip_and_clears_the_journal() {
+        let (root, mut app, take) = recovery_fixture("restore");
+        app.restore_recovered_take(&take).expect("restore");
+
+        let clips = &app.data.project.tracks[0].clips;
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].source_path, take.take.path);
+        assert!((clips[0].start_beats - 4.0).abs() < 1e-9);
+        assert!((clips[0].duration_seconds - 0.5).abs() < 1e-6);
+        assert!(
+            app.data.audio_sources.contains_key(&take.take.path),
+            "the restored take is ready to play without reopening the file"
+        );
+        assert!(app.modified);
+        assert!(
+            !recording_recovery::journal_path(&root).exists(),
+            "the journal is cleared once the take belongs to the project"
+        );
+        assert!(
+            !opentrack_audio::repair_take(&take.take.path)
+                .expect("repair again")
+                .repaired,
+            "the header is only rebuilt once"
+        );
+        assert!(app.status_message.contains("Recovered Take 001.wav"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restoring_reports_a_take_that_needs_a_new_track() {
+        let (root, mut app, take) = recovery_fixture("new-track");
+        app.data.project.tracks.clear();
+        app.restore_recovered_take(&take).expect("restore");
+
+        assert_eq!(app.data.project.tracks.len(), 1);
+        assert_eq!(app.data.project.tracks[0].name, "Recovered Take");
+        assert_eq!(app.data.project.tracks[0].clips.len(), 1);
+        assert!(app.status_message.contains("a new audio track was created"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discarding_a_take_keeps_the_file_outside_the_recording_folder() {
+        let (root, mut app, take) = recovery_fixture("discard");
+        app.recording_recovery = Some(RecordingRecoveryPrompt {
+            project_root: root.clone(),
+            takes: vec![take.clone()],
+            error: None,
+        });
+        app.discard_recovered_take(&take).expect("discard");
+
+        assert!(app.data.project.tracks[0].clips.is_empty());
+        assert!(!take.take.path.exists());
+        let discarded = root
+            .join("Metadata")
+            .join("Recording")
+            .join("Discarded")
+            .join("Take 001.wav");
+        assert!(
+            discarded.exists(),
+            "the audio is moved aside rather than destroyed"
+        );
+        assert!(!recording_recovery::journal_path(&root).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_recovery_prompt_only_lists_takes_that_need_a_decision() {
+        let (root, mut app, take) = recovery_fixture("prompt");
+        app.recording_recovery = Some(RecordingRecoveryPrompt {
+            project_root: root.clone(),
+            takes: vec![take.clone()],
+            error: None,
+        });
+        assert!(app.modal_dialog_open());
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 700.0))),
+                ..Default::default()
+            },
+            |_| app.show_recording_recovery(&ctx),
+        );
+        assert!(!output.shapes.is_empty(), "the prompt is drawn");
+        let _ = ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        output.textures_delta.clear();
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
