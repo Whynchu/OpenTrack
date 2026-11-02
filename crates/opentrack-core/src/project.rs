@@ -924,6 +924,66 @@ impl SourceFade {
         (up * down) as f32
     }
 }
+/// One built-in offline processor in an event's processing chain.
+///
+/// The chain describes intent; nothing is baked into the audio until the chain is
+/// applied. Only first-party processors are listed here, so a chain never depends
+/// on a third-party plug-in being installed.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "processor", rename_all = "snake_case")]
+pub enum OfflineProcess {
+    GainDb { db: f32 },
+    Normalize { target_dbfs: f32 },
+    Reverse,
+    RemoveDcOffset,
+    StereoFlip,
+    Resample { target_rate: u32 },
+    TimeStretch { percent: f32 },
+}
+
+/// Bound on processors in one event's offline chain.
+pub const MAX_OFFLINE_CHAIN: usize = 8;
+
+impl OfflineProcess {
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::GainDb { db } => db.is_finite() && (-60.0..=12.0).contains(db),
+            Self::Normalize { target_dbfs } => {
+                target_dbfs.is_finite() && (-60.0..=0.0).contains(target_dbfs)
+            }
+            Self::Reverse | Self::RemoveDcOffset | Self::StereoFlip => true,
+            Self::Resample { target_rate } => (8_000..=192_000).contains(target_rate),
+            Self::TimeStretch { percent } => {
+                percent.is_finite() && (25.0..=400.0).contains(percent)
+            }
+        }
+    }
+
+    /// Short label used by the processing list and menus.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::GainDb { .. } => "Gain",
+            Self::Normalize { .. } => "Normalize",
+            Self::Reverse => "Reverse",
+            Self::RemoveDcOffset => "Remove DC Offset",
+            Self::StereoFlip => "Stereo Flip",
+            Self::Resample { .. } => "Resample",
+            Self::TimeStretch { .. } => "Time Stretch",
+        }
+    }
+
+    /// One-line description with the parameters, for the chain list.
+    pub fn description(&self) -> String {
+        match self {
+            Self::GainDb { db } => format!("{db:+.1} dB"),
+            Self::Normalize { target_dbfs } => format!("{target_dbfs:.1} dBFS peak"),
+            Self::Resample { target_rate } => format!("{target_rate} Hz"),
+            Self::TimeStretch { percent } => format!("{percent:.0}%"),
+            _ => "no parameters".to_owned(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioClip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -950,6 +1010,9 @@ pub struct AudioClip {
     /// A locked event keeps playing but refuses move, trim, split and crop.
     #[serde(default)]
     pub locked: bool,
+    /// Ordered built-in processors waiting to be baked into the audio.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offline_chain: Vec<OfflineProcess>,
     /// Events sharing a group id move together, like one object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u64>,
@@ -3655,6 +3718,42 @@ impl Project {
         false
     }
 
+    /// Replaces one event's offline chain, validating the whole chain first.
+    pub fn set_offline_chain(
+        &mut self,
+        clip_id: u64,
+        chain: Vec<OfflineProcess>,
+    ) -> Result<(), &'static str> {
+        if chain.len() > MAX_OFFLINE_CHAIN {
+            return Err("an offline chain holds at most eight processors");
+        }
+        if !chain.iter().all(OfflineProcess::is_valid) {
+            return Err("an offline processor has unusable parameters");
+        }
+        let Some(clip) = self
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.clips.iter_mut())
+            .find(|clip| clip.id == clip_id)
+        else {
+            return Err("the event is no longer in the project");
+        };
+        if clip.locked {
+            return Err("a locked event refuses offline processing");
+        }
+        clip.offline_chain = chain;
+        Ok(())
+    }
+
+    /// The offline chain of one event, when it exists.
+    pub fn offline_chain_of(&self, clip_id: u64) -> Option<&[OfflineProcess]> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| clip.offline_chain.as_slice())
+    }
+
     /// Sets the selected events' gain from a decibel value.
     ///
     /// The linear result is clamped to the event-gain range (0 to 4.0, about
@@ -4542,6 +4641,7 @@ impl Project {
             gain: 1.0,
             muted: false,
             locked: false,
+            offline_chain: Vec::new(),
             group: None,
             take_group: None,
             take_active: true,
@@ -5422,6 +5522,11 @@ impl Project {
                 }
                 if !clip.gain.is_finite() || !(0.0..=4.0).contains(&clip.gain) {
                     return Err("audio event gain must be between 0.0 and 4.0");
+                }
+                if clip.offline_chain.len() > MAX_OFFLINE_CHAIN
+                    || !clip.offline_chain.iter().all(OfflineProcess::is_valid)
+                {
+                    return Err("an offline processing chain is invalid or too long");
                 }
                 if let Some(edit) = &clip.pitch_time {
                     if !edit.validate(edit.analysis.source_duration_seconds) {
@@ -7504,6 +7609,84 @@ mod sample_edit_tests {
             r#"{"rows":[{"pitch":36,"name":"Kick"},{"pitch":36,"name":"Snare"}]}"#,
         )
         .expect("decode malformed");
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn an_event_offline_chain_is_bounded_validated_and_opt_in() {
+        use crate::project::{MAX_OFFLINE_CHAIN, OfflineProcess};
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("take.wav"), 0.0, 2.0)
+            .expect("clip");
+        // New events start with no chain, so nothing is baked by surprise.
+        assert!(project.offline_chain_of(clip).expect("clip").is_empty());
+
+        let chain = vec![
+            OfflineProcess::GainDb { db: -3.0 },
+            OfflineProcess::Normalize { target_dbfs: -0.1 },
+            OfflineProcess::Reverse,
+            OfflineProcess::RemoveDcOffset,
+            OfflineProcess::StereoFlip,
+            OfflineProcess::Resample {
+                target_rate: 48_000,
+            },
+            OfflineProcess::TimeStretch { percent: 150.0 },
+        ];
+        assert!(project.set_offline_chain(clip, chain.clone()).is_ok());
+        assert_eq!(project.offline_chain_of(clip), Some(chain.as_slice()));
+        assert!(project.validate().is_ok());
+        assert_eq!(chain[0].label(), "Gain");
+        assert_eq!(chain[0].description(), "-3.0 dB");
+        assert_eq!(chain[5].description(), "48000 Hz");
+        assert_eq!(chain[2].label(), "Reverse");
+
+        // Invalid parameters, an over-long chain and a locked event are refused
+        // without touching the stored chain.
+        for bad in [
+            OfflineProcess::GainDb { db: 40.0 },
+            OfflineProcess::Normalize { target_dbfs: 5.0 },
+            OfflineProcess::Resample { target_rate: 1_000 },
+            OfflineProcess::TimeStretch { percent: 5.0 },
+            OfflineProcess::GainDb { db: f32::NAN },
+        ] {
+            assert!(!bad.is_valid(), "{bad:?}");
+            assert!(project.set_offline_chain(clip, vec![bad]).is_err());
+        }
+        let too_long = vec![OfflineProcess::Reverse; MAX_OFFLINE_CHAIN + 1];
+        assert!(project.set_offline_chain(clip, too_long).is_err());
+        assert_eq!(project.offline_chain_of(clip), Some(chain.as_slice()));
+        project.set_audio_clips_locked(&[clip], true);
+        assert!(
+            project
+                .set_offline_chain(clip, vec![OfflineProcess::Reverse])
+                .is_err()
+        );
+        project.set_audio_clips_locked(&[clip], false);
+        assert!(
+            project
+                .set_offline_chain(9_999, vec![OfflineProcess::Reverse])
+                .is_err()
+        );
+
+        // The chain round trips and an older file loads with none.
+        let encoded = serde_json::to_value(&project).expect("encode");
+        let decoded: Project = serde_json::from_value(encoded.clone()).expect("decode");
+        assert_eq!(decoded.offline_chain_of(clip), Some(chain.as_slice()));
+        let legacy = serde_json::to_string(&project).expect("encode");
+        let mut value: serde_json::Value = serde_json::from_str(&legacy).expect("value");
+        value["tracks"][0]["clips"][0]
+            .as_object_mut()
+            .expect("clip")
+            .remove("offline_chain");
+        let legacy: Project = serde_json::from_value(value).expect("legacy");
+        assert!(legacy.offline_chain_of(clip).expect("clip").is_empty());
+        assert!(legacy.validate().is_ok());
+
+        // An invalid stored chain is rejected on load.
+        project.tracks[0].clips[0].offline_chain = vec![OfflineProcess::GainDb { db: 99.0 }];
         assert!(project.validate().is_err());
     }
 

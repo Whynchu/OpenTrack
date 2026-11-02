@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 37;
+const FORMAT_VERSION: u32 = 38;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1390,6 +1390,44 @@ mod tests {
             loaded.project.pool_record_folder_or_default(),
             opentrack_core::project::DEFAULT_POOL_RECORD_FOLDER
         );
+        assert!(loaded.project.validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_37_file_without_offline_chains_loads_with_none() {
+        use opentrack_core::project::OfflineProcess;
+
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let clip = project
+            .add_audio_clip(0, PathBuf::from("/media/take.wav"), 0.0, 2.0)
+            .expect("clip");
+        project
+            .set_offline_chain(
+                clip,
+                vec![OfflineProcess::GainDb { db: -3.0 }, OfflineProcess::Reverse],
+            )
+            .expect("chain");
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 37.into();
+        legacy["project"]["tracks"][0]["clips"][0]
+            .as_object_mut()
+            .expect("clip")
+            .remove("offline_chain");
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v37-chain-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert!(loaded.project.tracks[0].clips[0].offline_chain.is_empty());
         assert!(loaded.project.validate().is_ok());
         fs::remove_file(path).unwrap();
     }

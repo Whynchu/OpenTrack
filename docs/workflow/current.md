@@ -10,7 +10,9 @@ R5-09 was a verification (the transpose dialog already existed; `Add Track > Tra
 
 R5-12 closed the virtual-keyboard review items at source level (MIDI Reset and close both release held keys, now covered by a test; the audible result stays pending).
 
-Next ready step: R5-13, the per-event offline processing chain contract. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
+R5-13 delivered the per-event offline chain model (OPR 38, bounded to eight first-party processors, validated on load, locked events refuse edits).
+
+Next ready step: R5-14, the staged chain renderer. Two export observations still await a user decision: stems include group and FX channels, and the arranger has no export entry.
 
 Interchange decision (2026-11-02): compatibility with other project formats (CPR, OMF) starts only when OpenTrack has full feature support; no adapter or alias is written until then.
 
