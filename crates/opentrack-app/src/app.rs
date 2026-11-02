@@ -12,6 +12,7 @@ mod automation;
 mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
+mod drum_map_setup;
 #[path = "media_names.rs"]
 pub(crate) mod media_names;
 #[path = "media_pool.rs"]
@@ -1283,6 +1284,8 @@ pub struct OpenTrackApp {
     metronome_count_in_bars: u8,
     /// Persisted pre/post-roll lengths in beats, independent of each other.
     roll_lengths: crate::transport_commands::RollLengths,
+    /// Open Drum Map Setup draft; `None` means closed.
+    drum_map_setup: Option<drum_map_setup::DrumMapDraft>,
     /// Beat where a running count-in should begin capture.
     count_in_armed: Option<f64>,
     /// True while the count-in forces the click on regardless of the toggle.
@@ -2770,6 +2773,7 @@ impl OpenTrackApp {
                     .and_then(|s| eframe::get_value::<f64>(s, "transport-post-roll-beats"))
                     .unwrap_or(crate::transport_commands::DEFAULT_ROLL_BEATS),
             ),
+            drum_map_setup: None,
             count_in_armed: None,
             count_in_click_active: false,
             suppress_count_in: false,
@@ -4077,6 +4081,7 @@ impl OpenTrackApp {
         self.detect_silence_dialog = None;
         self.conform_files_dialog = None;
         self.pool_record_folder_dialog = None;
+        self.drum_map_setup = None;
         self.virtual_keyboard_open = false;
         self.virtual_keyboard_held.clear();
         self.spectrum_open = false;
@@ -14201,11 +14206,14 @@ impl OpenTrackApp {
                         ui,
                         &[
                             ("Logical Presets", ""),
-                            ("Drum Map Setup...", ""),
                             ("VST Expression", ""),
                             ("CC Automation Setup...", ""),
                         ],
                     );
+                    if menu_command(ui, "Drum Map Setup...", "", self.project_open).clicked() {
+                        self.open_drum_map_setup();
+                        ui.close();
+                    }
                     if menu_command(ui, "Reset", "", true).clicked() {
                         self.reset_midi_destination();
                         ui.close();
@@ -18442,6 +18450,7 @@ impl eframe::App for OpenTrackApp {
         self.show_detect_silence_dialog(&ctx);
         self.show_conform_files_dialog(&ctx);
         self.show_pool_record_folder_dialog(&ctx);
+        self.show_drum_map_setup(&ctx);
         self.show_automation_panel(&ctx);
         self.show_normalize_dialog(&ctx);
         self.show_notepad(&ctx);

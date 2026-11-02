@@ -18,7 +18,9 @@ Step 7 enabled MIDI > Reset. It clears held on-screen keys and sends CC120/121/1
 
 Step 8 added the project-owned drum-map model in `opentrack-core::drum_map` (unique pitches, ordered rows, bounded names, identity when empty), serialized with a default, validated, and OPR bumped to 34. This is presentation-only groundwork; no editor or GM naming is claimed. Core 152 passed; app 514 passed, 9 ignored. See [R4-08](tasks/R4-08-drum-map-model.md).
 
-Next ready work: revision-4 step 9, enable Drum Map Setup. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
+Step 9 enabled MIDI > Drum Map Setup with a draft dialog (add/rename/reorder/remove/reset). Apply validates and makes one labelled history step; duplicate pitches keep the dialog open with an error; Cancel changes nothing; changing the selected track while open keeps the draft. App suite: 518 passed, 9 ignored; inventory is 271 leaves with 89 unavailable. Runtime visual/save-reopen review pending. See [R4-09](tasks/R4-09-drum-map-setup.md).
+
+Next ready work: revision-4 step 10, Open Drum Editor. No revision-4 runtime acceptance has occurred. Future pushes use the user's publication authorization for this run; a push is not milestone acceptance.
 
 ---
 
