@@ -2701,6 +2701,57 @@ impl Project {
         Some(changed)
     }
 
+    /// Fits the selected events' fades to the locator range.
+    ///
+    /// An event crossing the range keeps its material inside the range at full
+    /// level: the fade-in covers whatever precedes the left locator and the
+    /// fade-out whatever follows the right one. An event fully inside the range
+    /// loses its fades, because the range already bounds it. Locked events and
+    /// events outside the range are left alone.
+    pub fn fit_audio_clip_fades_to_range(
+        &mut self,
+        ids: &[u64],
+        start_beats: f64,
+        end_beats: f64,
+    ) -> usize {
+        if !start_beats.is_finite()
+            || !end_beats.is_finite()
+            || start_beats < 0.0
+            || end_beats <= start_beats
+        {
+            return 0;
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let tempo = self.tempo_bpm.max(1.0);
+        let mut changed = 0;
+        for track in self.tracks.iter_mut() {
+            for clip in track.clips.iter_mut() {
+                if !selected.contains(&clip.id) || clip.locked {
+                    continue;
+                }
+                let clip_end = clip.start_beats + clip.duration_seconds * tempo / 60.0;
+                if clip_end <= start_beats + 1e-9 || clip.start_beats >= end_beats - 1e-9 {
+                    continue;
+                }
+                let seconds_per_beat = 60.0 / tempo;
+                let fade_in = ((start_beats - clip.start_beats) * seconds_per_beat)
+                    .max(0.0)
+                    .min(clip.duration_seconds);
+                let fade_out = ((clip_end - end_beats) * seconds_per_beat)
+                    .max(0.0)
+                    .min((clip.duration_seconds - fade_in).max(0.0));
+                if (clip.fade_in_seconds - fade_in).abs() > 1e-9
+                    || (clip.fade_out_seconds - fade_out).abs() > 1e-9
+                {
+                    clip.fade_in_seconds = fade_in;
+                    clip.fade_out_seconds = fade_out;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
     /// Inserts `beats` of silence at `beat` and reports how many items moved.
     ///
     /// Events and MIDI parts that cross the insertion point are split first, so
@@ -5928,6 +5979,61 @@ mod sample_edit_tests {
         assert!(
             project.media_pool.contains(&gone),
             "the event still needs it"
+        );
+    }
+
+    #[test]
+    fn fades_fit_the_locator_range_without_touching_outside_events() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        // 8 s at 120 BPM is 16 beats, crossing the 4..8 range on both sides.
+        let crossing = project
+            .add_audio_clip(0, PathBuf::from("cross.wav"), 0.0, 8.0)
+            .unwrap();
+        // Fully inside the range: its fades should clear.
+        let inside = project
+            .add_audio_clip(0, PathBuf::from("inside.wav"), 5.0, 1.0)
+            .unwrap();
+        // Fully outside: untouched.
+        let outside = project
+            .add_audio_clip(0, PathBuf::from("outside.wav"), 20.0, 2.0)
+            .unwrap();
+        project.tracks[0].clips[1].fade_in_seconds = 0.4;
+        project.tracks[0].clips[2].fade_in_seconds = 0.3;
+
+        assert_eq!(
+            project.fit_audio_clip_fades_to_range(&[crossing, inside, outside], 4.0, 8.0),
+            2
+        );
+        let clips = &project.tracks[0].clips;
+        // 4 beats is two seconds before the left locator.
+        assert!((clips[0].fade_in_seconds - 2.0).abs() < 1e-9);
+        // 8 beats after the right locator is another four seconds.
+        assert!((clips[0].fade_out_seconds - 4.0).abs() < 1e-9);
+        assert_eq!(clips[1].fade_in_seconds, 0.0, "inside the range: no fades");
+        assert_eq!(clips[1].fade_out_seconds, 0.0);
+        assert_eq!(clips[2].fade_in_seconds, 0.3, "outside is untouched");
+        assert!(clips[0].fade_in_seconds + clips[0].fade_out_seconds <= 8.0);
+        assert!(project.validate().is_ok());
+
+        // Locked events are skipped and nothing changes twice.
+        project.set_audio_clips_locked(&[crossing], true);
+        project.tracks[0].clips[0].fade_in_seconds = 0.0;
+        assert_eq!(
+            project.fit_audio_clip_fades_to_range(&[crossing], 4.0, 8.0),
+            0
+        );
+        project.set_audio_clips_locked(&[crossing], false);
+        assert_eq!(
+            project.fit_audio_clip_fades_to_range(&[crossing, inside, outside], 4.0, 8.0),
+            1,
+            "only the event whose fade was cleared changes again"
+        );
+        assert_eq!(
+            project.fit_audio_clip_fades_to_range(&[crossing, inside, outside], 4.0, 4.0),
+            0,
+            "an invalid range does nothing"
         );
     }
 

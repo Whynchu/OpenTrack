@@ -739,6 +739,49 @@ impl OpenTrackApp {
         );
     }
 
+    /// Fits the selected events' fades to the locator range.
+    pub(super) fn adjust_selected_fades_to_range(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before adjusting fades".to_owned();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to adjust their fades".to_owned();
+            return;
+        }
+        let (start, end) = (
+            self.data.project.loop_start_beats,
+            self.data.project.loop_end_beats,
+        );
+        if !start.is_finite() || !end.is_finite() || end <= start {
+            self.status_message = "Set the locators to a range before adjusting fades".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.fit_audio_clip_fades_to_range(&ids, start, end);
+        if changed == 0 {
+            self.status_message =
+                "No fade changed: no unlocked selected event crosses the locator range".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot adjust fades: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Adjust Fades to Range");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Fitted {changed} event fade(s) to the locator range {start:.3} to {end:.3}");
+    }
+
     /// Silences the selected events by zeroing their gain, keeping the media.
     pub(super) fn silence_selected_audio_events(&mut self) {
         if self.is_recording() {
@@ -4560,6 +4603,57 @@ mod split_selection_tests {
         app.glue_selected_audio_events();
         assert!(app.status_message.contains("contiguous pieces"));
         assert_eq!(app.data.project.tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn adjusting_fades_to_the_range_is_one_labelled_undo_step() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        // 8 s at 120 BPM spans 16 beats and crosses the 4..8 locator range.
+        let crossing = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 8.0)
+            .unwrap();
+        let outside = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 20.0, 2.0)
+            .unwrap();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.arrange_view_state
+            .audio_events
+            .select_many([crossing, outside]);
+        app.project_history.clear();
+
+        app.adjust_selected_fades_to_range();
+        let clips = &app.data.project.tracks[0].clips;
+        assert!((clips[0].fade_in_seconds - 2.0).abs() < 1e-9);
+        assert!((clips[0].fade_out_seconds - 4.0).abs() < 1e-9);
+        assert_eq!(clips[1].fade_in_seconds, 0.0, "outside the range stays put");
+        assert!(app.status_message.contains("Fitted 1 event fade(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(
+            app.project_history.steps()[0].label,
+            "Adjust Fades to Range"
+        );
+
+        // Nothing left to change.
+        app.adjust_selected_fades_to_range();
+        assert!(app.status_message.contains("No fade changed"));
+
+        // A missing range or selection reports. `set_loop_range` refuses an
+        // empty range, so the fields are set directly to model a broken state.
+        app.data.project.loop_end_beats = app.data.project.loop_start_beats;
+        app.adjust_selected_fades_to_range();
+        assert!(app.status_message.contains("Set the locators"));
+        app.arrange_view_state.audio_events.clear_selection();
+        app.data.project.set_loop_range(4.0, 8.0);
+        app.adjust_selected_fades_to_range();
+        assert!(app.status_message.contains("Select audio events"));
     }
 
     #[test]

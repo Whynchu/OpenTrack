@@ -135,6 +135,14 @@ and measured numbers.
    selection report instead. The reveal path is transient and cleared when a
    project closes. 3 app and 1 module tests. Shortcut coverage 134 -> 135.
 
+16. **Adjust Fades to Range.** *Delivered.*
+   `Project::fit_audio_clip_fades_to_range` makes a selected event's fade-in cover
+   what precedes the left locator and its fade-out what follows the right one, so
+   the material inside the range stays at full level; events fully inside lose
+   their fades, events outside and locked events are untouched. Audio > Adjust
+   Fades to Range (A) is one labelled undo step. 1 core and 1 app tests. Shortcut
+   coverage 135 -> 136.
+
 ### E. Project tools (continued)
 
 7. **Notepad.** *Delivered.* `Project::notepad` is saved with the project, bounded

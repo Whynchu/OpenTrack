@@ -6964,6 +6964,7 @@ impl OpenTrackApp {
             "edit.paste_at_origin" => self.paste_audio_events_at_origin(),
             "edit.paste_time" => self.paste_time(),
             "audio.find_selected_in_pool" => self.find_selected_event_in_pool(),
+            "audio.adjust_fades_to_range" => self.adjust_selected_fades_to_range(),
             "devices.vst_instruments" => {
                 self.track_add_dialog = Some(TrackAddDialog {
                     kind: TrackKind::Instrument,
@@ -28266,6 +28267,7 @@ mod keyboard_coverage_tests {
             "edit.paste_at_origin",
             "edit.paste_time",
             "audio.find_selected_in_pool",
+            "audio.adjust_fades_to_range",
             "edit.insert_silence",
             "edit.cut_time",
             "edit.delete_time",
