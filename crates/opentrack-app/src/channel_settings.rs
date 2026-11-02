@@ -1533,6 +1533,11 @@ fn eq_knob_dial_rect(row: Rect) -> Rect {
     Rect::from_min_size(row.min, Vec2::splat(48.0))
 }
 
+/// Height the band editor actually occupies. The editor places its controls at
+/// fixed offsets; the lowest control ends at 385, so reserving more than this
+/// left blank space that made the scroll area show a scrollbar.
+const EQ_EDITOR_CONTENT_HEIGHT: f32 = 390.0;
+
 fn eq_editor_knob_rect(inner: Rect, section: usize, slot: usize) -> Rect {
     let (x, y) = match section {
         0 => match slot {
@@ -2004,7 +2009,7 @@ fn graph(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let (inner, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 414.0),
+                            Vec2::new(ui.available_width(), EQ_EDITOR_CONTENT_HEIGHT),
                             Sense::hover(),
                         );
                         let header = at(inner, 0.0, 0.0, inner.width(), 16.0);
