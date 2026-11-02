@@ -8,6 +8,7 @@ pub mod cpr;
 pub mod event_query;
 pub mod midi_file;
 pub mod midi_quantize;
+pub mod midi_transform;
 pub mod pitch_time;
 pub mod project;
 pub mod routing;

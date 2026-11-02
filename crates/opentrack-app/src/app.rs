@@ -1129,6 +1129,8 @@ pub struct OpenTrackApp {
     session_health_open: bool,
     /// Open MIDI quantize dialog settings.
     midi_quantize_dialog: Option<opentrack_core::midi_quantize::QuantizeOptions>,
+    /// Open MIDI transpose/velocity dialog: semitones and velocity delta.
+    midi_transform_dialog: Option<(i16, i16)>,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
@@ -2506,6 +2508,7 @@ impl OpenTrackApp {
             template_name_draft: None,
             session_health_open: false,
             midi_quantize_dialog: None,
+            midi_transform_dialog: None,
             plugin_scan_report: None,
             plugin_scan_status,
             plugin_scan_error: None,
@@ -6815,6 +6818,161 @@ impl OpenTrackApp {
         self.status_message = "Removed the marker; Undo restores it".to_owned();
     }
 
+    /// Transposes the selected notes as one undo step.
+    fn transpose_selected_notes(&mut self, semitones: i16) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before transposing".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let changed = opentrack_core::midi_transform::transpose_notes(part, &ids, semitones);
+        if changed == 0 {
+            self.status_message =
+                "No note moved; the transposition is zero or would leave the MIDI range".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot transpose: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Transpose Notes");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Transposed {changed} note(s) by {semitones:+}; Undo restores them");
+    }
+
+    /// Changes the selected notes' velocity as one undo step.
+    fn change_selected_note_velocity(&mut self, delta: i16) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before changing velocity".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let changed = opentrack_core::midi_transform::change_velocity(part, &ids, delta);
+        if changed == 0 {
+            self.status_message = "No note velocity changed".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot change velocity: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Note Velocity");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message =
+            format!("Changed {changed} note velocity/ies by {delta:+}; Undo restores them");
+    }
+
+    fn show_midi_transform_dialog(&mut self, ctx: &egui::Context) {
+        let Some((mut semitones, mut velocity)) = self.midi_transform_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut transpose = false;
+        let mut change_velocity = false;
+        let mut cancel = false;
+        let selection = self.selected_midi_note_ids.len();
+        let response = egui::Window::new("Transpose and Velocity")
+            .id(Id::new("midi-transform"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label(if selection > 0 {
+                    format!("{selection} selected note(s)")
+                } else {
+                    "Every note in the selected part".to_owned()
+                });
+                ui.separator();
+                ui.label("Transpose");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut semitones)
+                            .range(
+                                -opentrack_core::midi_transform::MAX_TRANSPOSE_SEMITONES
+                                    ..=opentrack_core::midi_transform::MAX_TRANSPOSE_SEMITONES,
+                            )
+                            .suffix(" st"),
+                    );
+                    if ui.button("Transpose").clicked() {
+                        transpose = true;
+                    }
+                });
+                ui.separator();
+                ui.label("Velocity");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut velocity).range(
+                        -opentrack_core::midi_transform::MAX_VELOCITY_DELTA
+                            ..=opentrack_core::midi_transform::MAX_VELOCITY_DELTA,
+                    ));
+                    if ui.button("Change Velocity").clicked() {
+                        change_velocity = true;
+                    }
+                });
+                ui.separator();
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("midi-transform"),
+            &mut open,
+            response.as_ref(),
+        );
+        if transpose {
+            self.transpose_selected_notes(semitones);
+        } else if change_velocity {
+            self.change_selected_note_velocity(velocity);
+        } else if !cancel && open {
+            self.midi_transform_dialog = Some((semitones, velocity));
+        }
+    }
+
     /// Quantizes the selected notes (or the whole part) as one undo step.
     fn quantize_selected_notes(&mut self, options: opentrack_core::midi_quantize::QuantizeOptions) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
@@ -9817,6 +9975,18 @@ impl OpenTrackApp {
                     }
                     if menu_command(
                         ui,
+                        "Transpose / Velocity...",
+                        "",
+                        self.project_open
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.midi_transform_dialog = Some((0, 0));
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
                         "Quantize MIDI...",
                         "",
                         self.project_open
@@ -11412,6 +11582,7 @@ impl OpenTrackApp {
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.midi_quantize_dialog.is_some()
+            || self.midi_transform_dialog.is_some()
             || self.project_open_error.is_some()
             || self.media_operation_error.is_some()
             || self.track_add_dialog.is_some()
@@ -13800,6 +13971,7 @@ impl eframe::App for OpenTrackApp {
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_midi_quantize_dialog(&ctx);
+        self.show_midi_transform_dialog(&ctx);
         self.show_about_window(&ctx);
         transport_panel::settings(self, &ctx);
         transport_panel::tempo_signature_settings(self, &ctx);
@@ -23089,6 +23261,40 @@ mod midi_quantize_tests {
         app.quantize_selected_notes(QuantizeOptions::default());
         assert!(app.status_message.contains("Select a MIDI part"));
         assert_eq!(app.data.project, before);
+    }
+
+    #[test]
+    fn transposing_and_changing_velocity_are_labelled_undo_steps() {
+        let mut app = app_with_part();
+        app.transpose_selected_notes(12);
+        assert_eq!(app.data.project.tracks[0].midi_parts[0].notes[0].pitch, 72);
+        assert!(app.status_message.contains("Transposed 2 note(s) by +12"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Transpose Notes");
+
+        app.change_selected_note_velocity(-30);
+        assert_eq!(
+            app.data.project.tracks[0].midi_parts[0].notes[0].velocity,
+            70
+        );
+        assert!(app.status_message.contains("Changed 2 note velocity"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Note Velocity");
+
+        // A zero change reports instead of writing a step.
+        let steps = app.project_history.counts().0;
+        app.transpose_selected_notes(0);
+        assert!(app.status_message.contains("No note moved"));
+        assert_eq!(app.project_history.counts().0, steps);
+    }
+
+    #[test]
+    fn transposing_a_selection_leaves_other_notes() {
+        let mut app = app_with_part();
+        app.selected_midi_note_ids = [2].into_iter().collect();
+        app.transpose_selected_notes(-1);
+        assert_eq!(app.data.project.tracks[0].midi_parts[0].notes[0].pitch, 60);
+        assert_eq!(app.data.project.tracks[0].midi_parts[0].notes[1].pitch, 61);
     }
 
     #[test]

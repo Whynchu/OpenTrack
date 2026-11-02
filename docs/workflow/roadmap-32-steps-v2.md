@@ -140,7 +140,12 @@ Still open from revision 1:
    from the toolbar's quantize grid and applies as one undo step labelled
    "Quantize Notes". A live preview is not part of this slice. 7 core and 4 app
    tests.
-16. **Transpose and velocity tools** over the selected notes.
+16. **Transpose and velocity tools.** *Delivered.*
+   `opentrack_core::midi_transform` transposes the selection by whole semitones,
+   skipping notes that would leave 0..=127 rather than clamping them onto an
+   unasked octave, and offsets velocity with clamping at 1 and 127. The Edit menu's
+   "Transpose / Velocity..." dialog applies either as its own labelled undo step.
+   4 core and 2 app tests.
 17. **MIDI part editing**: split a part at the cursor and merge adjacent parts.
 
 ### E. Recording and monitoring
