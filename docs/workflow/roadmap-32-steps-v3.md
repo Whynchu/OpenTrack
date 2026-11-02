@@ -503,5 +503,14 @@ still one commit with tests and refreshed counts.
    and the whole pass is one labelled "Convert Files" undo step. 1 audio and 1 app
    tests. Disabled entries 80 -> 79.
 
-Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
-fixtures.
+50. **Regions.** *Delivered.* `Project.regions` (OPR version 32 with a v31 migration
+   test) holds named start/end ranges ordered by start, bounded to 1,024 with
+   96-character names, validated on load, and moved by insert-silence and
+   whole-project cut/delete alongside markers. Media > Hitpoints > Create Regions
+   turns the detected hitpoints into contiguous regions — each runs to the next hit
+   and the last to the event end — as one labelled "Create Regions" undo step, with
+   rename/remove available on the model. 1 core model, 1 migration and 1 app tests.
+   Disabled entries 79 -> 78.
+
+Next candidates: the Arranger, then OMF / Track Archive, then the user-dependent
+reviews and CPR fixtures.

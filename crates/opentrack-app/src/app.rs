@@ -8160,6 +8160,75 @@ impl OpenTrackApp {
         }
     }
 
+    /// Creates timeline regions spanning the analysed hitpoints as one undo step.
+    ///
+    /// Each region runs from one hitpoint to the next, and the last runs to the
+    /// end of the event, so the regions cover the analysed audio without gaps.
+    fn create_regions_from_hitpoints(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before creating regions".to_owned();
+            return;
+        }
+        let Some(clip_id) = self.hitpoints_clip else {
+            self.status_message =
+                "Calculate hitpoints for an event before creating regions".to_owned();
+            return;
+        };
+        let Some((start_beats, duration_seconds)) = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| (clip.start_beats, clip.duration_seconds))
+        else {
+            self.hitpoints.clear();
+            self.hitpoints_clip = None;
+            self.status_message = "Calculate hitpoints again for the selected event".to_owned();
+            return;
+        };
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        let to_beats = |seconds: f64| start_beats + seconds * tempo / 60.0;
+        let end_beats = to_beats(duration_seconds);
+        let mut candidate = self.data.project.clone();
+        let mut created = 0;
+        for (index, seconds) in self.hitpoints.iter().enumerate() {
+            let start = to_beats(*seconds);
+            let end = self
+                .hitpoints
+                .get(index + 1)
+                .map(|next| to_beats(*next))
+                .unwrap_or(end_beats);
+            if candidate
+                .add_region(start, end, format!("Region {}", index + 1))
+                .is_some()
+            {
+                created += 1;
+            }
+        }
+        if created == 0 {
+            self.status_message =
+                "No regions were created; the ranges may be empty or the project is full"
+                    .to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot create regions: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Create Regions");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message =
+            format!("Created {created} region(s) across the hitpoints; Undo removes them");
+    }
+
     /// Creates timeline markers at the analysed hitpoints as one undo step.
     fn create_markers_from_hitpoints(&mut self) {
         if self.is_recording() {
@@ -13779,7 +13848,19 @@ impl OpenTrackApp {
                             self.create_markers_from_hitpoints();
                             ui.close();
                         }
-                        disabled_menu_commands(ui, &[("Create Regions", "")]);
+                        if menu_command(
+                            ui,
+                            "Create Regions",
+                            "",
+                            self.project_open
+                                && !self.is_recording()
+                                && self.hitpoints_clip.is_some(),
+                        )
+                        .clicked()
+                        {
+                            self.create_regions_from_hitpoints();
+                            ui.close();
+                        }
                     });
                     ui.menu_button("Realtime Processing", |ui| {
                         disabled_menu_commands(

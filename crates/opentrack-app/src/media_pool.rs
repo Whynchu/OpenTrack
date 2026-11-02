@@ -3574,6 +3574,63 @@ mod tests {
     }
 
     #[test]
+    fn hitpoints_become_contiguous_regions_as_one_undo_step() {
+        let root =
+            std::env::temp_dir().join(format!("opentrack-regions-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let source = root.join("Audio").join("Imports").join("clicks.wav");
+        write_click_train(&source);
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, source.clone(), 4.0, 1.0)
+            .expect("clip");
+        app.project_history.clear();
+
+        // Regions need hitpoints first.
+        app.create_regions_from_hitpoints();
+        assert!(
+            app.status_message
+                .contains("Calculate hitpoints for an event before creating regions")
+        );
+
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.calculate_hitpoints();
+        let hits = app.hitpoints.len();
+        assert!(hits >= 8, "found {hits} hitpoints");
+        app.create_regions_from_hitpoints();
+        assert_eq!(app.data.project.regions.len(), hits);
+        // The regions tile the analysed audio: each starts where the last ended,
+        // the first starts at the event and the last ends at its end.
+        let regions = &app.data.project.regions;
+        // Two beats per second at 120 BPM.
+        assert!((regions[0].start_beats - (4.0 + app.hitpoints[0] * 2.0)).abs() < 1e-6);
+        for pair in regions.windows(2) {
+            assert!(
+                (pair[0].end_beats - pair[1].start_beats).abs() < 1e-6,
+                "{:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        let last = regions.last().expect("last region");
+        assert!((last.end_beats - 6.0).abs() < 1e-6, "{}", last.end_beats);
+        assert_eq!(regions[0].name, "Region 1");
+        assert!(app.status_message.contains("Created"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Create Regions");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn converting_pool_files_repoints_media_as_one_undo_step() {
         let root =
             std::env::temp_dir().join(format!("opentrack-convert-app-{}", std::process::id()));

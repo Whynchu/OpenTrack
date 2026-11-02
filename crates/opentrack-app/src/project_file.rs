@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 31;
+const FORMAT_VERSION: u32 = 32;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1302,6 +1302,34 @@ mod tests {
         assert_eq!(loaded.version, FORMAT_VERSION);
         assert!(loaded.project.media_folders.is_empty());
         assert_eq!(loaded.project.media_pool.len(), 1);
+        assert!(loaded.project.validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_31_file_without_regions_loads_with_none() {
+        let mut project = Project::default();
+        project.add_region(0.0, 8.0, "Intro").expect("region");
+        project.add_marker(4.0, "Verse").expect("marker");
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 31.into();
+        let object = legacy["project"].as_object_mut().expect("project");
+        object.remove("regions");
+        object.remove("next_region_id");
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v31-regions-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert!(loaded.project.regions.is_empty());
+        assert_eq!(loaded.project.markers.len(), 1, "markers still load");
         assert!(loaded.project.validate().is_ok());
         fs::remove_file(path).unwrap();
     }

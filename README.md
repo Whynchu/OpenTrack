@@ -42,7 +42,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Editing tools:** MIDI editor with note and controller lanes, quantize with strength and swing, transpose and velocity tools; Sample Editor with on-demand Pitch & Time analysis and editing.
 - **Delivery:** stereo WAV mixdown, per-track stem export, bounce in place through a track's own chain, and Standard MIDI File export of the whole project or a selection.
 - **Project tools:** templates, session health check, project statistics, beat calculator, and a notepad saved with the project.
-- **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 31); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
+- **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 32); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
 
 ### What still needs work
 
@@ -50,7 +50,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Automation coverage:** input/output-bus automation and its Write controls are missing; track automation still needs live-device testing.
 - **Routing:** device-bus sends and wider physical channel maps are open. Track and group sends and typed routing pass offline checks and still need live review.
 - **Interchange:** CPR is inspection-only; a real adapter waits for sample files. Other DAW formats are future work. Authored MIDI fixtures pass; comparison with DAW-produced MIDI files remains.
-- **Interface completion:** 79 menu entries are still shown disabled and 146 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
+- **Interface completion:** 78 menu entries are still shown disabled and 146 of 152 keymap-bound commands have a working shortcut. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
 - **Linux plug-ins:** VST3 editor embedding on Linux is not implemented.
 - **Not available:** video, surround, score editing, macOS and browser builds, and a command-line or MCP interface. Plug-in compatibility and recovery behavior need continued verification.
 

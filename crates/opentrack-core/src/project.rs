@@ -1034,6 +1034,23 @@ pub struct Project {
     pub markers: Vec<Marker>,
     #[serde(default = "first_marker_id")]
     pub next_marker_id: u64,
+    /// Named start/end ranges, ordered by start beat. Older projects have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<Region>,
+    #[serde(default = "first_marker_id")]
+    pub next_region_id: u64,
+}
+
+/// A named range on the project timeline.
+///
+/// Regions are navigation and organisation: they do not change playback on their
+/// own, and they hold no media of their own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Region {
+    pub id: u64,
+    pub start_beats: f64,
+    pub end_beats: f64,
+    pub name: String,
 }
 
 /// A named position on the project timeline, used for navigation.
@@ -1064,6 +1081,11 @@ pub const MAX_NOTEPAD_CHARS: usize = 100_000;
 pub const MAX_MARKERS: usize = 1024;
 /// Bound on a marker name, in characters.
 pub const MAX_MARKER_NAME_CHARS: usize = 96;
+
+/// Bound on regions per project.
+pub const MAX_REGIONS: usize = 1024;
+/// Bound on a region name, in characters.
+pub const MAX_REGION_NAME_CHARS: usize = 96;
 
 fn first_marker_id() -> u64 {
     1
@@ -1157,6 +1179,8 @@ impl Default for Project {
             notepad: String::new(),
             markers: Vec::new(),
             next_marker_id: first_marker_id(),
+            regions: Vec::new(),
+            next_region_id: first_marker_id(),
             next_take_group: 1,
         }
     }
@@ -2335,6 +2359,69 @@ impl Project {
         Some(id)
     }
 
+    /// Adds a named range and returns its id.
+    ///
+    /// Invalid or inverted ranges are refused, and so is an empty name; the
+    /// length bound keeps a runaway script from growing the project file.
+    pub fn add_region(
+        &mut self,
+        start_beats: f64,
+        end_beats: f64,
+        name: impl Into<String>,
+    ) -> Option<u64> {
+        if !start_beats.is_finite()
+            || !end_beats.is_finite()
+            || start_beats < 0.0
+            || end_beats <= start_beats + 1e-9
+            || end_beats > MAX_LOOP_BEATS
+        {
+            return None;
+        }
+        let name = name.into();
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        if self.regions.len() >= MAX_REGIONS || self.next_region_id == u64::MAX {
+            return None;
+        }
+        let id = self.next_region_id;
+        self.next_region_id += 1;
+        self.regions.push(Region {
+            id,
+            start_beats,
+            end_beats,
+            name: name.chars().take(MAX_REGION_NAME_CHARS).collect(),
+        });
+        self.regions
+            .sort_by(|left, right| left.start_beats.total_cmp(&right.start_beats));
+        Some(id)
+    }
+
+    /// Renames a region and reports whether it changed.
+    pub fn rename_region(&mut self, id: u64, name: impl Into<String>) -> bool {
+        let name = name.into();
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let Some(region) = self.regions.iter_mut().find(|region| region.id == id) else {
+            return false;
+        };
+        if region.name == name {
+            return false;
+        }
+        region.name = name.chars().take(MAX_REGION_NAME_CHARS).collect();
+        true
+    }
+
+    /// Deletes a region, reporting whether it existed.
+    pub fn remove_region(&mut self, id: u64) -> bool {
+        let before = self.regions.len();
+        self.regions.retain(|region| region.id != id);
+        self.regions.len() != before
+    }
+
     /// Renames a marker and reports whether it changed.
     pub fn rename_marker(&mut self, id: u64, name: impl Into<String>) -> bool {
         let Some(marker) = self.markers.iter_mut().find(|marker| marker.id == id) else {
@@ -2761,6 +2848,13 @@ impl Project {
                     changed += 1;
                 }
             }
+            for region in candidate.regions.iter_mut() {
+                if region.start_beats >= end - 1e-9 {
+                    region.start_beats = (region.start_beats - gap).max(0.0);
+                    region.end_beats = (region.end_beats - gap).max(region.start_beats + 1e-6);
+                    changed += 1;
+                }
+            }
         }
         if changed == 0 || candidate.validate().is_err() {
             return None;
@@ -3110,6 +3204,13 @@ impl Project {
         candidate
             .markers
             .sort_by(|left, right| left.beat.total_cmp(&right.beat));
+        for region in candidate.regions.iter_mut() {
+            if region.start_beats >= beat - 1e-9 {
+                region.start_beats += beats;
+                region.end_beats += beats;
+                changed += 1;
+            }
+        }
         if changed == 0 || candidate.validate().is_err() {
             return None;
         }
@@ -4394,6 +4495,20 @@ impl Project {
             return Err("project notepad is too long");
         }
         self.media_folders.is_valid()?;
+        if self.regions.len() > MAX_REGIONS {
+            return Err("too many regions");
+        }
+        if self.regions.iter().any(|region| {
+            !region.start_beats.is_finite()
+                || !region.end_beats.is_finite()
+                || region.start_beats < 0.0
+                || region.end_beats <= region.start_beats + 1e-9
+                || region.end_beats > MAX_LOOP_BEATS
+                || region.name.trim().is_empty()
+                || region.name.chars().count() > MAX_REGION_NAME_CHARS
+        }) {
+            return Err("a region has an unusable name or range");
+        }
         {
             let mut slots = BTreeSet::new();
             for marker in &self.markers {
@@ -6844,6 +6959,60 @@ mod sample_edit_tests {
                 .explode_midi_part_by_channel(track_id, part, 3)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn regions_are_added_renamed_removed_and_validated() {
+        let mut project = Project::default();
+        let second = project.add_region(8.0, 16.0, " Chorus ").expect("region");
+        let first = project.add_region(0.0, 4.0, "Intro").expect("region");
+        assert_ne!(first, second);
+        // Regions are kept in start order so navigation reads naturally.
+        assert_eq!(
+            project
+                .regions
+                .iter()
+                .map(|region| (region.name.as_str(), region.start_beats))
+                .collect::<Vec<_>>(),
+            vec![("Intro", 0.0), ("Chorus", 8.0)]
+        );
+        assert_eq!(project.regions[1].name, "Chorus", "the name is trimmed");
+
+        // Invalid, inverted and unnamed ranges are refused.
+        assert!(project.add_region(4.0, 4.0, "Empty").is_none());
+        assert!(project.add_region(8.0, 4.0, "Backwards").is_none());
+        assert!(project.add_region(-1.0, 4.0, "Negative").is_none());
+        assert!(project.add_region(0.0, 4.0, "   ").is_none());
+        assert!(project.add_region(0.0, f64::NAN, "Nan").is_none());
+
+        assert!(project.rename_region(second, "Hook"));
+        assert!(!project.rename_region(second, "Hook"), "no change twice");
+        assert!(!project.rename_region(9_999, "Missing"));
+        assert!(!project.rename_region(second, "  "));
+        assert_eq!(project.regions[1].name, "Hook");
+        assert!(project.remove_region(second));
+        assert!(!project.remove_region(second));
+        assert_eq!(project.regions.len(), 1);
+        assert!(project.validate().is_ok());
+
+        // Regions round trip and an older project simply has none.
+        let encoded = serde_json::to_value(&project).expect("encode");
+        let decoded: Project = serde_json::from_value(encoded.clone()).expect("decode");
+        assert_eq!(decoded.regions, project.regions);
+        let mut legacy = encoded;
+        legacy.as_object_mut().expect("object").remove("regions");
+        let legacy: Project = serde_json::from_value(legacy).expect("legacy");
+        assert!(legacy.regions.is_empty());
+        assert!(legacy.validate().is_ok());
+
+        // An inverted range loaded from a file is rejected.
+        project.regions.push(Region {
+            id: 99,
+            start_beats: 4.0,
+            end_beats: 2.0,
+            name: "Bad".to_owned(),
+        });
+        assert!(project.validate().is_err());
     }
 
     #[test]
