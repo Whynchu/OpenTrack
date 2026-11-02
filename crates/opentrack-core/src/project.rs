@@ -2216,6 +2216,189 @@ impl Project {
             .or_else(|| wrap.then(|| self.markers.last()).flatten())
     }
 
+    /// Splits a MIDI part at an absolute project beat.
+    ///
+    /// Notes before the cut stay, notes after it move to the new part, and a note
+    /// that crosses the cut is itself split so no played note is lost. Controller
+    /// events follow the same rule. The cut must land inside the part by at least
+    /// a 64th note, so a split cannot produce a part too short to edit.
+    pub fn split_midi_part(&mut self, track_id: u64, part_id: u64, beat: f64) -> Option<u64> {
+        let track_index = self.tracks.iter().position(|track| track.id == track_id)?;
+        let part_index = self.tracks[track_index]
+            .midi_parts
+            .iter()
+            .position(|part| part.id == part_id)?;
+        let original = self.tracks[track_index].midi_parts[part_index].clone();
+        let split_offset = beat - original.start_beats;
+        if !split_offset.is_finite()
+            || split_offset < 0.0625
+            || split_offset > original.duration_beats - 0.0625
+        {
+            return None;
+        }
+        let new_part_id = self.add_midi_part(
+            track_index,
+            original.start_beats + split_offset,
+            original.duration_beats - split_offset,
+        )?;
+        if let Some(new_part) = self.tracks[track_index]
+            .midi_parts
+            .iter_mut()
+            .find(|part| part.id == new_part_id)
+        {
+            new_part.name = format!("{} (split)", original.name);
+        }
+        // The right part is filled first: the helpers number notes and controller
+        // events monotonically, so the left part's retained ids stay untouched.
+        for event in original.controller_events.iter() {
+            if event.position_beats >= split_offset {
+                let _ = self.add_midi_controller_event_on_channel(
+                    track_index,
+                    new_part_id,
+                    event.position_beats - split_offset,
+                    event.controller,
+                    event.channel,
+                    event.value,
+                );
+            }
+        }
+        for note in original.notes.iter() {
+            let end = note.start_beats + note.duration_beats;
+            if end <= split_offset {
+                continue;
+            }
+            let start = (note.start_beats - split_offset).max(0.0);
+            let duration = end.min(original.duration_beats) - split_offset.max(note.start_beats);
+            if duration > 0.0 {
+                let _ = self.add_midi_note_on_channel(
+                    track_index,
+                    new_part_id,
+                    start,
+                    duration,
+                    note.pitch,
+                    note.channel,
+                    note.velocity,
+                );
+            }
+        }
+        let left = &mut self.tracks[track_index].midi_parts[part_index];
+        left.duration_beats = split_offset;
+        left.notes.retain_mut(|note| {
+            if note.start_beats >= split_offset - 1e-9 {
+                return false;
+            }
+            note.duration_beats = note.duration_beats.min(split_offset - note.start_beats);
+            note.duration_beats > 1e-6
+        });
+        left.controller_events
+            .retain(|event| event.position_beats < split_offset - 1e-9);
+        if self.validate().is_err() {
+            return None;
+        }
+        Some(new_part_id)
+    }
+
+    /// Merges MIDI parts on one track into a single part.
+    ///
+    /// The merged part spans from the earliest start to the latest end and keeps
+    /// every note and controller event at its musical position. The earliest part
+    /// keeps its identity, so a selection that pointed at it still does.
+    pub fn merge_midi_parts(&mut self, track_id: u64, part_ids: &[u64]) -> Option<u64> {
+        if part_ids.len() < 2 {
+            return None;
+        }
+        let track_index = self.tracks.iter().position(|track| track.id == track_id)?;
+        let selected: BTreeSet<u64> = part_ids.iter().copied().collect();
+        let parts = self.tracks[track_index]
+            .midi_parts
+            .iter()
+            .filter(|part| selected.contains(&part.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if parts.len() != selected.len() {
+            return None;
+        }
+        let start = parts
+            .iter()
+            .map(|part| part.start_beats)
+            .fold(f64::INFINITY, f64::min);
+        let end = parts
+            .iter()
+            .map(|part| part.start_beats + part.duration_beats)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if !start.is_finite() || !end.is_finite() || end <= start {
+            return None;
+        }
+        let mut keeper = parts
+            .iter()
+            .min_by(|left, right| left.id.cmp(&right.id))?
+            .clone();
+        keeper.start_beats = start;
+        keeper.duration_beats = end - start;
+        keeper.notes.clear();
+        keeper.controller_events.clear();
+
+        // Notes are re-added through the helpers so ids stay unique across the
+        // merged part; controller events merge the same way.
+        let remove = selected.clone();
+        self.tracks[track_index]
+            .midi_parts
+            .retain(|part| !remove.contains(&part.id));
+        self.tracks[track_index].midi_parts.push(keeper.clone());
+        let note_sources = parts
+            .iter()
+            .flat_map(|part| {
+                part.notes
+                    .iter()
+                    .map(move |note| (part.start_beats - start + note.start_beats, note.clone()))
+            })
+            .collect::<Vec<_>>();
+        let event_sources = parts
+            .iter()
+            .flat_map(|part| {
+                part.controller_events.iter().map(move |event| {
+                    (
+                        part.start_beats - start + event.position_beats,
+                        event.clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for (offset, note) in note_sources {
+            let _ = self.add_midi_note_on_channel(
+                track_index,
+                keeper.id,
+                offset,
+                note.duration_beats,
+                note.pitch,
+                note.channel,
+                note.velocity,
+            );
+        }
+        for (offset, event) in event_sources {
+            let _ = self.add_midi_controller_event_on_channel(
+                track_index,
+                keeper.id,
+                offset,
+                event.controller,
+                event.channel,
+                event.value,
+            );
+        }
+        // A selection on a removed part follows the merged one, so the project
+        // never points at a part that no longer exists.
+        if self
+            .selected_midi_part_id
+            .is_some_and(|selected_id| remove.contains(&selected_id))
+        {
+            self.selected_midi_part_id = Some(keeper.id);
+        }
+        if self.validate().is_err() {
+            return None;
+        }
+        Some(keeper.id)
+    }
+
     /// Locks or unlocks the given events and reports how many changed.
     ///
     /// A locked event keeps its audio and its place but refuses move, trim,
@@ -4929,6 +5112,111 @@ mod sample_edit_tests {
         // An empty mapping is a no-op.
         assert_eq!(project.relink_media(&BTreeMap::new()), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn splitting_a_midi_part_keeps_every_note_on_one_side_of_the_cut() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let track_id = project.tracks[0].id;
+        let part = project.add_midi_part(0, 0.0, 8.0).expect("part");
+        // Two notes before the cut at beat 4, one crossing it, one after.
+        for (start, duration, pitch) in [
+            (0.0, 1.0, 60),
+            (2.0, 1.0, 62),
+            (3.5, 1.0, 64),
+            (5.0, 1.0, 65),
+        ] {
+            project
+                .add_midi_note_on_channel(0, part, start, duration, pitch, 0, 100)
+                .expect("note");
+        }
+
+        let right = project
+            .split_midi_part(track_id, part, 4.0)
+            .expect("split at beat 4");
+        assert_ne!(right, part);
+
+        let left_part = project.tracks[0]
+            .midi_parts
+            .iter()
+            .find(|candidate| candidate.id == part)
+            .expect("left part");
+        let right_part = project.tracks[0]
+            .midi_parts
+            .iter()
+            .find(|candidate| candidate.id == right)
+            .expect("right part");
+        assert_eq!(left_part.start_beats, 0.0);
+        assert_eq!(left_part.duration_beats, 4.0);
+        assert_eq!(right_part.start_beats, 4.0);
+        assert_eq!(right_part.duration_beats, 4.0);
+
+        // The crossing note is cut rather than dropped: 64 ends at the cut and a
+        // 64 starts the right part at its own zero.
+        assert!(left_part.notes.iter().any(|note| note.pitch == 64));
+        assert!(right_part.notes.iter().any(|note| note.pitch == 64));
+        assert!(right_part.notes.iter().any(|note| note.pitch == 65));
+        assert!(!right_part.notes.iter().any(|note| note.pitch == 60));
+        assert!(project.validate().is_ok());
+
+        // A cut outside the part is refused.
+        assert!(project.split_midi_part(track_id, part, 0.0).is_none());
+        assert!(project.split_midi_part(track_id, part, 99.0).is_none());
+    }
+
+    #[test]
+    fn merging_parts_keeps_every_note_at_its_musical_position() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let track_id = project.tracks[0].id;
+        let first = project.add_midi_part(0, 0.0, 4.0).expect("part");
+        let second = project.add_midi_part(0, 4.0, 4.0).expect("part");
+        project
+            .add_midi_note_on_channel(0, first, 1.0, 1.0, 60, 0, 100)
+            .expect("note");
+        project
+            .add_midi_note_on_channel(0, second, 0.5, 1.0, 64, 0, 100)
+            .expect("note");
+        project
+            .add_midi_controller_event_on_channel(0, second, 1.0, 11, 0, 64)
+            .expect("event");
+
+        let merged = project
+            .merge_midi_parts(track_id, &[first, second])
+            .expect("merge");
+        assert_eq!(merged, first, "the earliest part keeps its identity");
+        assert_eq!(project.tracks[0].midi_parts.len(), 1);
+        let part = &project.tracks[0].midi_parts[0];
+        assert_eq!(part.start_beats, 0.0);
+        assert_eq!(part.duration_beats, 8.0);
+        // The second part's note was at its own 0.5, so it lands at 4.5 here.
+        let positions = part
+            .notes
+            .iter()
+            .map(|note| (note.start_beats, note.pitch))
+            .collect::<Vec<_>>();
+        assert!(
+            positions
+                .iter()
+                .any(|(start, pitch)| (*start - 1.0).abs() < 1e-9 && *pitch == 60)
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|(start, pitch)| (*start - 4.5).abs() < 1e-9 && *pitch == 64)
+        );
+        assert_eq!(part.controller_events.len(), 1);
+        assert!((part.controller_events[0].position_beats - 5.0).abs() < 1e-9);
+        assert!(project.validate().is_ok());
+
+        // Merging needs two existing parts on the track.
+        assert!(project.merge_midi_parts(track_id, &[first]).is_none());
+        assert!(
+            project
+                .merge_midi_parts(track_id, &[first, 9_999])
+                .is_none()
+        );
     }
 
     #[test]

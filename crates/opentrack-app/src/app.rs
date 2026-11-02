@@ -6818,6 +6818,110 @@ impl OpenTrackApp {
         self.status_message = "Removed the marker; Undo restores it".to_owned();
     }
 
+    /// Splits the selected MIDI part at the transport position, one undo step.
+    fn split_selected_midi_part_at_cursor(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before splitting a MIDI part".to_owned();
+            return;
+        }
+        let (Some(track_id), Some(part_id)) = (
+            self.data
+                .project
+                .selected_track
+                .and_then(|index| self.data.project.tracks.get(index as usize))
+                .map(|track| track.id),
+            self.data.project.selected_midi_part_id,
+        ) else {
+            self.status_message = "Select a MIDI part to split".to_owned();
+            return;
+        };
+        let beat = self.data.transport.position_beats;
+        let mut candidate = self.data.project.clone();
+        let Some(new_part) = candidate.split_midi_part(track_id, part_id, beat) else {
+            self.status_message = "The cursor is not inside the selected MIDI part".to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot split: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Split MIDI Part");
+        self.data.project = candidate;
+        self.data.project.selected_midi_part_id = Some(new_part);
+        self.selected_midi_note_ids.clear();
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "Split the MIDI part at the cursor; Undo joins it back".to_owned();
+    }
+
+    /// Merges the selected MIDI parts on one track, one undo step.
+    fn merge_selected_midi_parts(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before merging MIDI parts".to_owned();
+            return;
+        }
+        let Some(track_id) = self
+            .data
+            .project
+            .selected_track
+            .and_then(|index| self.data.project.tracks.get(index as usize))
+            .map(|track| track.id)
+        else {
+            self.status_message = "Select a MIDI track to merge its parts".to_owned();
+            return;
+        };
+        let Some(selected) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part to merge".to_owned();
+            return;
+        };
+        let ids = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .map(|track| {
+                track
+                    .midi_parts
+                    .iter()
+                    .map(|part| part.id)
+                    .filter(|id| *id == selected || is_adjacent_part(track, *id, selected))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if ids.len() < 2 {
+            self.status_message =
+                "Merge needs a selected part and a part touching or overlapping it".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let Some(merged) = candidate.merge_midi_parts(track_id, &ids) else {
+            self.status_message = "The selected MIDI parts could not be merged".to_owned();
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot merge: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Merge MIDI Parts");
+        self.data.project = candidate;
+        self.data.project.selected_midi_part_id = Some(merged);
+        self.selected_midi_note_ids.clear();
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "Merged the adjacent MIDI parts; Undo splits them again".to_owned();
+    }
+
     /// Transposes the selected notes as one undo step.
     fn transpose_selected_notes(&mut self, semitones: i16) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
@@ -9971,6 +10075,32 @@ impl OpenTrackApp {
                             });
                     if menu_command(ui, "Move to Cursor", "Ctrl+L", can_move_to_cursor).clicked() {
                         self.move_selected_audio_events_to_cursor();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
+                        "Split MIDI Part at Cursor",
+                        "",
+                        self.project_open
+                            && !self.is_recording()
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.split_selected_midi_part_at_cursor();
+                        ui.close();
+                    }
+                    if menu_command(
+                        ui,
+                        "Merge MIDI Parts",
+                        "",
+                        self.project_open
+                            && !self.is_recording()
+                            && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.merge_selected_midi_parts();
                         ui.close();
                     }
                     if menu_command(
@@ -17727,86 +17857,29 @@ fn select_arrange_track(
     *selected_midi_part_id = None;
 }
 
+/// True when two parts on one track touch or overlap.
+fn is_adjacent_part(track: &opentrack_core::project::Track, first: u64, second: u64) -> bool {
+    let (Some(a), Some(b)) = (
+        track.midi_parts.iter().find(|part| part.id == first),
+        track.midi_parts.iter().find(|part| part.id == second),
+    ) else {
+        return false;
+    };
+    let (a_start, a_end) = (a.start_beats, a.start_beats + a.duration_beats);
+    let (b_start, b_end) = (b.start_beats, b.start_beats + b.duration_beats);
+    a_start <= b_end + 1e-6 && b_start <= a_end + 1e-6
+}
+
 fn split_midi_part(
     project: &mut Project,
     track_index: usize,
     part_id: u64,
     beat: f64,
 ) -> Option<u64> {
-    let part_index = project
-        .tracks
-        .get(track_index)?
-        .midi_parts
-        .iter()
-        .position(|part| part.id == part_id)?;
-    let original = project.tracks[track_index].midi_parts[part_index].clone();
-    let split_offset = beat - original.start_beats;
-    if !split_offset.is_finite()
-        || split_offset < 0.0625
-        || split_offset > original.duration_beats - 0.0625
-    {
-        return None;
-    }
-
-    {
-        let left = &mut project.tracks[track_index].midi_parts[part_index];
-        left.duration_beats = split_offset;
-        left.notes.retain_mut(|note| {
-            if note.start_beats >= split_offset {
-                return false;
-            }
-            note.duration_beats = note.duration_beats.min(split_offset - note.start_beats);
-            note.duration_beats > 0.0
-        });
-        left.controller_events
-            .retain(|event| event.position_beats < split_offset);
-    }
-
-    let new_part_id = project.add_midi_part(
-        track_index,
-        original.start_beats + split_offset,
-        original.duration_beats - split_offset,
-    )?;
-    {
-        let new_part = project.tracks[track_index]
-            .midi_parts
-            .iter_mut()
-            .find(|part| part.id == new_part_id)?;
-        new_part.name = format!("{} (split)", original.name);
-    }
-
-    for note in original.notes {
-        let end = note.start_beats + note.duration_beats;
-        if end <= split_offset {
-            continue;
-        }
-        let start = (note.start_beats - split_offset).max(0.0);
-        let duration = end.min(original.duration_beats) - split_offset.max(note.start_beats);
-        if duration > 0.0 {
-            let _ = project.add_midi_note_on_channel(
-                track_index,
-                new_part_id,
-                start,
-                duration,
-                note.pitch,
-                note.channel,
-                note.velocity,
-            );
-        }
-    }
-    for event in original.controller_events {
-        if event.position_beats >= split_offset {
-            let _ = project.add_midi_controller_event_on_channel(
-                track_index,
-                new_part_id,
-                event.position_beats - split_offset,
-                event.controller,
-                event.channel,
-                event.value,
-            );
-        }
-    }
-    Some(new_part_id)
+    // The rule lives in the project, so the gesture, the menu command and the
+    // tests all split a part the same way.
+    let track_id = project.tracks.get(track_index)?.id;
+    project.split_midi_part(track_id, part_id, beat)
 }
 
 fn show_midi_editor(
@@ -23261,6 +23334,44 @@ mod midi_quantize_tests {
         app.quantize_selected_notes(QuantizeOptions::default());
         assert!(app.status_message.contains("Select a MIDI part"));
         assert_eq!(app.data.project, before);
+    }
+
+    #[test]
+    fn splitting_and_merging_midi_parts_are_labelled_undo_steps() {
+        let mut app = app_with_part();
+        app.data.transport.position_beats = 2.0;
+        app.data.project.selected_track = Some(0);
+        app.split_selected_midi_part_at_cursor();
+        assert_eq!(app.data.project.tracks[0].midi_parts.len(), 2);
+        assert!(app.data.project.selected_midi_part_id.is_some());
+        assert!(app.status_message.contains("Split the MIDI part"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Split MIDI Part");
+
+        // The two halves are adjacent, so the merge command takes both.
+        app.merge_selected_midi_parts();
+        assert_eq!(app.data.project.tracks[0].midi_parts.len(), 1);
+        assert!(
+            app.status_message
+                .contains("Merged the adjacent MIDI parts")
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Merge MIDI Parts");
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn splitting_outside_the_part_and_merging_without_a_neighbour_report() {
+        let mut app = app_with_part();
+        app.data.project.selected_track = Some(0);
+        // The part spans 0..8, so the cursor at 20 is outside it.
+        app.data.transport.position_beats = 20.0;
+        app.split_selected_midi_part_at_cursor();
+        assert!(app.status_message.contains("cursor is not inside"));
+
+        app.merge_selected_midi_parts();
+        assert!(app.status_message.contains("touching or overlapping"));
+        assert_eq!(app.data.project.tracks[0].midi_parts.len(), 1);
     }
 
     #[test]

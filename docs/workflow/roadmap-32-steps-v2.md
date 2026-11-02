@@ -146,7 +146,15 @@ Still open from revision 1:
    unasked octave, and offsets velocity with clamping at 1 and 127. The Edit menu's
    "Transpose / Velocity..." dialog applies either as its own labelled undo step.
    4 core and 2 app tests.
-17. **MIDI part editing**: split a part at the cursor and merge adjacent parts.
+17. **MIDI part editing.** *Delivered.* `Project::split_midi_part` cuts a part at
+   an absolute beat — notes and controller events before the cut stay, those after
+   move, and a note crossing the cut is itself split so no played note is lost —
+   and `Project::merge_midi_parts` joins parts on one track into the earliest
+   part's span, keeping every note at its musical position and following the
+   selection. The arrange's Split tool now calls the same core rule. Edit > Split
+   MIDI Part at Cursor and Merge MIDI Parts are labelled undo steps; merge takes
+   the selected part plus any part touching or overlapping it. 2 core and 2 app
+   tests.
 
 ### E. Recording and monitoring
 
