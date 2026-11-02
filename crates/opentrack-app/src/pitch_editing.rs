@@ -110,9 +110,16 @@ fn note_handle_mode(note_rect: Rect, pos: Pos2) -> Option<u8> {
         }
     }
     let handle = note_handle_rects(note_rect)?.first()?.1.width();
+    // The anchor strip sits on the note's top edge and must stay clear of its
+    // middle: a short note is 12 px tall, so a fixed 7 px strip would swallow
+    // every body click and turn it into an anchor move.
+    let anchor_height = 7.0_f32.min(note_rect.height() * 0.4).max(3.0);
     let anchor_line = Rect::from_min_max(
         Pos2::new(note_rect.left() + handle + 5.0, note_rect.top()),
-        Pos2::new(note_rect.right() - handle - 5.0, note_rect.top() + 7.0),
+        Pos2::new(
+            note_rect.right() - handle - 5.0,
+            note_rect.top() + anchor_height,
+        ),
     );
     anchor_line
         .is_positive()
@@ -982,6 +989,29 @@ impl NoteEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_pitch_anchor_strip_never_covers_a_short_notes_middle() {
+        for height in [12.0_f32, 16.0, 24.0, 60.0] {
+            let note =
+                Rect::from_min_max(Pos2::new(100.0, 100.0), Pos2::new(300.0, 100.0 + height));
+            assert_eq!(
+                note_handle_mode(note, note.center()),
+                None,
+                "a body click must stay a body click at {height} px"
+            );
+            assert_eq!(
+                note_handle_mode(note, Pos2::new(note.center().x, note.top() + 1.0)),
+                Some(PITCH_ANCHOR_MODE),
+                "the top edge still grabs the anchor at {height} px"
+            );
+            assert_eq!(
+                note_handle_mode(note, Pos2::new(note.center().x, note.bottom() - 1.0)),
+                None,
+                "the lower edge is the split band, not the anchor, at {height} px"
+            );
+        }
+    }
+
     #[test]
     fn corner_handles_stay_inside_the_note_at_every_row_height() {
         for height in [12.0, 20.0, 40.0] {

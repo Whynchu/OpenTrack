@@ -1365,6 +1365,7 @@ pub(super) mod tests {
         let ctx = egui::Context::default();
         let sources = HashMap::from([(path.clone(), source)]);
         let mut history = ProjectHistory::default();
+        let drawn_note = std::cell::Cell::new(None::<Rect>);
         let frame = |events: Vec<egui::Event>,
                      project: &mut Project,
                      state: &mut State,
@@ -1390,6 +1391,26 @@ pub(super) mod tests {
                     );
                 },
             );
+            // The pitch note: a wide, note-height filled rectangle inside the
+            // editor's pitch area, not the overview strip or the scrollbar.
+            if let Some(rect) = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.width() > 400.0
+                            && (10.0..=20.0).contains(&rect.rect.height())
+                            && rect.rect.top() > 100.0
+                            && rect.rect.bottom() < 480.0 =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .last()
+            {
+                drawn_note.set(Some(rect));
+            }
             output.textures_delta.clear();
             history.finish_frame(project, !ctx.input(|i| i.pointer.any_down()));
         };
@@ -1405,10 +1426,11 @@ pub(super) mod tests {
             ]
         };
         frame(vec![], &mut project, &mut state, &mut history);
-        let wave = Rect::from_min_max(Pos2::new(301.0, 123.0), Pos2::new(1180.0, 478.0));
+        let note_rect = drawn_note.get().expect("the pitch note is drawn");
         let note = state.notes.draft.as_ref().unwrap().notes[0].clone();
-        let y = state.pitch_view.y(note.detected_midi, wave);
-        let cut = Pos2::new(wave.left() + wave.width() * 0.5, y + 4.2);
+        let y = note_rect.center().y;
+        // The split band is the note's lower quarter, below the pitch line.
+        let cut = Pos2::new(note_rect.center().x, note_rect.bottom() - 2.0);
         frame(button(cut, true), &mut project, &mut state, &mut history);
         frame(button(cut, false), &mut project, &mut state, &mut history);
         assert_eq!(project.tracks[0].clips.len(), 1);
@@ -1421,7 +1443,7 @@ pub(super) mod tests {
                 .len(),
             2
         );
-        let press = Pos2::new(wave.left() + wave.width() * 0.25, y);
+        let press = Pos2::new(note_rect.left() + note_rect.width() * 0.25, y);
         let before_drag = project.tracks[0].clips[0]
             .pitch_time
             .as_ref()
@@ -1436,7 +1458,10 @@ pub(super) mod tests {
                 .is_some_and(|audition| audition.note.id == before_drag.id),
             "a held note must request audition even when transport is stopped"
         );
-        let moved = press - Vec2::new(0.0, wave.height() / state.pitch_view.span);
+        // One semitone of vertical travel, measured from the drawn note: the
+        // note is 80% of a semitone row, so the row is height / 0.80.
+        let semitone = note_rect.height() / 0.80;
+        let moved = press - Vec2::new(0.0, semitone);
         frame(
             vec![egui::Event::PointerMoved(moved)],
             &mut project,
