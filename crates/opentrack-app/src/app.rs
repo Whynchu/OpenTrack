@@ -1246,7 +1246,8 @@ struct RecordingRecoveryPrompt {
 /// An autosave from an earlier session that still needs a decision.
 struct ProjectRecoveryPrompt {
     project_root: std::path::PathBuf,
-    pending: project_recovery::PendingAutosave,
+    /// Recovery points, newest first.
+    points: Vec<project_recovery::PendingAutosave>,
 }
 
 struct RecordingSession {
@@ -4390,13 +4391,17 @@ impl OpenTrackApp {
             return;
         };
         self.last_autosave = Instant::now();
-        let Ok(path) = project_recovery::prepare(&root) else {
+        let written_at = opentrack_plugin_scan::unix_time_ms();
+        let Ok(path) = project_recovery::prepare_point(&root, written_at) else {
             return;
         };
         // Plug-in state is captured on a real save; the recovery copy keeps the
         // project as it stands so an autosave never mutates live plug-ins.
-        if let Ok(document) = self.project_file() {
-            let _ = document.write(&path);
+        if let Ok(document) = self.project_file()
+            && document.write(&path).is_ok()
+        {
+            // Keep the newest few points; an older one may predate a bad edit.
+            project_recovery::prune(&root);
         }
     }
 
@@ -4415,12 +4420,13 @@ impl OpenTrackApp {
         let Some(root) = project_path.parent() else {
             return;
         };
-        let Some(pending) = project_recovery::pending(root) else {
+        let points = project_recovery::pending_points(root);
+        if points.is_empty() {
             return;
-        };
+        }
         self.project_recovery = Some(ProjectRecoveryPrompt {
             project_root: root.to_path_buf(),
-            pending,
+            points,
         });
     }
 
@@ -4432,9 +4438,8 @@ impl OpenTrackApp {
         let Some(prompt) = self.project_recovery.as_ref() else {
             return;
         };
-        let age = project_recovery::describe_age(prompt.pending.written);
-        let size = prompt.pending.bytes;
-        let mut recover = false;
+        let points = prompt.points.clone();
+        let mut recover = None;
         let mut discard = false;
         egui::Window::new("Recover Unsaved Changes")
             .id(Id::new("project-recovery"))
@@ -4443,27 +4448,46 @@ impl OpenTrackApp {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.set_min_width(460.0);
+                ui.set_min_width(470.0);
                 ui.label(format!(
-                    "OpenTrack kept a recovery copy of this project's unsaved changes ({age}, {:.1} MB).",
-                    size as f64 / (1024.0 * 1024.0)
+                    "OpenTrack kept {} recovery cop{} of this project's unsaved changes.",
+                    points.len(),
+                    if points.len() == 1 { "y" } else { "ies" }
                 ));
                 ui.label(
-                    "Recovering replaces the opened project with that copy. Discarding removes it \
-                     and keeps the saved project file.",
+                    "Recovering replaces the opened project with the chosen copy. Discarding \
+                     removes every copy and keeps the saved project file.",
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("Recover Changes").clicked() {
-                        recover = true;
-                    }
-                    if ui.button("Discard Changes").clicked() {
-                        discard = true;
-                    }
-                });
+                ui.separator();
+                for (index, point) in points.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let label = if index == 0 {
+                            format!("{} (newest)", project_recovery::describe_age(point.written))
+                        } else {
+                            project_recovery::describe_age(point.written)
+                        };
+                        ui.label(label);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.1} MB",
+                                point.bytes as f64 / (1024.0 * 1024.0)
+                            ))
+                            .small()
+                            .color(theme::palette(ui).muted),
+                        );
+                        if ui.button("Recover").clicked() {
+                            recover = Some(index);
+                        }
+                    });
+                }
+                ui.separator();
+                if ui.button("Discard All").clicked() {
+                    discard = true;
+                }
             });
 
-        if recover {
-            self.apply_recovered_changes();
+        if let Some(index) = recover {
+            self.apply_recovered_changes(index);
         } else if discard {
             if let Some(prompt) = self.project_recovery.take() {
                 match project_recovery::clear(&prompt.project_root) {
@@ -4479,12 +4503,16 @@ impl OpenTrackApp {
         }
     }
 
-    /// Replaces the opened project with the autosave's content.
-    fn apply_recovered_changes(&mut self) {
+    /// Replaces the opened project with one recovery point's content.
+    fn apply_recovered_changes(&mut self, index: usize) {
         let Some(prompt) = self.project_recovery.take() else {
             return;
         };
-        let document = match ProjectFile::read(&prompt.pending.path) {
+        let Some(point) = prompt.points.get(index) else {
+            self.status_message = "That recovery copy is no longer available".to_owned();
+            return;
+        };
+        let document = match ProjectFile::read(&point.path) {
             Ok(document) => document,
             Err(error) => {
                 self.status_message = format!("Could not read the recovery copy: {error}");
@@ -23259,8 +23287,16 @@ mod project_recovery_tests {
 
         let pending = project_recovery::pending(&root).expect("autosave written");
         assert_eq!(
-            pending.path,
-            root.join("Metadata").join("Recovery").join("autosave.opr")
+            pending.path.parent(),
+            Some(root.join("Metadata").join("Recovery").as_path()),
+            "the point lives in the project's recovery folder"
+        );
+        assert!(
+            pending
+                .path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("recovery-")),
+            "points are timestamped so several can coexist"
         );
         let document = ProjectFile::read(&pending.path).expect("the copy is a real project file");
         assert_eq!(document.project.tracks.len(), 2);
@@ -23294,16 +23330,16 @@ mod project_recovery_tests {
     fn autosaves_are_rate_limited_so_a_drag_does_not_rewrite_the_project() {
         let (root, mut app) = autosave_fixture("rate");
         app.maybe_autosave();
-        let first = std::fs::metadata(project_recovery::autosave_path(&root))
+        let first = project_recovery::pending_points(&root)
+            .first()
             .expect("written")
-            .modified()
-            .expect("mtime");
+            .written;
         app.data.project.tracks[0].name = "Changed".to_owned();
         app.maybe_autosave();
-        let second = std::fs::metadata(project_recovery::autosave_path(&root))
+        let second = project_recovery::pending_points(&root)
+            .first()
             .expect("written")
-            .modified()
-            .expect("mtime");
+            .written;
         assert_eq!(first, second, "the interval has not elapsed yet");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -23319,10 +23355,10 @@ mod project_recovery_tests {
         assert_eq!(app.data.project.tracks.len(), 1);
         app.project_recovery = Some(ProjectRecoveryPrompt {
             project_root: root.clone(),
-            pending,
+            points: vec![pending],
         });
         assert!(app.modal_dialog_open());
-        app.apply_recovered_changes();
+        app.apply_recovered_changes(0);
 
         assert_eq!(app.data.project.tracks.len(), 2);
         assert_eq!(app.data.project.tracks[0].name, "Guitar");
@@ -23359,7 +23395,7 @@ mod project_recovery_tests {
         assert_eq!(app.data.project.tracks.len(), 1);
         assert!(app.modal_dialog_open());
 
-        app.apply_recovered_changes();
+        app.apply_recovered_changes(0);
         assert_eq!(
             app.data.project.tracks.len(),
             2,
@@ -23414,7 +23450,7 @@ mod project_recovery_tests {
         let pending = project_recovery::pending(&root).expect("autosave again");
         app.project_recovery = Some(ProjectRecoveryPrompt {
             project_root: root.clone(),
-            pending,
+            points: vec![pending],
         });
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(

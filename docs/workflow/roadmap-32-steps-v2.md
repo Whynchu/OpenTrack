@@ -110,8 +110,11 @@ Still open from revision 1:
    name case-insensitively, and applies the matches as one undo step labelled
    "Relink Media", opening the relinked audio and reporting anything still
    missing. 1 core and 1 app test.
-12. **Multiple recovery points.** Keep the last N recovery copies and let the
-    user pick one, instead of one autosave file.
+12. **Multiple recovery points.** *Delivered.* Autosave now writes timestamped
+   points (`Metadata/Recovery/recovery-<ms>.opr`), keeps the newest 5 and prunes
+   the rest on disk. Opening a project with points lists each one with its age and
+   size, recovers the chosen copy, or discards them all; a single legacy
+   `autosave.opr` is still offered. 2 tests.
 13. **Project templates.** Save the current project's structure as a template and
     create new projects from it.
 14. **Session health check.** A dialog that reports unsupported sample rates,
