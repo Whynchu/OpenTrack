@@ -472,6 +472,8 @@ struct TrackAddDialog {
     audio_channels: u8,
     mono_input_right: bool,
     browse_presets: bool,
+    /// Index into the scanned VST3 instrument list, or none for an empty track.
+    instrument: Option<usize>,
 }
 
 fn mono_track_input_routing(right_channel: bool) -> &'static str {
@@ -8580,6 +8582,7 @@ impl OpenTrackApp {
                                     audio_channels: 1,
                                     mono_input_right: false,
                                     browse_presets: true,
+                                    instrument: None,
                                 });
                                 ui.close();
                             }
@@ -10821,6 +10824,7 @@ impl OpenTrackApp {
                     audio_channels: 1,
                     mono_input_right: false,
                     browse_presets: false,
+                    instrument: None,
                 });
             }
             Some(project_controls::Action::Remove(id)) => {
@@ -11132,14 +11136,46 @@ impl OpenTrackApp {
                                         }
                                         TrackKind::Instrument => {
                                             ui.vertical(|ui| {
-                                                ui.add_enabled_ui(false, |ui| {
-                                                    egui::Button::new("Instrument unavailable")
-                                                        .min_size(Vec2::new(160.0, 16.0))
+                                                let instruments = self
+                                                    .vst3_plugin_catalog
+                                                    .iter()
+                                                    .filter(|plugin| {
+                                                        plugin.category
+                                                            == PluginCategory::Instrument
+                                                    })
+                                                    .collect::<Vec<_>>();
+                                                let selected = dialog
+                                                    .instrument
+                                                    .and_then(|index| instruments.get(index))
+                                                    .map(|plugin| plugin.name.as_str())
+                                                    .unwrap_or("No Instrument");
+                                                egui::ComboBox::from_id_salt(
+                                                    "add-instrument-track",
+                                                )
+                                                .width(160.0)
+                                                .selected_text(selected)
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut dialog.instrument,
+                                                        None,
+                                                        "No Instrument",
+                                                    );
+                                                    for (index, plugin) in
+                                                        instruments.iter().enumerate()
+                                                    {
+                                                        ui.selectable_value(
+                                                            &mut dialog.instrument,
+                                                            Some(index),
+                                                            plugin.name.as_str(),
+                                                        );
+                                                    }
                                                 });
                                                 ui.label(
-                                                    egui::RichText::new(
-                                                        "instrument selection unavailable",
-                                                    )
+                                                    egui::RichText::new(if instruments.is_empty() {
+                                                        "no VST3 instruments found; scan plug-ins in Preferences"
+                                                    } else {
+                                                        "instrument"
+                                                    })
                                                     .size(10.0),
                                                 );
                                             });
@@ -11205,6 +11241,9 @@ impl OpenTrackApp {
                 }
                 last_track_id = self.data.project.tracks.get(index).map(|track| track.id);
             }
+            if dialog.kind == TrackKind::Instrument {
+                self.load_dialog_instrument(dialog.instrument);
+            }
             self.arrange_view_state.selected_track_ids.clear();
             if let Some(track_id) = last_track_id {
                 self.arrange_view_state.selected_track_ids.insert(track_id);
@@ -11214,6 +11253,39 @@ impl OpenTrackApp {
             self.rebuild_audio_plan();
         } else if !cancelled && open {
             self.track_add_dialog = Some(dialog);
+        }
+    }
+
+    /// Loads the Add Track dialog's chosen instrument on the newest instrument track.
+    ///
+    /// The instrument becomes that track's first insert, so it is saved and
+    /// reloaded with the project like any other insert.
+    fn load_dialog_instrument(&mut self, instrument: Option<usize>) {
+        let Some(plugin) = instrument.and_then(|index| {
+            self.vst3_plugin_catalog
+                .iter()
+                .filter(|plugin| plugin.category == PluginCategory::Instrument)
+                .nth(index)
+        }) else {
+            return;
+        };
+        let kind = vst3_insert_effect(plugin);
+        if let Some(track) = self
+            .data
+            .project
+            .tracks
+            .iter_mut()
+            .rev()
+            .find(|track| track.kind == TrackKind::Instrument)
+        {
+            track.inserts.insert(
+                0,
+                opentrack_core::project::InsertEffect {
+                    enabled: true,
+                    bypassed: false,
+                    kind,
+                },
+            );
         }
     }
 
@@ -21002,6 +21074,101 @@ mod plugin_catalog_tests {
                 .expect("catalog round-trip");
         assert_eq!(restored_folders, folders);
         assert_eq!(restored_catalog, catalog);
+    }
+}
+
+#[cfg(test)]
+mod add_track_instrument_tests {
+    use super::*;
+    use opentrack_plugins::{PluginArchitecture, PluginClassId, PluginFormat, PluginScanStatus};
+
+    fn descriptor(seed: u8, name: &str, category: PluginCategory) -> PluginDescriptor {
+        PluginDescriptor {
+            format: PluginFormat::Vst3,
+            class_id: PluginClassId::from_bytes([seed; 16]),
+            name: name.to_owned(),
+            vendor: "Example Audio".to_owned(),
+            version: "1.0".to_owned(),
+            category,
+            subcategories: Vec::new(),
+            module_path: PathBuf::from(format!(r"C:\VST3\{name}.vst3")),
+            architecture: PluginArchitecture::X64,
+            buses: Vec::new(),
+            parameter_count: 0,
+            parameters: Vec::new(),
+            has_editor: false,
+            latency_samples: 0,
+            tail_samples: 0,
+            scan_status: PluginScanStatus::Enumerated,
+            scanned_at_unix_ms: 1_700_000_000_000,
+            diagnostics: None,
+        }
+    }
+
+    fn app_with_catalog() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.vst3_plugin_catalog = vec![
+            descriptor(1, "Studio Compressor", PluginCategory::Effect),
+            descriptor(2, "Pad Synth", PluginCategory::Instrument),
+            descriptor(3, "Grand Piano", PluginCategory::Instrument),
+        ];
+        app
+    }
+
+    #[test]
+    fn the_chosen_instrument_becomes_the_new_tracks_first_insert() {
+        let mut app = app_with_catalog();
+        app.data
+            .project
+            .insert_track_below_selection(TrackKind::Instrument, 2);
+        app.load_dialog_instrument(Some(1));
+        let track = app
+            .data
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Instrument)
+            .expect("instrument track");
+        assert_eq!(track.inserts.len(), 1);
+        assert!(track.inserts[0].enabled);
+        match &track.inserts[0].kind {
+            opentrack_core::project::InsertEffectKind::Vst3 { name, class_id, .. } => {
+                assert_eq!(name, "Grand Piano", "the index counts instruments only");
+                assert_eq!(*class_id, PluginClassId::from_bytes([3; 16]).to_hex());
+            }
+            other => panic!("expected a VST3 instrument insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_instrument_or_no_instrument_track_leaves_the_project_alone() {
+        let mut app = app_with_catalog();
+        app.data
+            .project
+            .insert_track_below_selection(TrackKind::Instrument, 2);
+        let before = app.data.project.clone();
+        app.load_dialog_instrument(None);
+        assert_eq!(app.data.project, before, "no instrument selected");
+
+        // An out-of-range index (the catalog changed) is ignored as well.
+        app.load_dialog_instrument(Some(9));
+        assert_eq!(app.data.project, before);
+    }
+
+    #[test]
+    fn an_audio_track_never_receives_the_dialog_instrument() {
+        let mut app = app_with_catalog();
+        app.data
+            .project
+            .insert_track_below_selection(TrackKind::Audio, 2);
+        let before = app.data.project.clone();
+        app.load_dialog_instrument(Some(0));
+        assert_eq!(
+            app.data.project, before,
+            "there is no instrument track to load the plug-in on"
+        );
     }
 }
 
