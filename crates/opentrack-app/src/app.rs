@@ -3099,6 +3099,7 @@ impl OpenTrackApp {
                     track
                         .clips
                         .iter()
+                        .filter(|clip| audio_events::clip_is_audible(clip))
                         .map(|clip| {
                             (
                                 clip.id,
@@ -6127,6 +6128,13 @@ impl OpenTrackApp {
             "edit.split_at_cursor" => self.split_selected_audio_events_at_cursor(),
             "audio.crossfade" => self.crossfade_selected_audio_events(),
             "edit.move_to_cursor" => self.move_selected_audio_events_to_cursor(),
+            "edit.duplicate" => self.duplicate_selected_audio_events(),
+            "edit.mute_events" => self.set_selected_audio_events_muted(true),
+            "edit.unmute_events" => self.set_selected_audio_events_muted(false),
+            "edit.mute_unmute_objects" => self.toggle_selected_audio_events_muted(),
+            // Ctrl+A belongs to a focused text field, not to the event selection.
+            "edit.select_all" if !ctx.egui_wants_keyboard_input() => self.select_all_audio_events(),
+            "edit.select_none" if !ctx.egui_wants_keyboard_input() => self.select_no_audio_events(),
             "edit.open_default_editor" => self.open_selected_midi_editor(),
             "edit.open_close_editor" => self.midi_editor_open = false,
             "devices.mixer" => self.focus_tab(PanelTab::Mixer),
@@ -8418,12 +8426,7 @@ impl OpenTrackApp {
                                         .selected_ids()
                                         .contains(&clip.id)
                                 })
-                        })
-                        && self
-                            .arrange_view_state
-                            .audio_events
-                            .selected_group_segment()
-                            .is_none();
+                        });
                     if menu_command(ui, "Split at Cursor", "Alt+X", can_split).clicked() {
                         self.split_selected_audio_events_at_cursor();
                         ui.close();
@@ -8480,38 +8483,53 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.menu_button("Range", |ui| {
-                        disabled_menu_commands(
-                            ui,
-                            &[
-                                ("Select in Loop", ""),
-                                ("Set Left Locator", ""),
-                                ("Set Right Locator", ""),
-                                ("Crop", ""),
-                            ],
-                        );
+                        if menu_command(ui, "Select in Loop", "", self.project_open).clicked() {
+                            self.select_audio_events_in_loop();
+                            ui.close();
+                        }
+                        let has_selection = can_move_to_cursor;
+                        if menu_command(ui, "Set Left Locator", "", has_selection).clicked() {
+                            self.set_locator_from_selection(true);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Set Right Locator", "", has_selection).clicked() {
+                            self.set_locator_from_selection(false);
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Crop", "")]);
                     });
                     ui.menu_button("Select", |ui| {
-                        disabled_menu_commands(
-                            ui,
-                            &[
-                                ("All", "Ctrl+A"),
-                                ("None", "Ctrl+Shift+A"),
-                                ("Invert", ""),
-                                ("Events under Cursor", ""),
-                            ],
-                        );
+                        if menu_command(ui, "All Events", "Ctrl+A", self.project_open).clicked() {
+                            self.select_all_audio_events();
+                            ui.close();
+                        }
+                        if menu_command(ui, "None", "Ctrl+Shift+A", self.project_open).clicked() {
+                            self.select_no_audio_events();
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Invert", ""), ("Events under Cursor", "")]);
                     });
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Duplicate", "Ctrl+D"),
-                            ("Repeat...", "Ctrl+K"),
-                            ("Fill Loop", ""),
-                        ],
-                    );
+                    let can_duplicate = can_move_to_cursor;
+                    if menu_command(ui, "Duplicate", "Ctrl+D", can_duplicate).clicked() {
+                        self.duplicate_selected_audio_events();
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Repeat...", "Ctrl+K"), ("Fill Loop", "")]);
                     ui.menu_button("Move to", |ui| {
                         disabled_menu_commands(ui, &[("Left Locator", ""), ("Right Locator", "")]);
                     });
+                    if menu_command(ui, "Mute Events", "Shift+M", can_duplicate).clicked() {
+                        self.set_selected_audio_events_muted(true);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Unmute Events", "Shift+U", can_duplicate).clicked() {
+                        self.set_selected_audio_events_muted(false);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Mute/Unmute Objects", "Alt+M", can_duplicate).clicked() {
+                        self.toggle_selected_audio_events_muted();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
@@ -8520,8 +8538,6 @@ impl OpenTrackApp {
                             ("Ungroup", "Ctrl+U"),
                             ("Lock...", "Ctrl+Shift+L"),
                             ("Unlock", "Ctrl+Shift+U"),
-                            ("Mute", "Shift+M"),
-                            ("Unmute", "Shift+U"),
                             ("Project Logical Editor...", ""),
                             ("Process Project Logical Editor", ""),
                             ("Automation follows Events", ""),

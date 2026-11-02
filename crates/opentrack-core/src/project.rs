@@ -698,6 +698,9 @@ pub struct AudioClip {
     pub fade_out_seconds: f64,
     /// Linear event gain, 0.0 through 4.0 (approximately +12 dB).
     pub gain: f32,
+    /// A muted event keeps its place, fades and gain but produces no audio.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 /// A MIDI event container arranged on the project beat timeline.
@@ -1667,6 +1670,83 @@ impl Project {
         Some(id)
     }
 
+    /// Copies the given events directly after the selection's span.
+    ///
+    /// The copy keeps the source, trim, fades, gain and mute state, so it is a
+    /// real event rather than a reference to the original. A single event is
+    /// duplicated immediately after itself; several are shifted by the whole
+    /// selection's length, which keeps their spacing.
+    pub fn duplicate_audio_clips(&mut self, ids: &[u64]) -> Vec<u64> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut start = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        let mut targets = Vec::new();
+        for (track_index, track) in self.tracks.iter().enumerate() {
+            if track.kind != TrackKind::Audio {
+                continue;
+            }
+            for (clip_index, clip) in track.clips.iter().enumerate() {
+                if !selected.contains(&clip.id) {
+                    continue;
+                }
+                start = start.min(clip.start_beats);
+                end = end.max(clip.start_beats + clip.duration_seconds * self.tempo_bpm / 60.0);
+                targets.push((track_index, clip_index));
+            }
+        }
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        let offset = end - start;
+        if !offset.is_finite() || offset <= 0.0 {
+            return Vec::new();
+        }
+        if self
+            .next_clip_id
+            .checked_add(targets.len() as u64)
+            .is_none()
+        {
+            return Vec::new();
+        }
+        let mut candidate = self.clone();
+        let mut created = Vec::with_capacity(targets.len());
+        for (track_index, clip_index) in targets {
+            let mut copy = candidate.tracks[track_index].clips[clip_index].clone();
+            copy.id = candidate.next_clip_id;
+            candidate.next_clip_id += 1;
+            copy.start_beats += offset;
+            created.push(copy.id);
+            candidate.tracks[track_index].clips.push(copy);
+        }
+        if candidate.validate().is_err() {
+            return Vec::new();
+        }
+        *self = candidate;
+        created
+    }
+
+    /// Mutes or unmutes the given events and reports how many changed.
+    pub fn set_audio_clips_muted(&mut self, ids: &[u64], muted: bool) -> usize {
+        let selected: BTreeSet<u64> = ids.iter().copied().collect();
+        let mut changed = 0;
+        for track in self
+            .tracks
+            .iter_mut()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            for clip in track.clips.iter_mut() {
+                if selected.contains(&clip.id) && clip.muted != muted {
+                    clip.muted = muted;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
     /// Split every descendant audio event crossing one timeline position and
     /// retain the shared virtual-event boundary on the group channel.
     pub fn split_group_audio_clips(&mut self, group_id: u64, at_beats: f64) -> (bool, Vec<u64>) {
@@ -1839,6 +1919,7 @@ impl Project {
             fade_in_seconds: 0.0,
             fade_out_seconds: 0.0,
             gain: 1.0,
+            muted: false,
         });
         Some(id)
     }
@@ -3594,21 +3675,113 @@ mod sample_edit_tests {
         assert!(!p.crossfade_audio_clips(a, b));
         assert_eq!(p, before);
     }
-}
+    #[test]
+    fn duplicating_one_event_places_the_copy_immediately_after_it() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("guitar.wav"), 2.0, 4.0)
+            .unwrap();
+        project.tracks[0].clips[0].gain = 0.5;
+        project.tracks[0].clips[0].fade_in_seconds = 0.25;
+        project.tracks[0].clips[0].muted = true;
 
-impl AudioClip {
-    /// Event-relative sample position used by preview and cut commit.
-    pub fn cut_offset_seconds(&self, beat: f64, tempo: f64, rate: u32) -> Option<f64> {
-        if !beat.is_finite() || !tempo.is_finite() || tempo <= 0.0 {
-            return None;
-        }
-        let rate = rate.max(1) as f64;
-        let seconds = (((beat - self.start_beats) * 60.0 / tempo) * rate).round() / rate;
-        if seconds < 1.0 / rate || self.duration_seconds - seconds < 1.0 / rate {
-            None
-        } else {
-            Some(seconds)
-        }
+        let created = project.duplicate_audio_clips(&[id]);
+        assert_eq!(created.len(), 1);
+        let copy = project.tracks[0]
+            .clips
+            .iter()
+            .find(|clip| clip.id == created[0])
+            .expect("copy");
+        // 4 seconds at 120 BPM is 8 beats, so the copy starts at beat 10.
+        assert!((copy.start_beats - 10.0).abs() < 1e-9);
+        assert_eq!(copy.source_path, PathBuf::from("guitar.wav"));
+        assert_eq!(copy.gain, 0.5);
+        assert_eq!(copy.fade_in_seconds, 0.25);
+        assert!(copy.muted, "a duplicate keeps the original's mute state");
+        assert_eq!(project.tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn duplicating_a_selection_shifts_every_event_by_the_selection_span() {
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(1, PathBuf::from("b.wav"), 6.0, 2.0)
+            .unwrap();
+
+        let created = project.duplicate_audio_clips(&[first, second]);
+        assert_eq!(created.len(), 2);
+        // The selection spans beats 0 through 10, so both copies shift by 10.
+        let starts = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| created.contains(&clip.id))
+            .map(|clip| clip.start_beats)
+            .collect::<Vec<_>>();
+        assert_eq!(starts.len(), 2);
+        assert!(starts.iter().any(|start| (*start - 10.0).abs() < 1e-9));
+        assert!(starts.iter().any(|start| (*start - 16.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn duplicating_nothing_or_an_unknown_event_changes_nothing() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let before = project.clone();
+        assert!(project.duplicate_audio_clips(&[]).is_empty());
+        assert!(project.duplicate_audio_clips(&[9_999]).is_empty());
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn muting_events_is_reversible_and_reports_changes() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let first = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let second = project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 4.0, 2.0)
+            .unwrap();
+
+        assert_eq!(project.set_audio_clips_muted(&[first], true), 1);
+        assert_eq!(project.set_audio_clips_muted(&[first], true), 0);
+        assert!(project.tracks[0].clips[0].muted);
+        assert!(!project.tracks[0].clips[1].muted);
+        assert!(project.validate().is_ok());
+
+        // Only the muted event changes, so unmuting reports one edit.
+        assert_eq!(project.set_audio_clips_muted(&[first, second], false), 1);
+        assert!(project.tracks[0].clips.iter().all(|clip| !clip.muted));
+    }
+
+    #[test]
+    fn muted_events_round_trip_and_older_projects_default_to_unmuted() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        project.tracks[0].clips[0].muted = true;
+        let encoded = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&encoded).unwrap();
+        assert!(restored.tracks[0].clips[0].muted);
+
+        // A clip written before the field existed decodes as audible.
+        let legacy = encoded.replace(",\"muted\":true", "");
+        let legacy: Project = serde_json::from_str(&legacy).unwrap();
+        assert!(!legacy.tracks[0].clips[0].muted);
     }
 }
 
@@ -3626,5 +3799,21 @@ impl Project {
     }
     pub fn register_media(&mut self) {
         self.media_pool = self.media_paths();
+    }
+}
+
+impl AudioClip {
+    /// Event-relative sample position used by preview and cut commit.
+    pub fn cut_offset_seconds(&self, beat: f64, tempo: f64, rate: u32) -> Option<f64> {
+        if !beat.is_finite() || !tempo.is_finite() || tempo <= 0.0 {
+            return None;
+        }
+        let rate = rate.max(1) as f64;
+        let seconds = (((beat - self.start_beats) * 60.0 / tempo) * rate).round() / rate;
+        if seconds < 1.0 / rate || self.duration_seconds - seconds < 1.0 / rate {
+            None
+        } else {
+            Some(seconds)
+        }
     }
 }

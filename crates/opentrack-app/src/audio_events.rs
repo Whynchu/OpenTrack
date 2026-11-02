@@ -257,6 +257,11 @@ fn move_selected_clips_to_cursor(
     }
 }
 
+/// A muted event keeps its place in the project but never reaches playback.
+pub(super) fn clip_is_audible(clip: &AudioClip) -> bool {
+    !clip.muted
+}
+
 impl OpenTrackApp {
     pub(super) fn move_selected_audio_events_to_cursor(&mut self) {
         if self.is_recording() {
@@ -299,6 +304,125 @@ impl OpenTrackApp {
             format!("Moved {moved} audio event(s) to the cursor; Undo restores them");
     }
 
+    /// Copies the selected events after the selection, as one undo step.
+    pub(super) fn duplicate_selected_audio_events(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before duplicating audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to duplicate".into();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let created = candidate.duplicate_audio_clips(&ids);
+        if created.is_empty() {
+            self.status_message = "The selected audio events could not be duplicated".into();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot duplicate: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.arrange_view_state
+            .audio_events
+            .select_many(created.iter().copied());
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Duplicated {} audio event(s) after the selection; Undo removes them",
+            created.len()
+        );
+    }
+
+    /// Mutes or unmutes the selected events as one undo step.
+    pub(super) fn set_selected_audio_events_muted(&mut self, muted: bool) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before muting audio events".into();
+            return;
+        }
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to mute or unmute".into();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let changed = candidate.set_audio_clips_muted(&ids, muted);
+        if changed == 0 {
+            self.status_message = if muted {
+                "The selected audio events are already muted".into()
+            } else {
+                "The selected audio events are already unmuted".into()
+            };
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot change mute: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "{} {changed} audio event(s); Undo restores them",
+            if muted { "Muted" } else { "Unmuted" }
+        );
+    }
+
+    /// Toggles mute on the selection, matching the reference Mute/Unmute Objects command.
+    pub(super) fn toggle_selected_audio_events_muted(&mut self) {
+        let ids = self.arrange_view_state.audio_events.selected_ids();
+        if ids.is_empty() {
+            self.status_message = "Select audio events to mute or unmute".into();
+            return;
+        }
+        let muted = ids.iter().all(|id| {
+            self.data
+                .project
+                .tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .any(|clip| clip.id == *id && clip.muted)
+        });
+        self.set_selected_audio_events_muted(!muted);
+    }
+
+    /// Selects every audio event in the project, across all tracks.
+    pub(super) fn select_all_audio_events(&mut self) {
+        let ids = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| track.clips.iter().map(|clip| clip.id))
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.status_message = "There are no audio events to select".to_owned();
+            return;
+        }
+        let count = ids.len();
+        self.arrange_view_state.audio_events.select_many(ids);
+        self.status_message = format!("Selected {count} audio event(s)");
+    }
+
+    pub(super) fn select_no_audio_events(&mut self) {
+        self.arrange_view_state.audio_events.clear_selection();
+        self.status_message = "Cleared the event selection".to_owned();
+    }
+
     pub(super) fn crossfade_selected_audio_events(&mut self) {
         if self.is_recording() {
             self.status_message = "Stop recording before creating a crossfade".into();
@@ -320,13 +444,34 @@ impl OpenTrackApp {
             self.status_message = "Stop recording before splitting audio events".into();
             return;
         }
-        if self
+        if let Some((group_id, _)) = self
             .arrange_view_state
             .audio_events
             .selected_group_segment()
-            .is_some()
         {
-            self.status_message = "Splitting selected group segments is not available yet".into();
+            // A group segment is a virtual event spanning its members, so it is
+            // split through the group so every member keeps the shared boundary.
+            let beat = self.data.transport.position_beats;
+            let mut candidate = self.data.project.clone();
+            let (changed, _) = candidate.split_group_audio_clips(group_id, beat);
+            if !changed {
+                self.status_message = "The group segment does not cross the cursor".into();
+                return;
+            }
+            self.project_history.finish_frame(&self.data.project, true);
+            if !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+            {
+                self.status_message = "Cannot split: undo snapshot is unavailable".into();
+                return;
+            }
+            self.data.project = candidate;
+            self.project_history.commit_after_frame = true;
+            self.rebuild_audio_plan();
+            self.mark_modified();
+            self.status_message =
+                "Split the group segment at the cursor; Undo restores it".to_owned();
             return;
         }
         let selected: HashSet<_> = self
@@ -361,6 +506,110 @@ impl OpenTrackApp {
         self.mark_modified();
         self.status_message =
             format!("Split {split} audio event(s) at the cursor; Undo restores them");
+    }
+
+    /// Selects every audio event that overlaps the cycle loop.
+    pub(super) fn select_audio_events_in_loop(&mut self) {
+        let start = self.data.project.loop_start_beats;
+        let end = self.data.project.loop_end_beats;
+        if end <= start {
+            self.status_message = "Set a loop range before selecting inside it".to_owned();
+            return;
+        }
+        let tempo = self.data.project.tempo_bpm;
+        let ids = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| {
+                let clip_end = clip.start_beats + clip.duration_seconds * tempo / 60.0;
+                clip.start_beats < end && clip_end > start
+            })
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.status_message = "No audio events overlap the loop".to_owned();
+            return;
+        }
+        let count = ids.len();
+        self.arrange_view_state.audio_events.select_many(ids);
+        self.status_message = format!("Selected {count} audio event(s) in the loop");
+    }
+
+    /// Moves the loop locator to the selection's first or last event edge.
+    pub(super) fn set_locator_from_selection(&mut self, left: bool) {
+        let tempo = self.data.project.tempo_bpm;
+        let selected = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let clips = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| selected.contains(&clip.id))
+            .collect::<Vec<_>>();
+        if clips.is_empty() {
+            self.status_message = "Select audio events to place a locator".to_owned();
+            return;
+        }
+        let edge = if left {
+            clips
+                .iter()
+                .map(|clip| clip.start_beats)
+                .fold(f64::INFINITY, f64::min)
+        } else {
+            clips
+                .iter()
+                .map(|clip| clip.start_beats + clip.duration_seconds * tempo / 60.0)
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        if !edge.is_finite() || edge <= 0.0 {
+            self.status_message = "The selection does not end after the project start".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        if left {
+            if edge >= candidate.loop_end_beats {
+                self.status_message =
+                    "The left locator must stay before the right locator".to_owned();
+                return;
+            }
+            candidate.loop_start_beats = edge;
+        } else {
+            if edge <= candidate.loop_start_beats {
+                self.status_message =
+                    "The right locator must stay after the left locator".to_owned();
+                return;
+            }
+            candidate.loop_end_beats = edge;
+        }
+        if candidate.validate().is_err() {
+            self.status_message = "The locator position is outside the supported range".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = "Cannot move the locator: undo snapshot is unavailable".into();
+            return;
+        }
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.mark_modified();
+        self.status_message = format!(
+            "Set the {} locator to beat {edge:.3}",
+            if left { "left" } else { "right" }
+        );
     }
 
     pub(super) fn cut_selected_audio_events(&mut self) {
@@ -1065,7 +1314,14 @@ fn paint(
         return;
     }
     let painter = ui.painter().with_clip_rect(clip);
-    let alpha = if ghost { 0.28 } else { 1.0 };
+    // A muted event stays readable but clearly inactive, matching its silence.
+    let alpha = if ghost {
+        0.28
+    } else if c.muted {
+        0.45
+    } else {
+        1.0
+    };
     painter.rect_filled(r, 0.0, lane.color.gamma_multiply(alpha));
     let wave = wave_rect(r);
     if let Some(source) = sources
@@ -1107,6 +1363,15 @@ fn paint(
         );
     }
     paint_event_chrome(&painter, c, r, clip, lane.color, selected, ghost);
+    if c.muted && !ghost && r.width() > 18.0 {
+        painter.with_clip_rect(clip).text(
+            r.right_top() + Vec2::new(-4.0, 0.0),
+            Align2::RIGHT_TOP,
+            "M",
+            FontId::proportional(11.0),
+            Color32::WHITE.gamma_multiply(0.8),
+        );
+    }
 }
 
 pub(super) fn paint_group_segment_controls(
@@ -2943,6 +3208,148 @@ mod group_lane_tests {
 #[cfg(test)]
 mod split_selection_tests {
     use super::*;
+
+    #[test]
+    fn split_at_cursor_splits_a_selected_group_segment() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Audio);
+        let group_id = project.tracks[0].id;
+        project.tracks[1].parent_group_id = Some(group_id);
+        app.data.project = project;
+        app.data
+            .project
+            .add_audio_clip(1, PathBuf::from("take.wav"), 0.0, 4.0)
+            .unwrap();
+        let ids = clips_for_group_segment(&app.data.project, group_id, 0.0, 8.0)
+            .into_iter()
+            .map(|(_, clip)| clip.id)
+            .collect::<Vec<_>>();
+        app.arrange_view_state
+            .audio_events
+            .select_group_segment(group_id, 0, ids);
+        app.data.transport.position_beats = 4.0;
+        app.project_history.clear();
+
+        app.split_selected_audio_events_at_cursor();
+
+        assert_eq!(
+            group_audio_segments(&app.data.project, group_id).len(),
+            2,
+            "the group now has two segments"
+        );
+        assert!(app.modified);
+        assert!(app.status_message.contains("group segment"));
+    }
+
+    #[test]
+    fn range_selection_and_locators_follow_the_loop_and_the_selection() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let early = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let late = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("b.wav"), 20.0, 2.0)
+            .unwrap();
+
+        // The loop covers beats 0 through 8, so only the first event overlaps.
+        app.data.project.loop_start_beats = 0.0;
+        app.data.project.loop_end_beats = 8.0;
+        app.select_audio_events_in_loop();
+        assert_eq!(
+            app.arrange_view_state.audio_events.selected_ids(),
+            vec![early]
+        );
+
+        // The first event is 2 s at 120 BPM, so it spans beats 0 through 4.
+        app.set_locator_from_selection(false);
+        assert!((app.data.project.loop_end_beats - 4.0).abs() < 1e-9);
+        app.set_locator_from_selection(true);
+        assert_eq!(app.data.project.loop_start_beats, 0.0);
+
+        // Selecting the later event moves the right locator to beat 24.
+        app.arrange_view_state.audio_events.select_many([late]);
+        app.set_locator_from_selection(false);
+        assert!((app.data.project.loop_end_beats - 24.0).abs() < 1e-9);
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn muted_events_are_excluded_from_playback_but_kept_in_the_project() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        let clip = &project.tracks[0].clips[0];
+        assert!(clip_is_audible(clip));
+        project.set_audio_clips_muted(&[id], true);
+        let clip = &project.tracks[0].clips[0];
+        assert!(!clip_is_audible(clip));
+        assert_eq!(clip.start_beats, 0.0, "the event keeps its position");
+    }
+
+    #[test]
+    fn app_actions_duplicate_mute_and_select_events_as_undo_steps() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.data.project.add_track(TrackKind::Audio);
+        let id = app
+            .data
+            .project
+            .add_audio_clip(0, PathBuf::from("a.wav"), 0.0, 2.0)
+            .unwrap();
+        app.project_history.clear();
+
+        // Duplicate: the copy is created and becomes the selection.
+        app.arrange_view_state.audio_events.select_many([id]);
+        app.duplicate_selected_audio_events();
+        assert_eq!(app.data.project.tracks[0].clips.len(), 2);
+        let selected = app.arrange_view_state.audio_events.selected_ids();
+        assert_eq!(selected.len(), 1);
+        assert_ne!(selected[0], id, "the duplicate is selected");
+        assert!(app.modified);
+
+        // Mute the duplicate, then toggle it back.
+        app.set_selected_audio_events_muted(true);
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .any(|clip| clip.id == selected[0] && clip.muted)
+        );
+        app.toggle_selected_audio_events_muted();
+        assert!(
+            app.data.project.tracks[0]
+                .clips
+                .iter()
+                .all(|clip| !clip.muted)
+        );
+
+        // Select all / none work across the whole project.
+        app.select_all_audio_events();
+        assert_eq!(app.arrange_view_state.audio_events.selected_ids().len(), 2);
+        app.select_no_audio_events();
+        assert!(
+            app.arrange_view_state
+                .audio_events
+                .selected_ids()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn split_selected_clips_splits_each_crossing_event_atomically() {
