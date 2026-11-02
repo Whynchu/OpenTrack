@@ -13276,11 +13276,21 @@ impl OpenTrackApp {
                             self.open_normalize_dialog();
                             ui.close();
                         }
+                        if menu_command(
+                            ui,
+                            "Merge Clipboard",
+                            "",
+                            has_selection && self.audio_event_clipboard.is_some(),
+                        )
+                        .clicked()
+                        {
+                            self.merge_clipboard_into_selected_event();
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
                             &[
                                 ("Envelope...", ""),
-                                ("Merge Clipboard", ""),
                                 ("Time Stretch...", ""),
                                 ("Resample...", ""),
                             ],

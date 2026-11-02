@@ -35,6 +35,95 @@ pub fn reverse_wav_range(
     Ok(range.frames)
 }
 
+/// Bound on layers one merge may mix, so a huge clipboard cannot stall a frame.
+pub const MAX_MERGE_LAYERS: usize = 64;
+
+/// One audio layer mixed into a destination event.
+#[derive(Clone, Copy, Debug)]
+pub struct MergeLayer<'a> {
+    pub path: &'a Path,
+    /// Where the layer starts inside the destination, in seconds.
+    pub start_seconds: f64,
+    /// Offset into the layer's own source, in seconds.
+    pub offset_seconds: f64,
+    /// How many seconds of the layer to mix.
+    pub duration_seconds: f64,
+}
+
+/// Mixes `layers` over the destination event's used range into new media.
+///
+/// The destination keeps its own audio and every layer is added on top, clipped
+/// to the destination's length and clamped to ±1.0. Channel counts are matched by
+/// duplicating a mono layer into both channels or averaging a stereo layer into a
+/// mono destination; a layer with a different sample rate is refused, because
+/// resampling is a separate feature rather than something to do silently.
+pub fn merge_wav_range(
+    destination_source: &Path,
+    destination_offset_seconds: f64,
+    destination_duration_seconds: f64,
+    layers: &[MergeLayer<'_>],
+    destination: &Path,
+) -> Result<u64, String> {
+    if layers.len() > MAX_MERGE_LAYERS {
+        return Err(format!(
+            "merging supports at most {MAX_MERGE_LAYERS} layers at a time"
+        ));
+    }
+    let mut base = read_range(
+        destination_source,
+        destination_offset_seconds,
+        destination_duration_seconds,
+        false,
+    )?;
+    let channels = usize::from(base.channels);
+    let base_frames = base.frames as usize;
+    let rate = base.sample_rate;
+    for layer in layers {
+        if !layer.start_seconds.is_finite()
+            || layer.start_seconds < 0.0
+            || !layer.offset_seconds.is_finite()
+            || layer.offset_seconds < 0.0
+            || !layer.duration_seconds.is_finite()
+            || layer.duration_seconds <= 0.0
+        {
+            return Err("a merge layer has an unusable position".to_owned());
+        }
+        let part = read_range(
+            layer.path,
+            layer.offset_seconds,
+            layer.duration_seconds,
+            false,
+        )?;
+        if part.sample_rate != rate {
+            return Err(format!(
+                "{} has a different sample rate and cannot be merged",
+                layer.path.display()
+            ));
+        }
+        let part_channels = usize::from(part.channels);
+        let start_frame = (layer.start_seconds * f64::from(rate)).round() as usize;
+        for index in 0..part.frames as usize {
+            let out_frame = start_frame + index;
+            if out_frame >= base_frames {
+                break;
+            }
+            let source = index * part_channels;
+            for channel in 0..channels {
+                let value = match (channels, part_channels) {
+                    (2, 2) => part.samples[source + channel],
+                    (_, 1) => part.samples[source],
+                    // Stereo into mono is averaged rather than dropping a side.
+                    _ => (part.samples[source] + part.samples[source + 1]) * 0.5,
+                };
+                let target = &mut base.samples[out_frame * channels + channel];
+                *target = (*target + value).clamp(-1.0, 1.0);
+            }
+        }
+    }
+    write_float_wav(destination, base.channels, rate, &base.samples)?;
+    Ok(base.frames)
+}
+
 /// What one trimming pass did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrimOutcome {
@@ -404,6 +493,133 @@ mod tests {
         assert!(normalize_wav_range(&silent, 0.0, 0.1, 1.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 0.0, &second).is_err());
         assert!(normalize_wav_range(&source, 0.0, 0.1, 1.5, &second).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merging_adds_layers_at_their_offsets_and_matches_channel_counts() {
+        let root = std::env::temp_dir().join(format!("opentrack-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let base = root.join("base.wav");
+        let layer = root.join("layer.wav");
+        let out = root.join("merged.wav");
+        // 0.1 s of a steady 0.1 amplitude, then 0.025 s of 0.5 on top from 0.05 s.
+        write_wav(&base, 1, 4_800, |_, _| 0.1);
+        write_wav(&layer, 1, 2_400, |_, _| 0.5);
+        let frames = merge_wav_range(
+            &base,
+            0.0,
+            0.1,
+            &[MergeLayer {
+                path: &layer,
+                start_seconds: 0.05,
+                offset_seconds: 0.0,
+                duration_seconds: 0.025,
+            }],
+            &out,
+        )
+        .expect("merge");
+        assert_eq!(frames, 4_800);
+        let (channels, samples) = read(&out);
+        assert_eq!(channels, 1);
+        assert!((samples[0] - 0.1).abs() < 1e-6);
+        assert!(
+            (samples[2_399] - 0.1).abs() < 1e-6,
+            "before the layer starts"
+        );
+        assert!((samples[2_400] - 0.6).abs() < 1e-6, "layer added on top");
+        assert!(
+            (samples[3_599] - 0.6).abs() < 1e-6,
+            "the layer still sounds"
+        );
+        assert!((samples[3_600] - 0.1).abs() < 1e-6, "the layer ends inside");
+        assert!((samples[4_799] - 0.1).abs() < 1e-6);
+
+        // A mono layer feeds both channels of a stereo destination.
+        let stereo_base = root.join("stereo.wav");
+        let stereo_out = root.join("stereo-merged.wav");
+        write_wav(
+            &stereo_base,
+            2,
+            480,
+            |_, channel| {
+                if channel == 0 { 0.1 } else { 0.0 }
+            },
+        );
+        merge_wav_range(
+            &stereo_base,
+            0.0,
+            0.01,
+            &[MergeLayer {
+                path: &layer,
+                start_seconds: 0.0,
+                offset_seconds: 0.0,
+                duration_seconds: 0.01,
+            }],
+            &stereo_out,
+        )
+        .expect("stereo merge");
+        let (channels, samples) = read(&stereo_out);
+        assert_eq!(channels, 2);
+        assert!((samples[0] - 0.6).abs() < 1e-6);
+        assert!((samples[1] - 0.5).abs() < 1e-6);
+
+        // A stereo layer into a mono destination is averaged.
+        let stereo_layer = root.join("stereo-layer.wav");
+        write_wav(
+            &stereo_layer,
+            2,
+            480,
+            |_, channel| {
+                if channel == 0 { 0.2 } else { 0.4 }
+            },
+        );
+        let mono_out = root.join("mono-merged.wav");
+        merge_wav_range(
+            &base,
+            0.0,
+            0.01,
+            &[MergeLayer {
+                path: &stereo_layer,
+                start_seconds: 0.0,
+                offset_seconds: 0.0,
+                duration_seconds: 0.01,
+            }],
+            &mono_out,
+        )
+        .expect("mono merge");
+        let (_, samples) = read(&mono_out);
+        assert!((samples[0] - 0.4).abs() < 1e-6, "0.1 + (0.2 + 0.4) / 2");
+
+        // A different sample rate is refused instead of resampled silently.
+        let other_rate = root.join("44k.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&other_rate, spec).expect("writer");
+            for _ in 0..100 {
+                writer.write_sample(0.5_f32).expect("sample");
+            }
+            writer.finalize().expect("finalize");
+        }
+        let refused = merge_wav_range(
+            &base,
+            0.0,
+            0.01,
+            &[MergeLayer {
+                path: &other_rate,
+                start_seconds: 0.0,
+                offset_seconds: 0.0,
+                duration_seconds: 0.01,
+            }],
+            &root.join("no.wav"),
+        );
+        assert!(refused.is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

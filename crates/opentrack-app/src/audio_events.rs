@@ -180,18 +180,21 @@ impl State {
 }
 
 #[derive(Clone, Debug)]
-struct ClipboardItem {
+pub(super) struct ClipboardItem {
     track_offset: usize,
     channels: u8,
-    clip: AudioClip,
+    /// The copied event, still carrying its original position and source range.
+    pub(super) clip: AudioClip,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct Clipboard {
     anchor_track_id: u64,
-    anchor_beat: f64,
+    /// Beat the copied events were taken from; merges place layers relative to it.
+    pub(super) anchor_beat: f64,
     anchor_group_id: Option<u64>,
-    items: Vec<ClipboardItem>,
+    /// The copied events themselves, in the order they were selected.
+    pub(super) items: Vec<ClipboardItem>,
 }
 
 fn split_selected_clips(project: &mut Project, selected: &HashSet<u64>, beat: f64) -> usize {

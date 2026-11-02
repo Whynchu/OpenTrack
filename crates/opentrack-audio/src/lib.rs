@@ -38,8 +38,9 @@ pub use waveform::{WAVEFORM_BLOCK_FRAMES, Waveform};
 mod wasapi_backend;
 
 pub use audio_process::{
-    NormalizeOutcome, TrimOutcome, flip_stereo_wav_range, normalize_wav_range,
-    remove_dc_offset_wav_range, reverse_wav_range, trim_wav_range,
+    MAX_MERGE_LAYERS, MergeLayer, NormalizeOutcome, TrimOutcome, flip_stereo_wav_range,
+    merge_wav_range, normalize_wav_range, remove_dc_offset_wav_range, reverse_wav_range,
+    trim_wav_range,
 };
 pub use devices::{
     AudioDevice, AudioDeviceInventory, AudioOutputConfig, available_audio_devices,

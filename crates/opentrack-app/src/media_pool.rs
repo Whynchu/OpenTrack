@@ -884,6 +884,176 @@ impl OpenTrackApp {
         self.status_message = status;
     }
 
+    /// Mixes the copied events into the first selected event's used audio.
+    ///
+    /// The destination keeps its own audio and every copied event is mixed on top
+    /// at its position relative to the copy anchor, clipped to the destination's
+    /// length. Layers whose sample rate differs from the destination are reported
+    /// rather than resampled silently.
+    pub(super) fn merge_clipboard_into_selected_event(&mut self) {
+        if self.is_recording() {
+            self.status_message = "Stop recording before merging the clipboard".to_owned();
+            return;
+        }
+        let Some(clipboard) = self.audio_event_clipboard.clone() else {
+            self.status_message = "Copy audio events before merging the clipboard".to_owned();
+            return;
+        };
+        let destination_id = self
+            .arrange_view_state
+            .audio_events
+            .selected_ids()
+            .first()
+            .copied();
+        let Some(destination_id) = destination_id else {
+            self.status_message = "Select the audio event to merge into".to_owned();
+            return;
+        };
+        if !self.project_folder_managed {
+            self.status_message = "Set up this project's folder before merging audio".to_owned();
+            return;
+        }
+        let Some(root) = self.project_root() else {
+            self.status_message =
+                "Save this project into its folder before merging audio".to_owned();
+            return;
+        };
+        let Some((destination_source, destination_offset, destination_duration, name)) = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.id == destination_id)
+            .map(|clip| {
+                (
+                    clip.source_path.clone(),
+                    clip.source_offset_seconds,
+                    clip.duration_seconds,
+                    clip.name.clone(),
+                )
+            })
+        else {
+            self.status_message = "The selected event is no longer in the project".to_owned();
+            return;
+        };
+        let tempo = self.data.project.tempo_bpm.max(1.0);
+        let mut planned = Vec::<(PathBuf, f64, f64, f64)>::new();
+        let mut outside = 0;
+        for item in &clipboard.items {
+            let relative_seconds = (item.clip.start_beats - clipboard.anchor_beat) * 60.0 / tempo;
+            let start = relative_seconds.max(0.0);
+            let end = (relative_seconds + item.clip.duration_seconds).min(destination_duration);
+            if end <= start + 1e-9 {
+                outside += 1;
+                continue;
+            }
+            planned.push((
+                item.clip.source_path.clone(),
+                start,
+                item.clip.source_offset_seconds + (start - relative_seconds),
+                end - start,
+            ));
+        }
+        if planned.is_empty() {
+            self.status_message =
+                "No copied audio falls inside the selected event's range".to_owned();
+            return;
+        }
+        if planned.len() > opentrack_audio::MAX_MERGE_LAYERS {
+            self.status_message = format!(
+                "Merging supports at most {} copied events at a time",
+                opentrack_audio::MAX_MERGE_LAYERS
+            );
+            return;
+        }
+        let destination =
+            match super::audio_export::unique_wav_path(&root, &format!("{name} merged")) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.status_message = error;
+                    return;
+                }
+            };
+        let layers = planned
+            .iter()
+            .map(
+                |(path, start, offset, duration)| opentrack_audio::MergeLayer {
+                    path: path.as_path(),
+                    start_seconds: *start,
+                    offset_seconds: *offset,
+                    duration_seconds: *duration,
+                },
+            )
+            .collect::<Vec<_>>();
+        let merged = match opentrack_audio::merge_wav_range(
+            &destination_source,
+            destination_offset,
+            destination_duration,
+            &layers,
+            &destination,
+        ) {
+            Ok(frames) => frames,
+            Err(error) => {
+                let _ = std::fs::remove_file(&destination);
+                self.status_message = format!("Could not merge the clipboard: {error}");
+                return;
+            }
+        };
+        let audio = match AudioSource::open(&destination) {
+            Ok(audio) => audio,
+            Err(error) => {
+                let _ = std::fs::remove_file(&destination);
+                self.status_message = format!("Could not open the merged audio: {error}");
+                return;
+            }
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            let _ = std::fs::remove_file(&destination);
+            self.status_message = "Cannot merge: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Merge Clipboard");
+        if let Some(track) = self
+            .data
+            .project
+            .tracks
+            .iter_mut()
+            .find(|track| track.clips.iter().any(|clip| clip.id == destination_id))
+            && let Some(clip) = track
+                .clips
+                .iter_mut()
+                .find(|clip| clip.id == destination_id)
+        {
+            clip.source_path = destination.clone();
+            clip.source_offset_seconds = 0.0;
+            clip.pitch_time = None;
+            clip.source_fades.clear();
+            clip.fade_in_seconds = clip.fade_in_seconds.min(clip.duration_seconds);
+            clip.fade_out_seconds = clip
+                .fade_out_seconds
+                .min((clip.duration_seconds - clip.fade_in_seconds).max(0.0));
+        }
+        self.data.audio_sources.remove(&destination_source);
+        self.data.audio_sources.insert(destination.clone(), audio);
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        let mut status = format!(
+            "Merged {} copied event(s) into the selected event at {:.3} e; Undo restores the original",
+            planned.len(),
+            merged
+        );
+        if outside > 0 {
+            status.push_str(&format!("; {outside} lay outside it"));
+        }
+        self.status_message = status;
+    }
+
     /// Selects every event that uses the selected Media Pool source.
     pub(super) fn select_pool_media_in_project(&mut self) {
         let Some(path) = self.pool_selected.clone() else {
@@ -2276,6 +2446,105 @@ mod tests {
             app.status_message
                 .contains("Selected 2 event(s) using kick.wav")
         );
+    }
+
+    fn write_flat_wav(path: &std::path::Path, frames: u32, amplitude: f32) {
+        let mut bytes = Vec::with_capacity(44 + (frames as usize) * 2);
+        let data_bytes = frames * 2;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        let sample = (amplitude * f32::from(i16::MAX)) as i16;
+        for _ in 0..frames {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).expect("wav");
+    }
+
+    #[test]
+    fn merging_the_clipboard_mixes_copied_audio_into_the_selected_event() {
+        let root = std::env::temp_dir().join(format!("opentrack-merge-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_project_directory_layout(&root).expect("layout");
+        let imports = root.join("Audio").join("Imports");
+        let base = imports.join("base.wav");
+        let layer = imports.join("layer.wav");
+        write_flat_wav(&base, 48_000, 0.1);
+        write_flat_wav(&layer, 24_000, 0.5);
+        let base_len = std::fs::metadata(&base).expect("meta").len();
+
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.project_folder_managed = true;
+        app.project_path = Some(root.join("Song.opr"));
+        app.data.project.tempo_bpm = 120.0;
+        app.data.project.add_track(TrackKind::Audio);
+        let destination = app
+            .data
+            .project
+            .add_audio_clip(0, base.clone(), 0.0, 1.0)
+            .expect("clip");
+        app.data.project.add_track(TrackKind::Audio);
+        // Copied from beat 8: the anchor makes it start at the destination's 0.
+        let source = app
+            .data
+            .project
+            .add_audio_clip(1, layer.clone(), 8.0, 0.5)
+            .expect("clip");
+        app.arrange_view_state.audio_events.select_many([source]);
+        app.copy_selected_audio_events();
+        app.arrange_view_state
+            .audio_events
+            .select_many([destination]);
+        app.project_history.clear();
+
+        app.merge_clipboard_into_selected_event();
+        let clip = &app.data.project.tracks[0].clips[0];
+        assert_ne!(clip.source_path, base, "the event moved to merged media");
+        assert!(clip.source_path.exists());
+        assert_eq!(clip.source_offset_seconds, 0.0);
+        assert_eq!(clip.duration_seconds, 1.0, "the event keeps its length");
+        // The merged media is written as 32-bit float, so its byte size differs
+        // from the 16-bit source; the audio test asserts the frame count itself.
+        assert!(std::fs::metadata(&clip.source_path).expect("meta").len() > base_len);
+        assert_ne!(
+            std::fs::read(&clip.source_path).expect("merged"),
+            std::fs::read(&base).expect("base"),
+            "the layer changed the audio"
+        );
+        assert!(app.status_message.contains("Merged 1 copied event(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Merge Clipboard");
+
+        // Without a clipboard or a destination the command reports.
+        app.audio_event_clipboard = None;
+        app.merge_clipboard_into_selected_event();
+        assert!(
+            app.status_message
+                .contains("Copy audio events before merging")
+        );
+        // With a clipboard but no destination event it reports separately.
+        app.arrange_view_state.audio_events.select_many([source]);
+        app.copy_selected_audio_events();
+        app.arrange_view_state.audio_events.clear_selection();
+        app.merge_clipboard_into_selected_event();
+        assert!(
+            app.status_message
+                .contains("Select the audio event to merge into")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

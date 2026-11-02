@@ -422,5 +422,14 @@ still one commit with tests and refreshed counts.
    no event uses the file. 2 app tests (a simulated row click plus the command's
    three outcomes). Disabled entries 90 -> 89.
 
+41. **Merge Clipboard.** *Delivered.* Audio > Process > Merge Clipboard mixes the
+   copied events into the first selected event's used audio with the new
+   `opentrack_audio::merge_wav_range`: each layer is placed at its offset from the
+   copy anchor, clipped to the destination's length, mono/stereo matched by
+   duplication or averaging, and a different sample rate is refused rather than
+   resampled silently. One labelled "Merge Clipboard" undo step; pitch analysis and
+   source-fade lineage are cleared, layers outside the destination are counted and
+   reported. 1 audio and 1 app tests. Disabled entries 89 -> 88.
+
 Next candidates: OMF / Track Archive, then the user-dependent reviews and CPR
 fixtures.
