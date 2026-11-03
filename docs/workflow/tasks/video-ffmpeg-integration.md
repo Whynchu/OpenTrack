@@ -1,29 +1,48 @@
-# Video: FFmpeg integration plan and environment blocker
+# Video: FFmpeg backend and Video Window
 
-- Status: **blocked on the build environment and a packaging decision**; no dependency added yet
-- Scope: user-approved video decoder work (2026-11-03), recorded before any code so the integration is not invented ad hoc
-- Reference: `R5-28-video-decision.md` (FFmpeg FFI recommended, LGPL build), the six unavailable video rows.
+- Status: accepted for source, a feature build and headless decode; desktop, packaging and Windows runtime review pending
+- Scope: user-approved video decoder work (2026-11-03)
+- Desired observable outcome: with the `video-ffmpeg` feature and FFmpeg libraries present, Devices > Video Window (F8) shows the decoded frame nearest the playhead and refreshes as the transport moves; without the feature the row stays disabled and the window explains the build lacks a decoder.
+- Reference evidence: `crates/opentrack-video` (`VideoDecoder`, `RgbaFrame`, `backend_available`, decode test), `crates/opentrack-app/src/app/video_window.rs` (window, texture update, tests), `devices.video` dispatch, `video-ffmpeg` feature.
 
-## Planned shape
+## Integration
 
-1. **Separate crate** `opentrack-video` behind an optional feature, so the rest of the app builds without FFmpeg and the ABI boundary stays isolated (the project rule for external ABIs).
-2. **LGPL FFmpeg build** without GPL-only components, dynamically linked, pinned version; ship the required shared libraries beside the Windows binary and record their licences/notices in `docs/third-party-notices.md` before distribution.
-3. **Decode path:** demux → decode → convert to RGBA (`swscale`) → bounded frame cache and timestamp lookup; no frame is copied into the project.
-4. **UI:** `Devices > Video Window` shows the frame at the transport position (seek and cycle handled), `File > Import > Video File` stores the reference and extracts audio through the existing WAV import, `Media > Generate Thumbnail Cache` fills a bounded cache, and `Replace Audio in Video File` is only attempted after decode/encode round trips are verified.
-5. **Verification:** decode named sample files (H.264 in MP4, at least), frame timestamps against the transport, seek/loop accuracy, missing or unsupported files refused with a reason, and a licence/packaging review.
+- **Isolated crate** `opentrack-video` with an optional `ffmpeg` feature; the app enables it through `video-ffmpeg = ["opentrack-video/ffmpeg"]`. Default builds do not require FFmpeg and the menu row stays disabled.
+- **Decode path:** `ffmpeg-next` 9 (`ffmpeg-sys-next`, FFmpeg 8): open input, best video stream, decoder from stream parameters, `swscale` to RGBA, tighten stride rows, return `RgbaFrame { width, height, rgba, timestamp_seconds }`.
+- **Lookup:** seek to one second before the target (a failed seek falls back to decoding from the start), decode until the timestamp passes the target, bounded to 4,000 frames; the nearest frame wins.
+- **Video Window:** opens a file (mp4/m4v/mov/mkv/avi/webm/y4m), decodes the frame at `position_beats * 60 / tempo`, uploads an egui texture, and refreshes when the position moves by more than 1/30 s. Decode errors are shown instead of a stale frame.
+- **Menu/keymap:** `Devices > Video Window` availability is `opentrack_video::backend_available() && project_open`; F8 (`devices.video`) dispatches. Keyboard coverage is now 151/152 (Use External Sync remains).
 
-## Blocker
+## Licence and packaging
 
-- This machine has **no FFmpeg development files** (`pkg-config --exists libavcodec` fails) and `sudo` is not available to the agent, so `ffmpeg-sys`/`ffmpeg-next` cannot build here even though the network is reachable.
-- Required on this host (or a Windows build machine):
-  `sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev`
-  or the Windows FFmpeg development package matching the chosen version.
-- A product decision is also needed on **how FFmpeg binaries are shipped** (bundled DLLs versus requiring a system install) and which pinned version to support.
+- `ffmpeg-next` is WTFPL; FFmpeg itself is LGPL-2.1-or-later when built without GPL-only parts, linked dynamically. The binary requires the matching FFmpeg 8 runtime libraries on the target machine.
+- A distribution decision is still needed: bundle the required shared libraries beside OpenTrack (with notices) or document a system FFmpeg requirement. Until then the feature is a developer/opt-in build, not part of the default release binary.
 
-## Current behaviour
+## Building with the decoder on this machine (no sudo)
 
-All six video rows remain unavailable with this recorded reason; nothing pretends to decode. The MMC, score, and everything else in the app build without FFmpeg.
+The dev packages were extracted to a local prefix; they are not committed:
+```
+sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev   # normal path
+# or, without sudo:
+apt-get download libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                 libavcodec62 libavformat62 libavutil60 libswscale9 libswresample6
+for f in *.deb; do dpkg-deb -x "$f" /tmp/opencode/ffmpeg-dev; done
+export PKG_CONFIG_SYSROOT_DIR=/tmp/opencode/ffmpeg-dev
+export PKG_CONFIG_PATH=$PKG_CONFIG_SYSROOT_DIR/usr/lib/x86_64-linux-gnu/pkgconfig
+export BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)"
+export LD_LIBRARY_PATH=$PKG_CONFIG_SYSROOT_DIR/usr/lib/x86_64-linux-gnu
+cargo test -p opentrack-video --features ffmpeg
+cargo test -p opentrack --features video-ffmpeg video_window
+```
 
-## Next step once unblocked
+## Verification
 
-Add `opentrack-video` with the optional feature, implement decode-to-frame plus a test that reads a known file's first frame and timestamp, then wire the Video Window and import rows.
+- `cargo test -p opentrack-video --features ffmpeg` -> decode test passed: a generated Y4M clip decodes a 2x2 RGBA frame, opaque alpha, BT.601 red (`r>180, g<60, b<60`), timestamps 0.0 and 0.04, and missing files/negative positions are refused.
+- `cargo test -p opentrack-video` (default) -> the "not built" test passes.
+- `cargo test -p opentrack --features video-ffmpeg video_window` -> 2 passed: the window explains a build without the decoder, and a real Y4M opens, decodes and uploads a texture.
+- Inventory: 277 leaves, 63 available, **177 state-dependent, 29 unavailable**; Video Window is state-dependent on the backend.
+- Default suites: app 633 passed / 4 known device-dependent roll failures / 9 ignored (646 tests); core 167; audio 175 / 3 ignored.
+
+## Not claimed
+
+No desktop review, no Windows FFmpeg build/runtime, no transport-synced playback of long videos or audio extraction yet; the other video rows (import, replace audio, thumbnails, extract audio) remain unavailable and need the packaging decision before they can be honest.

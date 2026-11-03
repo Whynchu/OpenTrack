@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 local-asio = ["opentrack-audio/local-asio"]
+video-ffmpeg = ["opentrack-video/ffmpeg"]
 
 [dependencies]
 eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
@@ -26,6 +27,7 @@ opentrack-audio = { path = "../opentrack-audio" }
 opentrack-plugins = { path = "../opentrack-plugins" }
 opentrack-plugin-scan = { path = "../opentrack-plugin-scan" }
 opentrack-vst3 = { path = "../opentrack-vst3" }
+opentrack-video = { path = "../opentrack-video", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [

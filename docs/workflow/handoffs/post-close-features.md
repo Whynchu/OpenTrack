@@ -28,8 +28,9 @@ This batch followed the revision-5 close-out at the user's direction ("keep fill
 | Registration / Reconstruct | `registration-and-reconstruct.md` | Informational no-registration dialog, and audio sources re-read from disk with a rebuild |
 | MMC master | `mmc-master.md` | Windows MIDI output path, MMC play/stop/locate, and a persisted Project Synchronization Setup dialog |
 | Score view | `score-view.md` | Grand staff with select/move/transpose/delete, Page Mode, zoom and Open/Auto/Reset Layout |
+| FFmpeg video backend | `video-ffmpeg-integration.md` | Optional `opentrack-video` crate and a Video Window that decodes the frame at the playhead with the `video-ffmpeg` feature |
 
-Measured: the disabled project-open rows fell from 68 at the close-out to **30**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 632 passed / 4 failed / 9 ignored (645 tests), core 167, audio 175 / 3 ignored.
+Measured: the disabled project-open rows fell from 68 at the close-out to **29**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 633 passed / 4 failed / 9 ignored (646 tests), core 167, audio 175 / 3 ignored.
 
 ## Remaining rows and why they are still unavailable
 

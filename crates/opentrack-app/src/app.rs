@@ -78,6 +78,7 @@ mod track_archive;
 mod track_library;
 #[path = "transport_panel.rs"]
 mod transport_panel;
+mod video_window;
 #[path = "vst3_host.rs"]
 mod vst3_host;
 #[path = "waveform_view.rs"]
@@ -1267,6 +1268,13 @@ pub struct OpenTrackApp {
     score_bars_per_system: usize,
     score_settings_open: bool,
     score_layout_open: bool,
+    /// Video window and decoder state.
+    video_window_open: bool,
+    video_path: Option<PathBuf>,
+    video_decoder: Option<opentrack_video::VideoDecoder>,
+    video_texture: Option<egui::TextureHandle>,
+    video_last_frame: Option<f64>,
+    video_error: Option<String>,
     /// MIDI outputs for the MMC master and the sync setup dialog.
     midi_output_devices: Vec<MidiOutputDevice>,
     selected_midi_output: Option<String>,
@@ -2836,6 +2844,12 @@ impl OpenTrackApp {
             control_room_tab: 0,
             registration_open: false,
             score_view_open: false,
+            video_window_open: false,
+            video_path: None,
+            video_decoder: None,
+            video_texture: None,
+            video_last_frame: None,
+            video_error: None,
             score_page_mode: creation
                 .storage
                 .and_then(|storage| eframe::get_value::<bool>(storage, "score-page-mode-v1"))
@@ -8452,6 +8466,7 @@ impl OpenTrackApp {
             }
             "edit.enlarge_selected_track" => self.toggle_zoom_tracks_exclusive(),
             "edit.open_score_editor" => self.open_score_view(),
+            "devices.video" => self.open_video_window(),
             "edit.auto_select_events_under_cursor" => {
                 self.auto_select_events_under_cursor = !self.auto_select_events_under_cursor;
                 if self.auto_select_events_under_cursor {
@@ -15758,7 +15773,17 @@ impl OpenTrackApp {
                         self.toggle_virtual_keyboard();
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Video Window", "F8")]);
+                    if menu_command(
+                        ui,
+                        "Video Window",
+                        "F8",
+                        opentrack_video::backend_available() && self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.open_video_window();
+                        ui.close();
+                    }
                 });
                 ui.menu_button("Window", |ui| {
                     ui.menu_button("Workspaces", |ui| {
@@ -20172,6 +20197,7 @@ impl eframe::App for OpenTrackApp {
         self.show_sync_setup(&ctx);
         self.show_score_view(&ctx);
         self.show_score_layout(&ctx);
+        self.show_video_window(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);

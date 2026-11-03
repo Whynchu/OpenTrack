@@ -1004,14 +1004,11 @@ mod tests {
             );
         }
         let missing = shortcuts.iter().filter(|row| !row.dispatched).count();
-        assert_eq!(missing, 2, "bound command dispatch gap changed");
-        for (id, path) in [
-            ("devices.video", "Devices > Video Window"),
-            (
-                "transport.use_external_sync",
-                "Transport > Use External Sync",
-            ),
-        ] {
+        assert_eq!(missing, 1, "bound command dispatch gap changed");
+        for (id, path) in [(
+            "transport.use_external_sync",
+            "Transport > Use External Sync",
+        )] {
             assert!(
                 shortcuts.iter().any(|row| row.id == id && !row.dispatched),
                 "{id} is no longer an uncovered bound command"
@@ -1037,6 +1034,18 @@ mod tests {
             shortcuts
                 .iter()
                 .any(|row| row.id == "project.open_tempo_track_editor" && row.dispatched)
+        );
+        // The video window is reachable when the FFmpeg feature is built, and
+        // F8 dispatches; the row tracks the backend capability, not a placeholder.
+        let video = leaves
+            .iter()
+            .find(|leaf| leaf.path == "Devices > Video Window")
+            .expect("video window row missing");
+        assert_eq!(video.status, Status::StateDependent);
+        assert!(
+            shortcuts
+                .iter()
+                .any(|row| row.id == "devices.video" && row.dispatched)
         );
         // The read-only score view is now reachable and Ctrl+R dispatches to it.
         let score = leaves
