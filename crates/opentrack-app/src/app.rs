@@ -62,6 +62,7 @@ mod routing;
 mod sample_editor;
 #[path = "session_health.rs"]
 mod session_health;
+mod sound_browser;
 #[path = "system_stats.rs"]
 mod system_stats;
 #[path = "templates.rs"]
@@ -1248,6 +1249,12 @@ pub struct OpenTrackApp {
     /// Application-wide track library.
     track_library: Vec<track_library::LibraryTrack>,
     track_library_open: bool,
+    /// Browse Sounds window state.
+    sound_browser_open: bool,
+    sound_browser_folder: Option<PathBuf>,
+    sound_browser_files: Vec<PathBuf>,
+    sound_browser_selected: Option<usize>,
+    sound_browser_filter: String,
     macros_open: bool,
     macro_selected: Option<usize>,
     macro_new_name: String,
@@ -2792,6 +2799,13 @@ impl OpenTrackApp {
                 .map(track_library::sanitize_library)
                 .unwrap_or_default(),
             track_library_open: false,
+            sound_browser_open: false,
+            sound_browser_folder: creation.storage.and_then(|storage| {
+                eframe::get_value::<PathBuf>(storage, "sound-browser-folder-v1")
+            }),
+            sound_browser_files: Vec::new(),
+            sound_browser_selected: None,
+            sound_browser_filter: String::new(),
             plugin_browser_category: InsertMenuCategory::Other,
             plugin_browser_filter: String::new(),
             template_name_draft: None,
@@ -3386,6 +3400,18 @@ impl OpenTrackApp {
     }
 
     fn import_audio_file(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter("WAV audio", &["wav", "wave"])
+            .set_title("Import WAV Audio")
+            .pick_file()
+        else {
+            return;
+        };
+        self.import_audio_path(path);
+    }
+
+    /// Imports one WAV file through the project import pipeline.
+    fn import_audio_path(&mut self, path: PathBuf) {
         if !self.project_open {
             self.status_message = "Create or open a project before importing audio".to_owned();
             return;
@@ -3399,13 +3425,6 @@ impl OpenTrackApp {
             self.status_message = "Set up this project's folder before importing audio".to_owned();
             return;
         }
-        let Some(path) = FileDialog::new()
-            .add_filter("WAV audio", &["wav", "wave"])
-            .set_title("Import WAV Audio")
-            .pick_file()
-        else {
-            return;
-        };
         let Some(project_root) = self
             .project_path
             .as_deref()
@@ -14431,10 +14450,14 @@ impl OpenTrackApp {
                             self.midi_transform_dialog = Some((0, 0));
                             ui.close();
                         }
-                        disabled_menu_commands(
-                            ui,
-                            &[("Video", ""), ("Browse Sounds...", "")],
-                        );
+                        if menu_command(ui, "Browse Sounds...", "", true).clicked() {
+                            self.sound_browser_open = true;
+                            if let Some(folder) = self.sound_browser_folder.clone() {
+                                self.rescan_sound_folder(&folder);
+                            }
+                            ui.close();
+                        }
+                        disabled_menu_commands(ui, &[("Video", "")]);
                     });
                     if ui
                         .add_enabled(
@@ -16442,6 +16465,7 @@ impl OpenTrackApp {
             || self.cleanup_prompt.is_some()
             || self.macros_open
             || self.track_library_open
+            || self.sound_browser_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20025,6 +20049,7 @@ impl eframe::App for OpenTrackApp {
         self.show_device_connections(&ctx);
         self.show_macros(&ctx);
         self.show_track_library(&ctx);
+        self.show_sound_browser(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -20097,6 +20122,11 @@ impl eframe::App for OpenTrackApp {
         eframe::set_value(storage, "recent-projects-v1", &self.recent_projects);
         eframe::set_value(storage, "command-macros-v1", &self.macros);
         eframe::set_value(storage, "track-library-v1", &self.track_library);
+        eframe::set_value(
+            storage,
+            "sound-browser-folder-v1",
+            &self.sound_browser_folder,
+        );
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,
