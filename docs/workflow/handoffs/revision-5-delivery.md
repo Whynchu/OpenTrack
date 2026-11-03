@@ -31,7 +31,7 @@ Revision 5 (`roadmap-32-steps-v5.md`) was executed serially from step 1 through 
 26–28. **Decision records:** MMC needs a MIDI output path and a loopback device; external sync needs a clock source and lock/drift handling; video needs an approved decoder (FFmpeg FFI recommended if it becomes a requirement). No dependencies added.
 29. **Performance:** the offline chain render moved to a worker with stage progress and cancellation, removing the frame-blocking hotspot recorded in step 17. No frame-time number claimed.
 30. **Accessibility:** dialogs now own the keyboard (`modal_dialog_open()`/`dialog_owns_input()` guard) — previously Delete with the Regions editor open deleted the event behind it; report regenerated to 149/152 with Video, Open Score Editor and Use External Sync as feature-blocked.
-31. **Acceptance:** app 579 passed / 4 known device failures / 9 ignored, core 166, audio 171 / 3 ignored, clean fmt and diff checks, release build SHA-256 `4c0034ac2992150c65483d39cb61b2a5b1e6ebd8727bbabd10b2bdd444b13a40`, OPR 38 with migrations to v29–v38.
+31. **Acceptance:** app 579 passed / 4 known device failures / 9 ignored, core 166, audio 171 / 3 ignored, clean fmt and diff checks, release build SHA-256 `6e2b922d9b7bb14a332eab9af7b6daab93b14f4ba9c0fa3949c7213120b94637`, OPR 38 with migrations to v29–v38.
 32. **Consolidation:** inventory 275 leaves (41 available, 157 state-dependent, 69 unavailable, 8 informational); README, native-format doc, current.md and this handoff updated; no post-close slices appended.
 
 ## Measured size
