@@ -63,6 +63,7 @@ mod retrospective;
 mod routing;
 #[path = "sample_editor.rs"]
 mod sample_editor;
+mod score_view;
 #[path = "session_health.rs"]
 mod session_health;
 mod sound_browser;
@@ -1259,6 +1260,8 @@ pub struct OpenTrackApp {
     control_room_open: bool,
     /// Help > Registration informational dialog.
     registration_open: bool,
+    /// Read-only score view for the selected MIDI part.
+    score_view_open: bool,
     /// MIDI outputs for the MMC master and the sync setup dialog.
     midi_output_devices: Vec<MidiOutputDevice>,
     selected_midi_output: Option<String>,
@@ -2827,6 +2830,7 @@ impl OpenTrackApp {
             control_room_open: false,
             control_room_tab: 0,
             registration_open: false,
+            score_view_open: false,
             midi_output_devices: MidiOutputStream::available_devices().unwrap_or_default(),
             selected_midi_output: creation
                 .storage
@@ -8423,6 +8427,7 @@ impl OpenTrackApp {
                 };
             }
             "edit.enlarge_selected_track" => self.toggle_zoom_tracks_exclusive(),
+            "edit.open_score_editor" => self.open_score_view(),
             "edit.auto_select_events_under_cursor" => {
                 self.auto_select_events_under_cursor = !self.auto_select_events_under_cursor;
                 if self.auto_select_events_under_cursor {
@@ -14948,7 +14953,17 @@ impl OpenTrackApp {
                         self.list_editor_open = true;
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("Open Score Editor", "")]);
+                    if menu_command(
+                        ui,
+                        "Open Score Editor",
+                        "",
+                        self.project_open && self.data.project.selected_midi_part_id.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.open_score_view();
+                        ui.close();
+                    }
                     if menu_command(ui, "Open Drum Editor", "", midi_editor_available).clicked() {
                         self.toggle_drum_editor();
                         ui.close();
@@ -16525,6 +16540,7 @@ impl OpenTrackApp {
             || self.control_room_open
             || self.registration_open
             || self.sync_setup_open
+            || self.score_view_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20112,6 +20128,7 @@ impl eframe::App for OpenTrackApp {
         self.show_control_room(&ctx);
         self.show_registration(&ctx);
         self.show_sync_setup(&ctx);
+        self.show_score_view(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);

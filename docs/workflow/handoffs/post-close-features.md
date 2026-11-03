@@ -27,8 +27,9 @@ This batch followed the revision-5 close-out at the user's direction ("keep fill
 | Control Room | `control-room.md` | Persisted listen source and talkback preferences with a routing readout; no monitor-bus DSP claimed |
 | Registration / Reconstruct | `registration-and-reconstruct.md` | Informational no-registration dialog, and audio sources re-read from disk with a rebuild |
 | MMC master | `mmc-master.md` | Windows MIDI output path, MMC play/stop/locate, and a persisted Project Synchronization Setup dialog |
+| Score view | `score-view.md` | Read-only grand staff for the selected MIDI part; Ctrl+R dispatches |
 
-Measured: the disabled project-open rows fell from 68 at the close-out to **36**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 624 passed / 4 failed / 9 ignored (637 tests), core 167, audio 175 / 3 ignored.
+Measured: the disabled project-open rows fell from 68 at the close-out to **35**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 628 passed / 4 failed / 9 ignored (641 tests), core 167, audio 175 / 3 ignored.
 
 ## Remaining rows and why they are still unavailable
 

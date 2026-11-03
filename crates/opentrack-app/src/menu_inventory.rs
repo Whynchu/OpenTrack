@@ -1004,10 +1004,9 @@ mod tests {
             );
         }
         let missing = shortcuts.iter().filter(|row| !row.dispatched).count();
-        assert_eq!(missing, 3, "bound command dispatch gap changed");
+        assert_eq!(missing, 2, "bound command dispatch gap changed");
         for (id, path) in [
             ("devices.video", "Devices > Video Window"),
-            ("edit.open_score_editor", "MIDI > Open Score Editor"),
             (
                 "transport.use_external_sync",
                 "Transport > Use External Sync",
@@ -1038,6 +1037,17 @@ mod tests {
             shortcuts
                 .iter()
                 .any(|row| row.id == "project.open_tempo_track_editor" && row.dispatched)
+        );
+        // The read-only score view is now reachable and Ctrl+R dispatches to it.
+        let score = leaves
+            .iter()
+            .find(|leaf| leaf.path == "MIDI > Open Score Editor")
+            .expect("score editor row missing");
+        assert_eq!(score.status, Status::StateDependent);
+        assert!(
+            shortcuts
+                .iter()
+                .any(|row| row.id == "edit.open_score_editor" && row.dispatched)
         );
         // Retrospective Record landed in revision 5 as well: the row must be
         // reachable and its command dispatched.

@@ -34,7 +34,7 @@ revision of this report.
 
 The bundled Windows reference keymap declares **152** distinct commands
 (**158** literal chord entries; the runtime profile expands them to 198 for
-numpad ranges). **149** commands have a dispatch arm; **3** still do not.
+numpad ranges). **150** commands have a dispatch arm; **2** still do not.
 
 The generated source inventory is the current register:
 [`generated-source-inventory.md`](../reviews/generated-source-inventory.md).
@@ -49,10 +49,6 @@ Regenerate it with the command in that file.
 ### Devices
 
 - Video (`F8`) — `devices.video`
-
-### Edit
-
-- Open Score Editor (`Ctrl+R`) — `edit.open_score_editor`
 
 ### Transport
 
