@@ -18,15 +18,15 @@ This batch followed the revision-5 close-out at the user's direction ("keep fill
 | Back up Project | (module tests in `project_backup.rs`) | Bounded whole-folder copy with unique names and no partial backup |
 | Use Pre-roll / Use Post-roll | `transport-pre-post-roll.md` | Persisted checkboxes; plain Play starts before the left locator and stops after the right one |
 | Help > OpenTrack on the Web | commit `9fdb926` | Opens the project page through an OpenUrl command |
+| Plug-in browser | `plugin-browser.md` | Audio > Plug-ins families open a filtered browser over the scanned VST3 catalog and insert into the selected track |
 
-Measured: the disabled project-open rows fell from 68 at the close-out to **55**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 596 passed / 4 failed / 9 ignored (609 tests), core 167, audio 172 / 3 ignored.
+Measured: the disabled project-open rows fell from 68 at the close-out to **48**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 598 passed / 4 failed / 9 ignored (611 tests), core 167, audio 172 / 3 ignored.
 
 ## Remaining rows and why they are still unavailable
 
 - **Score editor and Scores menu (24 rows):** no engraving engine exists. This needs a scoped design before any row can be honest.
 - **Video (Video Window, Import Video File, Replace Audio in Video, Extract Audio from Video, Generate Thumbnail Cache, Add Track > Video):** blocked on an approved decoder; the comparison and recommendation are in `R5-28-video-decision.md`.
 - **MMC Master, Project Synchronization Setup, Use External Sync:** blocked on a MIDI output path and a clock source (`R5-26`, `R5-27`).
-- **Audio > Plug-ins > <category> (7 rows):** the insert picker already groups scanned VST3 effects by category inside Channel Settings, but a standalone browser with its own add-to-channel flow is a new surface, not wiring.
 - **Devices > VST Connections:** device-bus routing and wider channel maps are a feature, not a menu row.
 - **Devices > Control Room Mixer/Overview:** monitoring section design (talkback, listen buses, cue sends) has not been specified.
 - **Edit > Macros:** a macro recorder/editor does not exist; needs design.

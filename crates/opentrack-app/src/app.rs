@@ -1235,6 +1235,10 @@ pub struct OpenTrackApp {
     windows_dialog_open: bool,
     /// Revert confirmation for unsaved changes.
     revert_prompt: bool,
+    /// Standalone plug-in browser (Audio > Plug-ins > category).
+    plugin_browser_open: bool,
+    plugin_browser_category: InsertMenuCategory,
+    plugin_browser_filter: String,
     /// Name being typed in the Save as Template dialog.
     template_name_draft: Option<String>,
     session_health_open: bool,
@@ -2749,6 +2753,9 @@ impl OpenTrackApp {
             undo_history_open: false,
             windows_dialog_open: false,
             revert_prompt: false,
+            plugin_browser_open: false,
+            plugin_browser_category: InsertMenuCategory::Other,
+            plugin_browser_filter: String::new(),
             template_name_draft: None,
             session_health_open: false,
             project_statistics_open: false,
@@ -14627,18 +14634,37 @@ impl OpenTrackApp {
                         }
                     });
                     ui.menu_button("Plug-ins", |ui| {
-                        disabled_menu_commands(
-                            ui,
-                            &[
-                                ("Reverb", ""),
-                                ("Dynamics", ""),
-                                ("EQ", ""),
-                                ("Filter", ""),
-                                ("Distortion", ""),
-                                ("Modulation", ""),
-                                ("Other", ""),
-                            ],
-                        );
+                        // Each row opens the standalone browser filtered to that
+                        // family; the rows stay explicit so the menu inventory
+                        // keeps tracking them.
+                        if menu_command(ui, "Reverb", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Reverb);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Dynamics", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Dynamics);
+                            ui.close();
+                        }
+                        if menu_command(ui, "EQ", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Eq);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Filter", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Filter);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Distortion", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Distortion);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Modulation", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Modulation);
+                            ui.close();
+                        }
+                        if menu_command(ui, "Other", "", self.project_open).clicked() {
+                            self.open_plugin_browser(InsertMenuCategory::Other);
+                            ui.close();
+                        }
                     });
                     if menu_command(ui, "Spectrum Analyzer", "", true).clicked() {
                         self.open_spectrum_analyzer();
@@ -16345,6 +16371,7 @@ impl OpenTrackApp {
             || self.undo_history_open
             || self.windows_dialog_open
             || self.revert_prompt
+            || self.plugin_browser_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -16705,6 +16732,185 @@ impl OpenTrackApp {
             self.revert_prompt = false;
             self.status_message = "Revert cancelled".to_owned();
         }
+    }
+
+    /// Opens the standalone plug-in browser for one insert family.
+    fn open_plugin_browser(&mut self, category: InsertMenuCategory) {
+        self.plugin_browser_open = true;
+        self.plugin_browser_category = category;
+        self.plugin_browser_filter.clear();
+    }
+
+    /// The channel the browser inserts into: the selected track, if any.
+    fn plugin_browser_target(&self) -> Option<(u64, usize, String)> {
+        let index = self.data.project.selected_track? as usize;
+        let track = self.data.project.tracks.get(index)?;
+        Some((track.id, track.inserts.len() + 1, track.name.clone()))
+    }
+
+    /// Scanned effects in the browser's family that match the search text.
+    fn plugin_browser_plugins(&self) -> Vec<&PluginDescriptor> {
+        let filter = self.plugin_browser_filter.trim().to_lowercase();
+        catalog_plugins_for_category(&self.vst3_plugin_catalog, self.plugin_browser_category)
+            .into_iter()
+            .filter(|plugin| {
+                filter.is_empty()
+                    || plugin.name.to_lowercase().contains(&filter)
+                    || plugin.vendor.to_lowercase().contains(&filter)
+            })
+            .collect()
+    }
+
+    /// Appends a scanned VST3 effect to the selected track's insert rack.
+    ///
+    /// Returns false and reports when there is no target, the catalog entry is
+    /// gone, or the rack is full. A successful insert is one undo step.
+    fn insert_catalog_plugin(&mut self, class_id: &str) -> bool {
+        let Some(index) = self.data.project.selected_track.map(|index| index as usize) else {
+            self.status_message = "Select a track before inserting a plug-in".to_owned();
+            return false;
+        };
+        let Some(plugin) = self
+            .vst3_plugin_catalog
+            .iter()
+            .find(|plugin| plugin.class_id.to_hex() == class_id)
+            .cloned()
+        else {
+            self.status_message = "That plug-in is no longer in the scanned catalog".to_owned();
+            return false;
+        };
+        let mut candidate = self.data.project.clone();
+        let Some(track) = candidate.tracks.get_mut(index) else {
+            self.status_message = "The selected track is no longer in the project".to_owned();
+            return false;
+        };
+        if track.inserts.len() >= 16 {
+            self.status_message = "The selected track already holds 16 insert effects".to_owned();
+            return false;
+        }
+        let slot = track.inserts.len() + 1;
+        let name = plugin.name.clone();
+        let track_name = track.name.clone();
+        track.inserts.push(opentrack_core::project::InsertEffect {
+            enabled: true,
+            bypassed: false,
+            kind: vst3_insert_effect(&plugin),
+        });
+        if candidate.validate().is_err() {
+            self.status_message =
+                "That plug-in would leave an invalid project; nothing changed".to_owned();
+            return false;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot insert the plug-in: undo snapshot is unavailable".to_owned();
+            return false;
+        }
+        self.project_history.label_next("Insert Plug-in");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!("Inserted {name} on {track_name}, insert slot {slot}");
+        true
+    }
+
+    fn show_plugin_browser(&mut self, ctx: &egui::Context) {
+        if !self.plugin_browser_open {
+            return;
+        }
+        let category = self.plugin_browser_category;
+        let target = self.plugin_browser_target();
+        let plugins = self
+            .plugin_browser_plugins()
+            .into_iter()
+            .map(|plugin| {
+                (
+                    plugin.class_id.to_hex(),
+                    plugin.name.clone(),
+                    plugin.vendor.clone(),
+                    plugin.module_path.display().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut open = true;
+        let mut insert = None;
+        let response = egui::Window::new(format!(
+            "Plug-in Browser \u{2014} {}",
+            category.label()
+        ))
+        .id(Id::new("plugin-browser"))
+        .order(egui::Order::Foreground)
+        .collapsible(false)
+        .resizable(true)
+        .default_size(Vec2::new(440.0, 360.0))
+        .open(&mut open)
+        .show(ctx, |ui| {
+            match &target {
+                Some((_, slot, name)) => {
+                    ui.label(format!("Target: {name} \u{2014} new insert slot {slot}"));
+                }
+                None => {
+                    ui.colored_label(
+                        theme::palette(ui).muted,
+                        "Select a track to insert into this rack.",
+                    );
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label("Search");
+                ui.text_edit_singleline(&mut self.plugin_browser_filter);
+            });
+            ui.separator();
+            if plugins.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        "No scanned VST3 effects in this family. Scan plug-ins in Device Setup, then reopen this browser.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+            }
+            egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .show(ui, |ui| {
+                    for (class_id, name, vendor, path) in &plugins {
+                        ui.horizontal(|ui| {
+                            let enabled = target.is_some();
+                            if ui
+                                .add_enabled(enabled, egui::Button::new("Insert"))
+                                .clicked()
+                            {
+                                insert = Some(class_id.clone());
+                            }
+                            ui.label(egui::RichText::new(name).strong());
+                            if !vendor.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(vendor)
+                                        .small()
+                                        .color(theme::palette(ui).muted),
+                                );
+                            }
+                        })
+                        .response
+                        .on_hover_text(path);
+                    }
+                });
+        });
+        dismiss_window_on_outside_click(
+            ctx,
+            Id::new("plugin-browser"),
+            &mut open,
+            response.as_ref(),
+        );
+        if let Some(class_id) = insert {
+            self.insert_catalog_plugin(&class_id);
+        }
+        self.plugin_browser_open = open;
     }
 
     /// Opens the project's public page in the system browser.
@@ -19744,6 +19950,7 @@ impl eframe::App for OpenTrackApp {
         self.show_undo_history(&ctx);
         self.show_windows_dialog(&ctx);
         self.show_revert_prompt(&ctx);
+        self.show_plugin_browser(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -29090,6 +29297,141 @@ mod plugin_catalog_tests {
             }
             other => panic!("expected a VST3 insert, got {other:?}"),
         }
+    }
+
+    fn browser_app(catalog: Vec<PluginDescriptor>) -> (OpenTrackApp, String) {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].name = "Vocal".to_owned();
+        app.data.project.selected_track = Some(0);
+        app.vst3_plugin_catalog = catalog;
+        let class_id = app.vst3_plugin_catalog[0].class_id.to_hex();
+        app.project_history.clear();
+        (app, class_id)
+    }
+
+    #[test]
+    fn the_browser_inserts_a_scanned_effect_into_the_selected_track() {
+        let catalog = vec![
+            vst3_descriptor(
+                9,
+                "Studio Compressor",
+                PluginCategory::Effect,
+                &["Fx", "Dynamics"],
+            ),
+            vst3_descriptor(10, "Graphic EQ", PluginCategory::Effect, &["Fx", "EQ"]),
+        ];
+        let (mut app, class_id) = browser_app(catalog);
+
+        app.open_plugin_browser(InsertMenuCategory::Dynamics);
+        assert!(app.plugin_browser_open);
+        assert_eq!(app.plugin_browser_category, InsertMenuCategory::Dynamics);
+        let names = app
+            .plugin_browser_plugins()
+            .iter()
+            .map(|plugin| plugin.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["Studio Compressor"],
+            "only this family is listed"
+        );
+        app.plugin_browser_filter = "graphic".to_owned();
+        assert!(app.plugin_browser_plugins().is_empty());
+        app.plugin_browser_filter.clear();
+
+        // The insert lands as the next slot and is one undo step.
+        assert!(app.insert_catalog_plugin(&class_id));
+        assert_eq!(app.data.project.tracks[0].inserts.len(), 1);
+        assert!(matches!(
+            &app.data.project.tracks[0].inserts[0].kind,
+            InsertEffectKind::Vst3 { name, .. } if name == "Studio Compressor"
+        ));
+        assert!(app.status_message.contains("insert slot 1"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Insert Plug-in");
+
+        // A second insert appends rather than replacing.
+        assert!(app.insert_catalog_plugin(&class_id));
+        assert_eq!(app.data.project.tracks[0].inserts.len(), 2);
+        assert!(app.status_message.contains("insert slot 2"));
+
+        // No selection: refuses instead of guessing a channel.
+        app.data.project.selected_track = None;
+        assert!(!app.insert_catalog_plugin(&class_id));
+        assert!(app.status_message.contains("Select a track"));
+
+        // A stale catalog entry is refused.
+        app.data.project.selected_track = Some(0);
+        assert!(!app.insert_catalog_plugin("ffffffffffffffffffffffffffffffff"));
+        assert!(
+            app.status_message
+                .contains("no longer in the scanned catalog")
+        );
+
+        // The rack is bounded to 16 effects.
+        while app.data.project.tracks[0].inserts.len() < 16 {
+            app.data.project.tracks[0]
+                .inserts
+                .push(opentrack_core::project::InsertEffect {
+                    enabled: true,
+                    bypassed: false,
+                    kind: InsertEffectKind::default(),
+                });
+        }
+        assert!(!app.insert_catalog_plugin(&class_id));
+        assert!(app.status_message.contains("16 insert effects"));
+        assert_eq!(app.data.project.tracks[0].inserts.len(), 16);
+    }
+
+    #[test]
+    fn the_browser_draws_its_target_and_names() {
+        let ctx = egui::Context::default();
+        let catalog = vec![vst3_descriptor(
+            11,
+            "Studio Compressor",
+            PluginCategory::Effect,
+            &["Fx", "Dynamics"],
+        )];
+        let (mut app, _) = browser_app(catalog);
+        app.open_plugin_browser(InsertMenuCategory::Dynamics);
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_plugin_browser(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Plug-in Browser"), "{joined}");
+        assert!(joined.contains("Dynamics"), "{joined}");
+        assert!(joined.contains("Studio Compressor"), "{joined}");
+        assert!(joined.contains("Vocal"), "{joined}");
     }
 
     #[derive(Default)]
