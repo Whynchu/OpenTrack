@@ -35,6 +35,48 @@ pub fn toggle_hidden(part: &mut MidiPart, ids: &[u64]) -> usize {
     changed
 }
 
+/// Groups or ungroups the selected notes in the score.
+///
+/// If any selected note already carries a group, the selection is ungrouped;
+/// otherwise all selected notes share a new group id. Returns how many notes
+/// changed.
+pub fn toggle_note_group(part: &mut MidiPart, ids: &[u64]) -> usize {
+    let selected = part
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| ids.contains(&note.id))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return 0;
+    }
+    let any_grouped = selected
+        .iter()
+        .any(|index| part.notes[*index].group.is_some());
+    let mut changed = 0;
+    if any_grouped {
+        for index in selected {
+            if part.notes[index].group.take().is_some() {
+                changed += 1;
+            }
+        }
+    } else {
+        let next = part
+            .notes
+            .iter()
+            .filter_map(|note| note.group)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        for index in selected {
+            part.notes[index].group = Some(next);
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Toggles a slur from each selected note to the next note in the part.
 ///
 /// Notes with no later note are skipped, so the last note cannot hold a slur.
@@ -257,6 +299,7 @@ mod tests {
                     flipped: false,
                     grace: false,
                     slur_to_next: false,
+                    group: None,
                 },
                 MidiNote {
                     id: 2,
@@ -269,6 +312,7 @@ mod tests {
                     flipped: false,
                     grace: false,
                     slur_to_next: false,
+                    group: None,
                 },
                 MidiNote {
                     id: 3,
@@ -281,6 +325,7 @@ mod tests {
                     flipped: false,
                     grace: false,
                     slur_to_next: false,
+                    group: None,
                 },
             ],
             controller_events: Vec::new(),
@@ -444,5 +489,18 @@ mod tests {
         );
         assert_eq!(toggle_slurs(&mut part, &[1]), 1);
         assert!(!part.notes[0].slur_to_next);
+
+        // Grouping takes a fresh id; toggling again ungroups.
+        assert_eq!(toggle_note_group(&mut part, &[1, 2]), 2);
+        let group = part.notes[0].group.expect("group id");
+        assert_eq!(part.notes[1].group, Some(group));
+        assert!(part.notes[2].group.is_none());
+        assert_eq!(toggle_note_group(&mut part, &[1, 2]), 2);
+        assert!(part.notes[0].group.is_none() && part.notes[1].group.is_none());
+
+        // A second group gets a distinct id.
+        assert_eq!(toggle_note_group(&mut part, &[1]), 1);
+        assert_eq!(toggle_note_group(&mut part, &[2]), 1);
+        assert_ne!(part.notes[0].group, part.notes[1].group);
     }
 }

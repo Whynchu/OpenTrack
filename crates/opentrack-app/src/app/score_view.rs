@@ -41,6 +41,7 @@ pub(super) enum ScoreNoteFlag {
     Flipped,
     Grace,
     Slur,
+    Group,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,6 +285,11 @@ impl OpenTrackApp {
         self.toggle_score_note_flag(ScoreNoteFlag::Slur);
     }
 
+    /// Groups or ungroups the selected notes in the score.
+    pub(super) fn toggle_group_selected_score_notes(&mut self) {
+        self.toggle_score_note_flag(ScoreNoteFlag::Group);
+    }
+
     fn toggle_score_note_flag(&mut self, flag: ScoreNoteFlag) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
             self.status_message = "Select a MIDI part before editing the score".to_owned();
@@ -325,6 +331,10 @@ impl OpenTrackApp {
                 opentrack_core::midi_transform::toggle_slurs(part, &ids),
                 "Slurs",
             ),
+            ScoreNoteFlag::Group => (
+                opentrack_core::midi_transform::toggle_note_group(part, &ids),
+                "Group Notes",
+            ),
         };
         if changed == 0 {
             self.status_message = "No selected note changed".to_owned();
@@ -338,6 +348,7 @@ impl OpenTrackApp {
                 ScoreNoteFlag::Flipped => "Toggled the stem direction of",
                 ScoreNoteFlag::Grace => "Toggled grace notes for",
                 ScoreNoteFlag::Slur => "Toggled slurs for",
+                ScoreNoteFlag::Group => "Toggled grouping for",
             }
         );
     }
@@ -458,6 +469,7 @@ impl OpenTrackApp {
         let mut flip = false;
         let mut grace = false;
         let mut slur = false;
+        let mut group = false;
         let response = egui::Window::new("Score")
             .id(Id::new("score-view"))
             .order(egui::Order::Foreground)
@@ -467,6 +479,12 @@ impl OpenTrackApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 let slurs = part.notes.iter().filter(|note| note.slur_to_next).count();
+                let groups = part
+                    .notes
+                    .iter()
+                    .filter_map(|note| note.group)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
                 let mut suffix = String::new();
                 if page_mode {
                     suffix.push_str(&format!(
@@ -475,6 +493,9 @@ impl OpenTrackApp {
                 }
                 if slurs > 0 {
                     suffix.push_str(&format!(" · {slurs} slur(s)"));
+                }
+                if groups > 0 {
+                    suffix.push_str(&format!(" · {groups} group(s)"));
                 }
                 ui.label(format!(
                     "{} · {}/{} · {bars} bar(s) · {} note(s){suffix}",
@@ -517,6 +538,9 @@ impl OpenTrackApp {
                     }
                     if ui.button("Slur").clicked() {
                         slur = true;
+                    }
+                    if ui.button("Group").clicked() {
+                        group = true;
                     }
                     if ui
                         .selectable_label(page_mode, "Page Mode")
@@ -562,7 +586,7 @@ impl OpenTrackApp {
                     300.0 * scale + 20.0
                 };
                 let mut note_centers: Vec<(u64, Pos2)> = Vec::new();
-                let mut system_notes: Vec<(u64, f64, Pos2, bool)> = Vec::new();
+                let mut system_notes: Vec<(u64, f64, Pos2, bool, Option<u64>)> = Vec::new();
                 egui::ScrollArea::both()
                     .id_salt("score-scroll")
                     .show(ui, |ui| {
@@ -656,6 +680,7 @@ impl OpenTrackApp {
                                     note.start_beats,
                                     Pos2::new(x, y),
                                     note.slur_to_next,
+                                    note.group,
                                 ));
                                 if position > 8 {
                                     let mut ledger = 10;
@@ -773,15 +798,15 @@ impl OpenTrackApp {
                                     );
                                 }
                             }
-                            for (_, start, center, slurred) in &system_notes {
+                            for (_, start, center, slurred, _) in &system_notes {
                                 if !*slurred {
                                     continue;
                                 }
                                 let next = system_notes
                                     .iter()
-                                    .filter(|(_, other, _, _)| other > start)
+                                    .filter(|(_, other, _, _, _)| other > start)
                                     .min_by(|left, right| left.1.total_cmp(&right.1));
-                                let Some((_, _, next, _)) = next else {
+                                let Some((_, _, next, _, _)) = next else {
                                     continue;
                                 };
                                 let top = center.y.min(next.y) - 14.0 * scale;
@@ -802,6 +827,47 @@ impl OpenTrackApp {
                                     points,
                                     Stroke::new(1.0, colors.text),
                                 ));
+                            }
+                            let mut group_ids = std::collections::BTreeSet::new();
+                            for (_, _, _, _, group) in &system_notes {
+                                if let Some(id) = group {
+                                    group_ids.insert(*id);
+                                }
+                            }
+                            for id in group_ids {
+                                let members = system_notes
+                                    .iter()
+                                    .filter(|(_, _, _, _, group)| *group == Some(id))
+                                    .collect::<Vec<_>>();
+                                if members.len() < 2 {
+                                    continue;
+                                }
+                                let left = members
+                                    .iter()
+                                    .map(|(_, _, center, _, _)| center.x)
+                                    .fold(f32::INFINITY, f32::min);
+                                let right = members
+                                    .iter()
+                                    .map(|(_, _, center, _, _)| center.x)
+                                    .fold(f32::NEG_INFINITY, f32::max);
+                                let top = members
+                                    .iter()
+                                    .map(|(_, _, center, _, _)| center.y)
+                                    .fold(f32::INFINITY, f32::min)
+                                    - 22.0 * scale;
+                                let tick = 4.0 * scale;
+                                painter.line_segment(
+                                    [Pos2::new(left, top), Pos2::new(right, top)],
+                                    Stroke::new(1.2, colors.accent),
+                                );
+                                painter.line_segment(
+                                    [Pos2::new(left, top), Pos2::new(left, top + tick)],
+                                    Stroke::new(1.2, colors.accent),
+                                );
+                                painter.line_segment(
+                                    [Pos2::new(right, top), Pos2::new(right, top + tick)],
+                                    Stroke::new(1.2, colors.accent),
+                                );
                             }
                             system_notes.clear();
                         }
@@ -835,6 +901,9 @@ impl OpenTrackApp {
         }
         if slur {
             self.toggle_slur_selected_score_notes();
+        }
+        if group {
+            self.toggle_group_selected_score_notes();
         }
         if settings {
             self.toggle_score_settings();
@@ -1159,6 +1228,8 @@ mod tests {
         app.data.project.tracks[0].midi_parts[0].notes[0].hidden = true;
         app.data.project.tracks[0].midi_parts[0].notes[1].grace = true;
         app.data.project.tracks[0].midi_parts[0].notes[1].slur_to_next = true;
+        app.data.project.tracks[0].midi_parts[0].notes[0].group = Some(1);
+        app.data.project.tracks[0].midi_parts[0].notes[1].group = Some(1);
         let mut texts = Vec::new();
         for frame in 0..2 {
             let mut output = ctx.run_ui(

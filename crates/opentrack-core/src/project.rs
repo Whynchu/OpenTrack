@@ -1066,6 +1066,9 @@ pub struct MidiNote {
     /// Draws a slur from this note to the next note in the part.
     #[serde(default)]
     pub slur_to_next: bool,
+    /// Score grouping: notes sharing an id are bracketed together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u64>,
 }
 
 /// A MIDI control-change event positioned relative to its MIDI part.
@@ -4831,6 +4834,7 @@ impl Project {
             flipped: false,
             grace: false,
             slur_to_next: false,
+            group: None,
         });
         Some(id)
     }

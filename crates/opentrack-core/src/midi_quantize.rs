@@ -157,6 +157,7 @@ mod tests {
                     flipped: false,
                     grace: false,
                     slur_to_next: false,
+                    group: None,
                 })
                 .collect(),
             controller_events: Vec::new(),
