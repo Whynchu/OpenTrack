@@ -36,6 +36,7 @@ mod offline_processing;
 mod popup_behavior;
 #[path = "preferences.rs"]
 mod preferences;
+mod project_backup;
 #[path = "project_controls.rs"]
 mod project_controls;
 #[path = "project_inspector.rs"]
@@ -1347,6 +1348,10 @@ pub struct OpenTrackApp {
     metronome_count_in_bars: u8,
     /// Persisted pre/post-roll lengths in beats, independent of each other.
     roll_lengths: crate::transport_commands::RollLengths,
+    /// Start plain playback the pre-roll length before the left locator.
+    use_pre_roll: bool,
+    /// Stop plain playback the post-roll length after the right locator.
+    use_post_roll: bool,
     /// Open Drum Map Setup draft; `None` means closed.
     drum_map_setup: Option<drum_map_setup::DrumMapDraft>,
     /// Focused drum editor window and its transient move gesture.
@@ -2856,6 +2861,14 @@ impl OpenTrackApp {
                 .and_then(|s| eframe::get_value::<u8>(s, "metronome-count-in-bars"))
                 .unwrap_or(0)
                 .min(4),
+            use_pre_roll: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "transport-use-pre-roll"))
+                .unwrap_or(false),
+            use_post_roll: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "transport-use-post-roll"))
+                .unwrap_or(false),
             roll_lengths: crate::transport_commands::RollLengths::sanitized(
                 creation
                     .storage
@@ -8328,14 +8341,7 @@ impl OpenTrackApp {
             "media.open_mediabay" => self.focus_media_category(0),
             "media.open_sound_browser" => self.focus_media_category(2),
             "transport.panel_transport_panel" => self.show_transport = !self.show_transport,
-            "transport.play" => {
-                if self.is_recording() {
-                    self.finish_recording();
-                }
-                self.play_until = None;
-                self.set_transport_playing(true);
-                self.data.transport.recording = false;
-            }
+            "transport.play" => self.play_with_roll(),
             "transport.start_stop" => {
                 if !self.data.transport.playing {
                     self.play_until = None;
@@ -13695,7 +13701,17 @@ impl OpenTrackApp {
                         self.save_project_as();
                         ui.close();
                     }
-                    menu_command(ui, "Back up Project...", "", false);
+                    if menu_command(
+                        ui,
+                        "Back up Project...",
+                        "",
+                        self.project_open && self.project_folder_managed,
+                    )
+                    .clicked()
+                    {
+                        self.back_up_project();
+                        ui.close();
+                    }
                     if menu_command(ui, "Save as Template...", "", self.project_open).clicked() {
                         self.begin_save_as_template();
                         ui.close();
@@ -15333,8 +15349,30 @@ impl OpenTrackApp {
                             .color(theme::palette(ui).muted),
                         );
                     });
-                    menu_command(ui, "Use Pre-roll", "", false);
-                    menu_command(ui, "Use Post-roll", "", false);
+                    if ui.selectable_label(self.use_pre_roll, "Use Pre-roll").clicked() {
+                        self.use_pre_roll = !self.use_pre_roll;
+                        self.status_message = if self.use_pre_roll {
+                            format!(
+                                "Pre-roll on: plain playback starts {:.2} beat(s) before the left locator",
+                                self.roll_lengths.pre_beats
+                            )
+                        } else {
+                            "Pre-roll off".to_owned()
+                        };
+                        ui.close();
+                    }
+                    if ui.selectable_label(self.use_post_roll, "Use Post-roll").clicked() {
+                        self.use_post_roll = !self.use_post_roll;
+                        self.status_message = if self.use_post_roll {
+                            format!(
+                                "Post-roll on: plain playback stops {:.2} beat(s) after the right locator",
+                                self.roll_lengths.post_beats
+                            )
+                        } else {
+                            "Post-roll off".to_owned()
+                        };
+                        ui.close();
+                    }
                     if menu_command(
                         ui,
                         "Start Record at Left Locator",
@@ -16545,6 +16583,40 @@ impl OpenTrackApp {
             path.to_path_buf(),
             RECENT_PROJECT_LIMIT,
         );
+    }
+
+    /// Starts plain playback, applying the pre/post-roll preferences.
+    ///
+    /// Only the plain Play command goes through here: "play from selection" and
+    /// the roll commands set their own position and stop target, so they are not
+    /// rewritten. Pre-roll fires when the cursor is inside the locator range;
+    /// post-roll adds a stop target after the right locator in the same range.
+    fn play_with_roll(&mut self) {
+        if self.is_recording() {
+            self.finish_recording();
+        }
+        self.play_until = None;
+        let start = self.data.project.loop_start_beats;
+        let end = self.data.project.loop_end_beats;
+        let position = self.data.transport.position_beats;
+        let usable = end > start && end > 0.0;
+        if usable && self.use_pre_roll && (start..=end).contains(&position) {
+            let lead = self.roll_lengths.pre_beats.max(0.0);
+            let target = (start - lead).max(0.0);
+            if target < position {
+                self.seek_to_beats(target);
+                self.status_message =
+                    format!("Pre-roll from beat {target:.3}; playback runs into the locators");
+            }
+        }
+        if usable && self.use_post_roll && self.data.transport.position_beats <= end {
+            let post = self.roll_lengths.post_beats.max(0.0);
+            if post > 0.0 {
+                self.play_until = Some(end + post);
+            }
+        }
+        self.set_transport_playing(true);
+        self.data.transport.recording = false;
     }
 
     /// Moves the transport to the left locator and starts recording there.
@@ -18876,11 +18948,7 @@ impl OpenTrackApp {
                         true,
                     );
                     if play.clicked() {
-                        if self.is_recording() {
-                            self.finish_recording();
-                        }
-                        self.set_transport_playing(true);
-                        self.data.transport.recording = false;
+                        self.play_with_roll();
                     }
                     let record = toolbar_icon_button(
                         ui,
@@ -19805,6 +19873,8 @@ impl eframe::App for OpenTrackApp {
             "metronome-count-in-bars",
             &self.metronome_count_in_bars,
         );
+        eframe::set_value(storage, "transport-use-pre-roll", &self.use_pre_roll);
+        eframe::set_value(storage, "transport-use-post-roll", &self.use_post_roll);
         eframe::set_value(
             storage,
             "transport-pre-roll-beats",
@@ -33240,6 +33310,61 @@ mod empty_track_tests {
 
         // The recording guard uses a live session that a headless test cannot
         // construct, so that path stays with the desktop review.
+    }
+}
+
+#[cfg(test)]
+mod transport_roll_tests {
+    use super::*;
+
+    fn make_app(position: f64) -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.loop_start_beats = 4.0;
+        app.data.project.loop_end_beats = 8.0;
+        app.roll_lengths.pre_beats = 2.0;
+        app.roll_lengths.post_beats = 3.0;
+        app.data.transport.position_beats = position;
+        app
+    }
+
+    #[test]
+    fn pre_and_post_roll_only_apply_when_switched_on() {
+        // Off by default: position and stop target are untouched.
+        let mut app = make_app(5.0);
+        app.play_with_roll();
+        assert_eq!(app.data.transport.position_beats, 5.0);
+        assert!(app.play_until.is_none());
+
+        // Pre-roll moves the start before the left locator; post-roll adds the
+        // stop target after the right locator.
+        let mut app = make_app(5.0);
+        app.use_pre_roll = true;
+        app.use_post_roll = true;
+        app.play_with_roll();
+        assert_eq!(
+            app.data.transport.position_beats, 2.0,
+            "4 - 2 beats of pre-roll"
+        );
+        assert_eq!(app.play_until, Some(11.0), "8 + 3 beats of post-roll");
+
+        // A cursor after the locator range gets neither behaviour.
+        let mut app = make_app(9.0);
+        app.use_pre_roll = true;
+        app.use_post_roll = true;
+        app.play_with_roll();
+        assert_eq!(app.data.transport.position_beats, 9.0);
+        assert!(app.play_until.is_none());
+
+        // A pre-roll longer than the locator position clamps at beat zero.
+        let mut app = make_app(5.0);
+        app.data.project.loop_start_beats = 1.0;
+        app.roll_lengths.pre_beats = 4.0;
+        app.use_pre_roll = true;
+        app.play_with_roll();
+        assert_eq!(app.data.transport.position_beats, 0.0);
     }
 }
 
