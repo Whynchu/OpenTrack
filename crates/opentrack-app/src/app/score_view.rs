@@ -1034,7 +1034,7 @@ impl OpenTrackApp {
         self.show_score_settings(ctx);
     }
 
-    fn show_score_settings(&mut self, ctx: &egui::Context) {
+    pub(super) fn show_score_settings(&mut self, ctx: &egui::Context) {
         if !self.score_settings_open {
             return;
         }

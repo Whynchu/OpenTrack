@@ -117,7 +117,7 @@ impl OpenTrackApp {
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
+                ui.set_min_width(440.0);
                 ui.label(
                     egui::RichText::new(
                         "MIDI Machine Control master: OpenTrack sends MMC play, stop and locate over the chosen output. External clock sync needs a clock input and stays unavailable.",
@@ -126,34 +126,54 @@ impl OpenTrackApp {
                     .color(theme::palette(ui).muted),
                 );
                 ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("MIDI Output");
-                    egui::ComboBox::from_id_salt("midi-output-device")
-                        .width(240.0)
-                        .selected_text(selected_label.clone())
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(self.selected_midi_output.is_none(), "No MIDI output")
-                                .clicked()
-                            {
-                                chosen = Some(None);
-                            }
-                            for device in &devices {
-                                if ui
-                                    .selectable_label(
-                                        self.selected_midi_output.as_deref() == Some(device.id.as_str()),
-                                        &device.name,
-                                    )
-                                    .clicked()
-                                {
-                                    chosen = Some(Some(device.id.clone()));
-                                }
+                egui::Grid::new("sync-setup-grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("MIDI Output");
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("midi-output-device")
+                                .width(240.0)
+                                .selected_text(selected_label.clone())
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            self.selected_midi_output.is_none(),
+                                            "No MIDI output",
+                                        )
+                                        .clicked()
+                                    {
+                                        chosen = Some(None);
+                                    }
+                                    for device in &devices {
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_midi_output.as_deref()
+                                                    == Some(device.id.as_str()),
+                                                &device.name,
+                                            )
+                                            .clicked()
+                                        {
+                                            chosen = Some(Some(device.id.clone()));
+                                        }
+                                    }
+                                });
+                            if ui.button("Refresh").clicked() {
+                                refresh = true;
                             }
                         });
-                    if ui.button("Refresh").clicked() {
-                        refresh = true;
-                    }
-                });
+                        ui.end_row();
+                        ui.label("MMC device ID");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(&mut device_id).range(0..=127));
+                            ui.label(
+                                egui::RichText::new("127 addresses every device")
+                                    .small()
+                                    .color(theme::palette(ui).muted),
+                            );
+                        });
+                        ui.end_row();
+                    });
                 if devices.is_empty() {
                     ui.label(
                         egui::RichText::new(
@@ -163,15 +183,6 @@ impl OpenTrackApp {
                         .color(theme::palette(ui).muted),
                     );
                 }
-                ui.horizontal(|ui| {
-                    ui.label("MMC device ID");
-                    ui.add(egui::DragValue::new(&mut device_id).range(0..=127));
-                    ui.label(
-                        egui::RichText::new("127 addresses every device")
-                            .small()
-                            .color(theme::palette(ui).muted),
-                    );
-                });
                 if ui
                     .checkbox(&mut enabled, "Send MMC on play, stop and locate")
                     .changed()

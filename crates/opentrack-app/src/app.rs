@@ -83,6 +83,8 @@ mod video_window;
 mod vst3_host;
 #[path = "waveform_view.rs"]
 mod waveform_view;
+#[cfg(test)]
+mod window_layout_tests;
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
@@ -5641,19 +5643,23 @@ impl OpenTrackApp {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
-                ui.label(project_file_name(&task.path));
-                ui.add_space(8.0);
-                ui.add(
-                    egui::ProgressBar::new(status.fraction.clamp(0.0, 1.0))
-                        .animate(true)
-                        .desired_width(340.0),
-                );
-                ui.add_space(5.0);
-                ui.label(
-                    egui::RichText::new(status.phase)
-                        .small()
-                        .color(theme::palette(ui).muted),
-                );
+                ui.vertical_centered(|ui| {
+                    ui.label(project_file_name(&task.path));
+                    ui.add_space(8.0);
+                    let fraction = status.fraction.clamp(0.0, 1.0);
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .animate(true)
+                            .desired_width(340.0)
+                            .text(format!("{:.0}%", fraction * 100.0)),
+                    );
+                    ui.add_space(5.0);
+                    ui.label(
+                        egui::RichText::new(status.phase)
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                });
             });
     }
 
@@ -16854,7 +16860,7 @@ impl OpenTrackApp {
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_min_width(300.0);
+                ui.set_min_width(340.0);
                 ui.label(
                     egui::RichText::new(
                         "Open or close a window. The Mixer, Channel Settings and Project windows need a project.",
@@ -17126,6 +17132,7 @@ impl OpenTrackApp {
         .default_size(Vec2::new(440.0, 360.0))
         .open(&mut open)
         .show(ctx, |ui| {
+            ui.set_min_width(440.0);
             match &target {
                 Some((_, slot, name)) => {
                     ui.label(format!("Target: {name} \u{2014} new insert slot {slot}"));

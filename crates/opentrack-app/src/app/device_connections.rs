@@ -176,6 +176,7 @@ impl OpenTrackApp {
             .default_size(Vec2::new(560.0, 320.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                ui.set_min_width(560.0);
                 ui.label(
                     egui::RichText::new(
                         "Read-only view of the device buses and project buses. Change a track's output or a send in its channel strip.",

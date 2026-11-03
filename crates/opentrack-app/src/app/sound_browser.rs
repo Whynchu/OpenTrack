@@ -181,6 +181,7 @@ impl OpenTrackApp {
             .default_size(Vec2::new(600.0, 440.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                ui.set_min_width(560.0);
                 ui.label(
                     egui::RichText::new(
                         "Browses WAV files in one folder. Import copies the file into the project and places it on the selected audio track. The preview is the file's format; this window does not audition audio.",

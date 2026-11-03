@@ -147,6 +147,7 @@ impl OpenTrackApp {
             .default_size(Vec2::new(520.0, 360.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                ui.set_min_width(480.0);
                 ui.label(
                     egui::RichText::new(
                         "Monitor preferences only: OpenTrack has no separate monitor bus or talkback input yet, so this window stores the listen source and talkback state and shows the routing they would monitor.",

@@ -110,6 +110,7 @@ impl OpenTrackApp {
             .default_size(Vec2::new(660.0, 420.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                ui.set_min_width(480.0);
                 ui.horizontal(|ui| {
                     if ui.button("Open Video...").clicked() {
                         choose = true;
@@ -135,12 +136,17 @@ impl OpenTrackApp {
                 match &self.video_texture {
                     Some(texture) => {
                         let size = texture.size_vec2();
-                        let max = Vec2::new(ui.available_width().max(64.0), 320.0);
+                        let max = Vec2::new(
+                            ui.available_width().max(64.0),
+                            (ui.available_height() - 12.0).max(64.0),
+                        );
                         let scale = (max.x / size.x).min(max.y / size.y).min(1.0);
-                        ui.image(egui::load::SizedTexture::new(
-                            texture.id(),
-                            size * scale,
-                        ));
+                        ui.vertical_centered(|ui| {
+                            ui.image(egui::load::SizedTexture::new(
+                                texture.id(),
+                                size * scale,
+                            ));
+                        });
                     }
                     None => {
                         ui.label(

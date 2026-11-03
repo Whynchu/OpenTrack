@@ -225,6 +225,7 @@ impl OpenTrackApp {
             .default_size(Vec2::new(560.0, 380.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                ui.set_min_width(520.0);
                 ui.label(
                     egui::RichText::new(
                         "One application-wide library of track templates: kind, insert rack and portable routing. New and Open both show it.",
