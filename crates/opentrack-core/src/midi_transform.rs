@@ -35,6 +35,31 @@ pub fn toggle_hidden(part: &mut MidiPart, ids: &[u64]) -> usize {
     changed
 }
 
+/// Toggles a slur from each selected note to the next note in the part.
+///
+/// Notes with no later note are skipped, so the last note cannot hold a slur.
+pub fn toggle_slurs(part: &mut MidiPart, ids: &[u64]) -> usize {
+    let starts = part
+        .notes
+        .iter()
+        .map(|note| (note.id, note.start_beats))
+        .collect::<Vec<_>>();
+    let mut changed = 0;
+    for note in part.notes.iter_mut() {
+        if !ids.contains(&note.id) {
+            continue;
+        }
+        let has_next = starts
+            .iter()
+            .any(|(id, start)| *id != note.id && *start > note.start_beats);
+        if has_next {
+            note.slur_to_next = !note.slur_to_next;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Toggles the score `grace` flag on the given notes.
 pub fn toggle_grace(part: &mut MidiPart, ids: &[u64]) -> usize {
     let mut changed = 0;
@@ -231,6 +256,7 @@ mod tests {
                     hidden: false,
                     flipped: false,
                     grace: false,
+                    slur_to_next: false,
                 },
                 MidiNote {
                     id: 2,
@@ -242,6 +268,7 @@ mod tests {
                     hidden: false,
                     flipped: false,
                     grace: false,
+                    slur_to_next: false,
                 },
                 MidiNote {
                     id: 3,
@@ -253,6 +280,7 @@ mod tests {
                     hidden: false,
                     flipped: false,
                     grace: false,
+                    slur_to_next: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -406,5 +434,15 @@ mod tests {
         assert!(part.notes[2].grace && !part.notes[0].grace);
         assert_eq!(toggle_grace(&mut part, &[3]), 1);
         assert!(!part.notes[2].grace);
+
+        // Slurs only attach where a later note exists.
+        assert_eq!(toggle_slurs(&mut part, &[1, 3]), 1);
+        assert!(part.notes[0].slur_to_next);
+        assert!(
+            !part.notes[2].slur_to_next,
+            "the last note cannot slur forward"
+        );
+        assert_eq!(toggle_slurs(&mut part, &[1]), 1);
+        assert!(!part.notes[0].slur_to_next);
     }
 }

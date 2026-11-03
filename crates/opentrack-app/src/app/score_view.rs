@@ -40,6 +40,7 @@ pub(super) enum ScoreNoteFlag {
     Hidden,
     Flipped,
     Grace,
+    Slur,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -278,6 +279,11 @@ impl OpenTrackApp {
         self.toggle_score_note_flag(ScoreNoteFlag::Grace);
     }
 
+    /// Toggles slurs from the selected notes to their next note.
+    pub(super) fn toggle_slur_selected_score_notes(&mut self) {
+        self.toggle_score_note_flag(ScoreNoteFlag::Slur);
+    }
+
     fn toggle_score_note_flag(&mut self, flag: ScoreNoteFlag) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
             self.status_message = "Select a MIDI part before editing the score".to_owned();
@@ -315,6 +321,10 @@ impl OpenTrackApp {
                 opentrack_core::midi_transform::toggle_grace(part, &ids),
                 "Grace Notes",
             ),
+            ScoreNoteFlag::Slur => (
+                opentrack_core::midi_transform::toggle_slurs(part, &ids),
+                "Slurs",
+            ),
         };
         if changed == 0 {
             self.status_message = "No selected note changed".to_owned();
@@ -327,6 +337,7 @@ impl OpenTrackApp {
                 ScoreNoteFlag::Hidden => "Toggled the score visibility of",
                 ScoreNoteFlag::Flipped => "Toggled the stem direction of",
                 ScoreNoteFlag::Grace => "Toggled grace notes for",
+                ScoreNoteFlag::Slur => "Toggled slurs for",
             }
         );
     }
@@ -446,6 +457,7 @@ impl OpenTrackApp {
         let mut hide_show = false;
         let mut flip = false;
         let mut grace = false;
+        let mut slur = false;
         let response = egui::Window::new("Score")
             .id(Id::new("score-view"))
             .order(egui::Order::Foreground)
@@ -454,17 +466,22 @@ impl OpenTrackApp {
             .default_size(Vec2::new(820.0, 420.0))
             .open(&mut open)
             .show(ctx, |ui| {
+                let slurs = part.notes.iter().filter(|note| note.slur_to_next).count();
+                let mut suffix = String::new();
+                if page_mode {
+                    suffix.push_str(&format!(
+                        " · page mode, {bars_per_system} bar(s)/system"
+                    ));
+                }
+                if slurs > 0 {
+                    suffix.push_str(&format!(" · {slurs} slur(s)"));
+                }
                 ui.label(format!(
-                    "{} · {}/{} · {bars} bar(s) · {} note(s){}",
+                    "{} · {}/{} · {bars} bar(s) · {} note(s){suffix}",
                     part.name,
                     self.data.project.beats_per_bar,
                     self.data.project.beat_unit,
                     part.notes.len(),
-                    if page_mode {
-                        format!(" · page mode, {bars_per_system} bar(s)/system")
-                    } else {
-                        String::new()
-                    }
                 ));
                 ui.label(
                     egui::RichText::new(
@@ -497,6 +514,9 @@ impl OpenTrackApp {
                     }
                     if ui.button("Grace").clicked() {
                         grace = true;
+                    }
+                    if ui.button("Slur").clicked() {
+                        slur = true;
                     }
                     if ui
                         .selectable_label(page_mode, "Page Mode")
@@ -542,6 +562,7 @@ impl OpenTrackApp {
                     300.0 * scale + 20.0
                 };
                 let mut note_centers: Vec<(u64, Pos2)> = Vec::new();
+                let mut system_notes: Vec<(u64, f64, Pos2, bool)> = Vec::new();
                 egui::ScrollArea::both()
                     .id_salt("score-scroll")
                     .show(ui, |ui| {
@@ -630,6 +651,12 @@ impl OpenTrackApp {
                                     continue;
                                 }
                                 note_centers.push((note.id, Pos2::new(x, y)));
+                                system_notes.push((
+                                    note.id,
+                                    note.start_beats,
+                                    Pos2::new(x, y),
+                                    note.slur_to_next,
+                                ));
                                 if position > 8 {
                                     let mut ledger = 10;
                                     while ledger <= position {
@@ -746,6 +773,37 @@ impl OpenTrackApp {
                                     );
                                 }
                             }
+                            for (_, start, center, slurred) in &system_notes {
+                                if !*slurred {
+                                    continue;
+                                }
+                                let next = system_notes
+                                    .iter()
+                                    .filter(|(_, other, _, _)| other > start)
+                                    .min_by(|left, right| left.1.total_cmp(&right.1));
+                                let Some((_, _, next, _)) = next else {
+                                    continue;
+                                };
+                                let top = center.y.min(next.y) - 14.0 * scale;
+                                let control = Pos2::new((center.x + next.x) * 0.5, top);
+                                let mut points = Vec::with_capacity(12);
+                                for step in 0..=10 {
+                                    let t = step as f32 / 10.0;
+                                    let inverse = 1.0 - t;
+                                    let px = inverse * inverse * center.x
+                                        + 2.0 * inverse * t * control.x
+                                        + t * t * next.x;
+                                    let py = inverse * inverse * center.y
+                                        + 2.0 * inverse * t * control.y
+                                        + t * t * next.y;
+                                    points.push(Pos2::new(px, py));
+                                }
+                                painter.add(egui::Shape::line(
+                                    points,
+                                    Stroke::new(1.0, colors.text),
+                                ));
+                            }
+                            system_notes.clear();
                         }
                         if canvas.clicked()
                             && let Some(pointer) = canvas.interact_pointer_pos()
@@ -774,6 +832,9 @@ impl OpenTrackApp {
         }
         if grace {
             self.toggle_grace_selected_score_notes();
+        }
+        if slur {
+            self.toggle_slur_selected_score_notes();
         }
         if settings {
             self.toggle_score_settings();
@@ -1097,6 +1158,7 @@ mod tests {
         app.score_view_open = true;
         app.data.project.tracks[0].midi_parts[0].notes[0].hidden = true;
         app.data.project.tracks[0].midi_parts[0].notes[1].grace = true;
+        app.data.project.tracks[0].midi_parts[0].notes[1].slur_to_next = true;
         let mut texts = Vec::new();
         for frame in 0..2 {
             let mut output = ctx.run_ui(

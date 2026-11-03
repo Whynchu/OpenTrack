@@ -1063,6 +1063,9 @@ pub struct MidiNote {
     /// Draws the note as a small grace note in the score.
     #[serde(default)]
     pub grace: bool,
+    /// Draws a slur from this note to the next note in the part.
+    #[serde(default)]
+    pub slur_to_next: bool,
 }
 
 /// A MIDI control-change event positioned relative to its MIDI part.
@@ -4827,6 +4830,7 @@ impl Project {
             hidden: false,
             flipped: false,
             grace: false,
+            slur_to_next: false,
         });
         Some(id)
     }
