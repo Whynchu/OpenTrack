@@ -8,7 +8,7 @@ $env:UPDATE_SOURCE_INVENTORY = "1"
 cargo test -p opentrack generated_source_inventory -- --nocapture
 ```
 
-- Source snapshot: `app.rs` FNV-1a 64 `0xa8fc3e605f4e03e8`; keymap CSV `0xa9f1eb00c81948c7`
+- Source snapshot: `app.rs` FNV-1a 64 `0x6314df18322e1f96`; keymap CSV `0xa9f1eb00c81948c7`
 - Scope: the project-open main menu and the empty-project shell. Context menus are
 enumerated in the curated `docs/reviews/audit-menus.md` register; this generated file
 does not claim to cover them.
@@ -22,7 +22,7 @@ counted once, not per runtime instance.
 
 ## Project-open main menu
 
-277 leaves: 49 available, 164 state-dependent, 56 unavailable, 8 informational.
+277 leaves: 50 available, 164 state-dependent, 55 unavailable, 8 informational.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
@@ -156,10 +156,10 @@ counted once, not per runtime instance.
 | File > Save As... | Ctrl+Shift+S | available | `true` | 13700 |
 | File > Save Library... |  | unavailable | `false` | 13719 |
 | File > Save as Template... |  | state-dependent | `self.project_open` | 13715 |
-| Help > About OpenTrack... |  | available | `true` | 15651 |
-| Help > Credits and Copyrights |  | available | `true` | 15647 |
-| Help > OpenTrack on the Web |  | unavailable | `false` | 15645 |
-| Help > Registration |  | unavailable | `false` | 15646 |
+| Help > About OpenTrack... |  | available | `true` | 15654 |
+| Help > Credits and Copyrights |  | available | `true` | 15650 |
+| Help > OpenTrack on the Web |  | available | `true` | 15645 |
+| Help > Registration |  | unavailable | `false` | 15649 |
 | MIDI > Arm a MIDI or Instrument track to monitor its input |  | informational | `` | 14925 |
 | MIDI > CC Automation Setup... |  | state-dependent | `self.project_open` | 14836 |
 | MIDI > Drum Map Setup... |  | state-dependent | `self.project_open` | 14851 |
@@ -312,24 +312,24 @@ No duplicate full paths.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
-| Audio > No project is open |  | unavailable | `false` | 15698 |
-| Devices > Device Setup... |  | available | `true` | 15701 |
-| Devices > VST Connections... | F4 | unavailable | `false` | 15705 |
-| Edit > Key Commands... |  | available | `true` | 15689 |
-| Edit > Redo |  | unavailable | `false` | 15687 |
-| Edit > Undo |  | unavailable | `false` | 15686 |
-| File > New Project... | Ctrl+N | available | `true` | 15668 |
-| File > Open... | Ctrl+O | available | `true` | 15672 |
-| File > Quit | Alt+F4 | available | `true` | 15680 |
-| File > Save | Ctrl+S | unavailable | `false` | 15677 |
-| File > Save As... | Ctrl+Shift+S | unavailable | `false` | 15678 |
-| Help > About OpenTrack... |  | available | `true` | 15713 |
-| MIDI > No project is open |  | unavailable | `false` | 15709 |
-| Media > No project is open |  | unavailable | `false` | 15709 |
-| Project > No project is open |  | unavailable | `false` | 15695 |
-| Scores > No project is open |  | unavailable | `false` | 15709 |
-| Transport > No project is open |  | unavailable | `false` | 15709 |
-| Window > No project is open |  | unavailable | `false` | 15709 |
+| Audio > No project is open |  | unavailable | `false` | 15701 |
+| Devices > Device Setup... |  | available | `true` | 15704 |
+| Devices > VST Connections... | F4 | unavailable | `false` | 15708 |
+| Edit > Key Commands... |  | available | `true` | 15692 |
+| Edit > Redo |  | unavailable | `false` | 15690 |
+| Edit > Undo |  | unavailable | `false` | 15689 |
+| File > New Project... | Ctrl+N | available | `true` | 15671 |
+| File > Open... | Ctrl+O | available | `true` | 15675 |
+| File > Quit | Alt+F4 | available | `true` | 15683 |
+| File > Save | Ctrl+S | unavailable | `false` | 15680 |
+| File > Save As... | Ctrl+Shift+S | unavailable | `false` | 15681 |
+| Help > About OpenTrack... |  | available | `true` | 15716 |
+| MIDI > No project is open |  | unavailable | `false` | 15712 |
+| Media > No project is open |  | unavailable | `false` | 15712 |
+| Project > No project is open |  | unavailable | `false` | 15698 |
+| Scores > No project is open |  | unavailable | `false` | 15712 |
+| Transport > No project is open |  | unavailable | `false` | 15712 |
+| Window > No project is open |  | unavailable | `false` | 15712 |
 
 No duplicate full paths.
 

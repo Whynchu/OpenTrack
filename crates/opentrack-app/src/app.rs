@@ -15642,7 +15642,10 @@ impl OpenTrackApp {
                     }
                 });
                 ui.menu_button("Help", |ui| {
-                    menu_command(ui, "OpenTrack on the Web", "", false);
+                    if menu_command(ui, "OpenTrack on the Web", "", true).clicked() {
+                        self.open_website(ui.ctx());
+                        ui.close();
+                    }
                     menu_command(ui, "Registration", "", false);
                     if menu_command(ui, "Credits and Copyrights", "", true).clicked() {
                         self.about_open = true;
@@ -16702,6 +16705,13 @@ impl OpenTrackApp {
             self.revert_prompt = false;
             self.status_message = "Revert cancelled".to_owned();
         }
+    }
+
+    /// Opens the project's public page in the system browser.
+    fn open_website(&self, ctx: &egui::Context) {
+        ctx.open_url(egui::OpenUrl::new_tab(
+            "https://github.com/Whynchu/OpenTrack",
+        ));
     }
 
     /// Opens the undo-history window for the current project.
@@ -33650,6 +33660,27 @@ mod wired_menu_row_tests {
         closed.begin_save_as_template();
         assert!(closed.template_name_draft.is_none());
         assert!(closed.status_message.contains("Open a project"));
+    }
+
+    #[test]
+    fn the_help_row_opens_the_project_page() {
+        let ctx = egui::Context::default();
+        let app = make_app(true);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| app.open_website(&ctx));
+        output.textures_delta.clear();
+        assert!(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    egui::OutputCommand::OpenUrl(url)
+                        if url.url == "https://github.com/Whynchu/OpenTrack"
+                )),
+            "{:?}",
+            output.platform_output.commands
+        );
     }
 }
 
