@@ -15187,14 +15187,20 @@ impl OpenTrackApp {
                         self.toggle_score_layout();
                         ui.close();
                     }
+                    if menu_command(ui, "Hide/Show", "", self.project_open).clicked() {
+                        self.toggle_hidden_selected_score_notes();
+                        ui.close();
+                    }
+                    if menu_command(ui, "Flip", "", self.project_open).clicked() {
+                        self.toggle_flipped_selected_score_notes();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Group/Ungroup Notes", ""),
                             ("Convert to Grace Note", ""),
                             ("Insert Slur", ""),
-                            ("Hide/Show", ""),
-                            ("Flip", ""),
                         ],
                     );
                     ui.menu_button("Align Elements", |ui| {
@@ -30355,6 +30361,8 @@ mod midi_quantize_tests {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -30363,6 +30371,8 @@ mod midi_quantize_tests {
                     pitch: 62,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -34942,6 +34952,8 @@ mod list_editor_tests {
                     pitch: 67,
                     channel: 0,
                     velocity: 90,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -34950,6 +34962,8 @@ mod list_editor_tests {
                     pitch: 60,
                     channel: 1,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35071,6 +35085,8 @@ mod explode_channel_tests {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35079,6 +35095,8 @@ mod explode_channel_tests {
                     pitch: 64,
                     channel: 3,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35145,6 +35163,8 @@ mod explode_pitches_tests {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35153,6 +35173,8 @@ mod explode_pitches_tests {
                     pitch: 64,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 3,
@@ -35161,6 +35183,8 @@ mod explode_pitches_tests {
                     pitch: 67,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35224,6 +35248,8 @@ mod tuplet_tests {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35232,6 +35258,8 @@ mod tuplet_tests {
                     pitch: 62,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 3,
@@ -35240,6 +35268,8 @@ mod tuplet_tests {
                     pitch: 64,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35323,6 +35353,8 @@ mod insert_velocities_tests {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35331,6 +35363,8 @@ mod insert_velocities_tests {
                     pitch: 62,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),

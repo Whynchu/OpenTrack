@@ -1054,6 +1054,12 @@ pub struct MidiNote {
     pub channel: u8,
     /// MIDI velocity in the range 1 through 127; zero is reserved for note-off.
     pub velocity: u8,
+    /// Hidden notes keep sounding but show as a placeholder in the score.
+    #[serde(default)]
+    pub hidden: bool,
+    /// Flips the score stem direction for this note.
+    #[serde(default)]
+    pub flipped: bool,
 }
 
 /// A MIDI control-change event positioned relative to its MIDI part.
@@ -4815,6 +4821,8 @@ impl Project {
             pitch,
             channel,
             velocity,
+            hidden: false,
+            flipped: false,
         });
         Some(id)
     }

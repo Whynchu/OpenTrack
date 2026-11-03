@@ -35,6 +35,12 @@ pub(super) enum NoteHead {
 }
 
 /// One edit requested by a button or key in the score window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScoreNoteFlag {
+    Hidden,
+    Flipped,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ScoreAction {
     Move(f64),
@@ -119,6 +125,12 @@ pub(super) fn note_flags(head: NoteHead) -> u8 {
         NoteHead::Shorter => 3,
         NoteHead::Whole | NoteHead::Half | NoteHead::Quarter => 0,
     }
+}
+
+/// Stem direction for a staff position, honouring the note's flip flag.
+pub(super) fn stem_up(position: i32, flipped: bool) -> bool {
+    let up = position < 4;
+    if flipped { !up } else { up }
 }
 
 /// In page mode, the system and beat offset inside that system.
@@ -250,6 +262,64 @@ impl OpenTrackApp {
         self.mark_modified();
     }
 
+    /// Toggles the score visibility of the selected notes as one undo step.
+    pub(super) fn toggle_hidden_selected_score_notes(&mut self) {
+        self.toggle_score_note_flag(ScoreNoteFlag::Hidden);
+    }
+
+    /// Toggles the stem direction of the selected notes as one undo step.
+    pub(super) fn toggle_flipped_selected_score_notes(&mut self) {
+        self.toggle_score_note_flag(ScoreNoteFlag::Flipped);
+    }
+
+    fn toggle_score_note_flag(&mut self, flag: ScoreNoteFlag) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before editing the score".to_owned();
+            return;
+        };
+        if self.selected_midi_note_ids.is_empty() {
+            self.status_message = "Select a note in the score first".to_owned();
+            return;
+        }
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let (changed, label) = match flag {
+            ScoreNoteFlag::Hidden => (
+                opentrack_core::midi_transform::toggle_hidden(part, &ids),
+                "Hide/Show Notes",
+            ),
+            ScoreNoteFlag::Flipped => (
+                opentrack_core::midi_transform::toggle_flipped(part, &ids),
+                "Flip Notes",
+            ),
+        };
+        if changed == 0 {
+            self.status_message = "No selected note changed".to_owned();
+            return;
+        }
+        self.record_score_edit(candidate, label);
+        self.status_message = format!(
+            "{} {changed} note(s); Undo restores them",
+            match flag {
+                ScoreNoteFlag::Hidden => "Toggled the score visibility of",
+                ScoreNoteFlag::Flipped => "Toggled the stem direction of",
+            }
+        );
+    }
+
     pub(super) fn toggle_score_page_mode(&mut self) {
         self.score_page_mode = !self.score_page_mode;
         self.status_message = if self.score_page_mode {
@@ -362,6 +432,8 @@ impl OpenTrackApp {
         let mut clicked_note = None;
         let mut toggle_page = false;
         let mut settings = false;
+        let mut hide_show = false;
+        let mut flip = false;
         let response = egui::Window::new("Score")
             .id(Id::new("score-view"))
             .order(egui::Order::Foreground)
@@ -404,6 +476,12 @@ impl OpenTrackApp {
                     }
                     if ui.button("Delete Note").clicked() {
                         action = Some(ScoreAction::Delete);
+                    }
+                    if ui.button("Hide/Show").clicked() {
+                        hide_show = true;
+                    }
+                    if ui.button("Flip").clicked() {
+                        flip = true;
                     }
                     if ui
                         .selectable_label(page_mode, "Page Mode")
@@ -569,6 +647,23 @@ impl OpenTrackApp {
                                         Stroke::new(1.5, colors.accent),
                                     );
                                 }
+                                if note.hidden {
+                                    // A hidden note keeps its staff position as a
+                                    // muted placeholder; it still sounds.
+                                    painter.add(egui::Shape::ellipse_stroke(
+                                        center,
+                                        Vec2::new(3.4 * scale, 2.4 * scale),
+                                        Stroke::new(1.0, colors.muted),
+                                    ));
+                                    painter.text(
+                                        center,
+                                        Align2::CENTER_CENTER,
+                                        "×",
+                                        FontId::proportional(9.0 * scale),
+                                        colors.muted,
+                                    );
+                                    continue;
+                                }
                                 let filled = matches!(
                                     head,
                                     NoteHead::Quarter
@@ -588,7 +683,7 @@ impl OpenTrackApp {
                                     ));
                                 }
                                 if !matches!(head, NoteHead::Whole) {
-                                    let up = position < 4;
+                                    let up = stem_up(position, note.flipped);
                                     let stem_end = if up {
                                         Pos2::new(x + 4.5 * scale, y - 26.0 * scale)
                                     } else {
@@ -642,6 +737,12 @@ impl OpenTrackApp {
         dismiss_window_on_outside_click(ctx, Id::new("score-view"), &mut open, response.as_ref());
         if toggle_page {
             self.toggle_score_page_mode();
+        }
+        if hide_show {
+            self.toggle_hidden_selected_score_notes();
+        }
+        if flip {
+            self.toggle_flipped_selected_score_notes();
         }
         if settings {
             self.toggle_score_settings();
@@ -894,6 +995,55 @@ mod tests {
     }
 
     #[test]
+    fn hidden_and_flipped_notes_toggle_with_undo() {
+        let mut app = app_with_part();
+        let part_id = app.data.project.selected_midi_part_id.expect("part");
+        let first = app.data.project.tracks[0].midi_parts[0].notes[0].id;
+        let second = app.data.project.tracks[0].midi_parts[0].notes[1].id;
+
+        app.select_score_note(first);
+        app.toggle_hidden_selected_score_notes();
+        assert!(app.data.project.tracks[0].midi_parts[0].notes[0].hidden);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Hide/Show Notes")
+        );
+
+        // Without a selection the command reports.
+        app.selected_midi_note_ids.clear();
+        app.toggle_hidden_selected_score_notes();
+        assert!(app.status_message.contains("Select a note"));
+
+        // Flip applies to the selected notes only.
+        app.select_score_note(second);
+        app.toggle_flipped_selected_score_notes();
+        assert!(app.data.project.tracks[0].midi_parts[0].notes[1].flipped);
+        assert!(!app.data.project.tracks[0].midi_parts[0].notes[0].flipped);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Flip Notes")
+        );
+        assert_eq!(
+            part_id,
+            app.data.project.selected_midi_part_id.expect("part")
+        );
+    }
+
+    #[test]
+    fn stem_direction_respects_the_flip_flag() {
+        assert!(stem_up(0, false));
+        assert!(!stem_up(4, false));
+        assert!(!stem_up(0, true));
+        assert!(stem_up(4, true));
+    }
+
+    #[test]
     fn page_mode_and_zoom_are_view_settings() {
         let mut app = app_with_part();
         assert!(!app.score_page_mode);
@@ -914,6 +1064,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = app_with_part();
         app.score_view_open = true;
+        app.data.project.tracks[0].midi_parts[0].notes[0].hidden = true;
         let mut texts = Vec::new();
         for frame in 0..2 {
             let mut output = ctx.run_ui(
@@ -949,5 +1100,6 @@ mod tests {
         assert!(joined.contains("Bass"), "{joined}");
         assert!(joined.contains("3 note(s)"), "{joined}");
         assert!(joined.contains("Page Mode"), "{joined}");
+        assert!(joined.contains("×"), "hidden placeholder drawn: {joined}");
     }
 }

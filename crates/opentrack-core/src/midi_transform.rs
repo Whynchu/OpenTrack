@@ -23,6 +23,30 @@ fn says_yes(ids: &[u64], id: u64) -> bool {
 ///
 /// Notes that would leave the MIDI pitch range are skipped, and the caller can
 /// report the difference between the requested and the changed count.
+/// Toggles the score `hidden` flag on the given notes.
+pub fn toggle_hidden(part: &mut MidiPart, ids: &[u64]) -> usize {
+    let mut changed = 0;
+    for note in part.notes.iter_mut() {
+        if ids.contains(&note.id) {
+            note.hidden = !note.hidden;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Toggles the score stem `flipped` flag on the given notes.
+pub fn toggle_flipped(part: &mut MidiPart, ids: &[u64]) -> usize {
+    let mut changed = 0;
+    for note in part.notes.iter_mut() {
+        if ids.contains(&note.id) {
+            note.flipped = !note.flipped;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 pub fn transpose_notes(part: &mut MidiPart, ids: &[u64], semitones: i16) -> usize {
     if semitones == 0 || semitones.abs() > MAX_TRANSPOSE_SEMITONES {
         return 0;
@@ -192,6 +216,8 @@ mod tests {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 2,
@@ -200,6 +226,8 @@ mod tests {
                     pitch: 127,
                     channel: 0,
                     velocity: 1,
+                    hidden: false,
+                    flipped: false,
                 },
                 MidiNote {
                     id: 3,
@@ -208,6 +236,8 @@ mod tests {
                     pitch: 0,
                     channel: 0,
                     velocity: 64,
+                    hidden: false,
+                    flipped: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -336,5 +366,25 @@ mod tests {
         assert_eq!(change_velocity(&mut part, &[], MAX_VELOCITY_DELTA + 1), 0);
         assert_eq!(part, before);
         assert!(project.validate().is_ok());
+    }
+    #[test]
+    fn score_flags_toggle_per_note() {
+        let (mut project, part) = part();
+        let mut part = project.tracks[0].midi_parts.remove(0);
+        assert_eq!(toggle_hidden(&mut part, &[1]), 1);
+        assert!(part.notes[0].hidden && !part.notes[1].hidden);
+        assert_eq!(toggle_hidden(&mut part, &[1]), 1);
+        assert!(!part.notes[0].hidden);
+        assert_eq!(
+            toggle_hidden(&mut part, &[9]),
+            0,
+            "unknown ids change nothing"
+        );
+
+        assert_eq!(toggle_flipped(&mut part, &[2, 3]), 2);
+        assert!(part.notes[1].flipped && part.notes[2].flipped);
+        assert!(!part.notes[0].flipped);
+        assert_eq!(toggle_flipped(&mut part, &[2]), 1);
+        assert!(!part.notes[1].flipped);
     }
 }
