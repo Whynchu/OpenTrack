@@ -51,11 +51,13 @@ mod project_rate;
 mod project_recovery;
 #[path = "project_tools.rs"]
 mod project_tools;
+mod reconstruct;
 #[path = "recording_recovery.rs"]
 mod recording_recovery;
 #[path = "recording_undo.rs"]
 mod recording_undo;
 mod region_editor;
+mod registration;
 mod retrospective;
 #[path = "routing.rs"]
 mod routing;
@@ -1254,6 +1256,8 @@ pub struct OpenTrackApp {
     sound_browser_open: bool,
     /// Control Room monitor preferences and window state.
     control_room_open: bool,
+    /// Help > Registration informational dialog.
+    registration_open: bool,
     control_room_tab: u8,
     monitor_listen: Option<u64>,
     monitor_talkback: bool,
@@ -2814,6 +2818,7 @@ impl OpenTrackApp {
             sound_browser_filter: String::new(),
             control_room_open: false,
             control_room_tab: 0,
+            registration_open: false,
             monitor_listen: creation.storage.and_then(|storage| {
                 eframe::get_value::<Option<u64>>(storage, "control-room-listen-v1").flatten()
             }),
@@ -15322,10 +15327,13 @@ impl OpenTrackApp {
                         self.import_audio_cd();
                         ui.close();
                     }
+                    if menu_command(ui, "Reconstruct", "", self.project_open).clicked() {
+                        self.reconstruct_audio_sources();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Reconstruct", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
                         ],
@@ -15778,7 +15786,10 @@ impl OpenTrackApp {
                         self.open_website(ui.ctx());
                         ui.close();
                     }
-                    menu_command(ui, "Registration", "", false);
+                    if menu_command(ui, "Registration", "", true).clicked() {
+                        self.registration_open = true;
+                        ui.close();
+                    }
                     if menu_command(ui, "Credits and Copyrights", "", true).clicked() {
                         self.about_open = true;
                         ui.close();
@@ -16483,6 +16494,7 @@ impl OpenTrackApp {
             || self.track_library_open
             || self.sound_browser_open
             || self.control_room_open
+            || self.registration_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20068,6 +20080,7 @@ impl eframe::App for OpenTrackApp {
         self.show_track_library(&ctx);
         self.show_sound_browser(&ctx);
         self.show_control_room(&ctx);
+        self.show_registration(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
