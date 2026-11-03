@@ -14,9 +14,12 @@ use std::ffi::c_void;
 
 use vst3::ComPtr;
 use vst3::Steinberg::Vst::{IEditController, IEditControllerTrait};
-use vst3::Steinberg::{
-    FIDString, IPlugFrame, IPlugView, IPlugViewTrait, ViewRect, kPlatformTypeHWND, kResultOk,
-};
+use vst3::Steinberg::{FIDString, IPlugFrame, IPlugView, IPlugViewTrait, ViewRect, kResultOk};
+
+#[cfg(windows)]
+use vst3::Steinberg::kPlatformTypeHWND;
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 
 /// One live editor view.
 pub(crate) struct EditorSession {
@@ -45,10 +48,18 @@ pub(crate) fn open_session(
         .ok_or_else(|| String::from("plug-in has no editor view"))?;
 
     // SAFETY: control-thread call on a live view.
-    if unsafe { view.isPlatformTypeSupported(kPlatformTypeHWND) } != kResultOk {
-        return Err(String::from(
-            "plug-in editor does not support the Windows HWND platform type",
-        ));
+    #[cfg(windows)]
+    let platform_type = kPlatformTypeHWND;
+    #[cfg(target_os = "linux")]
+    let platform_type = kPlatformTypeX11EmbedWindowID;
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let platform_type: *const std::ffi::c_char = c"".as_ptr();
+    if unsafe { view.isPlatformTypeSupported(platform_type) } != kResultOk {
+        return Err(String::from(if cfg!(target_os = "linux") {
+            "plug-in editor does not support the Linux X11EmbedWindowID platform type"
+        } else {
+            "plug-in editor does not support the Windows HWND platform type"
+        }));
     }
 
     let mut rect = ViewRect {
@@ -87,7 +98,7 @@ pub(crate) fn open_session(
 
     // SAFETY: the parent is a valid HWND supplied by the application and the
     // view is alive for the duration of the call.
-    if unsafe { view.attached(parent, kPlatformTypeHWND) } != kResultOk {
+    if unsafe { view.attached(parent, platform_type) } != kResultOk {
         // SAFETY: best-effort detachment after a failed attach.
         unsafe {
             let _ = view.setFrame(std::ptr::null_mut());
@@ -261,7 +272,46 @@ pub(crate) fn resize_native_window(hwnd: isize, width: u32, height: u32) -> Resu
         }
         Ok(())
     }
+    #[cfg(target_os = "linux")]
+    {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt};
+
+        if hwnd == 0 || width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+            return Err(String::from("invalid editor X11 window or size"));
+        }
+        let (connection, _) = x11rb::connect(None)
+            .map_err(|error| format!("could not connect to X11 to resize the editor: {error}"))?;
+        let parent = connection
+            .query_tree(hwnd as u32)
+            .map_err(|error| format!("could not inspect the VST3 editor parent: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read the VST3 editor parent: {error}"))?
+            .parent;
+        // The VST3 view is attached to a dedicated plug-in child window. Keep
+        // that container and its decorated top-level in sync when the view
+        // requests a resize.
+        if parent != 0 {
+            connection
+                .configure_window(
+                    parent,
+                    &ConfigureWindowAux::new().width(width).height(height),
+                )
+                .map_err(|error| format!("could not resize the VST3 editor frame: {error}"))?;
+        }
+        connection
+            .configure_window(
+                hwnd as u32,
+                &ConfigureWindowAux::new().width(width).height(height),
+            )
+            .map_err(|error| format!("could not resize the VST3 editor window: {error}"))?;
+        connection
+            .flush()
+            .map_err(|error| format!("could not flush the VST3 editor resize: {error}"))?;
+        Ok(())
+    }
     #[cfg(not(windows))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (hwnd, width, height);
         Err(String::from(

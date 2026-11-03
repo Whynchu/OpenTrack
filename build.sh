@@ -65,11 +65,11 @@ esac
 
 printf 'Building %s release for %s\n' "$arch" "$triple"
 if [[ "$triple" == "$host_triple" ]]; then
-    cargo build --release --locked -p opentrack -p opentrack-plugin-scan
+    cargo build --release --locked -p opentrack -p opentrack-plugin-scan --features opentrack/linux-realtime
     binary=".build-cache/release/opentrack"
     scanner_binary=".build-cache/release/opentrack-plugin-scan"
 else
-    cargo build --release --locked -p opentrack -p opentrack-plugin-scan --target "$triple"
+    cargo build --release --locked -p opentrack -p opentrack-plugin-scan --target "$triple" --features opentrack/linux-realtime
     binary=".build-cache/$triple/release/opentrack"
     scanner_binary=".build-cache/$triple/release/opentrack-plugin-scan"
 fi
@@ -99,6 +99,7 @@ cat >"$build_info" <<EOF
     "platform": "linux-$triple",
     "architecture": "$arch",
     "profile": "release",
+    "linux_realtime_scheduling": true,
     "executable_sha256": "$sha256"
 }
 EOF

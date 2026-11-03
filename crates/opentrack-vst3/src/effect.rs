@@ -230,6 +230,9 @@ impl Vst3Effect {
         }
 
         let shared = Arc::new(HostShared::default());
+        #[cfg(target_os = "linux")]
+        let services = HostServices::new(Arc::clone(&shared), host_context.run_loop());
+        #[cfg(not(target_os = "linux"))]
         let services = HostServices::new(Arc::clone(&shared));
         let handler = services
             .to_com_ptr::<IComponentHandler>()
@@ -805,6 +808,9 @@ impl Vst3Effect {
         shared
             .editor_hwnd
             .store(parent_window as isize, Ordering::Release);
+        #[cfg(target_os = "linux")]
+        let services = HostServices::new(Arc::clone(&self.shared), self.host_context.run_loop());
+        #[cfg(not(target_os = "linux"))]
         let services = HostServices::new(Arc::clone(&self.shared));
         let plug_frame = services
             .to_com_ptr::<IPlugFrame>()
@@ -824,6 +830,12 @@ impl Vst3Effect {
             _plug_frame: plug_frame,
             shared,
         })
+    }
+
+    /// Runs Linux VST3 host event and timer callbacks on the editor thread.
+    #[cfg(target_os = "linux")]
+    pub fn pump_editor_run_loop(&self) {
+        self.host_context.pump_run_loop();
     }
 
     /// Detaches and releases the native editor, if any.

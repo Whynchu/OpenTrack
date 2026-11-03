@@ -88,6 +88,7 @@ fn unavailable_devices_summary(host_name: &str, count: usize) -> String {
 }
 
 /// Parsed ALSA PCM name, for example `alsa:plughw:CARD=sofhdadsp,DEV=3`.
+#[derive(Clone, Copy)]
 struct AlsaPcm<'a> {
     pcm: &'a str,
     card: Option<&'a str>,
@@ -169,8 +170,10 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
         .cloned()
         .collect();
 
-    // `plughw` converts formats and rates, so prefer it and take over the
-    // capabilities reported by the other front ends for the same PCM.
+    // `plughw` converts formats and rates. Keep it alongside `hw`: the latter
+    // exposes CPAL's RT-eligible direct ALSA path, while the former remains a
+    // more forgiving compatibility route. Merge alias capabilities into the
+    // converted entry so its device setup remains useful.
     let plug_keys: Vec<(String, String)> = kept
         .iter()
         .filter_map(|device| {
@@ -208,7 +211,7 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
         let Some(parsed) = AlsaPcm::parse(&device.id) else {
             return true;
         };
-        if !matches!(parsed.pcm, "hw" | "dmix" | "dsnoop") {
+        if !matches!(parsed.pcm, "dmix" | "dsnoop") {
             return true;
         }
         let Some((card, dev)) = parsed.key() else {
@@ -239,13 +242,18 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
         } else if let (Some(card), Some(dev)) = (card, dev) {
             display_alsa_device(device, &card, &dev);
         }
+        if pcm == "hw" {
+            device.name = format!("{} (Direct ALSA)", clean_alsa_name(&device.name));
+        } else if pcm == "plughw" {
+            device.name = format!("{} (Format converting)", clean_alsa_name(&device.name));
+        }
     }
 
     // The internal microphone array can expose several PCMs ("DMIC",
     // "DMIC16kHz"); one friendly entry is enough.
     let mut seen_friendly = std::collections::HashSet::new();
     kept.retain(|device| {
-        let friendly = device.name == "Laptop Speakers" || device.name == "Laptop Microphone";
+        let friendly = device.name == "Laptop Microphone";
         !friendly || seen_friendly.insert(device.name.clone())
     });
 
@@ -267,12 +275,25 @@ fn curate_alsa_devices(devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
     }
 
     kept.sort_by_key(|device| {
-        let rank = match AlsaPcm::parse(&device.id).map(|parsed| parsed.pcm) {
+        let parsed = AlsaPcm::parse(&device.id);
+        let rank = match parsed.map(|parsed| parsed.pcm) {
             Some("default") => 0,
             Some("pipewire" | "pulse") => 1,
             _ => 2,
         };
-        (rank, device.id.clone())
+        (
+            rank,
+            parsed
+                .and_then(|parsed| parsed.card)
+                .unwrap_or("")
+                .to_owned(),
+            parsed
+                .and_then(|parsed| parsed.dev)
+                .unwrap_or("")
+                .to_owned(),
+            parsed.map(|parsed| parsed.pcm).unwrap_or("").to_owned(),
+            device.id.clone(),
+        )
     });
     kept
 }
@@ -710,13 +731,19 @@ mod tests {
             ids,
             [
                 "alsa:default",
+                "alsa:hw:CARD=testcard,DEV=0",
                 "alsa:plughw:CARD=testcard,DEV=0",
+                "alsa:hw:CARD=testcard,DEV=3",
                 "alsa:plughw:CARD=testcard,DEV=3",
             ]
         );
         // The merged `plughw` entry keeps the input capability `hw` reported.
         assert!(curated[1].supports_input && curated[1].supports_output);
-        assert!(!curated[2].supports_input);
+        assert!(curated[2].supports_input && curated[2].supports_output);
+        assert!(!curated[3].supports_input);
+        assert!(!curated[4].supports_input);
+        assert!(curated[1].name.ends_with("(Direct ALSA)"));
+        assert!(curated[2].name.ends_with("(Format converting)"));
     }
 
     #[test]
@@ -735,7 +762,7 @@ mod tests {
                 true,
             ),
         ]);
-        assert_eq!(curated[0].name, "sof-hda-dsp (DEV 0)");
-        assert_eq!(curated[1].name, "sof-hda-dsp (DEV 31)");
+        assert_eq!(curated[0].name, "sof-hda-dsp (Format converting) (DEV 0)");
+        assert_eq!(curated[1].name, "sof-hda-dsp (Format converting) (DEV 31)");
     }
 }

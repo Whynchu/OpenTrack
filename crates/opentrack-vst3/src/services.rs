@@ -20,6 +20,11 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
+#[cfg(target_os = "linux")]
+use crate::host::LinuxRunLoop;
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::Linux::{IEventHandler, IRunLoop, IRunLoopTrait, ITimerHandler};
+
 use crate::parameter::PendingParameters;
 
 /// State shared between the effect and the host service objects.
@@ -38,16 +43,48 @@ pub(crate) struct HostShared {
 /// `IComponentHandler`, `IComponentHandler2` and `IPlugFrame` implementation.
 pub(crate) struct HostServices {
     pub(crate) shared: Arc<HostShared>,
+    #[cfg(target_os = "linux")]
+    run_loop: Arc<LinuxRunLoop>,
 }
 
 impl HostServices {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new(shared: Arc<HostShared>, run_loop: Arc<LinuxRunLoop>) -> ComWrapper<Self> {
+        ComWrapper::new(Self { shared, run_loop })
+    }
+
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn new(shared: Arc<HostShared>) -> ComWrapper<Self> {
         ComWrapper::new(Self { shared })
     }
 }
 
+#[cfg(target_os = "linux")]
+type HostServiceInterfaces = (IComponentHandler, IComponentHandler2, IPlugFrame, IRunLoop);
+#[cfg(not(target_os = "linux"))]
+type HostServiceInterfaces = (IComponentHandler, IComponentHandler2, IPlugFrame);
+
 impl Class for HostServices {
-    type Interfaces = (IComponentHandler, IComponentHandler2, IPlugFrame);
+    type Interfaces = HostServiceInterfaces;
+}
+
+#[cfg(target_os = "linux")]
+impl IRunLoopTrait for HostServices {
+    unsafe fn registerEventHandler(&self, handler: *mut IEventHandler, fd: i32) -> tresult {
+        unsafe { self.run_loop.register_event_handler(handler, fd) }
+    }
+
+    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
+        unsafe { self.run_loop.unregister_event_handler(handler) }
+    }
+
+    unsafe fn registerTimer(&self, handler: *mut ITimerHandler, milliseconds: u64) -> tresult {
+        unsafe { self.run_loop.register_timer(handler, milliseconds) }
+    }
+
+    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
+        unsafe { self.run_loop.unregister_timer(handler) }
+    }
 }
 
 impl IComponentHandlerTrait for HostServices {
@@ -133,5 +170,20 @@ impl IPlugFrameTrait for HostServices {
 impl HostShared {
     pub(crate) fn take_restart_flags(&self) -> i32 {
         self.restart_flags.swap(0, Ordering::AcqRel)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plug_frame_exposes_the_linux_run_loop() {
+        let services = HostServices::new(
+            Arc::new(HostShared::default()),
+            Arc::new(LinuxRunLoop::default()),
+        );
+        assert!(services.as_com_ref::<IPlugFrame>().is_some());
+        assert!(services.as_com_ref::<IRunLoop>().is_some());
     }
 }

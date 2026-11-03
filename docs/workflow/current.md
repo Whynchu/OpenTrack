@@ -1,5 +1,83 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Active Linux platform goal (2026-11-03)
+
+The user authorized closing the Linux VST3 editor and real-time scheduling
+gaps. Work is in progress in
+[`LINUX-VST3-editor-hosting`](tasks/LINUX-VST3-editor-hosting.md) and
+[`LINUX-realtime-scheduling`](tasks/LINUX-realtime-scheduling.md).
+
+- Linux editor source creates a decorated X11/XWayland window and a dedicated
+  plug-in parent child window on its own thread, requests Steinberg's
+  `X11EmbedWindowID` view type, handles XEmbed child creation and versioned
+  activation/focus notifications, and supplies Linux `IRunLoop` callbacks on
+  that editor thread. A real DISTRHO MVerb editor run exposed that `IRunLoop`
+  was queryable from `IHostApplication` but missing from `IPlugFrame`; both
+  interfaces now share the same run-loop object; focused Linux tests exercise FD readiness, timer dispatch, and unregister behavior. The Linux lifecycle check
+  passes against MVerb 1.7 on XWayland: paint confirmed visually, keyboard
+  focus routed to its child, pointer drag changed a parameter, 900x600 resize
+  returned `Ok(())`, and processing/state/close/reopen all completed. Native
+  Wayland-only editor embedding remains unsupported, and broader plug-in
+  compatibility and user review remain open. The no-X11 error path now has a
+  focused regression test for missing/empty `DISPLAY`. Native Wayland VST3
+  requires the host to provide a compositor connection through
+  `IWaylandHost`, then pass a parent `wl_surface` for the plug-in's
+  `wl_subsurface`. I fetched and evaluated `wayland-server` but removed it
+  from product dependencies because a server crate alone does not provide
+  compositor rendering/input. Casilda is a GTK4/wlroots embedding widget, but
+  adopting it would add a compositor/toolkit runtime to the current egui/winit
+  application; that packaging architecture remains undecided. A full app
+  window launched on XWayland and rendered its menu shell, but KWin's Remote
+  Control confirmation blocked keyboard/mouse automation before project and
+  insert workflow review; the untouched window was closed by the window
+  manager. See the editor task for evidence and remaining acceptance.
+- The normal Linux `build.sh` enables CPAL `realtime-dbus` through the
+  `linux-realtime` feature. ALSA curation now exposes direct `hw` endpoints
+  alongside format-converting `plughw`; the shared-mode engine chooses a
+  supported format at the preferred rate when no rate is selected. The DSP
+  scheduler readout masks `SCHED_RESET_ON_FORK`, which RTKit combines with RR.
+  Outside the sandbox, OpenTrack's `AudioEngine` ran five-second silent streams
+  at 48 kHz / 512 frames: direct HDA returned RR priority 10, 0 denials, 0
+  xruns, 470 callback blocks; PipeWire default returned normal priority, 0
+  denials, 0 xruns, 462 callback blocks. With system-bus access disabled only
+  for the probe process, direct HDA returned normal priority, 1 denial, 0
+  xruns, and 470 callback blocks. This verifies promotion and denied-promotion
+  continuation. It does not establish audible stability or callback-load
+  performance. The host-wide RTKit service is active.
+- Linux CPAL output callbacks now feed the existing opt-in bounded callback
+  timing ring for F32, I16 and U16 streams. With diagnostics enabled, a fresh
+  five-second equal-settings comparison (48 kHz, 512 frames, silence) yielded
+  469 samples on direct HDMI ALSA at RR 10 (interval p95/max 11,079/11,184 us;
+  render duration p95/max 72/591 us) and 461 samples on PipeWire default at
+  normal priority (10,806/10,897 us; 67/367 us). Both showed 0 xruns and 0 RT
+  denials. These short silent runs do not establish audible stability or
+  loaded-project performance. The checked-in muted probe ran for ten seconds on direct HDMI ALSA at RR 10 /
+  48 kHz / 512 frames: one track through 12 EQ bands reached 19% worst
+  callback load (render p95 1,009 us); eight copies reached 60% (4,642 us).
+  Both runs had 0 xruns and 0 RTKit denials, with Stereo Out gain set to zero.
+  On PipeWire `alsa:default` at normal priority, the same eight-track muted
+  probe reached 65% worst callback load (render p95 4,867 us; max 7,041 us),
+  930 blocks, 0 xruns and 0 RTKit denials. This extends the comparison across
+  direct RR and server-backed normal-priority routes; it remains synthetic,
+  muted and unaudited for real-project output quality.
+  The saved example projects contain no arranged clips; full-project performance
+  and listening remain open.
+- Linux x86_64 `cargo check --locked --offline -p opentrack` passes both
+  with and without `linux-realtime`; the Windows x64 VST3 crate check,
+  `cargo fmt --all -- --check`, and `git diff --check` pass. The full Windows
+  app check stops in its existing build script because Windows SDK `rc.exe`
+  is unavailable here.
+- The targeted ALSA device-curation tests pass (6 passed), callback timing
+  summary tests pass (2 passed), and the current optimized Linux package builds
+  successfully with the timing change. Application SHA-256:
+  `d15dd59ac574e00e380fc2bbdba354d7618bc3f4e19ca1c7a8a54d54f435c665`.
+- Actual model: Codex GPT-6. Linux promotion, denied fallback, equal-settings
+  silent timing probes and one real third-party editor session are verified.
+  A full app window opened on XWayland, but KWin's Remote Control confirmation
+  blocked input automation before project/insert review; the blank review window
+  was closed through the window manager. Full app user review, real saved-project
+  playback and listening measurements remain open.
+
 Revision 5 (32 steps) is complete at the source level; see [the delivery handoff](handoffs/revision-5-delivery.md) for the full record. Revision 4's delivery handoff remains at [revision-4-delivery](handoffs/revision-4-delivery.md).
 
 Delivered in this revision: baseline reconciliation; export/delivery contract review; validated tempo and time-signature contract plus the **Tempo Track editor** and versioned tempo-file exchange; render-length conversion audit; transpose verification; **Retrospective Record** with a bounded capture buffer (Shift+Numpad* now dispatches); virtual-keyboard close-out test; per-event **offline processing chain** (OPR 38), staged render, Direct Offline Processing window, Add/Remove Plug-in, and acceptance; **Audio CD import** through CUE sheets; **background Track Archive import** with progress, cancel and stale-result rejection, plus its round-trip acceptance; Add Track lane mapping; Regions editor polish; arranger preview and secondary-ruler reviews; MMC, external-sync and video decision records; the offline chain render moved off the UI thread; dialog keyboard ownership (dialogs no longer leak Delete to the arrange) and the acceptance pass.
@@ -12,7 +90,7 @@ No desktop, listening, hardware, VST3 or user acceptance is claimed. Actual mode
 
 ## Post-close work (2026-11-02)
 
-- **Audio xrun recovery** (`tasks/audio-xrun-recovery.md`): the app no longer destroys the output engine when the backend reports a recoverable underrun. cpal's ALSA backend calls the stream error callback on every xrun after recovering; OpenTrack latched all reports as fatal. Xruns, route changes and refused real-time promotion are now counted and shown as "N output xruns" in the DSP readout, and only a lost device stops playback. Linux still has no real-time callback priority.
+- **Audio xrun recovery** (`tasks/audio-xrun-recovery.md`): the app no longer destroys the output engine when the backend reports a recoverable underrun. cpal's ALSA backend calls the stream error callback on every xrun after recovering; OpenTrack latched all reports as fatal. Xruns and route changes are counted, while RTKit denials are now reported separately. The standard Linux package requests real-time scheduling for eligible ALSA streams; the active Linux platform goal below records promotion and denied-promotion probes.
 - **Event color palettes** (`tasks/event-color-palettes.md`): Event Colors has a palette selector with six complete 16-slot sets - Default, Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale - plus per-slot editing. A first cut only changed the dialog because track drawing read a constant palette; the drawing palette is now the active one, applying a palette assigns each track the slot for its id as one undo step, Default Color is the separate standard grey, and the flavours were resaturated after the review. The colors remain workspace state, so OPR stays 38.
 - **Buffer size reporting** (same packet): the Driver Setup buffer size read `0 frames` because the CPAL path reported the *requested* value and left it unset at the driver default. The engine now reads the negotiated period back through `StreamTrait::buffer_size()`, fills the preset list from the device's declared range, offers the presets even when a device declares no range (CPAL rounds or refuses the request), and shows "Driver default (unknown)" when a backend cannot report one. The Buffer Size control is therefore adjustable rather than greyed out.
 - **Menu wiring batch** (`tasks/menu-wiring-batch.md`): six rows that named an existing surface now open it - Edit > History, Audio > Spectrum Analyzer, Media > Open Pool Window, Media > Import Audio CD, Devices > MIDI Device Manager, File > Save as Template - taking the disabled count from 68 to 62.
@@ -33,7 +111,7 @@ No desktop, listening, hardware, VST3 or user acceptance is claimed. Actual mode
 - **Standalone plug-in browser** (`tasks/plugin-browser.md`): Audio > Plug-ins > Reverb/Dynamics/EQ/Filter/Distortion/Modulation/Other open a filtered browser over the scanned VST3 catalog and append the chosen effect to the selected track's insert rack as one undo step.
 - **Use Pre-roll / Use Post-roll** (`tasks/transport-pre-post-roll.md`): persisted Transport checkboxes; plain Play starts the pre-roll length before the left locator and stops the post-roll length after the right locator, while the explicit roll commands are untouched.
 - **Remove Empty Tracks** (`tasks/remove-empty-tracks.md`): Project > Remove Empty Tracks deletes media tracks with no events, parts or automation as one undo step, keeping buses, folders, armed tracks and automation.
-- **Platform target:** Windows x64 and Linux x86_64 are both target platforms (user direction, recorded in `AGENTS.md` and the README), with WASAPI/ASIO on Windows and ALSA through CPAL on Linux. Linux gaps are stated: no VST3 editor embedding and no real-time audio scheduling.
+- **Platform target:** Windows x64 and Linux x86_64 are both target platforms (user direction, recorded in `AGENTS.md` and the README), with WASAPI/ASIO on Windows and ALSA through CPAL on Linux. Linux's X11/XWayland VST3 editor and RTKit scheduling paths are implemented and runtime-probed; one real MVerb editor passed paint, focus, pointer editing, resize, process/state, and reopen checks. Native Wayland embedding, broader plug-in compatibility, full app user review, and loaded-project scheduling evidence remain open.
 
 This batch is recorded in [the post-close feature handoff](handoffs/post-close-features.md), which lists what shipped and why each remaining row is still unavailable (score engine, video decoder, MIDI output/clock, plugin browser, VST connections, control room, macros, libraries, cleanup, printing, browse sounds, registration).
 

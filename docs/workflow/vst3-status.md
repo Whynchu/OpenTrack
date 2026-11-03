@@ -146,9 +146,21 @@ each step covered by a test where it is testable without a plug-in:
 
 Known limits: this is isolation, not sandboxing. A plug-in that crashes the
 process still takes OpenTrack with it; scanning has no per-module timeout or
-crash attribution yet. The native editor is Windows-only; Linux builds report
-"native VST3 editors are only supported on Windows" and fall back to the
-parameter window.
+crash attribution yet. Windows native editor hosting is established by the
+Windows-specific compatibility evidence. Linux source now supports the
+X11/XWayland `X11EmbedWindowID` path and Linux `IRunLoop`; native Wayland-only
+embedding remains unsupported. DISTRHO MVerb from DPF VST3 1.7 passed an
+XWayland lifecycle probe covering paint, focus, pointer parameter editing,
+resize, processing/state, and close/reopen. This is one plug-in only; full app
+user review, native-Wayland-only behavior, and broader compatibility remain open.
+The no-X11 error response now has a focused regression test, but a native
+Wayland VST3 host requires a separate compositor connection for the plug-in
+and a parent-surface/subsurface bridge; that runtime path is not implemented.
+An attempted full-app review on XWayland reached the main window, but KWin's
+Remote Control confirmation blocked automated input before the example
+project/insert workflow could be reviewed. The no-project window was closed
+through a window-manager close request.
+See [the Linux editor task](tasks/LINUX-VST3-editor-hosting.md) for exact evidence.
 
 ## Not implemented
 

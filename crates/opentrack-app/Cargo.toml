@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 local-asio = ["opentrack-audio/local-asio"]
+linux-realtime = ["opentrack-audio/linux-realtime"]
 video-ffmpeg = ["opentrack-video/ffmpeg"]
 
 [dependencies]
@@ -49,3 +50,4 @@ windows-sys = { version = "=0.61.2", features = [
 # extension so native tool-window ordering can use the supported X11 backend.
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "=0.30.13", default-features = false, features = ["x11", "wayland"] }
+x11rb = "=0.13.2"

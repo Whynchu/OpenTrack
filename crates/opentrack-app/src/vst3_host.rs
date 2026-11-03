@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(windows)]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 use opentrack_audio::HostedInsert;
 use opentrack_core::project::{InsertEffectKind, Project, Track};
@@ -53,6 +55,19 @@ pub struct Runtime {
 pub struct EditorWindow {
     frame: isize,
     hwnd: isize,
+}
+
+#[cfg(target_os = "linux")]
+pub struct EditorWindow {
+    connection: x11rb::rust_connection::RustConnection,
+    window: u32,
+    plug_parent: u32,
+    protocols_atom: u32,
+    delete_atom: u32,
+    xembed_info_atom: u32,
+    xembed_atom: u32,
+    embedded_children: HashMap<u32, u32>,
+    alive: bool,
 }
 
 #[cfg(windows)]
@@ -410,6 +425,377 @@ impl EditorWindow {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl EditorWindow {
+    fn create_hidden(
+        title: &str,
+        restore_bounds: Option<&opentrack_core::workspaces::WindowBounds>,
+    ) -> Result<Self, String> {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{
+            AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropMode, WindowClass,
+        };
+        use x11rb::wrapper::ConnectionExt as WrapperConnectionExt;
+
+        let (connection, screen_index) = x11rb::connect(None)
+            .map_err(|error| format!("could not connect to X11 for VST3 editor: {error}"))?;
+        let screen = &connection.setup().roots[screen_index];
+        let window = connection
+            .generate_id()
+            .map_err(|error| format!("could not allocate VST3 editor XID: {error}"))?;
+        let (x, y, width, height) = restore_bounds
+            .filter(|bounds| bounds.left.is_finite() && bounds.top.is_finite())
+            .map(|bounds| {
+                (
+                    bounds.left.round() as i16,
+                    bounds.top.round() as i16,
+                    bounds.width.round().clamp(240.0, 16_384.0) as u16,
+                    bounds.height.round().clamp(160.0, 16_384.0) as u16,
+                )
+            })
+            .unwrap_or((80, 80, 800, 600));
+        connection
+            .create_window(
+                0,
+                window,
+                screen.root,
+                x,
+                y,
+                width,
+                height,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new()
+                    .background_pixel(screen.black_pixel)
+                    .event_mask(
+                        EventMask::STRUCTURE_NOTIFY
+                            | EventMask::EXPOSURE
+                            | EventMask::SUBSTRUCTURE_NOTIFY,
+                    ),
+            )
+            .map_err(|error| format!("could not create VST3 editor X11 window: {error}"))?;
+        let protocols = connection
+            .intern_atom(false, b"WM_PROTOCOLS")
+            .map_err(|error| format!("could not intern WM_PROTOCOLS: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read WM_PROTOCOLS atom: {error}"))?
+            .atom;
+        let delete_atom = connection
+            .intern_atom(false, b"WM_DELETE_WINDOW")
+            .map_err(|error| format!("could not intern WM_DELETE_WINDOW: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read WM_DELETE_WINDOW atom: {error}"))?
+            .atom;
+        // XEmbed hosts advertise a two-CARDINAL _XEMBED_INFO structure on the
+        // parent window. Flags start clear until the host maps the editor.
+        let xembed_atom = connection
+            .intern_atom(false, b"_XEMBED")
+            .map_err(|error| format!("could not intern _XEMBED: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read _XEMBED atom: {error}"))?
+            .atom;
+        let xembed_info_atom = connection
+            .intern_atom(false, b"_XEMBED_INFO")
+            .map_err(|error| format!("could not intern _XEMBED_INFO: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read _XEMBED_INFO atom: {error}"))?
+            .atom;
+        let plug_parent = connection
+            .generate_id()
+            .map_err(|error| format!("could not allocate VST3 plug-in parent XID: {error}"))?;
+        connection
+            .create_window(
+                0,
+                plug_parent,
+                window,
+                0,
+                0,
+                width,
+                height,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new()
+                    .event_mask(EventMask::SUBSTRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
+            )
+            .map_err(|error| format!("could not create VST3 plug-in parent: {error}"))?;
+        connection
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                protocols,
+                AtomEnum::ATOM,
+                &[delete_atom],
+            )
+            .map_err(|error| format!("could not set VST3 editor close protocol: {error}"))?;
+        let utf8 = connection
+            .intern_atom(false, b"UTF8_STRING")
+            .map_err(|error| format!("could not intern UTF8_STRING: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read UTF8_STRING atom: {error}"))?
+            .atom;
+        let net_name = connection
+            .intern_atom(false, b"_NET_WM_NAME")
+            .map_err(|error| format!("could not intern _NET_WM_NAME: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read _NET_WM_NAME atom: {error}"))?
+            .atom;
+        connection
+            .change_property8(PropMode::REPLACE, window, net_name, utf8, title.as_bytes())
+            .map_err(|error| format!("could not set VST3 editor title: {error}"))?;
+        connection
+            .change_property8(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_NAME,
+                AtomEnum::STRING,
+                title.as_bytes(),
+            )
+            .map_err(|error| format!("could not set VST3 editor legacy title: {error}"))?;
+        connection
+            .map_window(plug_parent)
+            .map_err(|error| format!("could not map VST3 plug-in parent: {error}"))?;
+        connection
+            .flush()
+            .map_err(|error| format!("could not flush VST3 editor X11 window: {error}"))?;
+        Ok(Self {
+            connection,
+            window,
+            plug_parent,
+            protocols_atom: protocols,
+            delete_atom,
+            xembed_info_atom,
+            xembed_atom,
+            embedded_children: HashMap::new(),
+            alive: true,
+        })
+    }
+
+    fn show(&mut self) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt;
+        let _ = self.connection.map_window(self.window);
+        let _ = self.connection.flush();
+    }
+
+    fn set_visible(&self, visible: bool) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt;
+        let _ = if visible {
+            self.connection.map_window(self.window)
+        } else {
+            self.connection.unmap_window(self.window)
+        };
+        self.send_xembed_message(if visible { 1 } else { 2 });
+        let _ = self.connection.flush();
+    }
+
+    fn hwnd(&self) -> isize {
+        self.plug_parent as isize
+    }
+
+    fn focus(&self) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
+        let focus_window = self
+            .embedded_children
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(self.plug_parent);
+        let _ =
+            self.connection
+                .set_input_focus(InputFocus::PARENT, focus_window, x11rb::CURRENT_TIME);
+        self.send_xembed_message(4);
+        let _ = self.connection.flush();
+    }
+
+    fn send_xembed_message(&self, opcode: u32) {
+        use x11rb::protocol::xproto::{
+            ClientMessageData, ClientMessageEvent, ConnectionExt, EventMask,
+        };
+        for (child, version) in &self.embedded_children {
+            let event = ClientMessageEvent::new(
+                32,
+                *child,
+                self.xembed_atom,
+                ClientMessageData::from([
+                    x11rb::CURRENT_TIME,
+                    opcode,
+                    0,
+                    self.plug_parent,
+                    *version,
+                ]),
+            );
+            let _ = self
+                .connection
+                .send_event(false, *child, EventMask::NO_EVENT, event);
+        }
+    }
+
+    fn set_owner(&self, owner: isize) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
+        use x11rb::wrapper::ConnectionExt as WrapperConnectionExt;
+        if owner == 0 {
+            return;
+        }
+        if let Some(atom) = self
+            .connection
+            .intern_atom(false, b"WM_TRANSIENT_FOR")
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+        {
+            let _ = self.connection.change_property32(
+                PropMode::REPLACE,
+                self.window,
+                atom.atom,
+                AtomEnum::WINDOW,
+                &[owner as u32],
+            );
+            let _ = self.connection.flush();
+        }
+    }
+
+    fn restore_position(&self, bounds: Option<&opentrack_core::workspaces::WindowBounds>) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt};
+        let Some(bounds) =
+            bounds.filter(|bounds| bounds.left.is_finite() && bounds.top.is_finite())
+        else {
+            return;
+        };
+        let _ = self.connection.configure_window(
+            self.window,
+            &ConfigureWindowAux::new()
+                .x(bounds.left.round() as i32)
+                .y(bounds.top.round() as i32)
+                .width(bounds.width.round().clamp(240.0, 16_384.0) as u32)
+                .height(bounds.height.round().clamp(160.0, 16_384.0) as u32),
+        );
+        let _ = self.connection.configure_window(
+            self.plug_parent,
+            &ConfigureWindowAux::new()
+                .x(0)
+                .y(0)
+                .width(bounds.width.round().clamp(240.0, 16_384.0) as u32)
+                .height(bounds.height.round().clamp(160.0, 16_384.0) as u32),
+        );
+        let _ = self.connection.flush();
+    }
+
+    fn bounds(&self) -> Option<opentrack_core::workspaces::WindowBounds> {
+        use x11rb::protocol::xproto::ConnectionExt;
+        let geometry = self
+            .connection
+            .get_geometry(self.window)
+            .ok()?
+            .reply()
+            .ok()?;
+        Some(opentrack_core::workspaces::WindowBounds {
+            left: f64::from(geometry.x),
+            top: f64::from(geometry.y),
+            width: f64::from(geometry.width),
+            height: f64::from(geometry.height),
+            inner_width: None,
+            inner_height: None,
+            monitor_id: None,
+        })
+    }
+
+    fn pump_messages(&mut self) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt, EventMask};
+        const XEMBED_EMBEDDED_NOTIFY: u32 = 0;
+        const XEMBED_WINDOW_ACTIVATE: u32 = 1;
+        const XEMBED_FOCUS_IN: u32 = 4;
+        while let Ok(Some(event)) = self.connection.poll_for_event() {
+            match event {
+                x11rb::protocol::Event::CreateNotify(created)
+                    if created.parent == self.plug_parent
+                        && !self.embedded_children.contains_key(&created.window) =>
+                {
+                    let version = self
+                        .connection
+                        .get_property(
+                            false,
+                            created.window,
+                            self.xembed_info_atom,
+                            x11rb::protocol::xproto::AtomEnum::CARDINAL,
+                            0,
+                            2,
+                        )
+                        .ok()
+                        .and_then(|cookie| cookie.reply().ok())
+                        .and_then(|reply| reply.value32().and_then(|mut values| values.next()))
+                        .unwrap_or(0);
+                    self.embedded_children.insert(created.window, version);
+                    for opcode in [
+                        XEMBED_EMBEDDED_NOTIFY,
+                        XEMBED_WINDOW_ACTIVATE,
+                        XEMBED_FOCUS_IN,
+                    ] {
+                        let message = x11rb::protocol::xproto::ClientMessageEvent::new(
+                            32,
+                            created.window,
+                            self.xembed_atom,
+                            x11rb::protocol::xproto::ClientMessageData::from([
+                                x11rb::CURRENT_TIME,
+                                opcode,
+                                0,
+                                self.plug_parent,
+                                version,
+                            ]),
+                        );
+                        let _ = self.connection.send_event(
+                            false,
+                            created.window,
+                            EventMask::NO_EVENT,
+                            message,
+                        );
+                    }
+                    let _ = self.connection.map_window(created.window);
+                }
+                x11rb::protocol::Event::ClientMessage(message) => {
+                    if message.type_ == self.protocols_atom
+                        && message.data.as_data32()[0] == self.delete_atom
+                    {
+                        self.alive = false;
+                    } else if message.type_ == self.xembed_atom && message.data.as_data32()[1] == 3
+                    {
+                        self.focus();
+                    }
+                }
+                x11rb::protocol::Event::DestroyNotify(destroyed)
+                    if destroyed.window == self.window =>
+                {
+                    self.alive = false;
+                }
+                x11rb::protocol::Event::DestroyNotify(destroyed) => {
+                    self.embedded_children.remove(&destroyed.window);
+                }
+                _ => {}
+            }
+        }
+        let _ = self.connection.flush();
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for EditorWindow {
+    fn drop(&mut self) {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt;
+        let _ = self.connection.destroy_window(self.window);
+        let _ = self.connection.flush();
+    }
+}
+
 #[cfg(windows)]
 impl Drop for EditorWindow {
     fn drop(&mut self) {
@@ -645,17 +1031,225 @@ fn editor_thread(
     result
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+enum LinuxEditorCommand {
+    Focus,
+    SetVisible(bool),
+    SetOwner(isize),
+    Close,
+}
+
+#[cfg(target_os = "linux")]
+pub struct EditorHost {
+    commands: std::sync::mpsc::Sender<LinuxEditorCommand>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+    bounds: Arc<Mutex<Option<opentrack_core::workspaces::WindowBounds>>>,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_editor_unavailable_reason(display: Option<&std::ffi::OsStr>) -> Option<&'static str> {
+    display
+        .filter(|display| !display.is_empty())
+        .is_none()
+        .then_some(
+            "Linux VST3 editors currently require X11 or XWayland; native Wayland-only embedding is unavailable",
+        )
+}
+
+#[cfg(target_os = "linux")]
+impl EditorHost {
+    pub fn open(
+        title: &str,
+        restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
+        effect: Arc<Vst3Effect>,
+    ) -> Result<Self, String> {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        if let Some(reason) =
+            linux_editor_unavailable_reason(std::env::var_os("DISPLAY").as_deref())
+        {
+            return Err(String::from(reason));
+        }
+
+        let title = title.to_owned();
+        let alive = Arc::new(AtomicBool::new(false));
+        let thread_alive = Arc::clone(&alive);
+        let bounds = Arc::new(Mutex::new(None));
+        let thread_bounds = Arc::clone(&bounds);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (command_tx, command_rx) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("opentrack-vst3-editor".to_owned())
+            .spawn(move || {
+                let result = linux_editor_thread(
+                    title,
+                    restore_bounds,
+                    effect,
+                    thread_alive,
+                    thread_bounds,
+                    command_rx,
+                    ready_tx,
+                );
+                if let Err(error) = result {
+                    eprintln!("VST3 editor thread: {error}");
+                }
+            })
+            .map_err(|error| format!("could not start the VST3 editor thread: {error}"))?;
+        match ready_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ok(())) => Ok(Self {
+                commands: command_tx,
+                thread: Some(thread),
+                alive,
+                bounds,
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(error) => {
+                let _ = command_tx.send(LinuxEditorCommand::Close);
+                let _ = thread.join();
+                Err(format!(
+                    "the Linux VST3 editor did not become ready: {error}"
+                ))
+            }
+        }
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
+    }
+    pub fn focus(&self) {
+        let _ = self.commands.send(LinuxEditorCommand::Focus);
+    }
+    pub fn set_visible(&self, visible: bool) {
+        let _ = self.commands.send(LinuxEditorCommand::SetVisible(visible));
+    }
+    pub fn set_owner(&self, owner: isize) {
+        let _ = self.commands.send(LinuxEditorCommand::SetOwner(owner));
+    }
+    pub fn bounds(&self) -> Option<opentrack_core::workspaces::WindowBounds> {
+        self.bounds.lock().ok().and_then(|bounds| bounds.clone())
+    }
+    pub fn close(mut self) {
+        let _ = self.commands.send(LinuxEditorCommand::Close);
+        if let Some(thread) = self.thread.take() {
+            join_bounded(thread);
+        }
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for EditorHost {
+    fn drop(&mut self) {
+        let _ = self.commands.send(LinuxEditorCommand::Close);
+        if let Some(thread) = self.thread.take() {
+            join_bounded(thread);
+        }
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn join_bounded(thread: std::thread::JoinHandle<()>) {
+    use std::time::Duration;
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("opentrack-vst3-editor-join".into())
+        .spawn(move || {
+            let _ = thread.join();
+            let _ = done_tx.send(());
+        });
+    if done_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+        crate::crash_log::session("Linux editor thread did not exit within 2 s; detached");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_editor_thread(
+    title: String,
+    restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
+    effect: Arc<Vst3Effect>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+    bounds: Arc<Mutex<Option<opentrack_core::workspaces::WindowBounds>>>,
+    commands: std::sync::mpsc::Receiver<LinuxEditorCommand>,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    let result = (|| -> Result<(), String> {
+        let mut window = EditorWindow::create_hidden(&title, restore_bounds.as_ref())?;
+        let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
+        // Attach may create the plug-in child before the outer window is
+        // mapped. Process that X11 event first so initial focus targets the
+        // child rather than the empty host container.
+        window.pump_messages();
+        window.restore_position(restore_bounds.as_ref());
+        window.show();
+        if let Ok(mut current) = bounds.lock() {
+            *current = window.bounds();
+        }
+        window.focus();
+        alive.store(true, Ordering::Release);
+        let _ = ready.send(Ok(()));
+        let mut visible = true;
+        loop {
+            let mut close = false;
+            while let Ok(command) = commands.try_recv() {
+                match command {
+                    LinuxEditorCommand::Focus if visible => window.focus(),
+                    LinuxEditorCommand::SetVisible(value) => {
+                        visible = value;
+                        window.set_visible(value);
+                    }
+                    LinuxEditorCommand::SetOwner(owner) => window.set_owner(owner),
+                    LinuxEditorCommand::Close => close = true,
+                    LinuxEditorCommand::Focus => {}
+                }
+            }
+            if close || !window.is_alive() {
+                break;
+            }
+            window.pump_messages();
+            effect.pump_editor_run_loop();
+            effect.sync_output_parameters();
+            if let Ok(mut current) = bounds.lock() {
+                *current = window.bounds();
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        drop(editor);
+        drop(window);
+        Ok(())
+    })();
+    alive.store(false, Ordering::Release);
+    if let Err(error) = &result {
+        let _ = ready.send(Err(error.clone()));
+    }
+    result
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub struct EditorHost;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 impl EditorHost {
     pub fn open(
         _title: &str,
         _restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
         _effect: Arc<Vst3Effect>,
     ) -> Result<Self, String> {
-        Err("native VST3 editors are only supported on Windows".to_owned())
+        Err("native VST3 editors are only supported on Windows and Linux X11/XWayland".to_owned())
     }
 
     pub fn is_alive(&self) -> bool {
@@ -675,13 +1269,13 @@ impl EditorHost {
     pub fn close(self) {}
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub struct EditorWindow;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 impl EditorWindow {
     pub fn create(_title: &str, _owner: Option<isize>) -> Result<Self, String> {
-        Err("native VST3 editors are only supported on Windows".to_owned())
+        Err("native VST3 editors are only supported on Windows and Linux X11/XWayland".to_owned())
     }
 
     pub fn hwnd(&self) -> isize {
@@ -1054,6 +1648,27 @@ mod tests {
     use super::*;
     use opentrack_core::project::{InsertEffect, TrackKind};
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_editor_reports_wayland_only_limitation_without_x11_display() {
+        assert_eq!(
+            linux_editor_unavailable_reason(None),
+            Some(
+                "Linux VST3 editors currently require X11 or XWayland; native Wayland-only embedding is unavailable"
+            )
+        );
+        assert_eq!(
+            linux_editor_unavailable_reason(Some(std::ffi::OsStr::new(""))),
+            Some(
+                "Linux VST3 editors currently require X11 or XWayland; native Wayland-only embedding is unavailable"
+            )
+        );
+        assert_eq!(
+            linux_editor_unavailable_reason(Some(std::ffi::OsStr::new(":0"))),
+            None
+        );
+    }
+
     /// Run one installed class per process so an ABI crash is attributable.
     #[test]
     #[ignore = "requires OPENTRACK_VST3_PROBE_MODULE and OPENTRACK_VST3_PROBE_CLASS"]
@@ -1065,15 +1680,61 @@ mod tests {
         eprintln!("stage: load first");
         let first = Vst3Effect::load(&module, class, 48_000, 64).expect("first instance");
         eprintln!("stage: open first editor");
-        let window = EditorWindow::create("OpenTrack compatibility probe", None).unwrap();
+        let mut window = probe_editor_window("OpenTrack compatibility probe");
         first
             .open_editor(window.hwnd() as *mut std::ffi::c_void)
             .expect("native editor");
-        pump_editor_messages();
+        pump_editor_messages(&mut window, &first);
+        #[cfg(target_os = "linux")]
+        {
+            use x11rb::protocol::xproto::ConnectionExt as _;
+
+            let embedded_child = window
+                .embedded_children
+                .keys()
+                .next()
+                .copied()
+                .expect("VST3 editor creates an XEmbed child");
+            window.focus();
+            let keyboard_focus = window
+                .connection
+                .get_input_focus()
+                .expect("query X11 keyboard focus")
+                .reply()
+                .expect("read X11 keyboard focus")
+                .focus;
+            assert_eq!(keyboard_focus, embedded_child);
+            eprintln!("stage: X11 keyboard focus routed to plug-in child");
+            eprintln!("stage: request editor resize");
+            eprintln!("resize result: {:?}", first.resize_editor(900, 600));
+            pump_editor_messages(&mut window, &first);
+            let before = first.parameters();
+            // Opening an editor may legitimately publish initial state;
+            // clear it so this assertion specifically covers the edit.
+            let _ = first.take_dirty();
+            inject_test_pointer_drag(&window, (140, 138), (140, 100))
+                .expect("send synthetic pointer drag to plug-in child");
+            pump_editor_messages(&mut window, &first);
+            let after = first.parameters();
+            assert!(
+                before.iter().any(|old| {
+                    after.iter().any(|new| {
+                        old.id == new.id && (old.normalized - new.normalized).abs() > 1e-6
+                    })
+                }),
+                "plug-in did not report a parameter edit after the X11 pointer drag"
+            );
+            assert!(
+                first.take_dirty(),
+                "native editor parameter edits must mark hosted state dirty"
+            );
+            eprintln!("stage: X11 pointer drag changed plug-in parameter");
+            eprintln!("stage: native editor parameter edit marked hosted state dirty");
+        }
         if let Ok(seconds) = std::env::var("OPENTRACK_VST3_PROBE_VIEW_SECONDS") {
             let started = std::time::Instant::now();
             while started.elapsed().as_secs() < seconds.parse::<u64>().unwrap_or(0).min(120) {
-                pump_editor_messages();
+                pump_editor_messages(&mut window, &first);
             }
         }
         eprintln!("stage: load overlapping instance");
@@ -1087,18 +1748,18 @@ mod tests {
         assert!(left.iter().chain(&right).all(|v| v.is_finite()));
         eprintln!("stage: drop overlapping instance");
         drop(second);
-        pump_editor_messages();
+        pump_editor_messages(&mut window, &first);
         eprintln!("stage: save/restore");
         let state = first.save_state().unwrap();
         first.load_state(&state).unwrap();
         first.close_editor();
         drop(window);
         eprintln!("stage: reopen editor");
-        let window = EditorWindow::create("OpenTrack compatibility reopen", None).unwrap();
+        let mut window = probe_editor_window("OpenTrack compatibility reopen");
         first
             .open_editor(window.hwnd() as *mut std::ffi::c_void)
             .unwrap();
-        pump_editor_messages();
+        pump_editor_messages(&mut window, &first);
         #[cfg(windows)]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1118,7 +1779,117 @@ mod tests {
         eprintln!("stage: complete");
     }
 
-    fn pump_editor_messages() {
+    fn probe_editor_window(title: &str) -> EditorWindow {
+        #[cfg(windows)]
+        {
+            EditorWindow::create(title, None).expect("editor host")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut window = EditorWindow::create_hidden(title, None).expect("editor host");
+            window.show();
+            window
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn inject_test_pointer_drag(
+        window: &EditorWindow,
+        start: (i16, i16),
+        end: (i16, i16),
+    ) -> Result<(), String> {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{
+            ButtonPressEvent, ButtonReleaseEvent, ConnectionExt, EventMask, KeyButMask, Motion,
+            MotionNotifyEvent,
+        };
+        use x11rb::x11_utils::Serialize;
+
+        let child = window
+            .embedded_children
+            .keys()
+            .next()
+            .copied()
+            .ok_or_else(|| String::from("plug-in has not created an XEmbed child window"))?;
+        let attributes = window
+            .connection
+            .get_window_attributes(child)
+            .map_err(|error| error.to_string())?
+            .reply()
+            .map_err(|error| error.to_string())?;
+        eprintln!(
+            "plug-in X11 child event mask: {:?}",
+            attributes.all_event_masks
+        );
+        let root = window
+            .connection
+            .setup()
+            .roots
+            .first()
+            .ok_or_else(|| String::from("X11 screen has no root window"))?
+            .root;
+        let root_position = |point: (i16, i16)| {
+            window
+                .connection
+                .translate_coordinates(child, root, point.0, point.1)
+                .map_err(|error| error.to_string())?
+                .reply()
+                .map(|reply| (reply.dst_x, reply.dst_y))
+                .map_err(|error| error.to_string())
+        };
+        let start_root = root_position(start)?;
+        let end_root = root_position(end)?;
+        let press = ButtonPressEvent {
+            response_type: x11rb::protocol::xproto::BUTTON_PRESS_EVENT,
+            detail: 1,
+            sequence: 0,
+            time: x11rb::CURRENT_TIME,
+            root,
+            event: child,
+            child: 0,
+            root_x: start_root.0,
+            root_y: start_root.1,
+            event_x: start.0,
+            event_y: start.1,
+            state: KeyButMask::default(),
+            same_screen: true,
+        };
+        let motion = MotionNotifyEvent {
+            response_type: x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
+            detail: Motion::NORMAL,
+            sequence: 0,
+            time: x11rb::CURRENT_TIME,
+            root,
+            event: child,
+            child: 0,
+            root_x: end_root.0,
+            root_y: end_root.1,
+            event_x: end.0,
+            event_y: end.1,
+            state: KeyButMask::BUTTON1,
+            same_screen: true,
+        };
+        let release = ButtonReleaseEvent {
+            response_type: x11rb::protocol::xproto::BUTTON_RELEASE_EVENT,
+            state: KeyButMask::BUTTON1,
+            ..press
+        };
+        window
+            .connection
+            .send_event(false, child, EventMask::BUTTON_PRESS, press.serialize())
+            .map_err(|error| error.to_string())?;
+        window
+            .connection
+            .send_event(false, child, EventMask::POINTER_MOTION, motion.serialize())
+            .map_err(|error| error.to_string())?;
+        window
+            .connection
+            .send_event(false, child, EventMask::BUTTON_RELEASE, release.serialize())
+            .map_err(|error| error.to_string())?;
+        window.connection.flush().map_err(|error| error.to_string())
+    }
+
+    fn pump_editor_messages(window: &mut EditorWindow, effect: &Vst3Effect) {
         #[cfg(windows)]
         {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1135,6 +1906,15 @@ mod tests {
                         DispatchMessageW(&message);
                     }
                 }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_millis(250) {
+                window.pump_messages();
+                effect.pump_editor_run_loop();
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
@@ -1299,7 +2079,7 @@ mod tests {
         runtime.set_format(48_000, 64);
         runtime.sync(&project);
         assert_eq!(runtime.failure(track_id, 0), None);
-        let window = EditorWindow::create("OpenTrack VST3 editor test", None).expect("editor host");
+        let window = probe_editor_window("OpenTrack VST3 editor test");
         runtime
             .open_editor(track_id, 0, window.hwnd())
             .expect("CLA-76 editor opens");

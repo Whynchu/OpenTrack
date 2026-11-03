@@ -19827,6 +19827,12 @@ impl OpenTrackApp {
                     // separately: they glitch but do not stop the stream, so
                     // they must not be confused with the render overruns above.
                     let xruns = engine.output_xrun_count();
+                    let realtime_denials = engine.realtime_priority_denial_count();
+                    let realtime_denial_suffix = if cfg!(target_os = "linux") {
+                        format!(" · {realtime_denials} RT priority denials")
+                    } else {
+                        String::new()
+                    };
                     let budget = engine.callback_budget();
                     let asio_overloads = engine.asio_overload_window_count();
                     let asio_collisions = engine.asio_callback_collision_count();
@@ -19836,17 +19842,22 @@ impl OpenTrackApp {
                     if refresh_details {
                     let diagnostic = if let Some(windows) = asio_overloads {
                         format!(
-                            "DSP {:.0}% (worst {}%) · {overruns} render overruns · {xruns} output xruns · {windows} ASIO overload windows",
+                            "DSP {:.0}% (worst {}%) · {overruns} render overruns · {xruns} output xruns{realtime_denial_suffix} · {windows} ASIO overload windows",
                             engine.callback_load_percent(),
                             budget.worst_load_percent,
                         )
                     } else {
                         format!(
-                            "DSP {:.0}% (worst {}%) · {overruns} render overruns · {xruns} output xruns",
+                            "DSP {:.0}% (worst {}%) · {overruns} render overruns · {xruns} output xruns{realtime_denial_suffix}",
                             engine.callback_load_percent(),
                             budget.worst_load_percent,
                         )
                     };
+                    #[cfg(target_os = "linux")]
+                    let diagnostic = format!(
+                        "{diagnostic} · ALSA output thread {}",
+                        engine.output_thread_scheduling()
+                    );
                     let diagnostic = if let Some(timing) = engine.callback_timing_summary() {
                         format!(
                             "{diagnostic} | render interval p95/max {} / {} us | render duration p95/max {} / {} us | {} samples | {} lost",

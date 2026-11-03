@@ -9,7 +9,11 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_void};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 use vst3::Steinberg::Vst::{
     IAttributeList, IAttributeListTrait, IHostApplication, IHostApplicationTrait, IMessage,
@@ -20,6 +24,11 @@ use vst3::Steinberg::{
     tresult, uint32,
 };
 use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
+
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::Linux::{
+    IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, ITimerHandler, ITimerHandlerTrait,
+};
 
 const HOST_NAME: &str = "OpenTrack";
 
@@ -227,6 +236,8 @@ impl IAttributeListTrait for AttributeList {
 /// Host application object passed to `IPluginBase::initialize`.
 pub struct HostContext {
     application: ComWrapper<HostApplication>,
+    #[cfg(target_os = "linux")]
+    run_loop: Arc<LinuxRunLoop>,
 }
 
 impl Default for HostContext {
@@ -237,9 +248,29 @@ impl Default for HostContext {
 
 impl HostContext {
     pub fn new() -> Self {
+        #[cfg(target_os = "linux")]
+        let run_loop = Arc::new(LinuxRunLoop::default());
         Self {
-            application: ComWrapper::new(HostApplication),
+            application: ComWrapper::new(HostApplication {
+                #[cfg(target_os = "linux")]
+                run_loop: Arc::clone(&run_loop),
+            }),
+            #[cfg(target_os = "linux")]
+            run_loop,
         }
+    }
+
+    /// Services registered Linux VST3 file descriptors and timers. Called on
+    /// the native editor thread; never called by the audio callback.
+    #[cfg(target_os = "linux")]
+    pub fn pump_run_loop(&self) {
+        self.run_loop.pump();
+    }
+
+    /// Shares the same UI-thread run loop with the host `IPlugFrame` object.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn run_loop(&self) -> Arc<LinuxRunLoop> {
+        Arc::clone(&self.run_loop)
     }
 
     /// Returns the `FUnknown` interface pointer for the lifetime of this host.
@@ -252,10 +283,202 @@ impl HostContext {
     }
 }
 
-struct HostApplication;
+struct HostApplication {
+    #[cfg(target_os = "linux")]
+    run_loop: Arc<LinuxRunLoop>,
+}
+
+#[cfg(target_os = "linux")]
+type HostApplicationInterfaces = (IHostApplication, IRunLoop);
+#[cfg(not(target_os = "linux"))]
+type HostApplicationInterfaces = (IHostApplication,);
 
 impl Class for HostApplication {
-    type Interfaces = (IHostApplication,);
+    type Interfaces = HostApplicationInterfaces;
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct LinuxRunLoop {
+    event_handlers: Mutex<HashMap<(i32, usize), ComPtr<IEventHandler>>>,
+    timers: Mutex<HashMap<usize, LinuxTimer>>,
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxTimer {
+    handler: ComPtr<ITimerHandler>,
+    interval: Duration,
+    next: Instant,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxRunLoop {
+    pub(crate) unsafe fn register_event_handler(
+        &self,
+        handler: *mut IEventHandler,
+        fd: i32,
+    ) -> tresult {
+        if handler.is_null() || fd < 0 {
+            return kInvalidArgument;
+        }
+        // SAFETY: the VST3 callback supplies a live borrowed interface. Retain
+        // it for the registered lifetime, then transfer that owned ref to ComPtr.
+        unsafe { ((*(*handler).vtbl).base.addRef)(handler.cast()) };
+        let Some(retained) = (unsafe { ComPtr::<IEventHandler>::from_raw(handler) }) else {
+            return kInvalidArgument;
+        };
+        let key = (fd, retained.as_ptr() as usize);
+        self.event_handlers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, retained);
+        kResultOk
+    }
+
+    pub(crate) unsafe fn unregister_event_handler(&self, handler: *mut IEventHandler) -> tresult {
+        if handler.is_null() {
+            return kInvalidArgument;
+        }
+        let address = handler as usize;
+        let mut handlers = self
+            .event_handlers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let keys: Vec<_> = handlers
+            .keys()
+            .filter(|(_, registered)| *registered == address)
+            .copied()
+            .collect();
+        if keys.is_empty() {
+            return kResultFalse;
+        }
+        for key in keys {
+            handlers.remove(&key);
+        }
+        kResultOk
+    }
+
+    pub(crate) unsafe fn register_timer(
+        &self,
+        handler: *mut ITimerHandler,
+        milliseconds: u64,
+    ) -> tresult {
+        if handler.is_null() || milliseconds == 0 {
+            return kInvalidArgument;
+        }
+        // SAFETY: retain the plug-in's live borrowed interface before storing
+        // it beyond this callback.
+        unsafe { ((*(*handler).vtbl).base.addRef)(handler.cast()) };
+        let Some(retained) = (unsafe { ComPtr::<ITimerHandler>::from_raw(handler) }) else {
+            return kInvalidArgument;
+        };
+        let interval = Duration::from_millis(milliseconds.max(1));
+        let now = Instant::now();
+        let Some(next) = now.checked_add(interval) else {
+            return kInvalidArgument;
+        };
+        self.timers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                retained.as_ptr() as usize,
+                LinuxTimer {
+                    handler: retained,
+                    interval,
+                    next,
+                },
+            );
+        kResultOk
+    }
+
+    pub(crate) unsafe fn unregister_timer(&self, handler: *mut ITimerHandler) -> tresult {
+        if handler.is_null() {
+            return kInvalidArgument;
+        }
+        let removed = self
+            .timers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(handler as usize));
+        if removed.is_some() {
+            kResultOk
+        } else {
+            kResultFalse
+        }
+    }
+
+    fn pump(&self) {
+        let handlers: Vec<_> = self
+            .event_handlers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(&(fd, _), handler)| (fd, handler.clone()))
+            .collect();
+        if !handlers.is_empty() {
+            let mut pollfds: Vec<_> = handlers
+                .iter()
+                .map(|(fd, _)| libc::pollfd {
+                    fd: *fd,
+                    events: libc::POLLIN | libc::POLLPRI | libc::POLLERR | libc::POLLHUP,
+                    revents: 0,
+                })
+                .collect();
+            // This is a zero-timeout poll on the editor thread, not the audio
+            // callback. A bad plug-in fd cannot stall playback or the app UI.
+            let ready = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as _, 0) };
+            if ready > 0 {
+                for ((fd, handler), pollfd) in handlers.iter().zip(pollfds.iter()) {
+                    if pollfd.revents != 0 {
+                        unsafe { handler.onFDIsSet(*fd) };
+                    }
+                }
+            }
+        }
+
+        let now = Instant::now();
+        let due: Vec<_> = {
+            let mut timers = self
+                .timers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            timers
+                .values_mut()
+                .filter_map(|timer| {
+                    if timer.next <= now {
+                        timer.next = now
+                            .checked_add(timer.interval)
+                            .unwrap_or(now + Duration::from_secs(86_400));
+                        Some(timer.handler.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for handler in due {
+            unsafe { handler.onTimer() };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl IRunLoopTrait for HostApplication {
+    unsafe fn registerEventHandler(&self, handler: *mut IEventHandler, fd: i32) -> tresult {
+        unsafe { self.run_loop.register_event_handler(handler, fd) }
+    }
+
+    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
+        unsafe { self.run_loop.unregister_event_handler(handler) }
+    }
+
+    unsafe fn registerTimer(&self, handler: *mut ITimerHandler, milliseconds: u64) -> tresult {
+        unsafe { self.run_loop.register_timer(handler, milliseconds) }
+    }
+
+    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
+        unsafe { self.run_loop.unregister_timer(handler) }
+    }
 }
 
 impl IHostApplicationTrait for HostApplication {
@@ -429,6 +652,113 @@ mod tests {
             let mut value = 0;
             assert_eq!(attributes.getInt(key, &mut value), kResultOk);
             assert_eq!(value, 42);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod linux_run_loop {
+        use super::*;
+        use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+        use std::time::Duration;
+        use vst3::Steinberg::Linux::{
+            FileDescriptor, IEventHandler, IEventHandlerTrait, ITimerHandler, ITimerHandlerTrait,
+        };
+
+        struct TestEventHandler {
+            calls: AtomicUsize,
+            last_fd: AtomicI32,
+        }
+
+        impl Class for TestEventHandler {
+            type Interfaces = (IEventHandler,);
+        }
+
+        impl IEventHandlerTrait for TestEventHandler {
+            unsafe fn onFDIsSet(&self, fd: FileDescriptor) {
+                self.last_fd.store(fd, Ordering::Release);
+                self.calls.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        struct TestTimerHandler {
+            calls: AtomicUsize,
+        }
+
+        impl Class for TestTimerHandler {
+            type Interfaces = (ITimerHandler,);
+        }
+
+        impl ITimerHandlerTrait for TestTimerHandler {
+            unsafe fn onTimer(&self) {
+                self.calls.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        #[test]
+        fn dispatches_and_unregisters_readable_fds() {
+            let run_loop = LinuxRunLoop::default();
+            let handler = ComWrapper::new(TestEventHandler {
+                calls: AtomicUsize::new(0),
+                last_fd: AtomicI32::new(-1),
+            });
+            let interface = handler.as_com_ref::<IEventHandler>().unwrap();
+            let mut pipe_fds = [-1; 2];
+            assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
+            assert_eq!(
+                unsafe { run_loop.register_event_handler(interface.as_ptr(), pipe_fds[0]) },
+                kResultOk
+            );
+
+            let byte = [1u8];
+            assert_eq!(
+                unsafe { libc::write(pipe_fds[1], byte.as_ptr().cast(), 1) },
+                1
+            );
+            run_loop.pump();
+            assert_eq!(handler.calls.load(Ordering::Acquire), 1);
+            assert_eq!(handler.last_fd.load(Ordering::Acquire), pipe_fds[0]);
+
+            assert_eq!(
+                unsafe { run_loop.unregister_event_handler(interface.as_ptr()) },
+                kResultOk
+            );
+            run_loop.pump();
+            assert_eq!(handler.calls.load(Ordering::Acquire), 1);
+            assert_eq!(
+                unsafe { run_loop.unregister_event_handler(interface.as_ptr()) },
+                kResultFalse
+            );
+            unsafe {
+                libc::close(pipe_fds[0]);
+                libc::close(pipe_fds[1]);
+            }
+        }
+
+        #[test]
+        fn dispatches_and_unregisters_timers() {
+            let run_loop = LinuxRunLoop::default();
+            let handler = ComWrapper::new(TestTimerHandler {
+                calls: AtomicUsize::new(0),
+            });
+            let interface = handler.as_com_ref::<ITimerHandler>().unwrap();
+            assert_eq!(
+                unsafe { run_loop.register_timer(interface.as_ptr(), 1) },
+                kResultOk
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            run_loop.pump();
+            assert_eq!(handler.calls.load(Ordering::Acquire), 1);
+            assert_eq!(
+                unsafe { run_loop.unregister_timer(interface.as_ptr()) },
+                kResultOk
+            );
+            std::thread::sleep(Duration::from_millis(2));
+            run_loop.pump();
+            assert_eq!(handler.calls.load(Ordering::Acquire), 1);
+            assert_eq!(
+                unsafe { run_loop.unregister_timer(interface.as_ptr()) },
+                kResultFalse
+            );
         }
     }
 }

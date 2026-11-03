@@ -211,7 +211,12 @@ fn hosted_block_frames() -> usize {
 /// every xrun *after* recovering the stream itself. Latching each of those as a
 /// failure tears down a stream that is still running, so only the kinds that
 /// actually end playback are recorded as fatal; the rest are counted.
-fn note_output_stream_error(error: &cpal::Error, failed: &AtomicBool, xruns: &AtomicU64) {
+fn note_output_stream_error(
+    error: &cpal::Error,
+    failed: &AtomicBool,
+    xruns: &AtomicU64,
+    realtime_denied: &AtomicU64,
+) {
     match error.kind() {
         // A buffer underrun/overrun: the backend prepared the stream and kept
         // going, so the user hears a click, not silence.
@@ -221,8 +226,13 @@ fn note_output_stream_error(error: &cpal::Error, failed: &AtomicBool, xruns: &At
         // The route changed and the backend rerouted a default-device stream,
         // or real-time promotion was refused while audio keeps playing. Neither
         // stops playback, so neither may tear the engine down.
-        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied => {
+        cpal::ErrorKind::DeviceChanged => {
             xruns.fetch_add(1, Ordering::Relaxed);
+        }
+        // CPAL reports denied priority promotion asynchronously while the
+        // stream remains active. Keep it distinct from an actual audio xrun.
+        cpal::ErrorKind::RealtimeDenied => {
+            realtime_denied.fetch_add(1, Ordering::Relaxed);
         }
         _ => failed.store(true, Ordering::Release),
     }
@@ -1659,7 +1669,13 @@ mod output_stream_health_tests {
         let xruns = AtomicU64::new(0);
 
         // An underrun is the event the ALSA backend recovers from itself.
-        note_output_stream_error(&cpal::Error::new(cpal::ErrorKind::Xrun), &failed, &xruns);
+        let denied = AtomicU64::new(0);
+        note_output_stream_error(
+            &cpal::Error::new(cpal::ErrorKind::Xrun),
+            &failed,
+            &xruns,
+            &denied,
+        );
         assert!(
             !failed.load(Ordering::Acquire),
             "an xrun must not stop the stream"
@@ -1672,20 +1688,24 @@ mod output_stream_health_tests {
             &cpal::Error::new(cpal::ErrorKind::DeviceChanged),
             &failed,
             &xruns,
+            &denied,
         );
         note_output_stream_error(
             &cpal::Error::new(cpal::ErrorKind::RealtimeDenied),
             &failed,
             &xruns,
+            &denied,
         );
         assert!(!failed.load(Ordering::Acquire));
-        assert_eq!(xruns.load(Ordering::Relaxed), 3);
+        assert_eq!(xruns.load(Ordering::Relaxed), 2);
+        assert_eq!(denied.load(Ordering::Relaxed), 1);
 
         // A device that disappeared is a real stop.
         note_output_stream_error(
             &cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable),
             &failed,
             &xruns,
+            &denied,
         );
         assert!(failed.load(Ordering::Acquire));
         assert_eq!(
@@ -2081,6 +2101,7 @@ pub struct AudioEngine {
     callback_active: Arc<AtomicBool>,
     output_stream_failed: Arc<AtomicBool>,
     output_stream_xruns: Arc<AtomicU64>,
+    realtime_priority_denials: Arc<AtomicU64>,
     current_generation: u64,
     retired_plans: Vec<Arc<PlaybackPlan>>,
     pub device_name: String,
@@ -2195,7 +2216,30 @@ impl AudioEngine {
                         format!("the selected output does not support {sample_rate} Hz")
                     })?
             } else {
-                default_config
+                // ALSA's `default_output_config` can describe a format that a
+                // direct `hw:` PCM cannot actually open (for example f32 when
+                // the codec exposes only integer samples). Keep its preferred
+                // rate/channel count, but select a format from the device's
+                // declared capabilities when possible. This also lets direct
+                // hardware streams use CPAL's RT-eligible `hw:` path.
+                device
+                    .supported_output_configs()
+                    .map_err(|error| format!("could not read output configurations: {error}"))?
+                    .filter(|config| {
+                        matches!(
+                            config.sample_format(),
+                            SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16
+                        ) && config.channels() > 0
+                    })
+                    .filter_map(|config| config.try_with_sample_rate(default_config.sample_rate()))
+                    .min_by_key(|config| {
+                        (
+                            config.sample_format() != default_config.sample_format(),
+                            config.channels() != default_config.channels(),
+                            config.channels(),
+                        )
+                    })
+                    .unwrap_or(default_config)
             };
             let sample_format = supported_config.sample_format();
             let mut config: cpal::StreamConfig = supported_config.into();
@@ -2261,6 +2305,7 @@ impl AudioEngine {
         let callback_active = Arc::new(AtomicBool::new(false));
         let output_stream_failed = Arc::new(AtomicBool::new(false));
         let output_stream_xruns = Arc::new(AtomicU64::new(0));
+        let realtime_priority_denials = Arc::new(AtomicU64::new(0));
 
         #[cfg(windows)]
         {
@@ -2386,6 +2431,7 @@ impl AudioEngine {
                 callback_active,
                 output_stream_failed,
                 output_stream_xruns,
+                realtime_priority_denials,
                 current_generation: 0,
                 retired_plans: Vec::new(),
                 asio_info,
@@ -2417,6 +2463,9 @@ impl AudioEngine {
                     let input_monitor = Arc::clone(&input_monitor);
                     let stream_failed = Arc::clone(&output_stream_failed);
                     let stream_xruns = Arc::clone(&output_stream_xruns);
+                    let stream_realtime_denials = Arc::clone(&realtime_priority_denials);
+                    let timing = Arc::clone(&callback_timing);
+                    let mut last_entry = None;
                     let (tone, playing, playhead, plan, generation, active) = callback_state(
                         &test_tone_enabled,
                         &playing,
@@ -2428,6 +2477,13 @@ impl AudioEngine {
                     device.build_output_stream(
                         config,
                         move |samples: &mut [f32], _| {
+                            let started = timing.enabled.then(Instant::now);
+                            let interval = started
+                                .zip(last_entry)
+                                .map(|(now, previous)| now.duration_since(previous));
+                            if let Some(now) = started {
+                                last_entry = Some(now);
+                            }
                             render_f32_with_midi(
                                 samples,
                                 channels,
@@ -2443,9 +2499,17 @@ impl AudioEngine {
                                 &mut phase,
                                 Some(&mut live_midi),
                             );
+                            if let Some(started) = started {
+                                timing.record(interval, started.elapsed());
+                            }
                         },
                         move |error| {
-                            note_output_stream_error(&error, &stream_failed, &stream_xruns);
+                            note_output_stream_error(
+                                &error,
+                                &stream_failed,
+                                &stream_xruns,
+                                &stream_realtime_denials,
+                            );
                         },
                         Some(Duration::from_secs(5)),
                     )
@@ -2462,6 +2526,9 @@ impl AudioEngine {
                     let input_monitor = Arc::clone(&input_monitor);
                     let stream_failed = Arc::clone(&output_stream_failed);
                     let stream_xruns = Arc::clone(&output_stream_xruns);
+                    let stream_realtime_denials = Arc::clone(&realtime_priority_denials);
+                    let timing = Arc::clone(&callback_timing);
+                    let mut last_entry = None;
                     let (tone, playing, playhead, plan, generation, active) = callback_state(
                         &test_tone_enabled,
                         &playing,
@@ -2473,6 +2540,13 @@ impl AudioEngine {
                     device.build_output_stream(
                         config,
                         move |samples: &mut [i16], _| {
+                            let started = timing.enabled.then(Instant::now);
+                            let interval = started
+                                .zip(last_entry)
+                                .map(|(now, previous)| now.duration_since(previous));
+                            if let Some(now) = started {
+                                last_entry = Some(now);
+                            }
                             render_i16(
                                 samples,
                                 channels,
@@ -2488,9 +2562,17 @@ impl AudioEngine {
                                 &mut phase,
                                 Some(&mut live_midi),
                             );
+                            if let Some(started) = started {
+                                timing.record(interval, started.elapsed());
+                            }
                         },
                         move |error| {
-                            note_output_stream_error(&error, &stream_failed, &stream_xruns);
+                            note_output_stream_error(
+                                &error,
+                                &stream_failed,
+                                &stream_xruns,
+                                &stream_realtime_denials,
+                            );
                         },
                         Some(Duration::from_secs(5)),
                     )
@@ -2507,6 +2589,9 @@ impl AudioEngine {
                     let input_monitor = Arc::clone(&input_monitor);
                     let stream_failed = Arc::clone(&output_stream_failed);
                     let stream_xruns = Arc::clone(&output_stream_xruns);
+                    let stream_realtime_denials = Arc::clone(&realtime_priority_denials);
+                    let timing = Arc::clone(&callback_timing);
+                    let mut last_entry = None;
                     let (tone, playing, playhead, plan, generation, active) = callback_state(
                         &test_tone_enabled,
                         &playing,
@@ -2518,6 +2603,13 @@ impl AudioEngine {
                     device.build_output_stream(
                         config,
                         move |samples: &mut [u16], _| {
+                            let started = timing.enabled.then(Instant::now);
+                            let interval = started
+                                .zip(last_entry)
+                                .map(|(now, previous)| now.duration_since(previous));
+                            if let Some(now) = started {
+                                last_entry = Some(now);
+                            }
                             render_u16(
                                 samples,
                                 channels,
@@ -2533,9 +2625,17 @@ impl AudioEngine {
                                 &mut phase,
                                 Some(&mut live_midi),
                             );
+                            if let Some(started) = started {
+                                timing.record(interval, started.elapsed());
+                            }
                         },
                         move |error| {
-                            note_output_stream_error(&error, &stream_failed, &stream_xruns);
+                            note_output_stream_error(
+                                &error,
+                                &stream_failed,
+                                &stream_xruns,
+                                &stream_realtime_denials,
+                            );
                         },
                         Some(Duration::from_secs(5)),
                     )
@@ -2586,6 +2686,7 @@ impl AudioEngine {
                 callback_active,
                 output_stream_failed,
                 output_stream_xruns,
+                realtime_priority_denials,
                 current_generation: 0,
                 retired_plans: Vec::new(),
                 device_name,
@@ -2619,6 +2720,56 @@ impl AudioEngine {
     /// rather than reported as a failed stream.
     pub fn output_xrun_count(&self) -> u64 {
         self.output_stream_xruns.load(Ordering::Relaxed)
+    }
+
+    /// Number of times the Linux backend reported that RTKit priority
+    /// promotion was unavailable. A denial does not stop the audio stream.
+    pub fn realtime_priority_denial_count(&self) -> u64 {
+        self.realtime_priority_denials.load(Ordering::Relaxed)
+    }
+
+    /// Inspects CPAL's output worker scheduling policy from the control/UI
+    /// thread. This reads /proc and is intentionally not real-time safe.
+    #[cfg(target_os = "linux")]
+    pub fn output_thread_scheduling(&self) -> String {
+        let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+            return "unknown".to_owned();
+        };
+        for task in tasks.flatten() {
+            let Ok(name) = std::fs::read_to_string(task.path().join("comm")) else {
+                continue;
+            };
+            if name.trim() != "cpal_alsa_out" {
+                continue;
+            }
+            let Some(tid) = task
+                .file_name()
+                .to_str()
+                .and_then(|tid| tid.parse::<libc::pid_t>().ok())
+            else {
+                continue;
+            };
+            // SAFETY: tid is a live Linux thread id read from /proc/self/task.
+            let policy = unsafe { libc::sched_getscheduler(tid) };
+            if policy < 0 {
+                return "unknown".to_owned();
+            }
+            let mut parameter = libc::sched_param { sched_priority: 0 };
+            // SAFETY: parameter is writable and tid belongs to this process.
+            if unsafe { libc::sched_getparam(tid, &mut parameter) } != 0 {
+                return "unknown".to_owned();
+            }
+            // RTKit sets SCHED_RESET_ON_FORK alongside FIFO/RR. Mask this
+            // modifier before decoding the base scheduling policy, or an
+            // elevated thread is incorrectly displayed as normal priority.
+            let base_policy = policy & !libc::SCHED_RESET_ON_FORK;
+            return match base_policy {
+                libc::SCHED_FIFO => format!("FIFO priority {}", parameter.sched_priority),
+                libc::SCHED_RR => format!("RR priority {}", parameter.sched_priority),
+                _ => "normal priority".to_owned(),
+            };
+        }
+        "output thread not found".to_owned()
     }
 
     pub fn set_playback_plan(

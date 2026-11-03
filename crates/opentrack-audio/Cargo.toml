@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 local-asio = ["dep:maolan-asio"]
+linux-realtime = ["cpal/realtime-dbus"]
 
 [dependencies]
 arc-swap = "=1.9.2"
@@ -24,3 +25,6 @@ maolan-asio = { path = "../../vendor/maolan-asio", version = "=0.0.1", optional 
 wasapi = "=0.26.0"
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_Audio"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Media", "Win32_Media_Audio", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.190"

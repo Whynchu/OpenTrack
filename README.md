@@ -53,8 +53,8 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Interchange:** CPR/OMF compatibility waits until the feature set is complete (user decision, 2026-11-02); no adapter is planned before then. OpenTrack Track Archive v1 export/import is implemented with a background import; desktop round-trip review remains. Other DAW formats are future work. Authored MIDI fixtures pass; comparison with DAW-produced MIDI files remains.
 - **Interface completion:** the project-open main menu has 17 rows still shown disabled (measured from source in the [generated inventory](docs/reviews/generated-source-inventory.md)); 151 of 152 keymap-bound commands have a dispatch arm. The last undispatched command (external sync) names a feature that does not exist yet and is unavailable in its menu. The [accessibility and keyboard report](docs/workflow/accessibility-2026-11-02.md) lists the gaps; a manual keyboard-only pass is pending.
 - **New in revision 5, pending desktop review:** Tempo Track editor and tempo-file exchange, Retrospective Record, Direct Offline Processing, Audio CD import, and the background archive import have automated coverage only.
-- **Linux audio scheduling:** the ALSA callback thread runs at normal priority because cpal's real-time feature is not enabled; output underruns are recovered by the backend and counted in the DSP readout instead of stopping the engine. Raising the buffer in Device Setup is the current mitigation; real-time scheduling needs a dependency decision.
-- **Linux plug-ins:** VST3 editor embedding on Linux is not implemented.
+- **Linux audio scheduling:** the packaged Linux build requests RTKit-backed real-time scheduling for eligible ALSA streams. Audio Setup keeps both direct ALSA hardware endpoints and format-converting routes where available; direct hardware can receive RTKit priority, while server-backed and converting routes may remain at normal priority. The DSP readout shows the actual output policy and counts promotion denials separately from xruns. Opt-in diagnostics record Linux callback interval and render time without clock reads when disabled. Five-second silent checks at 48 kHz / 512 frames compared direct HDMI ALSA at RR priority 10 (11,079 us interval p95; 72 us render p95) with PipeWire at normal priority (10,806 us interval p95; 67 us render p95); both reported zero xruns. Muted synthetic load checks with eight tracks through 12 EQ bands each reached 60% worst callback load on direct HDMI at RR 10 and 65% through PipeWire at normal priority; both had zero xruns and RTKit denials. Full saved-project and audible performance review remain open.
+- **Linux plug-ins:** native VST3 editors use the X11/XWayland embed path. DISTRHO MVerb (DPF VST3 1.7) was exercised on XWayland for paint, keyboard focus, pointer parameter editing, resize and close/reopen. Linux host tests also exercise VST3 run-loop FD and timer dispatch. Native Wayland-only embedding, full app review and broader plug-in compatibility remain open.
 - **Not available:** video, surround, score editing, macOS and browser builds, and a command-line or MCP interface. Plug-in compatibility and recovery behavior need continued verification.
 
 ### Highlights
@@ -64,7 +64,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Up to 24 insert and send slots per channel:** insert slots run available built-in processors and third-party VST3 effects, including native plug-in editor windows. Track, group and FX-return sends have destination, level, pan, and pre/post-fader controls; the signal path passes offline tests and still needs live hardware review. Device-bus sends remain unavailable.
 - **Integrated Pitch & Time:** analyze and edit audio in the Sample Editor, alongside the Project and Mixer workspace.
 - **Audio backends:** Windows offers WASAPI or the optional local ASIO adapter for a compatible installed driver; Linux uses ALSA through CPAL.
-- **Platform:** Windows x64 and Linux x86_64 are both target platforms, built from the same Rust code. Linux still needs VST3 editor embedding and real-time audio scheduling; the ALSA callback runs at normal priority today.
+- **Platform:** Windows x64 and Linux x86_64 are both target platforms, built from the same Rust code. Linux packages request RTKit scheduling for eligible ALSA streams and support native VST3 editor windows under X11/XWayland; one third-party editor has passed a native lifecycle check. Native Wayland-only plug-in editors and broader compatibility remain open.
 
 ### Built-in EQ and analysis
 
@@ -80,13 +80,13 @@ These features are under active development; live listening, visual behavior and
 
 ### Near-term priorities
 
-User-side review of the recording, delivery and listening features above; the CPR adapter once real `.cpr` files are available; the remaining disabled menus and undispatched shortcuts; and a Linux VST3 editor path with a test plug-in. Windows x64 and Linux x86_64 are both target platforms, not a primary/secondary split.
+User-side review of the recording, delivery and listening features above; the CPR adapter once real `.cpr` files are available; the remaining disabled menus and undispatched shortcuts; further Linux VST3 compatibility review and loaded-project audio performance. Windows x64 and Linux x86_64 are both target platforms, not a primary/secondary split.
 
 Progress and verification live in [the current workflow state](docs/workflow/current.md), [the revision-4 delivery handoff](docs/workflow/handoffs/revision-4-delivery.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
 
 ## Build and run
 
-Windows x64 and Linux x86_64 are the target platforms, built from this repository. Other Linux distributions, macOS and browser builds are not current release claims. On Linux, install Rust and the ALSA development headers (`libasound2-dev` on Debian/Ubuntu), then run `./build.sh`; the Linux audio path is ALSA through CPAL, so there is no ASIO or WASAPI selection. On Windows, install Rust with the MSVC toolchain and the Visual Studio C++ build tools, then run this from the repository root:
+Windows x64 and Linux x86_64 are the target platforms, built from this repository. Other Linux distributions, macOS and browser builds are not current release claims. On Linux, install Rust, ALSA and D-Bus development headers (`libasound2-dev` and `libdbus-1-dev` on Debian/Ubuntu), then run `./build.sh`; it enables CPAL's RTKit integration for eligible ALSA streams. RTKit can deny promotion according to the session policy; OpenTrack continues playback and reports denials separately. The Linux editor path requires X11 or XWayland; native Wayland-only VST3 embedding remains unsupported. On Windows, install Rust with the MSVC toolchain and the Visual Studio C++ build tools, then run this from the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Architecture x64
