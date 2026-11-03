@@ -126,3 +126,13 @@ A schema, timing or graph decision beyond these contracts requires a written dec
 ## Explicitly deferred in revision 5
 
 Score engraving and layout, Control Room monitoring, MMC implementation without a MIDI output path, external sync without hardware, video without an approved decoder, real CPR/OMF adapters without fixtures, and multi-tempo maps. These omissions are deliberate: keep the relevant entries honestly unavailable and report them rather than deleting labels or adding aliases to improve a count.
+
+## Revision 5 close-out (2026-11-02)
+
+All 31 implementable steps were executed, and step 2 is the user's runtime review, which remains open rather than claimed. Steps 1 and 3-32 delivered code, tests or decision records; step 2's checklist is in R5-01's handoff and in the delivery handoff.
+
+Final measurements: inventory 275 project-open leaves (41 available, 157 state-dependent, 69 unavailable, 8 informational); 149/152 command IDs dispatched; OPR 38; app 579 passed / 4 known device-dependent failures / 9 ignored, core 166, audio 171 / 3 ignored; release build `20496f7d...`.
+
+Delivered: baseline inventory, export contract review, tempo/signature contract and editor, tempo exchange, conversion audit, transpose verification, retrospective capture and command, virtual-keyboard close-out, offline chain model/render/UI/menus/acceptance, cue-sheet Audio CD import, background and accepted Track Archive import, add-track lane mapping, regions polish, arranger preview review, secondary ruler review, MMC/sync/video decision records, backgrounded chain render, dialog keyboard ownership and the acceptance pass.
+
+Remaining work is user-blocked or decision-blocked: the runtime review, audible checks, Windows/ASIO and VST3 verification, the two open export decisions (stems and arranger export), and the larger features named in the decision records.

@@ -21,7 +21,7 @@
 - Actual implementer/reviewer model: DeepSeek V4.1 Flash (opencode-go/deepseek-v4.1-flash); self-review only.
 - Source identity: commit carrying this packet.
 - Changes and reasons: guard added; editors registered as modal; new test presses Delete with each editor open; report and inventory regenerated; README counts updated.
-- Commands/checks and actual results: `cargo test -p opentrack a_dialog_that_owns_input` → passed; app suite 580 passing with the four known device failures; accessibility report 149/152.
+- Commands/checks and actual results: `cargo test -p opentrack a_dialog_that_owns_input` → passed; app suite 579 passing with the four known device failures; accessibility report 149/152.
 - Runtime environment: Kubuntu Linux.
 - Ledger IDs updated: accessibility report and README.
 - Review findings: the report had drifted to 147/5 and needed regeneration, which is why this pass exists.

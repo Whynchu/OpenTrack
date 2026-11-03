@@ -199,6 +199,30 @@ fn hosted_block_frames() -> usize {
     })
 }
 
+/// Sorts a backend stream report into "playback stopped" and "a glitch happened".
+///
+/// CPAL reports underruns, route changes and refused real-time promotion through
+/// the same error callback as fatal failures, and the ALSA backend calls it on
+/// every xrun *after* recovering the stream itself. Latching each of those as a
+/// failure tears down a stream that is still running, so only the kinds that
+/// actually end playback are recorded as fatal; the rest are counted.
+fn note_output_stream_error(error: &cpal::Error, failed: &AtomicBool, xruns: &AtomicU64) {
+    match error.kind() {
+        // A buffer underrun/overrun: the backend prepared the stream and kept
+        // going, so the user hears a click, not silence.
+        cpal::ErrorKind::Xrun => {
+            xruns.fetch_add(1, Ordering::Relaxed);
+        }
+        // The route changed and the backend rerouted a default-device stream,
+        // or real-time promotion was refused while audio keeps playing. Neither
+        // stops playback, so neither may tear the engine down.
+        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied => {
+            xruns.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => failed.store(true, Ordering::Release),
+    }
+}
+
 fn effective_hosted_block_frames(configured: usize, callback_frames: usize) -> usize {
     configured.min(callback_frames.max(1))
 }
@@ -1590,6 +1614,54 @@ mod callback_timing_tests {
 }
 
 #[cfg(test)]
+mod output_stream_health_tests {
+    use super::note_output_stream_error;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    #[test]
+    fn recoverable_stream_reports_are_counted_not_treated_as_failure() {
+        let failed = AtomicBool::new(false);
+        let xruns = AtomicU64::new(0);
+
+        // An underrun is the event the ALSA backend recovers from itself.
+        note_output_stream_error(&cpal::Error::new(cpal::ErrorKind::Xrun), &failed, &xruns);
+        assert!(
+            !failed.load(Ordering::Acquire),
+            "an xrun must not stop the stream"
+        );
+        assert_eq!(xruns.load(Ordering::Relaxed), 1);
+
+        // A rerouted default-device stream and a refused real-time promotion
+        // both leave audio running.
+        note_output_stream_error(
+            &cpal::Error::new(cpal::ErrorKind::DeviceChanged),
+            &failed,
+            &xruns,
+        );
+        note_output_stream_error(
+            &cpal::Error::new(cpal::ErrorKind::RealtimeDenied),
+            &failed,
+            &xruns,
+        );
+        assert!(!failed.load(Ordering::Acquire));
+        assert_eq!(xruns.load(Ordering::Relaxed), 3);
+
+        // A device that disappeared is a real stop.
+        note_output_stream_error(
+            &cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable),
+            &failed,
+            &xruns,
+        );
+        assert!(failed.load(Ordering::Acquire));
+        assert_eq!(
+            xruns.load(Ordering::Relaxed),
+            3,
+            "a fatal report is not counted as a glitch"
+        );
+    }
+}
+
+#[cfg(test)]
 mod hosted_block_size_tests {
     use super::effective_hosted_block_frames;
 
@@ -1973,6 +2045,7 @@ pub struct AudioEngine {
     callback_generation: Arc<AtomicU64>,
     callback_active: Arc<AtomicBool>,
     output_stream_failed: Arc<AtomicBool>,
+    output_stream_xruns: Arc<AtomicU64>,
     current_generation: u64,
     retired_plans: Vec<Arc<PlaybackPlan>>,
     pub device_name: String,
@@ -2152,6 +2225,7 @@ impl AudioEngine {
         let callback_generation = Arc::new(AtomicU64::new(0));
         let callback_active = Arc::new(AtomicBool::new(false));
         let output_stream_failed = Arc::new(AtomicBool::new(false));
+        let output_stream_xruns = Arc::new(AtomicU64::new(0));
 
         #[cfg(windows)]
         {
@@ -2276,6 +2350,7 @@ impl AudioEngine {
                 callback_generation,
                 callback_active,
                 output_stream_failed,
+                output_stream_xruns,
                 current_generation: 0,
                 retired_plans: Vec::new(),
                 asio_info,
@@ -2306,6 +2381,7 @@ impl AudioEngine {
                     );
                     let input_monitor = Arc::clone(&input_monitor);
                     let stream_failed = Arc::clone(&output_stream_failed);
+                    let stream_xruns = Arc::clone(&output_stream_xruns);
                     let (tone, playing, playhead, plan, generation, active) = callback_state(
                         &test_tone_enabled,
                         &playing,
@@ -2333,8 +2409,8 @@ impl AudioEngine {
                                 Some(&mut live_midi),
                             );
                         },
-                        move |_| {
-                            stream_failed.store(true, Ordering::Release);
+                        move |error| {
+                            note_output_stream_error(&error, &stream_failed, &stream_xruns);
                         },
                         Some(Duration::from_secs(5)),
                     )
@@ -2350,6 +2426,7 @@ impl AudioEngine {
                     );
                     let input_monitor = Arc::clone(&input_monitor);
                     let stream_failed = Arc::clone(&output_stream_failed);
+                    let stream_xruns = Arc::clone(&output_stream_xruns);
                     let (tone, playing, playhead, plan, generation, active) = callback_state(
                         &test_tone_enabled,
                         &playing,
@@ -2377,8 +2454,8 @@ impl AudioEngine {
                                 Some(&mut live_midi),
                             );
                         },
-                        move |_| {
-                            stream_failed.store(true, Ordering::Release);
+                        move |error| {
+                            note_output_stream_error(&error, &stream_failed, &stream_xruns);
                         },
                         Some(Duration::from_secs(5)),
                     )
@@ -2394,6 +2471,7 @@ impl AudioEngine {
                     );
                     let input_monitor = Arc::clone(&input_monitor);
                     let stream_failed = Arc::clone(&output_stream_failed);
+                    let stream_xruns = Arc::clone(&output_stream_xruns);
                     let (tone, playing, playhead, plan, generation, active) = callback_state(
                         &test_tone_enabled,
                         &playing,
@@ -2421,8 +2499,8 @@ impl AudioEngine {
                                 Some(&mut live_midi),
                             );
                         },
-                        move |_| {
-                            stream_failed.store(true, Ordering::Release);
+                        move |error| {
+                            note_output_stream_error(&error, &stream_failed, &stream_xruns);
                         },
                         Some(Duration::from_secs(5)),
                     )
@@ -2459,6 +2537,7 @@ impl AudioEngine {
                 callback_generation,
                 callback_active,
                 output_stream_failed,
+                output_stream_xruns,
                 current_generation: 0,
                 retired_plans: Vec::new(),
                 device_name,
@@ -2480,8 +2559,18 @@ impl AudioEngine {
     }
 
     /// Returns and clears a stream failure reported asynchronously by CPAL.
+    ///
+    /// Only reports that end playback are latched here; recoverable underruns
+    /// are counted by [`Self::output_xrun_count`] instead.
     pub fn take_output_stream_error(&self) -> bool {
         self.output_stream_failed.swap(false, Ordering::AcqRel)
+    }
+
+    /// Recoverable output underruns/overruns the backend reported and recovered
+    /// from. These do not stop playback, so they are counted for diagnostics
+    /// rather than reported as a failed stream.
+    pub fn output_xrun_count(&self) -> u64 {
+        self.output_stream_xruns.load(Ordering::Relaxed)
     }
 
     pub fn set_playback_plan(

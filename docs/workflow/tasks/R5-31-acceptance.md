@@ -14,12 +14,12 @@
 
 | Check | Result |
 | --- | --- |
-| app suite | 580 passed, 4 failed, 9 ignored |
+| app suite | 579 passed, 4 failed, 9 ignored (592 tests) |
 | core suite | 166 passed |
-| audio suite | 170 passed, 3 ignored |
+| audio suite | 171 passed, 3 ignored |
 | `cargo fmt --all --check` | clean |
 | `git diff --check` | clean |
-| release build | `builds/x64/OpenTrack`, SHA-256 `46ab1a11575299786468ab76fed841fa7d802f4f7ea3cfdd5839d4b67756f729` |
+| release build | `builds/x64/OpenTrack`, SHA-256 `20496f7da2afe0775fab56e15ac95341a93e3fb12a0f0453d3301a4fea0a2f89` |
 | OPR | 38; migrations tested for v29→30 (timecode), v30→31 (pool folders), v31→32 (regions), v32→33 (pool record folder) and v37→38 (offline chains) |
 | save/reopen | new fields validated by `Project::validate` and covered by project-file round trips |
 
