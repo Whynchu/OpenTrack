@@ -20,6 +20,7 @@ mod device_connections;
 mod drum_editor;
 mod drum_map_setup;
 mod logical_presets;
+mod macros;
 #[path = "media_names.rs"]
 pub(crate) mod media_names;
 #[path = "media_pool.rs"]
@@ -1241,6 +1242,12 @@ pub struct OpenTrackApp {
     plugin_browser_open: bool,
     /// Planned cleanup awaiting confirmation.
     cleanup_prompt: Option<project_cleanup::CleanupPlan>,
+    /// Saved command macros.
+    macros: Vec<macros::Macro>,
+    macros_open: bool,
+    macro_selected: Option<usize>,
+    macro_new_name: String,
+    macro_filter: String,
     plugin_browser_category: InsertMenuCategory,
     plugin_browser_filter: String,
     /// Name being typed in the Save as Template dialog.
@@ -2759,6 +2766,17 @@ impl OpenTrackApp {
             revert_prompt: false,
             plugin_browser_open: false,
             cleanup_prompt: None,
+            macros: creation
+                .storage
+                .and_then(|storage| {
+                    eframe::get_value::<Vec<macros::Macro>>(storage, "command-macros-v1")
+                })
+                .map(macros::sanitize_macros)
+                .unwrap_or_default(),
+            macros_open: false,
+            macro_selected: None,
+            macro_new_name: String::new(),
+            macro_filter: String::new(),
             plugin_browser_category: InsertMenuCategory::Other,
             plugin_browser_filter: String::new(),
             template_name_draft: None,
@@ -14310,7 +14328,10 @@ impl OpenTrackApp {
                             }
                         }
                     });
-                    menu_command(ui, "Macros", "", false);
+                    if menu_command(ui, "Macros", "", self.project_open).clicked() {
+                        self.macros_open = true;
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(ui, "Key Commands...", "", true).clicked() {
                         self.key_commands_open = true;
@@ -16388,6 +16409,7 @@ impl OpenTrackApp {
             || self.revert_prompt
             || self.plugin_browser_open
             || self.cleanup_prompt.is_some()
+            || self.macros_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -19969,6 +19991,7 @@ impl eframe::App for OpenTrackApp {
         self.show_plugin_browser(&ctx);
         self.show_cleanup_prompt(&ctx);
         self.show_device_connections(&ctx);
+        self.show_macros(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -20039,6 +20062,7 @@ impl eframe::App for OpenTrackApp {
             &self.metering_preferences,
         );
         eframe::set_value(storage, "recent-projects-v1", &self.recent_projects);
+        eframe::set_value(storage, "command-macros-v1", &self.macros);
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,

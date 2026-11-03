@@ -21,8 +21,9 @@ This batch followed the revision-5 close-out at the user's direction ("keep fill
 | Plug-in browser | `plugin-browser.md` | Audio > Plug-ins families open a filtered browser over the scanned VST3 catalog and insert into the selected track |
 | File > Cleanup | `project-cleanup.md` | Unreferenced media moves to a dated trash folder inside the project, preserving relative paths |
 | VST Connections | `vst-connections.md` | Read-only window: device buses and every group/FX return with width, device, output and send counts |
+| Edit > Macros | `macros.md` | Named command macros persisted in settings, run through the ordinary dispatch path |
 
-Measured: the disabled project-open rows fell from 68 at the close-out to **47**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 605 passed / 4 failed / 9 ignored (618 tests), core 167, audio 172 / 3 ignored.
+Measured: the disabled project-open rows fell from 68 at the close-out to **46**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 608 passed / 4 failed / 9 ignored (621 tests), core 167, audio 172 / 3 ignored.
 
 ## Remaining rows and why they are still unavailable
 
@@ -30,7 +31,6 @@ Measured: the disabled project-open rows fell from 68 at the close-out to **47**
 - **Video (Video Window, Import Video File, Replace Audio in Video, Extract Audio from Video, Generate Thumbnail Cache, Add Track > Video):** blocked on an approved decoder; the comparison and recommendation are in `R5-28-video-decision.md`.
 - **MMC Master, Project Synchronization Setup, Use External Sync:** blocked on a MIDI output path and a clock source (`R5-26`, `R5-27`).
 - **Devices > Control Room Mixer/Overview:** monitoring section design (talkback, listen buses, cue sends) has not been specified.
-- **Edit > Macros:** a macro recorder/editor does not exist; needs design.
 - **File > New/Open/Save Library:** there is no library concept; project templates and Track Archive cover the current workflows.
 - **File > Page Setup / Print:** score printing depends on the score engine.
 - **Media > Reconstruct:** the row has no defined product meaning yet; the waveform and analysis data are recomputed from source, so nothing is cached to reconstruct.
