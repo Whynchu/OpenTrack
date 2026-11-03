@@ -301,6 +301,14 @@ impl OpenTrackApp {
             ScoreAlign::Right => ("Align Right", "starts to the latest note"),
             ScoreAlign::Top => ("Align Top", "pitches to the highest note"),
             ScoreAlign::Bottom => ("Align Bottom", "pitches to the lowest note"),
+            ScoreAlign::DistributeHorizontally => (
+                "Distribute Horizontally",
+                "starts evenly between the outer notes",
+            ),
+            ScoreAlign::DistributeVertically => (
+                "Distribute Vertically",
+                "pitches evenly between the outer notes",
+            ),
         };
         self.record_score_edit(candidate, label);
         self.status_message = format!("Aligned {changed} note(s): {description}");
@@ -1344,6 +1352,37 @@ mod tests {
                 .steps()
                 .iter()
                 .any(|step| step.label == "Align Top")
+        );
+
+        // Distribution spaces the middle note between the outer ones.
+        app.data.project.tracks[0].midi_parts[0].notes[0].start_beats = 0.0;
+        app.data.project.tracks[0].midi_parts[0].notes[1].start_beats = 0.5;
+        app.data.project.tracks[0].midi_parts[0].notes[2].start_beats = 2.0;
+        app.selected_midi_note_ids.clear();
+        for note in &app.data.project.tracks[0].midi_parts[0].notes {
+            app.selected_midi_note_ids.insert(note.id);
+        }
+        app.align_selected_score_notes(ScoreAlign::DistributeHorizontally);
+        assert!((app.data.project.tracks[0].midi_parts[0].notes[1].start_beats - 1.0).abs() < 1e-9);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Distribute Horizontally")
+        );
+
+        app.data.project.tracks[0].midi_parts[0].notes[0].pitch = 60;
+        app.data.project.tracks[0].midi_parts[0].notes[1].pitch = 61;
+        app.data.project.tracks[0].midi_parts[0].notes[2].pitch = 72;
+        app.align_selected_score_notes(ScoreAlign::DistributeVertically);
+        assert_eq!(app.data.project.tracks[0].midi_parts[0].notes[1].pitch, 66);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Distribute Vertically")
         );
 
         // One selected note is not an alignment.

@@ -30,6 +30,8 @@ pub enum ScoreAlign {
     Right,
     Top,
     Bottom,
+    DistributeHorizontally,
+    DistributeVertically,
 }
 
 /// Aligns the selected notes in the score: starts to the earliest/latest beat,
@@ -43,7 +45,11 @@ pub fn align_notes(part: &mut MidiPart, ids: &[u64], align: ScoreAlign) -> usize
         .filter(|(_, note)| ids.contains(&note.id))
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    if selected.len() < 2 {
+    let distributing = matches!(
+        align,
+        ScoreAlign::DistributeHorizontally | ScoreAlign::DistributeVertically
+    );
+    if selected.len() < if distributing { 3 } else { 2 } {
         return 0;
     }
     let target_beat = match align {
@@ -55,7 +61,11 @@ pub fn align_notes(part: &mut MidiPart, ids: &[u64], align: ScoreAlign) -> usize
             .iter()
             .map(|index| part.notes[*index].start_beats)
             .fold(f64::NEG_INFINITY, f64::max),
-        _ => 0.0,
+        ScoreAlign::Left
+        | ScoreAlign::Top
+        | ScoreAlign::Bottom
+        | ScoreAlign::DistributeHorizontally
+        | ScoreAlign::DistributeVertically => 0.0,
     };
     let target_pitch = match align {
         ScoreAlign::Top => selected
@@ -68,9 +78,68 @@ pub fn align_notes(part: &mut MidiPart, ids: &[u64], align: ScoreAlign) -> usize
             .map(|index| part.notes[*index].pitch)
             .min()
             .unwrap_or(0),
-        _ => 0,
+        ScoreAlign::Right
+        | ScoreAlign::Left
+        | ScoreAlign::Top
+        | ScoreAlign::DistributeHorizontally
+        | ScoreAlign::DistributeVertically => 0,
     };
     let duration = part.duration_beats;
+    if distributing {
+        let mut changed = 0;
+        match align {
+            ScoreAlign::DistributeHorizontally => {
+                let mut items = selected
+                    .iter()
+                    .map(|index| (part.notes[*index].start_beats, *index))
+                    .collect::<Vec<_>>();
+                items.sort_by(|left, right| {
+                    left.0
+                        .total_cmp(&right.0)
+                        .then_with(|| left.1.cmp(&right.1))
+                });
+                let first = items.first().map(|(beat, _)| *beat).unwrap_or(0.0);
+                let last = items.last().map(|(beat, _)| *beat).unwrap_or(0.0);
+                let step = (last - first) / (items.len() - 1) as f64;
+                for (rank, (_, index)) in items.iter().enumerate() {
+                    let note = &mut part.notes[*index];
+                    let limit = (duration - note.duration_beats).max(0.0);
+                    let target = (first + step * rank as f64).min(limit);
+                    if (note.start_beats - target).abs() > 1.0e-9 {
+                        note.start_beats = target;
+                        changed += 1;
+                    }
+                }
+            }
+            ScoreAlign::DistributeVertically => {
+                let mut items = selected
+                    .iter()
+                    .map(|index| (part.notes[*index].pitch, *index))
+                    .collect::<Vec<_>>();
+                items
+                    .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+                let first = items
+                    .first()
+                    .map(|(pitch, _)| f64::from(*pitch))
+                    .unwrap_or(0.0);
+                let last = items
+                    .last()
+                    .map(|(pitch, _)| f64::from(*pitch))
+                    .unwrap_or(0.0);
+                let step = (last - first) / (items.len() - 1) as f64;
+                for (rank, (_, index)) in items.iter().enumerate() {
+                    let note = &mut part.notes[*index];
+                    let target = (first + step * rank as f64).round().clamp(0.0, 127.0) as u8;
+                    if note.pitch != target {
+                        note.pitch = target;
+                        changed += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+        return changed;
+    }
     let mut changed = 0;
     for index in selected {
         let note = &mut part.notes[index];
@@ -89,6 +158,7 @@ pub fn align_notes(part: &mut MidiPart, ids: &[u64], align: ScoreAlign) -> usize
                     changed += 1;
                 }
             }
+            ScoreAlign::DistributeHorizontally | ScoreAlign::DistributeVertically => {}
         }
     }
     changed
@@ -621,5 +691,39 @@ mod tests {
 
         // A single selected note is not an alignment.
         assert_eq!(align_notes(&mut target, &[ids[0]], ScoreAlign::Left), 0);
+
+        // Distribution needs at least three notes and spaces by rank.
+        let (_project, mut target) = part();
+        target.notes[0].start_beats = 0.0;
+        target.notes[1].start_beats = 0.5;
+        target.notes[2].start_beats = 6.0;
+        let ids = ids_for(&target);
+        assert_eq!(
+            align_notes(&mut target, &ids, ScoreAlign::DistributeHorizontally),
+            1
+        );
+        assert!((target.notes[1].start_beats - 3.0).abs() < 1e-9);
+        assert_eq!(
+            align_notes(&mut target, &ids, ScoreAlign::DistributeHorizontally),
+            0,
+            "already distributed"
+        );
+
+        let (_project, mut target) = part();
+        target.notes[0].pitch = 60;
+        target.notes[1].pitch = 61;
+        target.notes[2].pitch = 72;
+        let ids = ids_for(&target);
+        assert_eq!(
+            align_notes(&mut target, &ids, ScoreAlign::DistributeVertically),
+            1
+        );
+        assert_eq!(target.notes[1].pitch, 66);
+        assert_eq!(target.notes[0].pitch, 60);
+        assert_eq!(target.notes[2].pitch, 72);
+        assert_eq!(
+            align_notes(&mut target, &ids, ScoreAlign::DistributeVertically),
+            0
+        );
     }
 }

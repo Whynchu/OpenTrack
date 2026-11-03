@@ -15232,10 +15232,22 @@ impl OpenTrackApp {
                             );
                             ui.close();
                         }
-                        disabled_menu_commands(
-                            ui,
-                            &[("Distribute Horizontally", ""), ("Distribute Vertically", "")],
-                        );
+                        if menu_command(ui, "Distribute Horizontally", "", self.project_open)
+                            .clicked()
+                        {
+                            self.align_selected_score_notes(
+                                opentrack_core::midi_transform::ScoreAlign::DistributeHorizontally,
+                            );
+                            ui.close();
+                        }
+                        if menu_command(ui, "Distribute Vertically", "", self.project_open)
+                            .clicked()
+                        {
+                            self.align_selected_score_notes(
+                                opentrack_core::midi_transform::ScoreAlign::DistributeVertically,
+                            );
+                            ui.close();
+                        }
                     });
                     if menu_command(ui, "Make Chord Symbols", "", self.project_open).clicked() {
                         self.make_chord_symbols_for_selected_part();
