@@ -693,6 +693,21 @@ fn audio_sample_rate_choices(configs: &[AudioOutputConfig]) -> Vec<u32> {
     rates
 }
 
+/// How many recent project paths are kept.
+const RECENT_PROJECT_LIMIT: usize = 10;
+
+/// Moves `path` to the front of `list`, replacing an existing entry and keeping
+/// at most `limit` paths.
+fn remember_recent_path(
+    list: &mut Vec<std::path::PathBuf>,
+    path: std::path::PathBuf,
+    limit: usize,
+) {
+    list.retain(|entry| entry != &path);
+    list.insert(0, path);
+    list.truncate(limit);
+}
+
 fn audio_buffer_choices(configs: &[AudioOutputConfig], sample_rate: Option<u32>) -> Vec<u32> {
     let presets = [64, 128, 256, 512, 1_024, 2_048, 4_096];
     let configured_rate =
@@ -1215,6 +1230,8 @@ pub struct OpenTrackApp {
     project_logical_editor_open: bool,
     markers_window_open: bool,
     undo_history_open: bool,
+    /// Window list dialog (Window > Windows...).
+    windows_dialog_open: bool,
     /// Name being typed in the Save as Template dialog.
     template_name_draft: Option<String>,
     session_health_open: bool,
@@ -1429,6 +1446,8 @@ pub struct OpenTrackApp {
     project_load_task: Option<ProjectLoadTask>,
     midi_recording_session: Option<MidiRecordingSession>,
     project_path: Option<std::path::PathBuf>,
+    /// Most recently opened or saved projects, newest first.
+    recent_projects: Vec<std::path::PathBuf>,
     native_window_title: Option<String>,
     project_open: bool,
     project_folder_managed: bool,
@@ -2637,6 +2656,16 @@ impl OpenTrackApp {
             arrange_view_state: ArrangeViewState::default(),
             audio_event_clipboard: None,
             project_window,
+            recent_projects: {
+                let mut value = creation
+                    .storage
+                    .and_then(|storage| {
+                        eframe::get_value::<Vec<std::path::PathBuf>>(storage, "recent-projects-v1")
+                    })
+                    .unwrap_or_default();
+                value.truncate(RECENT_PROJECT_LIMIT);
+                value
+            },
             workspace_preferences,
             data: AppData::default(),
             last_meter_update: None,
@@ -2711,6 +2740,7 @@ impl OpenTrackApp {
             project_logical_editor_open: false,
             markers_window_open: false,
             undo_history_open: false,
+            windows_dialog_open: false,
             template_name_draft: None,
             session_health_open: false,
             project_statistics_open: false,
@@ -5613,6 +5643,7 @@ impl OpenTrackApp {
         }
         self.rebuild_audio_plan();
         self.mark_saved();
+        self.remember_recent_project(&path);
         self.detect_interrupted_recording(path.clone());
         self.detect_unsaved_recovery(path);
         // A stored route this build cannot play is reported instead of being
@@ -5999,6 +6030,7 @@ impl OpenTrackApp {
                 self.status_message = format!("Saved {}", project_file_name(&path));
                 self.mark_saved();
                 self.clear_autosave();
+                self.remember_recent_project(&path);
                 true
             }
             Err(error) => {
@@ -13811,7 +13843,30 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.menu_button("Recent Projects", |ui| {
-                        menu_command(ui, "No Recent Projects", "", false);
+                        if self.recent_projects.is_empty() {
+                            menu_command(ui, "No Recent Projects", "", false);
+                        }
+                        let entries = self.recent_projects.clone();
+                        for path in entries {
+                            let label = path
+                                .file_stem()
+                                .map(|stem| stem.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string());
+                            if menu_command(ui, &label, "", true)
+                                .on_hover_text(path.display().to_string())
+                                .clicked()
+                            {
+                                self.request_project_action(PendingProjectAction::Open(path));
+                                ui.close();
+                            }
+                        }
+                        if !self.recent_projects.is_empty() {
+                            ui.separator();
+                            if ui.button("Clear Recent Projects").clicked() {
+                                self.recent_projects.clear();
+                                ui.close();
+                            }
+                        }
                     });
                     ui.separator();
                     if menu_command(ui, "Quit", "Ctrl+Q", true).clicked() {
@@ -15457,7 +15512,10 @@ impl OpenTrackApp {
                             ui.close();
                         }
                     });
-                    menu_command(ui, "Windows...", "", false);
+                    if menu_command(ui, "Windows...", "", true).clicked() {
+                        self.windows_dialog_open = true;
+                        ui.close();
+                    }
                     if ui
                         .selectable_label(
                             self.arrange_view_state.show_overview,
@@ -16228,6 +16286,7 @@ impl OpenTrackApp {
             || self.project_logical_editor_open
             || self.markers_window_open
             || self.undo_history_open
+            || self.windows_dialog_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -16346,6 +16405,128 @@ impl OpenTrackApp {
         self.status_message = format!(
             "Removed {} empty track(s); Undo restores them",
             removed.len()
+        );
+    }
+
+    /// The windows the Window > Windows... dialog can show or hide.
+    const WINDOW_NAMES: [&'static str; 7] = [
+        "Project",
+        "Mixer",
+        "Mixer 2",
+        "Mixer 3",
+        "Channel Settings",
+        "Media",
+        "Spectrum Analyzer",
+    ];
+
+    fn window_is_open(&self, index: usize) -> bool {
+        match index {
+            0 => self.project_window.open,
+            1 => self.mixer_window.open,
+            2 => self.mixer_window_2.open,
+            3 => self.mixer_window_3.open,
+            4 => self.channel_settings_window.open,
+            5 => self.media_window.open,
+            6 => self.spectrum_open,
+            _ => false,
+        }
+    }
+
+    fn set_window_open(&mut self, index: usize, open: bool) {
+        match index {
+            0 => self.project_window.open = open && self.project_open,
+            1 => self.mixer_window.open = open && self.project_open,
+            2 => self.mixer_window_2.open = open && self.project_open,
+            3 => self.mixer_window_3.open = open && self.project_open,
+            4 => self.channel_settings_window.open = open && self.project_open,
+            5 => self.media_window.open = open,
+            6 => self.spectrum_open = open,
+            _ => {}
+        }
+        if open {
+            self.focus_window(index);
+        }
+    }
+
+    fn focus_window(&mut self, index: usize) {
+        match index {
+            0 => {
+                if self.project_open {
+                    self.project_window.open = true;
+                    self.project_window.minimized = false;
+                    self.project_window.focus_requested = true;
+                }
+            }
+            1 | 2 | 3 => {
+                if self.project_open {
+                    let slot = (index - 1) as u8;
+                    let state = self.mixer_window_state(slot);
+                    state.open = true;
+                    state.focus_requested = true;
+                }
+            }
+            4 => {
+                if self.project_open {
+                    self.channel_settings_window.open = true;
+                    self.channel_settings_window.focus_requested = true;
+                }
+            }
+            5 => {
+                self.media_window.open = true;
+                self.media_window.focus_requested = true;
+            }
+            6 => self.spectrum_open = true,
+            _ => {}
+        }
+    }
+
+    fn show_windows_dialog(&mut self, ctx: &egui::Context) {
+        if !self.windows_dialog_open {
+            return;
+        }
+        let mut open = true;
+        let mut focus = None;
+        let response = egui::Window::new("Windows")
+            .id(Id::new("window-list"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Open or close a window. The Mixer, Channel Settings and Project windows need a project.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.separator();
+                for (index, name) in Self::WINDOW_NAMES.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let mut is_open = self.window_is_open(index);
+                        if ui.checkbox(&mut is_open, *name).changed() {
+                            self.set_window_open(index, is_open);
+                        }
+                        if is_open && ui.small_button("Focus").clicked() {
+                            focus = Some(index);
+                        }
+                    });
+                }
+            });
+        dismiss_window_on_outside_click(ctx, Id::new("window-list"), &mut open, response.as_ref());
+        if let Some(index) = focus {
+            self.focus_window(index);
+        }
+        self.windows_dialog_open = open;
+    }
+
+    /// Records a project that was just opened or saved as the most recent one.
+    fn remember_recent_project(&mut self, path: &Path) {
+        remember_recent_path(
+            &mut self.recent_projects,
+            path.to_path_buf(),
+            RECENT_PROJECT_LIMIT,
         );
     }
 
@@ -19381,6 +19562,7 @@ impl eframe::App for OpenTrackApp {
         self.show_project_logical_editor(&ctx);
         self.show_markers_window(&ctx);
         self.show_undo_history(&ctx);
+        self.show_windows_dialog(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -19450,6 +19632,7 @@ impl eframe::App for OpenTrackApp {
             "metering-preferences-v1",
             &self.metering_preferences,
         );
+        eframe::set_value(storage, "recent-projects-v1", &self.recent_projects);
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,
@@ -32954,6 +33137,153 @@ mod empty_track_tests {
 
         // The recording guard uses a live session that a headless test cannot
         // construct, so that path stays with the desktop review.
+    }
+}
+
+#[cfg(test)]
+mod recent_project_tests {
+    use super::*;
+
+    #[test]
+    fn recent_paths_move_to_the_front_dedupe_and_stay_bounded() {
+        let mut list = Vec::new();
+        for index in 0..12 {
+            remember_recent_path(
+                &mut list,
+                PathBuf::from(format!("/tmp/song-{index}.opr")),
+                RECENT_PROJECT_LIMIT,
+            );
+        }
+        assert_eq!(list.len(), RECENT_PROJECT_LIMIT);
+        assert!(list[0].ends_with("song-11.opr"));
+        assert!(list.last().expect("list").ends_with("song-2.opr"));
+
+        // Re-opening an older project moves it to the front without duplicating.
+        remember_recent_path(
+            &mut list,
+            PathBuf::from("/tmp/song-5.opr"),
+            RECENT_PROJECT_LIMIT,
+        );
+        assert!(list[0].ends_with("song-5.opr"));
+        assert_eq!(
+            list.iter()
+                .filter(|path| path.ends_with("song-5.opr"))
+                .count(),
+            1
+        );
+        assert_eq!(list.len(), RECENT_PROJECT_LIMIT);
+    }
+
+    #[test]
+    fn the_app_remembers_the_most_recent_project() {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        let path = Path::new("/tmp/My Song.opr");
+        app.remember_recent_project(path);
+        assert_eq!(app.recent_projects.first(), Some(&path.to_path_buf()));
+        app.remember_recent_project(path);
+        assert_eq!(app.recent_projects.len(), 1, "no duplicate entry");
+
+        // A failed open reports instead of remembering the path.
+        app.load_project(PathBuf::from("/tmp/does-not-exist.opr"));
+        assert!(app.status_message.contains("Could not open project"));
+        assert_eq!(app.recent_projects.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod window_list_tests {
+    use super::*;
+
+    fn make_app(project_open: bool) -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = project_open;
+        app
+    }
+
+    #[test]
+    fn the_window_list_opens_closes_and_focuses_each_window() {
+        let mut app = make_app(true);
+        // The docked Project and Mixer panels start visible; the floating
+        // windows listed after them start closed.
+        assert!(app.window_is_open(0));
+        for index in 2..OpenTrackApp::WINDOW_NAMES.len() {
+            assert!(
+                !app.window_is_open(index),
+                "{}",
+                OpenTrackApp::WINDOW_NAMES[index]
+            );
+        }
+
+        // Toggling opens the matching surface and asks for focus.
+        app.set_window_open(5, true);
+        assert!(app.media_window.open);
+        assert!(app.media_window.focus_requested);
+        app.set_window_open(5, false);
+        assert!(!app.media_window.open);
+
+        app.set_window_open(2, true);
+        assert!(app.mixer_window_2.open);
+        assert!(app.mixer_window_2.focus_requested);
+        app.set_window_open(6, true);
+        assert!(app.spectrum_open);
+        app.set_window_open(6, false);
+        assert!(!app.spectrum_open);
+
+        // Without a project the project-bound windows refuse to open.
+        let mut closed = make_app(false);
+        closed.set_window_open(4, true);
+        assert!(!closed.channel_settings_window.open);
+        closed.set_window_open(2, true);
+        assert!(!closed.mixer_window_2.open);
+        closed.set_window_open(5, true);
+        assert!(
+            closed.media_window.open,
+            "the Media window does not need a project"
+        );
+    }
+
+    #[test]
+    fn the_window_list_draws_every_name() {
+        let ctx = egui::Context::default();
+        let mut app = make_app(true);
+        app.windows_dialog_open = true;
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_windows_dialog(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        for name in OpenTrackApp::WINDOW_NAMES {
+            assert!(joined.contains(name), "missing {name} in {joined}");
+        }
     }
 }
 
