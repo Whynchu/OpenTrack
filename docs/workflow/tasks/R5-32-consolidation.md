@@ -17,7 +17,7 @@
 - Source disabled labels: 46 unique `(label, shortcut)` pairs across `disabled_menu_commands` blocks (58 at the start of the revision).
 - OPR: 38; migrations tested through v29-v38 including v37-v38 offline chains.
 - Suites: app 579 passed / 4 failed / 9 ignored (592 tests); core 166; audio 171 / 3 ignored. The four failures are the `transport_locate_tests` roll cases, which fail identically on the pristine revision-4 checkpoint because `schedule_roll` needs an audio output device; no assertion was weakened.
-- Release build: `builds/x64/OpenTrack`, SHA-256 `6e2b922d9b7bb14a332eab9af7b6daab93b14f4ba9c0fa3949c7213120b94637`.
+- Release build: `builds/x64/OpenTrack`, SHA-256 `683374d55b98017503e9a72a0de0e69145261d90a49a2c3c604dc6ebd2033085`.
 - `cargo fmt --all --check` and `git diff --check` clean.
 
 ## Handoff
