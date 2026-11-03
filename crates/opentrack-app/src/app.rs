@@ -37,6 +37,7 @@ mod popup_behavior;
 #[path = "preferences.rs"]
 mod preferences;
 mod project_backup;
+mod project_cleanup;
 #[path = "project_controls.rs"]
 mod project_controls;
 #[path = "project_inspector.rs"]
@@ -1237,6 +1238,8 @@ pub struct OpenTrackApp {
     revert_prompt: bool,
     /// Standalone plug-in browser (Audio > Plug-ins > category).
     plugin_browser_open: bool,
+    /// Planned cleanup awaiting confirmation.
+    cleanup_prompt: Option<project_cleanup::CleanupPlan>,
     plugin_browser_category: InsertMenuCategory,
     plugin_browser_filter: String,
     /// Name being typed in the Save as Template dialog.
@@ -2754,6 +2757,7 @@ impl OpenTrackApp {
             windows_dialog_open: false,
             revert_prompt: false,
             plugin_browser_open: false,
+            cleanup_prompt: None,
             plugin_browser_category: InsertMenuCategory::Other,
             plugin_browser_filter: String::new(),
             template_name_draft: None,
@@ -13861,7 +13865,17 @@ impl OpenTrackApp {
                         }
                     });
                     menu_command(ui, "Replace Audio in Video File...", "", false);
-                    menu_command(ui, "Cleanup...", "", false);
+                    if menu_command(
+                        ui,
+                        "Cleanup...",
+                        "",
+                        self.project_open && self.project_folder_managed && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.request_project_cleanup();
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(ui, "Preferences...", "", true).clicked() {
                         self.preferences_ui.open(&self.metering_preferences);
@@ -16372,6 +16386,7 @@ impl OpenTrackApp {
             || self.windows_dialog_open
             || self.revert_prompt
             || self.plugin_browser_open
+            || self.cleanup_prompt.is_some()
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -19951,6 +19966,7 @@ impl eframe::App for OpenTrackApp {
         self.show_windows_dialog(&ctx);
         self.show_revert_prompt(&ctx);
         self.show_plugin_browser(&ctx);
+        self.show_cleanup_prompt(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);

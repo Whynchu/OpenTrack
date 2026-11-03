@@ -19,8 +19,9 @@ This batch followed the revision-5 close-out at the user's direction ("keep fill
 | Use Pre-roll / Use Post-roll | `transport-pre-post-roll.md` | Persisted checkboxes; plain Play starts before the left locator and stops after the right one |
 | Help > OpenTrack on the Web | commit `9fdb926` | Opens the project page through an OpenUrl command |
 | Plug-in browser | `plugin-browser.md` | Audio > Plug-ins families open a filtered browser over the scanned VST3 catalog and insert into the selected track |
+| File > Cleanup | `project-cleanup.md` | Unreferenced media moves to a dated trash folder inside the project, preserving relative paths |
 
-Measured: the disabled project-open rows fell from 68 at the close-out to **48**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 598 passed / 4 failed / 9 ignored (611 tests), core 167, audio 172 / 3 ignored.
+Measured: the disabled project-open rows fell from 68 at the close-out to **47**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 602 passed / 4 failed / 9 ignored (615 tests), core 167, audio 172 / 3 ignored.
 
 ## Remaining rows and why they are still unavailable
 
@@ -31,7 +32,6 @@ Measured: the disabled project-open rows fell from 68 at the close-out to **48**
 - **Devices > Control Room Mixer/Overview:** monitoring section design (talkback, listen buses, cue sends) has not been specified.
 - **Edit > Macros:** a macro recorder/editor does not exist; needs design.
 - **File > New/Open/Save Library:** there is no library concept; project templates and Track Archive cover the current workflows.
-- **File > Cleanup:** a destructive whole-folder cleanup needs a recovery design (the existing media deletion and pool cleanup already cover the safe cases).
 - **File > Page Setup / Print:** score printing depends on the score engine.
 - **Media > Reconstruct:** the row has no defined product meaning yet; the waveform and analysis data are recomputed from source, so nothing is cached to reconstruct.
 - **Project > Browse Sounds:** needs a content browser and metadata source.
