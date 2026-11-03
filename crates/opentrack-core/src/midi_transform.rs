@@ -329,6 +329,7 @@ mod tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         };
         project.tracks[0].midi_parts.push(part.clone());
         (project, part)

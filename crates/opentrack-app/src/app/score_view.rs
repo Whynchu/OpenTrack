@@ -265,6 +265,49 @@ impl OpenTrackApp {
         self.mark_modified();
     }
 
+    /// Analyses the selected notes (or the whole part) into chord symbols.
+    pub(super) fn make_chord_symbols_for_selected_part(&mut self) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before making chord symbols".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let notes = part
+            .notes
+            .iter()
+            .filter(|note| ids.is_empty() || ids.contains(&note.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let symbols = opentrack_core::chord_symbols::symbols_for_notes(&notes);
+        if symbols.is_empty() {
+            self.status_message =
+                "No major, minor, diminished or augmented triads were found".to_owned();
+            return;
+        }
+        let count = symbols.len();
+        part.chord_symbols = symbols;
+        if candidate.validate().is_err() {
+            self.status_message = "The chord symbols would leave an invalid project".to_owned();
+            return;
+        }
+        self.record_score_edit(candidate, "Make Chord Symbols");
+        self.status_message = format!("Added {count} chord symbol(s) above the staff");
+    }
+
     /// Toggles the score visibility of the selected notes as one undo step.
     pub(super) fn toggle_hidden_selected_score_notes(&mut self) {
         self.toggle_score_note_flag(ScoreNoteFlag::Hidden);
@@ -497,6 +540,9 @@ impl OpenTrackApp {
                 if groups > 0 {
                     suffix.push_str(&format!(" · {groups} group(s)"));
                 }
+                if !part.chord_symbols.is_empty() {
+                    suffix.push_str(&format!(" · {} chord(s)", part.chord_symbols.len()));
+                }
                 ui.label(format!(
                     "{} · {}/{} · {bars} bar(s) · {} note(s){suffix}",
                     part.name,
@@ -625,6 +671,24 @@ impl OpenTrackApp {
                             } else {
                                 bars
                             };
+                            for symbol in &part.chord_symbols {
+                                let (symbol_system, x_beats) = if page_mode {
+                                    page_system_for_beats(symbol.beat, bar, bars_per_system)
+                                } else {
+                                    (0, symbol.beat)
+                                };
+                                if symbol_system != system {
+                                    continue;
+                                }
+                                let x = rect.left() + 56.0 + x_beats as f32 * px_per_beat;
+                                painter.text(
+                                    Pos2::new(x, treble_top - 10.0 * scale),
+                                    Align2::LEFT_BOTTOM,
+                                    &symbol.text,
+                                    FontId::proportional(13.0 * scale),
+                                    colors.accent,
+                                );
+                            }
                             for bar_index in 1..=bars_in_system {
                                 let global_bar = if page_mode {
                                     system * bars_per_system + bar_index
@@ -1205,6 +1269,53 @@ mod tests {
     }
 
     #[test]
+    fn chord_symbols_are_made_from_triads_with_undo() {
+        let mut app = app_with_part();
+        // The fixture has single notes at 0, 1 and 2 beats: no triads.
+        app.make_chord_symbols_for_selected_part();
+        assert!(
+            app.status_message.contains("No major, minor"),
+            "{}",
+            app.status_message
+        );
+
+        // Add a C major triad at beat 0 and an A minor triad at beat 1.
+        let part_id = app.data.project.selected_midi_part_id.expect("part");
+        app.data.project.tracks[0].midi_parts[0].notes.clear();
+        for (index, (beat, pitch)) in [
+            (0.0, 60),
+            (0.0, 64),
+            (0.0, 67),
+            (1.0, 57),
+            (1.0, 60),
+            (1.0, 64),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.data
+                .project
+                .add_midi_note(0, part_id, beat, 1.0, pitch, 100)
+                .expect("note");
+            let _ = index;
+        }
+        app.project_history.clear();
+        app.make_chord_symbols_for_selected_part();
+        let symbols = &app.data.project.tracks[0].midi_parts[0].chord_symbols;
+        assert_eq!(symbols.len(), 2, "{symbols:?}");
+        assert_eq!(symbols[0].text, "C");
+        assert_eq!(symbols[1].text, "Am");
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Make Chord Symbols")
+        );
+        assert!(app.status_message.contains("2 chord symbol(s)"));
+    }
+
+    #[test]
     fn page_mode_and_zoom_are_view_settings() {
         let mut app = app_with_part();
         assert!(!app.score_page_mode);
@@ -1229,6 +1340,12 @@ mod tests {
         app.data.project.tracks[0].midi_parts[0].notes[1].grace = true;
         app.data.project.tracks[0].midi_parts[0].notes[1].slur_to_next = true;
         app.data.project.tracks[0].midi_parts[0].notes[0].group = Some(1);
+        app.data.project.tracks[0].midi_parts[0].chord_symbols.push(
+            opentrack_core::project::ChordSymbol {
+                beat: 0.0,
+                text: "C".to_owned(),
+            },
+        );
         app.data.project.tracks[0].midi_parts[0].notes[1].group = Some(1);
         let mut texts = Vec::new();
         for frame in 0..2 {

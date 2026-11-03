@@ -161,6 +161,7 @@ mod tests {
                 })
                 .collect(),
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         (project, track_id, part_id)
     }

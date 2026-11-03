@@ -4,6 +4,7 @@
 //! so they can be developed independently of the eventual GUI framework.
 pub mod arranger;
 pub mod automation;
+pub mod chord_symbols;
 pub mod commands;
 pub mod cpr;
 pub mod drum_map;

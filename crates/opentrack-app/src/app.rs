@@ -15220,10 +15220,11 @@ impl OpenTrackApp {
                             ],
                         );
                     });
-                    disabled_menu_commands(
-                        ui,
-                        &[("Make Chord Symbols", ""), ("Make Guitar Symbols", "")],
-                    );
+                    if menu_command(ui, "Make Chord Symbols", "", self.project_open).clicked() {
+                        self.make_chord_symbols_for_selected_part();
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Make Guitar Symbols", "")]);
                     ui.menu_button("Functions", |ui| {
                         if menu_command(
                             ui,
@@ -30386,6 +30387,7 @@ mod midi_quantize_tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         app.data.project.selected_midi_part_id = Some(1);
         app.project_history.clear();
@@ -34983,6 +34985,7 @@ mod list_editor_tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         app.data.project.selected_midi_part_id = Some(1);
         app.project_history.clear();
@@ -35122,6 +35125,7 @@ mod explode_channel_tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         app.data.project.selected_track = Some(0);
         app.data.project.selected_midi_part_id = Some(1);
@@ -35219,6 +35223,7 @@ mod explode_pitches_tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         app.data.project.selected_track = Some(0);
         app.data.project.selected_midi_part_id = Some(1);
@@ -35313,6 +35318,7 @@ mod tuplet_tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         app.data.project.selected_midi_part_id = Some(1);
         app.project_history.clear();
@@ -35414,6 +35420,7 @@ mod insert_velocities_tests {
                 },
             ],
             controller_events: Vec::new(),
+            chord_symbols: Vec::new(),
         });
         app.data.project.selected_midi_part_id = Some(1);
         app.project_history.clear();

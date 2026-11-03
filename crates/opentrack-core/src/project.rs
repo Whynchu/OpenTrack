@@ -1036,9 +1036,21 @@ pub struct MidiPart {
     pub start_beats: f64,
     pub duration_beats: f64,
     pub notes: Vec<MidiNote>,
+    /// Chord symbols analysed from the notes, relative to the part start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chord_symbols: Vec<ChordSymbol>,
     /// Beat-based controller changes stored relative to this part's start.
     #[serde(default)]
     pub controller_events: Vec<MidiControllerEvent>,
+}
+
+/// One chord name shown above the staff at a beat inside its part.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChordSymbol {
+    /// Beat relative to the part start.
+    pub beat: f64,
+    /// Short symbol such as `C`, `Am`, `F#dim` or `C/E`.
+    pub text: String,
 }
 
 /// A MIDI note event positioned relative to the start of its MIDI part.
@@ -4758,6 +4770,7 @@ impl Project {
             start_beats,
             duration_beats,
             notes: Vec::new(),
+            chord_symbols: Vec::new(),
             controller_events: Vec::new(),
         });
         self.selected_track = u32::try_from(track_index).ok();
@@ -5486,6 +5499,16 @@ impl Project {
                     || !(part.start_beats + part.duration_beats).is_finite()
                 {
                     return Err("MIDI part start must be nonnegative and duration positive");
+                }
+                for symbol in &part.chord_symbols {
+                    if !symbol.beat.is_finite()
+                        || symbol.beat < 0.0
+                        || symbol.beat > part.duration_beats + 1.0e-9
+                        || symbol.text.trim().is_empty()
+                        || symbol.text.chars().count() > 32
+                    {
+                        return Err("a MIDI part has an invalid chord symbol");
+                    }
                 }
                 for note in &part.notes {
                     if note.id == 0 || !midi_note_ids.insert(note.id) {
