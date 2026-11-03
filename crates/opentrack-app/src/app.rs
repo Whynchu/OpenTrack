@@ -1232,6 +1232,8 @@ pub struct OpenTrackApp {
     undo_history_open: bool,
     /// Window list dialog (Window > Windows...).
     windows_dialog_open: bool,
+    /// Revert confirmation for unsaved changes.
+    revert_prompt: bool,
     /// Name being typed in the Save as Template dialog.
     template_name_draft: Option<String>,
     session_health_open: bool,
@@ -2741,6 +2743,7 @@ impl OpenTrackApp {
             markers_window_open: false,
             undo_history_open: false,
             windows_dialog_open: false,
+            revert_prompt: false,
             template_name_draft: None,
             session_health_open: false,
             project_statistics_open: false,
@@ -13698,7 +13701,10 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     menu_command(ui, "Save Library...", "", false);
-                    menu_command(ui, "Revert", "", false);
+                    if menu_command(ui, "Revert", "", self.project_open).clicked() {
+                        self.request_revert_project();
+                        ui.close();
+                    }
                     ui.separator();
                     menu_command(ui, "Page Setup...", "", false);
                     menu_command(ui, "Print...", "", false);
@@ -15329,7 +15335,17 @@ impl OpenTrackApp {
                     });
                     menu_command(ui, "Use Pre-roll", "", false);
                     menu_command(ui, "Use Post-roll", "", false);
-                    menu_command(ui, "Start Record at Left Locator", "", false);
+                    if menu_command(
+                        ui,
+                        "Start Record at Left Locator",
+                        "",
+                        self.project_open,
+                    )
+                    .clicked()
+                    {
+                        self.start_record_at_left_locator();
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_command(ui, "Metronome Setup...", "", true).clicked() {
                         self.metronome_settings_open = true;
@@ -16287,6 +16303,7 @@ impl OpenTrackApp {
             || self.markers_window_open
             || self.undo_history_open
             || self.windows_dialog_open
+            || self.revert_prompt
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -16528,6 +16545,91 @@ impl OpenTrackApp {
             path.to_path_buf(),
             RECENT_PROJECT_LIMIT,
         );
+    }
+
+    /// Moves the transport to the left locator and starts recording there.
+    fn start_record_at_left_locator(&mut self) {
+        if !self.project_open {
+            self.status_message = "Create or open a project before recording".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Recording is already running".to_owned();
+            return;
+        }
+        let left = self.data.project.loop_start_beats.max(0.0);
+        self.seek_to_beats(left);
+        self.toggle_recording();
+        if self.is_recording() {
+            self.status_message = format!("Recording from the left locator at beat {left:.3}");
+        }
+    }
+
+    /// Asks to discard unsaved changes before reloading the project from disk.
+    fn request_revert_project(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to revert it".to_owned();
+            return;
+        }
+        if self.project_path.is_none() {
+            self.status_message = "Save the project before reverting it".to_owned();
+            return;
+        }
+        if self.modified {
+            self.revert_prompt = true;
+        } else {
+            self.revert_project_now();
+        }
+    }
+
+    fn revert_project_now(&mut self) {
+        self.revert_prompt = false;
+        let Some(path) = self.project_path.clone() else {
+            self.status_message = "Save the project before reverting it".to_owned();
+            return;
+        };
+        // The user already confirmed discarding, so this goes straight to the
+        // ordinary background load rather than the unsaved-changes prompt.
+        self.begin_project_load(path);
+        self.status_message = "Reverting to the saved file...".to_owned();
+    }
+
+    fn show_revert_prompt(&mut self, ctx: &egui::Context) {
+        if !self.revert_prompt {
+            return;
+        }
+        let name = self
+            .project_path
+            .as_deref()
+            .map(project_file_name)
+            .unwrap_or_else(|| "this project".to_owned());
+        let mut revert = false;
+        let mut cancel = false;
+        egui::Window::new("Revert")
+            .id(Id::new("revert-prompt"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.set_min_width(340.0);
+                ui.label(format!(
+                    "Discard the unsaved changes and reload {name} from disk?"
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button("Revert").clicked() {
+                        revert = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if revert {
+            self.revert_project_now();
+        } else if cancel {
+            self.revert_prompt = false;
+            self.status_message = "Revert cancelled".to_owned();
+        }
     }
 
     /// Opens the undo-history window for the current project.
@@ -19563,6 +19665,7 @@ impl eframe::App for OpenTrackApp {
         self.show_markers_window(&ctx);
         self.show_undo_history(&ctx);
         self.show_windows_dialog(&ctx);
+        self.show_revert_prompt(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -33137,6 +33240,94 @@ mod empty_track_tests {
 
         // The recording guard uses a live session that a headless test cannot
         // construct, so that path stays with the desktop review.
+    }
+}
+
+#[cfg(test)]
+mod revert_and_record_locator_tests {
+    use super::*;
+
+    fn write_project_file(path: &Path) {
+        let dock = egui_dock::DockState::new(vec![PanelTab::Project]);
+        let workspace = crate::project_file::initial_workspace_state(&dock).expect("workspace");
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        // A managed project needs its folder layout on disk and a non-zero
+        // layout marker in the document.
+        create_project_directory_layout(path.parent().expect("parent")).expect("layout");
+        let mut document =
+            crate::project_file::ProjectFile::new(project, workspace, dock, true, 0, false);
+        document.project_folder_layout = 1;
+        document.write(path).expect("write project");
+    }
+
+    fn make_app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app
+    }
+
+    #[test]
+    fn revert_reloads_only_after_confirmation() {
+        let root = std::env::temp_dir().join(format!("opentrack-revert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let path = root.join("Song.opr");
+        write_project_file(&path);
+
+        let mut app = make_app();
+        app.load_project(path.clone());
+        assert!(app.project_open, "{:?}", app.status_message);
+        assert_eq!(app.project_path.as_deref(), Some(path.as_path()));
+        assert!(!app.modified);
+
+        // Unsaved edits ask before discarding.
+        app.data.project.tracks[0].name = "Changed".to_owned();
+        app.modified = true;
+        app.request_revert_project();
+        assert!(app.revert_prompt);
+        assert_eq!(app.data.project.tracks[0].name, "Changed");
+        app.revert_prompt = false;
+
+        // Confirming starts the ordinary background load.
+        app.revert_project_now();
+        assert!(app.project_load_task.is_some());
+        assert!(app.status_message.contains("Reverting"));
+
+        // Without a path or a project the command reports instead.
+        let mut app = make_app();
+        app.project_open = false;
+        app.request_revert_project();
+        assert!(app.status_message.contains("Open a project"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn record_at_left_locator_seeks_there_first() {
+        let mut app = make_app();
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.loop_start_beats = 4.0;
+        app.data.project.loop_end_beats = 8.0;
+        app.data.transport.position_beats = 0.0;
+
+        app.start_record_at_left_locator();
+        assert_eq!(
+            app.data.transport.position_beats, 4.0,
+            "the transport moves to the left locator"
+        );
+
+        // Without a project the command reports.
+        let mut closed = app_only_shell();
+        closed.start_record_at_left_locator();
+        assert!(closed.status_message.contains("Create or open a project"));
+    }
+
+    fn app_only_shell() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        OpenTrackApp::new_internal(&creation, false)
     }
 }
 
