@@ -13661,7 +13661,10 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     menu_command(ui, "Back up Project...", "", false);
-                    menu_command(ui, "Save as Template...", "", false);
+                    if menu_command(ui, "Save as Template...", "", self.project_open).clicked() {
+                        self.begin_save_as_template();
+                        ui.close();
+                    }
                     menu_command(ui, "Save Library...", "", false);
                     menu_command(ui, "Revert", "", false);
                     ui.separator();
@@ -13830,7 +13833,10 @@ impl OpenTrackApp {
                         self.redo_project();
                         ui.close();
                     }
-                    menu_command(ui, "History...", "", false);
+                    if menu_command(ui, "History...", "", self.project_open).clicked() {
+                        self.open_event_history();
+                        ui.close();
+                    }
                     ui.separator();
                     let can_cut = self.project_open
                         && !self.is_recording()
@@ -14557,7 +14563,10 @@ impl OpenTrackApp {
                             ],
                         );
                     });
-                    menu_command(ui, "Spectrum Analyzer", "", false);
+                    if menu_command(ui, "Spectrum Analyzer", "", true).clicked() {
+                        self.open_spectrum_analyzer();
+                        ui.close();
+                    }
                     if menu_command(ui, "Statistics", "", self.project_open).clicked() {
                         self.project_statistics_open = true;
                         ui.close();
@@ -14957,7 +14966,10 @@ impl OpenTrackApp {
                     });
                 });
                 ui.menu_button("Media", |ui| {
-                    menu_command(ui, "Open Pool Window", "Ctrl+P", false);
+                    if menu_command(ui, "Open Pool Window", "Ctrl+P", true).clicked() {
+                        self.open_media_pool_window();
+                        ui.close();
+                    }
                     if menu_command(ui, "Open MediaBay", "F5", true).clicked() {
                         self.data.selected_media = 0;
                         self.focus_tab(PanelTab::Media);
@@ -15091,10 +15103,20 @@ impl OpenTrackApp {
                         self.minimize_media_files();
                         ui.close();
                     }
+                    if menu_command(
+                        ui,
+                        "Import Audio CD...",
+                        "",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.import_audio_cd();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Import Audio CD...", ""),
                             ("Reconstruct", ""),
                             ("Extract Audio from Video File", ""),
                             ("Generate Thumbnail Cache", ""),
@@ -15334,12 +15356,15 @@ impl OpenTrackApp {
                         });
                         ui.close();
                     }
+                    if menu_command(ui, "MIDI Device Manager", "", true).clicked() {
+                        self.open_midi_device_manager();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Control Room Mixer", ""),
                             ("Control Room Overview", ""),
-                            ("MIDI Device Manager", ""),
                             ("MMC Master", ""),
                         ],
                     );
@@ -16322,6 +16347,40 @@ impl OpenTrackApp {
             "Removed {} empty track(s); Undo restores them",
             removed.len()
         );
+    }
+
+    /// Opens the undo-history window for the current project.
+    fn open_event_history(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to see its history".to_owned();
+            return;
+        }
+        self.undo_history_open = true;
+    }
+
+    /// Opens the standalone spectrum analyzer.
+    fn open_spectrum_analyzer(&mut self) {
+        self.spectrum_open = true;
+    }
+
+    /// Opens and focuses the Media Pool window.
+    fn open_media_pool_window(&mut self) {
+        self.focus_tab(PanelTab::Media);
+    }
+
+    /// Opens Device Setup on the MIDI port page.
+    fn open_midi_device_manager(&mut self) {
+        self.device_setup_open = true;
+        self.device_setup_page = 2;
+    }
+
+    /// Starts the Save as Template dialog with the project name as a draft.
+    fn begin_save_as_template(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to save it as a template".to_owned();
+            return;
+        }
+        self.template_name_draft = Some(self.data.project.name.clone());
     }
 
     /// Shows or hides the marker lane.
@@ -32895,6 +32954,56 @@ mod empty_track_tests {
 
         // The recording guard uses a live session that a headless test cannot
         // construct, so that path stays with the desktop review.
+    }
+}
+
+#[cfg(test)]
+mod wired_menu_row_tests {
+    use super::*;
+
+    fn make_app(project_open: bool) -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = project_open;
+        app
+    }
+
+    #[test]
+    fn the_wired_rows_reach_their_existing_surfaces() {
+        let mut app = make_app(true);
+
+        // Edit > History...
+        app.open_event_history();
+        assert!(app.undo_history_open);
+        app.undo_history_open = false;
+        let mut closed = make_app(false);
+        closed.open_event_history();
+        assert!(!closed.undo_history_open);
+        assert!(closed.status_message.contains("Open a project"));
+
+        // Audio > Spectrum Analyzer
+        app.open_spectrum_analyzer();
+        assert!(app.spectrum_open);
+
+        // Media > Open Pool Window
+        assert!(!app.media_window.open);
+        app.open_media_pool_window();
+        assert!(app.media_window.open, "the Media window is opened");
+
+        // Devices > MIDI Device Manager
+        app.open_midi_device_manager();
+        assert!(app.device_setup_open);
+        assert_eq!(app.device_setup_page, 2, "the MIDI port page");
+
+        // File > Save as Template...
+        app.data.project.name = "Song".to_owned();
+        app.begin_save_as_template();
+        assert_eq!(app.template_name_draft.as_deref(), Some("Song"));
+        let mut closed = make_app(false);
+        closed.begin_save_as_template();
+        assert!(closed.template_name_draft.is_none());
+        assert!(closed.status_message.contains("Open a project"));
     }
 }
 
