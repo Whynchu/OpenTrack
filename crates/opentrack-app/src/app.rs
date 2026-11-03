@@ -727,10 +727,13 @@ fn audio_buffer_choices(configs: &[AudioOutputConfig], sample_rate: Option<u32>)
         })
         .flat_map(|config| {
             presets.into_iter().filter(move |frames| {
-                config
-                    .min_buffer_frames
-                    .zip(config.max_buffer_frames)
-                    .is_some_and(|(min, max)| *frames >= min && *frames <= max)
+                match config.min_buffer_frames.zip(config.max_buffer_frames) {
+                    Some((min, max)) => *frames >= min && *frames <= max,
+                    // The backend did not declare a range, so offer the presets
+                    // and let it round or refuse the request with its own
+                    // message rather than leaving the control unusable.
+                    None => true,
+                }
             })
         })
         .collect::<Vec<_>>();
@@ -32855,6 +32858,43 @@ mod empty_track_tests {
 
         // The recording guard uses a live session that a headless test cannot
         // construct, so that path stays with the desktop review.
+    }
+}
+
+#[cfg(test)]
+mod buffer_choice_tests {
+    use super::audio_buffer_choices;
+    use opentrack_audio::{AudioOutputConfig, SampleFormat};
+
+    fn config(min: Option<u32>, max: Option<u32>) -> AudioOutputConfig {
+        AudioOutputConfig {
+            min_sample_rate: 44_100,
+            max_sample_rate: 96_000,
+            channels: 2,
+            sample_format: SampleFormat::F32,
+            default_sample_rate: 48_000,
+            default_channels: 2,
+            default_sample_format: SampleFormat::F32,
+            min_buffer_frames: min,
+            max_buffer_frames: max,
+        }
+    }
+
+    #[test]
+    fn buffer_choices_follow_the_declared_range_and_survive_an_unknown_one() {
+        assert_eq!(
+            audio_buffer_choices(&[config(Some(128), Some(512))], Some(48_000)),
+            vec![128, 256, 512]
+        );
+        // A device that will not state its range still gets the presets: the
+        // backend rounds or refuses the request, instead of the control being
+        // greyed out with no way to raise the buffer.
+        assert_eq!(
+            audio_buffer_choices(&[config(None, None)], Some(48_000)),
+            vec![64, 128, 256, 512, 1_024, 2_048, 4_096]
+        );
+        // A rate the device cannot run offers nothing rather than a false list.
+        assert!(audio_buffer_choices(&[config(Some(64), Some(4_096))], Some(192_000)).is_empty());
     }
 }
 

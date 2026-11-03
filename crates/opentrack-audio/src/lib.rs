@@ -106,12 +106,13 @@ use std::collections::HashMap;
 
 use crate::plugins::test_generator::{TestGenerator, TestGeneratorParameters, TestWaveform};
 
+use cpal::BufferSize;
+#[cfg(not(windows))]
+pub use cpal::SampleFormat;
 #[cfg(not(windows))]
 use cpal::traits::DeviceTrait;
 #[cfg(not(windows))]
 use cpal::traits::StreamTrait;
-#[cfg(not(windows))]
-use cpal::{BufferSize, SampleFormat};
 
 /// Counts allocations made by the thread that asked for it, so the callback
 /// path can prove it does not allocate. Counting is per thread, so a parallel
@@ -2215,12 +2216,12 @@ impl AudioEngine {
                             "the selected output supports buffer sizes from {min} to {max} frames"
                         ));
                     }
-                    Some(cpal::SupportedBufferSize::Unknown) | None => {
-                        return Err(
-                            "the selected output does not expose a configurable buffer range"
-                                .to_owned(),
-                        );
-                    }
+                    // The device did not declare a range. Pass the request
+                    // through anyway: CPAL applies the period with
+                    // `set_period_size_near` and reports its own error when the
+                    // device refuses, which is more useful than refusing every
+                    // size up front and greying the control out.
+                    Some(cpal::SupportedBufferSize::Unknown) | None => {}
                 }
                 config.buffer_size = BufferSize::Fixed(buffer_frames);
             }

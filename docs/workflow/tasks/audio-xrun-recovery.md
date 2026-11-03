@@ -48,7 +48,12 @@ Fixed by reading the negotiated period back from the stream:
 - The device's declared period range is captured once at open and turned into the preset list ([64, 128, 256, 512, 1024, 2048, 4096] filtered to that range), so on Linux the Buffer Size dropdown now has real choices - including in Shared - Low Latency mode, whose list is the engine's.
 - The Driver Setup label shows "Driver default (unknown)" instead of "0 frames" if a backend still cannot report a period.
 
-Coverage: `period_choices_follow_the_device_range` pins the list filtering. The negotiated-value path itself needs a real device, so it is verified by inspection and stays a desktop check.
+The control was also disabled, not just mislabelled: the preset list came from the engine's `output_period_choices`, which the CPAL path always left empty, and a device reporting `SupportedBufferSize::Unknown` produced no presets either. Both are addressed:
+
+- the engine fills `output_period_choices` from the device's declared range;
+- when no range is declared, the presets are still offered and the request is passed through - CPAL applies it with `set_period_size_near` and reports its own error if the device refuses - so the control can be used instead of staying greyed out.
+
+Coverage: `period_choices_follow_the_device_range` pins the engine list filtering and `buffer_choices_follow_the_declared_range_and_survive_an_unknown_one` pins the app-side presets (declared range, unknown range, unusable sample rate). The negotiated-value path itself needs a real device, so it is verified by inspection and stays a desktop check.
 
 ## Why underruns happen here (contributing, not fixed)
 
