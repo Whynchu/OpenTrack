@@ -69,6 +69,7 @@ mod templates;
 mod tempo_editor;
 mod tempo_file;
 mod track_archive;
+mod track_library;
 #[path = "transport_panel.rs"]
 mod transport_panel;
 #[path = "vst3_host.rs"]
@@ -1244,6 +1245,9 @@ pub struct OpenTrackApp {
     cleanup_prompt: Option<project_cleanup::CleanupPlan>,
     /// Saved command macros.
     macros: Vec<macros::Macro>,
+    /// Application-wide track library.
+    track_library: Vec<track_library::LibraryTrack>,
+    track_library_open: bool,
     macros_open: bool,
     macro_selected: Option<usize>,
     macro_new_name: String,
@@ -2777,6 +2781,17 @@ impl OpenTrackApp {
             macro_selected: None,
             macro_new_name: String::new(),
             macro_filter: String::new(),
+            track_library: creation
+                .storage
+                .and_then(|storage| {
+                    eframe::get_value::<Vec<track_library::LibraryTrack>>(
+                        storage,
+                        "track-library-v1",
+                    )
+                })
+                .map(track_library::sanitize_library)
+                .unwrap_or_default(),
+            track_library_open: false,
             plugin_browser_category: InsertMenuCategory::Other,
             plugin_browser_filter: String::new(),
             template_name_draft: None,
@@ -13701,12 +13716,18 @@ impl OpenTrackApp {
                         self.request_new_project();
                         ui.close();
                     }
-                    menu_command(ui, "New Library...", "", false);
+                    if menu_command(ui, "New Library...", "", true).clicked() {
+                        self.track_library_open = true;
+                        ui.close();
+                    }
                     if menu_command(ui, "Open...", "Ctrl+O", true).clicked() {
                         self.request_open_project();
                         ui.close();
                     }
-                    menu_command(ui, "Open Library...", "", false);
+                    if menu_command(ui, "Open Library...", "", true).clicked() {
+                        self.track_library_open = true;
+                        ui.close();
+                    }
                     if menu_command(ui, "Close", "Ctrl+W", self.project_open).clicked() {
                         self.request_close_project();
                         ui.close();
@@ -13746,7 +13767,17 @@ impl OpenTrackApp {
                         self.begin_save_as_template();
                         ui.close();
                     }
-                    menu_command(ui, "Save Library...", "", false);
+                    if menu_command(
+                        ui,
+                        "Save Library...",
+                        "",
+                        self.project_open && self.data.project.selected_track.is_some(),
+                    )
+                    .clicked()
+                    {
+                        self.save_selected_track_to_library();
+                        ui.close();
+                    }
                     if menu_command(ui, "Revert", "", self.project_open).clicked() {
                         self.request_revert_project();
                         ui.close();
@@ -16410,6 +16441,7 @@ impl OpenTrackApp {
             || self.plugin_browser_open
             || self.cleanup_prompt.is_some()
             || self.macros_open
+            || self.track_library_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -19992,6 +20024,7 @@ impl eframe::App for OpenTrackApp {
         self.show_cleanup_prompt(&ctx);
         self.show_device_connections(&ctx);
         self.show_macros(&ctx);
+        self.show_track_library(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -20063,6 +20096,7 @@ impl eframe::App for OpenTrackApp {
         );
         eframe::set_value(storage, "recent-projects-v1", &self.recent_projects);
         eframe::set_value(storage, "command-macros-v1", &self.macros);
+        eframe::set_value(storage, "track-library-v1", &self.track_library);
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,
