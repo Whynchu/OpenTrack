@@ -19,7 +19,7 @@
 | audio suite | 171 passed, 3 ignored |
 | `cargo fmt --all --check` | clean |
 | `git diff --check` | clean |
-| release build | `builds/x64/OpenTrack`, SHA-256 `e312a24d68fe735b702c4e6278c5824f24aaac96de24673a23fb9de6a5747105` |
+| release build | `builds/x64/OpenTrack`, SHA-256 `5796122010a4cce9d79761ed030328c9ecb0af89ec805416df5a48364dc3c69f` |
 | OPR | 38; migrations tested for v29→30 (timecode), v30→31 (pool folders), v31→32 (regions), v32→33 (pool record folder) and v37→38 (offline chains) |
 | save/reopen | new fields validated by `Project::validate` and covered by project-file round trips |
 

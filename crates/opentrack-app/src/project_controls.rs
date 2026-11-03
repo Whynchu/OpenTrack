@@ -2,27 +2,62 @@
 //! Evidence: Project-live-study/Project-study-11,13,14,15.
 use super::*;
 
-// Shared starting palette for the Event Colors selector and track strips.
+// The shipped palette. Event Colors can replace it with another built-in set,
+// but Reset and the default workspace still refer to these colors.
 pub(super) const COLORS: [[u8; 3]; 16] = crate::project_file::DEFAULT_EVENT_COLORS;
 /// Stereo In/Out use a blue identity until the user picks another color.
 pub(super) const BUS_DEFAULT_COLOR: Color32 = Color32::from_rgb(76, 142, 210);
 
-pub(super) fn track_color(track: &Track) -> Color32 {
-    track
-        .color_index
-        .and_then(|i| COLORS.get(usize::from(i)))
-        .map(|c| Color32::from_rgb(c[0], c[1], c[2]))
-        .unwrap_or_else(|| {
-            if track.id >= opentrack_core::project::INPUT_BUS_ID {
-                BUS_DEFAULT_COLOR
-            } else {
-                Color32::from_gray(160)
-            }
-        })
+thread_local! {
+    /// The event-color palette currently in force for drawing.
+    ///
+    /// The app writes it from the workspace view state before drawing, so a
+    /// palette change or a project load recolors the arrange, the Mixer, the
+    /// Inspector and the Sample Editor together. A thread local (rather than a
+    /// process global) keeps parallel tests from sharing a palette, and every
+    /// test thread starts on the shipped palette.
+    static ACTIVE_EVENT_COLORS: std::cell::Cell<[[u8; 3]; 16]> =
+        const { std::cell::Cell::new(COLORS) };
 }
 
+/// Sets the palette used for automatic and explicitly chosen track colors.
+pub(super) fn set_active_event_colors(colors: [[u8; 3]; 16]) {
+    ACTIVE_EVENT_COLORS.with(|active| active.set(colors));
+}
+
+/// The palette currently used for drawing.
+pub(super) fn active_event_colors() -> [[u8; 3]; 16] {
+    ACTIVE_EVENT_COLORS.with(std::cell::Cell::get)
+}
+
+fn palette_color(colors: [[u8; 3]; 16], index: usize) -> Color32 {
+    let rgb = colors[index % colors.len()];
+    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+}
+
+/// Stable automatic slot for a track: derived from its id, so reordering,
+/// renaming or duplicating a lane never changes the color it has.
+pub(super) fn automatic_color_index(track: &Track) -> usize {
+    usize::try_from(track.id.saturating_sub(1) % 16).unwrap_or(0)
+}
+
+pub(super) fn track_color(track: &Track) -> Color32 {
+    let palette = active_event_colors();
+    if let Some(index) = track.color_index {
+        return palette_color(palette, usize::from(index));
+    }
+    if track.id >= opentrack_core::project::INPUT_BUS_ID {
+        return BUS_DEFAULT_COLOR;
+    }
+    palette_color(palette, automatic_color_index(track))
+}
+
+/// Whether the track shows a palette color rather than a neutral strip.
+///
+/// Every media track does, because its color comes from the palette by id; a
+/// bus keeps its blue identity until the user picks a slot.
 pub(super) fn has_track_color(track: &Track) -> bool {
-    track.color_index.is_some()
+    track.id < opentrack_core::project::INPUT_BUS_ID || track.color_index.is_some()
 }
 
 pub(super) fn color_strip(
@@ -65,10 +100,16 @@ pub(super) fn color_strip(
                 .color_index
                 .map(|i| format!("Color {}", i + 1))
                 .unwrap_or_else(|| String::from("Default Color"));
-            // Live reference: the first grey swatch is Default Color.
+            // The first swatch is Default Color: the palette color this track
+            // gets from its id when no slot is chosen.
+            let palette_colors = active_event_colors();
+            let automatic = if track.id >= opentrack_core::project::INPUT_BUS_ID {
+                BUS_DEFAULT_COLOR
+            } else {
+                palette_color(palette_colors, automatic_color_index(track))
+            };
             let first = Rect::from_min_size(bar.min, Vec2::new(22.0, 40.0));
-            ui.painter()
-                .rect_filled(first, 0.0, Color32::from_gray(160));
+            ui.painter().rect_filled(first, 0.0, automatic);
             let default = ui.interact(
                 first,
                 ui.make_persistent_id(("track-default-color", track.id)),
@@ -88,7 +129,7 @@ pub(super) fn color_strip(
                 changed |= had_palette_color;
                 ui.close();
             }
-            for (index, rgb) in COLORS.iter().enumerate() {
+            for (index, rgb) in palette_colors.iter().enumerate() {
                 let r = Rect::from_min_size(
                     bar.min + Vec2::new((index + 1) as f32 * 22.0, 0.0),
                     Vec2::new(22.0, 40.0),
@@ -652,6 +693,65 @@ mod tests {
             vec![project.tracks[0].id]
         );
         assert!(used_automation_track_ids(&project, Some(project.tracks[1].id)).is_empty());
+    }
+
+    #[test]
+    fn automatic_track_colors_follow_the_palette_and_the_track_id() {
+        let mut project = opentrack_core::project::Project::default();
+        for _ in 0..17 {
+            project.add_track(TrackKind::Audio);
+        }
+
+        let first: [[u8; 3]; 16] = std::array::from_fn(|index| [index as u8 * 10 + 1, 20, 30]);
+        set_active_event_colors(first);
+        assert_eq!(
+            track_color(&project.tracks[0]),
+            Color32::from_rgb(1, 20, 30),
+            "the first track uses the first slot"
+        );
+        assert_eq!(
+            track_color(&project.tracks[1]),
+            Color32::from_rgb(11, 20, 30),
+            "the next track takes the next slot"
+        );
+        assert_eq!(
+            track_color(&project.tracks[16]),
+            track_color(&project.tracks[0]),
+            "the 17th automatic track wraps to the first slot"
+        );
+
+        // Switching palettes recolors every automatic track without touching
+        // the project, which is what makes the Event Colors palettes visible.
+        let second: [[u8; 3]; 16] = std::array::from_fn(|index| [200, index as u8, 5]);
+        set_active_event_colors(second);
+        assert_eq!(
+            track_color(&project.tracks[0]),
+            Color32::from_rgb(200, 0, 5)
+        );
+        assert_eq!(
+            track_color(&project.tracks[1]),
+            Color32::from_rgb(200, 1, 5)
+        );
+        assert_ne!(
+            track_color(&project.tracks[0]),
+            track_color(&project.tracks[1]),
+            "neighbouring tracks do not share a color"
+        );
+
+        // An explicit slot wins over the automatic one and uses the same palette.
+        project.tracks[0].color_index = Some(4);
+        assert_eq!(
+            track_color(&project.tracks[0]),
+            Color32::from_rgb(200, 4, 5)
+        );
+        project.tracks[0].color_index = None;
+        assert_eq!(
+            track_color(&project.tracks[0]),
+            Color32::from_rgb(200, 0, 5)
+        );
+
+        // Leave the thread on the shipped palette for any later test here.
+        set_active_event_colors(COLORS);
     }
 
     #[test]

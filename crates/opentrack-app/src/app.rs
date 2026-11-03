@@ -6477,6 +6477,7 @@ impl OpenTrackApp {
             return false;
         };
         self.arrange_view_state.event_colors = palette.colors;
+        project_controls::set_active_event_colors(palette.colors);
         // Load first: mark_modified writes its own status line.
         self.mark_modified();
         self.status_message = format!(
@@ -7147,7 +7148,7 @@ impl OpenTrackApp {
         if apply || accept || reset {
             if reset {
                 self.arrange_view_state.event_colors[dialog.slot_index] =
-                    project_controls::COLORS[dialog.slot_index];
+                    color_palettes::PALETTES[0].colors[dialog.slot_index];
                 let rgb = self.arrange_view_state.event_colors[dialog.slot_index];
                 dialog.draft_rgb = rgb;
             } else {
@@ -7155,6 +7156,7 @@ impl OpenTrackApp {
             }
             // Keep the palette label honest: a single edited slot no longer
             // matches a built-in set, so the next frame shows "Custom".
+            project_controls::set_active_event_colors(self.arrange_view_state.event_colors);
             dialog.palette =
                 color_palettes::matching_palette(&self.arrange_view_state.event_colors);
             self.arrange_view_state.selected_event_color = Some(dialog.slot_index as u8);
@@ -14257,7 +14259,17 @@ impl OpenTrackApp {
                         self.request_selected_track_delete();
                         ui.close();
                     }
-                    menu_command(ui, "Remove Empty Tracks", "", false);
+                    if menu_command(
+                        ui,
+                        "Remove Empty Tracks",
+                        "",
+                        self.project_open && !self.is_recording(),
+                    )
+                    .clicked()
+                    {
+                        self.remove_empty_tracks();
+                        ui.close();
+                    }
                     ui.menu_button("Track Folding", |ui| {
                         for (label, collapsed) in [("Expand All", false), ("Collapse All", true)] {
                             if menu_command(ui, label, "", self.project_open).clicked() {
@@ -16229,6 +16241,47 @@ impl OpenTrackApp {
             self.mark_modified();
         }
         removed
+    }
+
+    /// Removes media tracks that hold no events, parts or automation.
+    fn remove_empty_tracks(&mut self) {
+        if !self.project_open {
+            self.status_message = "Open a project to remove empty tracks".to_owned();
+            return;
+        }
+        if self.is_recording() {
+            self.status_message = "Stop recording before removing empty tracks".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let removed = candidate.remove_empty_tracks();
+        if removed.is_empty() {
+            self.status_message = "There are no empty tracks to remove".to_owned();
+            return;
+        }
+        if candidate.validate().is_err() {
+            self.status_message =
+                "Removing the empty tracks would leave an invalid project".to_owned();
+            return;
+        }
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot remove empty tracks: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Remove Empty Tracks");
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = format!(
+            "Removed {} empty track(s); Undo restores them",
+            removed.len()
+        );
     }
 
     /// Shows or hides the marker lane.
@@ -19048,6 +19101,10 @@ impl eframe::App for OpenTrackApp {
         egui::Rgba::from(visuals.panel_fill).to_array()
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The drawing code reads one palette; keep it in step with the workspace
+        // view state so a palette change, project load or undo recolors every
+        // surface in the same frame.
+        project_controls::set_active_event_colors(self.arrange_view_state.event_colors);
         if let Some(capture) = automation::take_finished_write(ui.ctx()) {
             self.apply_automation_write(capture);
         }
@@ -32756,6 +32813,52 @@ mod arranger_preview_tests {
 }
 
 #[cfg(test)]
+mod empty_track_tests {
+    use super::*;
+
+    fn app_with_tracks() -> (OpenTrackApp, u64) {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[0].name = "Empty".to_owned();
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.tracks[1].name = "Take".to_owned();
+        let clip = app
+            .data
+            .project
+            .add_audio_clip(1, PathBuf::from("take.wav"), 0.0, 1.0)
+            .expect("clip");
+        app.data.project.add_track(TrackKind::Midi);
+        app.data.project.tracks[2].name = "Empty MIDI".to_owned();
+        app.project_history.clear();
+        (app, clip)
+    }
+
+    #[test]
+    fn the_command_removes_empty_tracks_as_one_undo_step() {
+        let (mut app, clip) = app_with_tracks();
+        app.remove_empty_tracks();
+        assert_eq!(app.data.project.tracks.len(), 1);
+        assert_eq!(app.data.project.tracks[0].name, "Take");
+        assert_eq!(app.data.project.tracks[0].clips[0].id, clip);
+        assert!(app.status_message.contains("Removed 2 empty track(s)"));
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Remove Empty Tracks");
+
+        // A second run reports instead of writing another history step.
+        let steps = app.project_history.counts().0;
+        app.remove_empty_tracks();
+        assert!(app.status_message.contains("no empty tracks"));
+        assert_eq!(app.project_history.counts().0, steps);
+
+        // The recording guard uses a live session that a headless test cannot
+        // construct, so that path stays with the desktop review.
+    }
+}
+
+#[cfg(test)]
 mod event_color_palette_tests {
     use super::*;
 
@@ -32792,6 +32895,25 @@ mod event_color_palette_tests {
             Some(2)
         );
         app.event_colors_dialog = None;
+
+        // The palette reaches the arrange: a track without an explicit slot
+        // takes its color from the active palette by id, and switching palettes
+        // recolors that same track.
+        app.data.project.add_track(TrackKind::Audio);
+        let slot_zero = color_palettes::PALETTES[2].colors[0];
+        assert_eq!(
+            project_controls::track_color(&app.data.project.tracks[0]),
+            Color32::from_rgb(slot_zero[0], slot_zero[1], slot_zero[2]),
+            "choosing a palette recolors automatic tracks"
+        );
+        assert!(app.apply_event_color_palette(5));
+        let other = color_palettes::PALETTES[5].colors[0];
+        assert_ne!(other, slot_zero);
+        assert_eq!(
+            project_controls::track_color(&app.data.project.tracks[0]),
+            Color32::from_rgb(other[0], other[1], other[2]),
+            "switching palettes recolors the same track"
+        );
 
         // An unknown palette index changes nothing.
         let before = app.arrange_view_state.event_colors;

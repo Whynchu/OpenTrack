@@ -33,6 +33,22 @@ The user direction is that Linux is a real target, not an accessory to Windows. 
 - Known Linux gaps are stated rather than hidden: VST3 editor embedding is not implemented, and the ALSA callback thread runs at normal priority (cpal's `realtime` feature is off), which is the scheduling half of the dropout report fixed earlier.
 - The release procedure builds and tests on Linux in this repository (`./build.sh`), and the binary below was built there.
 
+## Follow-up: the first cut did not reach the arrange
+
+The user reported that the palettes looked right in the dialog but did not apply. That was correct: the dialog and the toolbar swatch read `event_colors`, while every track strip, event, Mixer strip, Inspector header and Sample Editor waveform read `project_controls::track_color`, which used the **constant** `DEFAULT_EVENT_COLORS` plus `track.color_index`. Nothing painted with the chosen palette.
+
+Fixed by making the drawing palette a single source:
+
+- `project_controls` holds the active palette (thread-local, so parallel tests stay isolated) and exposes `set_active_event_colors` / `active_event_colors`.
+- `track_color` takes an explicit `color_index` from the **active** palette; otherwise a media track gets `palette[(id - 1) % 16]`, so every track has a palette color chosen **by track id** - reordering, renaming or duplicating a lane never changes it - and a bus keeps its blue identity until a slot is chosen.
+- The app writes the workspace `event_colors` into the drawing palette at the top of every frame, in `apply_event_color_palette`, and when a slot is edited, so a palette change, project load or undo recolors all surfaces in the same frame.
+- `has_track_color` now reports true for media tracks, so the Mixer and Inspector show the palette color too.
+- The per-track selector's first swatch shows the track's automatic color instead of a flat grey, and its palette row follows the active palette.
+
+The palettes were also resaturated after the review: Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale were regenerated with stronger chroma, and Grayscale uses a wider dark-to-light ramp. Default keeps the shipped colors so existing projects look the same.
+
+New coverage: `automatic_track_colors_follow_the_palette_and_the_track_id` (core: id mapping, wrap at 16, explicit slot override, palette switch recolors) and the app test now asserts that choosing and switching a palette changes the same track's drawn color.
+
 ## Handoff
 
 - Actual implementer/reviewer model: DeepSeek V4.1 Flash (opencode-go/deepseek-v4.1-flash); self-review only.

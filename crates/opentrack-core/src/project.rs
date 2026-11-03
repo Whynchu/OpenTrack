@@ -2068,6 +2068,39 @@ impl Project {
         Some(removed)
     }
 
+    /// Removes media tracks that hold no events, parts or automation.
+    ///
+    /// Buses and folders are kept even when they are empty, because they carry
+    /// routing and organisation rather than content, and an armed track is kept
+    /// so a lane prepared for recording is never deleted under the user.
+    /// Returns the stable ids of the removed tracks in track order.
+    pub fn remove_empty_tracks(&mut self) -> Vec<u64> {
+        let removable: Vec<usize> = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| {
+                matches!(
+                    track.kind,
+                    TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi
+                ) && !track.armed
+                    && track.clips.is_empty()
+                    && track.midi_parts.is_empty()
+                    && track.automation_lanes.is_empty()
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let mut removed = Vec::with_capacity(removable.len());
+        for index in removable.into_iter().rev() {
+            if let Some(track) = self.remove_track(index) {
+                removed.push(track.id);
+            }
+        }
+        removed.reverse();
+        self.register_media();
+        removed
+    }
+
     /// Reorders a track while preserving selection by stable track ID.
     pub fn move_track(&mut self, from: usize, to: usize) -> bool {
         if from >= self.tracks.len() || to >= self.tracks.len() || from == to {
@@ -7610,6 +7643,69 @@ mod sample_edit_tests {
         )
         .expect("decode malformed");
         assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn empty_tracks_are_removed_without_touching_content_or_structure() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio); // empty, removable
+        project.tracks[0].name = "Empty Audio".to_owned();
+        project.add_track(TrackKind::Group);
+        project.tracks[1].name = "Bus".to_owned();
+        project.add_track(TrackKind::Audio); // holds an event
+        let clip = project
+            .add_audio_clip(2, PathBuf::from("take.wav"), 0.0, 1.0)
+            .expect("clip");
+        project.add_track(TrackKind::Midi); // empty, removable
+        project.add_track(TrackKind::Instrument); // armed, kept
+        project.tracks[4].armed = true;
+        project.add_track(TrackKind::Folder);
+        project.tracks[5].name = "Folder".to_owned();
+        project.add_track(TrackKind::Audio); // automation only, kept
+        project.tracks[6]
+            .automation_lanes
+            .push(crate::automation::AutomationLane {
+                target: crate::automation::AutomationTarget::TrackVolume,
+                points: Vec::new(),
+            });
+        // An empty track inside the folder is removed and the folder survives.
+        project.tracks[0].parent_folder_id = Some(project.tracks[5].id);
+
+        let removed = project.remove_empty_tracks();
+        assert_eq!(removed.len(), 2, "{removed:?}");
+        let names = project
+            .tracks
+            .iter()
+            .map(|track| track.name.clone())
+            .collect::<Vec<_>>();
+        assert!(!names.iter().any(|name| name == "Empty Audio"));
+        assert!(names.iter().any(|name| name == "Bus"));
+        assert!(names.iter().any(|name| name == "Folder"));
+        assert_eq!(
+            project.tracks.iter().filter(|track| track.armed).count(),
+            1,
+            "an armed track is kept"
+        );
+        assert_eq!(
+            project
+                .tracks
+                .iter()
+                .filter(|track| !track.automation_lanes.is_empty())
+                .count(),
+            1,
+            "a track with automation is not empty"
+        );
+        assert!(
+            project
+                .tracks
+                .iter()
+                .any(|track| track.clips.iter().any(|c| c.id == clip))
+        );
+        assert!(project.validate().is_ok());
+
+        // A second pass finds nothing, so the command can report instead of
+        // writing an empty undo step.
+        assert!(project.remove_empty_tracks().is_empty());
     }
 
     #[test]
