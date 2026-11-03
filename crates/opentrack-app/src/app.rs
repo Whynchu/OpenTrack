@@ -1264,7 +1264,9 @@ pub struct OpenTrackApp {
     score_view_open: bool,
     score_page_mode: bool,
     score_zoom: f32,
+    score_bars_per_system: usize,
     score_settings_open: bool,
+    score_layout_open: bool,
     /// MIDI outputs for the MMC master and the sync setup dialog.
     midi_output_devices: Vec<MidiOutputDevice>,
     selected_midi_output: Option<String>,
@@ -2843,7 +2845,16 @@ impl OpenTrackApp {
                 .and_then(|storage| eframe::get_value::<f32>(storage, "score-zoom-v1"))
                 .unwrap_or(1.0)
                 .clamp(score_view::MIN_SCORE_ZOOM, score_view::MAX_SCORE_ZOOM),
+            score_bars_per_system: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<usize>(storage, "score-bars-per-system-v1"))
+                .unwrap_or(score_view::DEFAULT_SCORE_BARS_PER_SYSTEM)
+                .clamp(
+                    score_view::MIN_SCORE_BARS_PER_SYSTEM,
+                    score_view::MAX_SCORE_BARS_PER_SYSTEM,
+                ),
             score_settings_open: false,
+            score_layout_open: false,
             midi_output_devices: MidiOutputStream::available_devices().unwrap_or_default(),
             selected_midi_output: creation
                 .storage
@@ -15157,10 +15168,13 @@ impl OpenTrackApp {
                         self.toggle_score_settings();
                         ui.close();
                     }
+                    if menu_command(ui, "Open Layout...", "", true).clicked() {
+                        self.toggle_score_layout();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
-                            ("Open Layout...", ""),
                             ("Group/Ungroup Notes", ""),
                             ("Convert to Grace Note", ""),
                             ("Insert Slur", ""),
@@ -15227,7 +15241,14 @@ impl OpenTrackApp {
                         }
                         disabled_menu_commands(ui, &[("Make Chord Symbols", "")]);
                     });
-                    disabled_menu_commands(ui, &[("Auto Layout...", ""), ("Reset Layout...", "")]);
+                    if menu_command(ui, "Auto Layout...", "", true).clicked() {
+                        self.auto_score_layout();
+                        ui.close();
+                    }
+                    if menu_command(ui, "Reset Layout...", "", true).clicked() {
+                        self.reset_score_layout();
+                        ui.close();
+                    }
                     ui.menu_button("Advanced Layout", |ui| {
                         disabled_menu_commands(
                             ui,
@@ -16561,6 +16582,7 @@ impl OpenTrackApp {
             || self.sync_setup_open
             || self.score_view_open
             || self.score_settings_open
+            || self.score_layout_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20149,6 +20171,7 @@ impl eframe::App for OpenTrackApp {
         self.show_registration(&ctx);
         self.show_sync_setup(&ctx);
         self.show_score_view(&ctx);
+        self.show_score_layout(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -20233,6 +20256,11 @@ impl eframe::App for OpenTrackApp {
         eframe::set_value(storage, "mmc-device-id-v1", &self.mmc_device_id);
         eframe::set_value(storage, "score-page-mode-v1", &self.score_page_mode);
         eframe::set_value(storage, "score-zoom-v1", &self.score_zoom);
+        eframe::set_value(
+            storage,
+            "score-bars-per-system-v1",
+            &self.score_bars_per_system,
+        );
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,

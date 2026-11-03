@@ -10,8 +10,10 @@ use opentrack_core::project::MidiPart;
 
 /// Pitches at or above middle C read on the treble staff; lower ones on bass.
 pub(super) const STAFF_SPLIT_PITCH: u8 = 60;
-/// Bars per system in page mode.
-pub(super) const SCORE_BARS_PER_SYSTEM: usize = 4;
+/// Default bars per system in page mode, and its bounds.
+pub(super) const DEFAULT_SCORE_BARS_PER_SYSTEM: usize = 4;
+pub(super) const MIN_SCORE_BARS_PER_SYSTEM: usize = 1;
+pub(super) const MAX_SCORE_BARS_PER_SYSTEM: usize = 8;
 /// Zoom bounds.
 pub(super) const MIN_SCORE_ZOOM: f32 = 0.5;
 pub(super) const MAX_SCORE_ZOOM: f32 = 2.0;
@@ -120,12 +122,13 @@ pub(super) fn note_flags(head: NoteHead) -> u8 {
 }
 
 /// In page mode, the system and beat offset inside that system.
-pub(super) fn page_system_for_beats(beats: f64, bar: f64) -> (usize, f64) {
+pub(super) fn page_system_for_beats(beats: f64, bar: f64, bars_per_system: usize) -> (usize, f64) {
+    let per_system = bars_per_system.max(1);
     let bar_index = (beats / bar.max(0.25)).floor().max(0.0) as usize;
     let within = beats - bar_index as f64 * bar;
     (
-        bar_index / SCORE_BARS_PER_SYSTEM,
-        (bar_index % SCORE_BARS_PER_SYSTEM) as f64 * bar + within,
+        bar_index / per_system,
+        (bar_index % per_system) as f64 * bar + within,
     )
 }
 
@@ -260,6 +263,77 @@ impl OpenTrackApp {
         self.score_settings_open = !self.score_settings_open;
     }
 
+    pub(super) fn toggle_score_layout(&mut self) {
+        self.score_layout_open = !self.score_layout_open;
+    }
+
+    /// Auto layout: four bars per system with page mode on.
+    pub(super) fn auto_score_layout(&mut self) {
+        self.score_bars_per_system = DEFAULT_SCORE_BARS_PER_SYSTEM;
+        self.score_page_mode = true;
+        self.status_message = "Auto layout: 4 bars per system, page mode on".to_owned();
+    }
+
+    /// Reset layout: the shipped defaults for bars, zoom and page mode.
+    pub(super) fn reset_score_layout(&mut self) {
+        self.score_bars_per_system = DEFAULT_SCORE_BARS_PER_SYSTEM;
+        self.score_zoom = 1.0;
+        self.score_page_mode = false;
+        self.status_message =
+            "Score layout reset: 4 bars per system, zoom 1.00, continuous mode".to_owned();
+    }
+
+    pub(super) fn show_score_layout(&mut self, ctx: &egui::Context) {
+        if !self.score_layout_open {
+            return;
+        }
+        let mut open = true;
+        let mut bars = self.score_bars_per_system;
+        let mut zoom = self.score_zoom;
+        let mut page = self.score_page_mode;
+        egui::Window::new("Score Layout")
+            .id(Id::new("score-layout"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                egui::Grid::new("score-layout-grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Bars per system");
+                        ui.add(
+                            egui::DragValue::new(&mut bars)
+                                .range(MIN_SCORE_BARS_PER_SYSTEM..=MAX_SCORE_BARS_PER_SYSTEM),
+                        );
+                        ui.end_row();
+                        ui.label("Zoom");
+                        ui.add(
+                            egui::Slider::new(&mut zoom, MIN_SCORE_ZOOM..=MAX_SCORE_ZOOM)
+                                .fixed_decimals(2),
+                        );
+                        ui.end_row();
+                        ui.label("Page mode");
+                        ui.checkbox(&mut page, "Stack systems as pages");
+                        ui.end_row();
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "Layout settings are stored with the application, not in the project.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+            });
+        self.score_bars_per_system =
+            bars.clamp(MIN_SCORE_BARS_PER_SYSTEM, MAX_SCORE_BARS_PER_SYSTEM);
+        self.score_zoom = zoom.clamp(MIN_SCORE_ZOOM, MAX_SCORE_ZOOM);
+        self.score_page_mode = page;
+        self.score_layout_open = open;
+    }
+
     pub(super) fn show_score_view(&mut self, ctx: &egui::Context) {
         if !self.score_view_open {
             return;
@@ -274,8 +348,11 @@ impl OpenTrackApp {
         let scale = self.score_zoom.clamp(MIN_SCORE_ZOOM, MAX_SCORE_ZOOM);
         let px_per_beat = 26.0 * scale;
         let page_mode = self.score_page_mode;
+        let bars_per_system = self
+            .score_bars_per_system
+            .clamp(MIN_SCORE_BARS_PER_SYSTEM, MAX_SCORE_BARS_PER_SYSTEM);
         let systems = if page_mode {
-            bars.div_ceil(SCORE_BARS_PER_SYSTEM).max(1)
+            bars.div_ceil(bars_per_system).max(1)
         } else {
             1
         };
@@ -299,7 +376,11 @@ impl OpenTrackApp {
                     self.data.project.beats_per_bar,
                     self.data.project.beat_unit,
                     part.notes.len(),
-                    if page_mode { " · page mode" } else { "" }
+                    if page_mode {
+                        format!(" · page mode, {bars_per_system} bar(s)/system")
+                    } else {
+                        String::new()
+                    }
                 ));
                 ui.label(
                     egui::RichText::new(
@@ -357,7 +438,7 @@ impl OpenTrackApp {
                 }
                 let width = 80.0
                     + if page_mode {
-                        SCORE_BARS_PER_SYSTEM as f32 * bar as f32 * px_per_beat
+                        bars_per_system as f32 * bar as f32 * px_per_beat
                     } else {
                         bars as f32 * bar as f32 * px_per_beat
                     }
@@ -402,13 +483,13 @@ impl OpenTrackApp {
                                 );
                             }
                             let bars_in_system = if page_mode {
-                                SCORE_BARS_PER_SYSTEM
+                                bars_per_system
                             } else {
                                 bars
                             };
                             for bar_index in 1..=bars_in_system {
                                 let global_bar = if page_mode {
-                                    system * SCORE_BARS_PER_SYSTEM + bar_index
+                                    system * bars_per_system + bar_index
                                 } else {
                                     bar_index
                                 };
@@ -431,7 +512,11 @@ impl OpenTrackApp {
                             }
                             for note in &part.notes {
                                 let (system_of_note, x_beats) = if page_mode {
-                                    page_system_for_beats(note.start_beats.max(0.0), bar)
+                                    page_system_for_beats(
+                                        note.start_beats.max(0.0),
+                                        bar,
+                                        bars_per_system,
+                                    )
                                 } else {
                                     (0, note.start_beats.max(0.0))
                                 };
@@ -644,9 +729,12 @@ mod tests {
         assert_eq!(note_flags(NoteHead::Half), 0);
 
         // Page mode wraps every four bars onto the next system.
-        assert_eq!(page_system_for_beats(9.0, 4.0), (0, 9.0));
-        assert_eq!(page_system_for_beats(16.0, 4.0), (1, 0.0));
-        assert_eq!(page_system_for_beats(17.5, 4.0), (1, 1.5));
+        assert_eq!(page_system_for_beats(9.0, 4.0, 4), (0, 9.0));
+        assert_eq!(page_system_for_beats(16.0, 4.0, 4), (1, 0.0));
+        assert_eq!(page_system_for_beats(17.5, 4.0, 4), (1, 1.5));
+        // Two bars per system start a new system after bar 2.
+        assert_eq!(page_system_for_beats(8.0, 4.0, 2), (1, 0.0));
+        assert_eq!(page_system_for_beats(4.0, 4.0, 2), (0, 4.0));
     }
 
     #[test]
@@ -743,6 +831,66 @@ mod tests {
                 .all(|note| note.id != first.id)
         );
         assert_eq!(app.data.project.tracks[0].midi_parts[0].notes.len(), 2);
+    }
+
+    #[test]
+    fn layout_applies_auto_and_reset() {
+        let mut app = app_with_part();
+        app.score_bars_per_system = 3;
+        app.score_zoom = 1.5;
+        app.score_page_mode = true;
+        app.auto_score_layout();
+        assert_eq!(app.score_bars_per_system, DEFAULT_SCORE_BARS_PER_SYSTEM);
+        assert!(app.score_page_mode);
+        assert!((app.score_zoom - 1.5).abs() < 1e-6, "auto keeps the zoom");
+        assert!(app.status_message.contains("4 bars per system"));
+
+        app.reset_score_layout();
+        assert_eq!(app.score_bars_per_system, DEFAULT_SCORE_BARS_PER_SYSTEM);
+        assert!((app.score_zoom - 1.0).abs() < 1e-6);
+        assert!(!app.score_page_mode);
+        assert!(app.status_message.contains("reset"));
+    }
+
+    #[test]
+    fn the_layout_dialog_draws_its_controls() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_part();
+        app.score_layout_open = true;
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_score_layout(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Score Layout"), "{joined}");
+        assert!(joined.contains("Bars per system"), "{joined}");
+        assert!(joined.contains("Zoom"), "{joined}");
+        assert!(joined.contains("Page mode"), "{joined}");
     }
 
     #[test]
