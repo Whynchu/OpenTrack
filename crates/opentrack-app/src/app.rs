@@ -16,6 +16,7 @@ mod channel_gain;
 mod channel_settings;
 mod color_palettes;
 mod cue_import;
+mod device_connections;
 mod drum_editor;
 mod drum_map_setup;
 mod logical_presets;
@@ -19967,6 +19968,7 @@ impl eframe::App for OpenTrackApp {
         self.show_revert_prompt(&ctx);
         self.show_plugin_browser(&ctx);
         self.show_cleanup_prompt(&ctx);
+        self.show_device_connections(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
