@@ -32896,21 +32896,29 @@ mod event_color_palette_tests {
         );
         app.event_colors_dialog = None;
 
-        // The palette reaches the arrange: a track without an explicit slot
-        // takes its color from the active palette by id, and switching palettes
-        // recolors that same track.
+        // The palette reaches the arrange: tracks without an explicit slot take
+        // their color from the active palette by id, and switching palettes
+        // recolors them. The first slot is the standard grey, so the first track
+        // stays neutral while its neighbor follows the palette.
         app.data.project.add_track(TrackKind::Audio);
-        let slot_zero = color_palettes::PALETTES[2].colors[0];
+        app.data.project.add_track(TrackKind::Audio);
+        let grey = color_palettes::PALETTES[2].colors[0];
         assert_eq!(
             project_controls::track_color(&app.data.project.tracks[0]),
-            Color32::from_rgb(slot_zero[0], slot_zero[1], slot_zero[2]),
+            Color32::from_rgb(grey[0], grey[1], grey[2]),
+            "the first track takes the standard grey"
+        );
+        let second = color_palettes::PALETTES[2].colors[1];
+        assert_eq!(
+            project_controls::track_color(&app.data.project.tracks[1]),
+            Color32::from_rgb(second[0], second[1], second[2]),
             "choosing a palette recolors automatic tracks"
         );
         assert!(app.apply_event_color_palette(5));
-        let other = color_palettes::PALETTES[5].colors[0];
-        assert_ne!(other, slot_zero);
+        let other = color_palettes::PALETTES[5].colors[1];
+        assert_ne!(other, second);
         assert_eq!(
-            project_controls::track_color(&app.data.project.tracks[0]),
+            project_controls::track_color(&app.data.project.tracks[1]),
             Color32::from_rgb(other[0], other[1], other[2]),
             "switching palettes recolors the same track"
         );

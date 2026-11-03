@@ -22,7 +22,7 @@
 | Pastel | Light tints that keep dark labels legible |
 | Grayscale | Neutral ramp for color-blind-safe or print-oriented work |
 
-Each palette is a complete 16-slot set rather than an offset: the arrange always has a full palette, and the result does not depend on the previous colors.
+Each palette is a complete 16-slot set rather than an offset: the arrange always has a full palette, and the result does not depend on the previous colors. **Every palette starts with the standard grey as Color 1** (user direction): the first swatch is the neutral default identity, and the 15 flavour colors follow it. Automatic track colors therefore include one grey slot per 16 ids, so the first track stays neutral while its neighbours follow the palette.
 
 ## Platform target
 
@@ -45,7 +45,7 @@ Fixed by making the drawing palette a single source:
 - `has_track_color` now reports true for media tracks, so the Mixer and Inspector show the palette color too.
 - The per-track selector's first swatch shows the track's automatic color instead of a flat grey, and its palette row follows the active palette.
 
-The palettes were also resaturated after the review: Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale were regenerated with stronger chroma, and Grayscale uses a wider dark-to-light ramp. Default keeps the shipped colors so existing projects look the same.
+The palettes were also resaturated after the review: Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale were regenerated with stronger chroma, and Grayscale uses a wider dark-to-light ramp. Every set - including Default - starts with the standard grey as Color 1 (user direction), so the shipped palette's first entry changed from salmon to grey; projects that already saved their own colors keep them until a palette is chosen.
 
 New coverage: `automatic_track_colors_follow_the_palette_and_the_track_id` (core: id mapping, wrap at 16, explicit slot override, palette switch recolors) and the app test now asserts that choosing and switching a palette changes the same track's drawn color.
 

@@ -29,8 +29,10 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
 const ARRANGE_VIEW_STATE_KEY: &str = "arrange_view_state_v1";
+/// The standard first event color: neutral grey, the "default" identity.
+pub(crate) const DEFAULT_EVENT_COLOR_GREY: [u8; 3] = [160, 160, 160];
 pub(crate) const DEFAULT_EVENT_COLORS: [[u8; 3]; 16] = [
-    [211, 116, 87],
+    DEFAULT_EVENT_COLOR_GREY,
     [219, 151, 93],
     [231, 180, 100],
     [235, 216, 108],

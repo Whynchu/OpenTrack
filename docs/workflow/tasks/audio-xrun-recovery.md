@@ -38,6 +38,18 @@ So one underrun tore down a stream the backend had already recovered, which is e
   - The CPAL path reports the *requested* frames, not the negotiated period, so "Driver default" displays `0 frames` in the driver page and in `output_period_frames`.
   - The Windows CPAL path ignores the requested buffer; WASAPI and ASIO honour it.
 
+## Follow-up: the buffer size read "0 frames"
+
+The user reported that the Driver Setup buffer size showed `0 frames`, which is not a real period. The CPAL path stored `requested_buffer_frames.unwrap_or(0)`, so leaving the buffer at the driver default (the common case) reported zero even though the stream was running with a real period.
+
+Fixed by reading the negotiated period back from the stream:
+
+- `StreamTrait::buffer_size()` is available immediately after the stream is created and returns the backend's estimate (the negotiated hardware size for a fixed request, the backend default otherwise). The engine stores that as `output_period_frames` / `output_buffer_frames`, falling back to the requested value, and only reports 0 when the backend cannot say.
+- The device's declared period range is captured once at open and turned into the preset list ([64, 128, 256, 512, 1024, 2048, 4096] filtered to that range), so on Linux the Buffer Size dropdown now has real choices - including in Shared - Low Latency mode, whose list is the engine's.
+- The Driver Setup label shows "Driver default (unknown)" instead of "0 frames" if a backend still cannot report a period.
+
+Coverage: `period_choices_follow_the_device_range` pins the list filtering. The negotiated-value path itself needs a real device, so it is verified by inspection and stays a desktop check.
+
 ## Why underruns happen here (contributing, not fixed)
 
 - **No real-time priority on Linux.** cpal is declared with default features (`crates/opentrack-audio/Cargo.toml`), which excludes cpal's `realtime` feature, and only the ASIO backend promotes its callback thread (MMCSS). A normal-priority thread competing with the UI and the rest of the system misses deadlines under load.

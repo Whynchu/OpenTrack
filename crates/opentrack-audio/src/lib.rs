@@ -223,6 +223,18 @@ fn note_output_stream_error(error: &cpal::Error, failed: &AtomicBool, xruns: &At
     }
 }
 
+/// Buffer sizes offered for a device that declares a period range.
+///
+/// The list matches the Event/Driver Setup presets, filtered to what the device
+/// accepts, so a Linux device can be asked for a larger period when the default
+/// one is too small for the session.
+fn period_choices(min: u32, max: u32) -> Vec<u32> {
+    [64, 128, 256, 512, 1_024, 2_048, 4_096]
+        .into_iter()
+        .filter(|frames| (min..=max).contains(frames))
+        .collect()
+}
+
 fn effective_hosted_block_frames(configured: usize, callback_frames: usize) -> usize {
     configured.min(callback_frames.max(1))
 }
@@ -1614,6 +1626,24 @@ mod callback_timing_tests {
 }
 
 #[cfg(test)]
+mod period_choice_tests {
+    use super::period_choices;
+
+    #[test]
+    fn period_choices_follow_the_device_range() {
+        assert_eq!(
+            period_choices(64, 4_096),
+            vec![64, 128, 256, 512, 1_024, 2_048, 4_096]
+        );
+        // A device that only accepts small periods offers only those.
+        assert_eq!(period_choices(128, 512), vec![128, 256, 512]);
+        // A range with no preset inside it offers nothing rather than a lie.
+        assert!(period_choices(300, 400).is_empty());
+        assert!(period_choices(65, 100).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod output_stream_health_tests {
     use super::note_output_stream_error;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -2132,7 +2162,7 @@ impl AudioEngine {
             .map_err(|error| format!("could not identify the output device: {error}"))?
             .to_string();
         #[cfg(not(windows))]
-        let (sample_format, config) = {
+        let (sample_format, config, buffer_range) = {
             let default_config = device
                 .default_output_config()
                 .map_err(|error| format!("could not read the output format: {error}"))?;
@@ -2164,20 +2194,20 @@ impl AudioEngine {
             };
             let sample_format = supported_config.sample_format();
             let mut config: cpal::StreamConfig = supported_config.into();
-            if !cfg!(windows)
-                && let Some(buffer_frames) = requested_buffer_frames
-            {
-                let range = device
-                    .supported_output_configs()
-                    .map_err(|error| format!("could not read supported buffer sizes: {error}"))?
-                    .find(|range| {
-                        range.channels() == config.channels
-                            && range.sample_format() == sample_format
-                            && range.min_sample_rate() <= config.sample_rate
-                            && config.sample_rate <= range.max_sample_rate()
-                    })
-                    .map(|range| *range.buffer_size());
-                match range {
+            // The device's declared period range, used to validate a requested
+            // buffer and to offer the choices the UI lists.
+            let buffer_range = device
+                .supported_output_configs()
+                .map_err(|error| format!("could not read supported buffer sizes: {error}"))?
+                .find(|range| {
+                    range.channels() == config.channels
+                        && range.sample_format() == sample_format
+                        && range.min_sample_rate() <= config.sample_rate
+                        && config.sample_rate <= range.max_sample_rate()
+                })
+                .map(|range| *range.buffer_size());
+            if let Some(buffer_frames) = requested_buffer_frames {
+                match buffer_range {
                     Some(cpal::SupportedBufferSize::Range { min, max })
                         if buffer_frames >= min && buffer_frames <= max => {}
                     Some(cpal::SupportedBufferSize::Range { min, max }) => {
@@ -2197,7 +2227,7 @@ impl AudioEngine {
             if config.channels == 0 || config.sample_rate == 0 {
                 return Err("the selected output device reports an invalid format".to_owned());
             }
-            (sample_format, config)
+            (sample_format, config, buffer_range)
         };
 
         #[cfg(not(windows))]
@@ -2517,6 +2547,19 @@ impl AudioEngine {
                 .play()
                 .map_err(|error| format!("could not start the selected output stream: {error}"))?;
 
+            // CPAL knows the negotiated period even when the buffer is left at
+            // the driver default, so report that instead of a misleading zero.
+            let observed_period = stream
+                .buffer_size()
+                .ok()
+                .and_then(|frames| u32::try_from(frames).ok())
+                .filter(|frames| *frames > 0);
+            let output_period_frames = observed_period.or(requested_buffer_frames).unwrap_or(0);
+            let output_period_choices = match buffer_range {
+                Some(cpal::SupportedBufferSize::Range { min, max }) => period_choices(min, max),
+                _ => Vec::new(),
+            };
+
             Ok(Self {
                 _stream: stream,
                 test_tone_enabled,
@@ -2550,9 +2593,9 @@ impl AudioEngine {
                 channels: output_channels,
                 requested_buffer_frames,
                 output_mode,
-                output_period_frames: requested_buffer_frames.unwrap_or(0),
-                output_period_choices: Vec::new(),
-                output_buffer_frames: requested_buffer_frames.unwrap_or(0),
+                output_period_frames,
+                output_period_choices,
+                output_buffer_frames: output_period_frames,
                 output_mode_detail: "CPAL output".to_owned(),
             })
         }

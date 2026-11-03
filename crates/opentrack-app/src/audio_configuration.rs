@@ -496,9 +496,16 @@ impl OpenTrackApp {
                 ui.end_row();
                 ui.label("Buffer Size:");
                 ui.add_enabled_ui(!choices.is_empty(), |ui| {
+                    // A backend that cannot report its period yet says so
+                    // instead of claiming "0 frames".
+                    let actual_label = if actual_frames > 0 {
+                        format!("{actual_frames} frames")
+                    } else {
+                        "Driver default (unknown)".to_owned()
+                    };
                     egui::ComboBox::from_id_salt("driver-buffer-size")
                         .width(180.0)
-                        .selected_text(format!("{actual_frames} frames"))
+                        .selected_text(actual_label)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut frames, None, "Driver default");
                             for value in &choices {
