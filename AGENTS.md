@@ -24,7 +24,7 @@ Design first-party effects and instruments individually with the user and implem
 - Define new behavior from the user's workflow and the current OpenTrack application. Consult another DAW or external material only when it answers a specific feature or format question.
 - Treat screenshots supplied by the user as task inputs. Do not archive them or derived comparison images by default; retain them only when the user explicitly asks.
 - Use original code and fresh visual assets. Do not copy or ship another application's code, binaries, or visual assets.
-- The primary application target is x86_64 Windows. Isolate compatibility work behind crates or process boundaries. An optional legacy 32-bit plug-in helper is a separate compatibility feature.
+- Windows x64 and Linux x86_64 are both target platforms (user direction, 2026-11-02): the same Rust application, with WASAPI and optional local ASIO on Windows and ALSA through CPAL on Linux. Treat a feature as delivered only when it works on both where the platform allows, and state platform-specific gaps (Linux VST3 editor embedding, Linux real-time audio scheduling) explicitly rather than implying Windows-only support. Isolate compatibility work behind crates or process boundaries. An optional legacy 32-bit plug-in helper is a separate compatibility feature.
 
 ## Feature acceptance and compatibility
 

@@ -14,6 +14,7 @@ mod cc_automation;
 mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
+mod color_palettes;
 mod cue_import;
 mod drum_editor;
 mod drum_map_setup;
@@ -609,6 +610,8 @@ struct RepeatDialog {
 struct EventColorsDialog {
     slot_index: usize,
     draft_rgb: [u8; 3],
+    /// The built-in palette the stored slots currently match, if any.
+    palette: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -6462,7 +6465,25 @@ impl OpenTrackApp {
         self.event_colors_dialog = Some(EventColorsDialog {
             slot_index,
             draft_rgb: rgb,
+            palette: color_palettes::matching_palette(&self.arrange_view_state.event_colors),
         });
+    }
+
+    /// Replaces all 16 event color slots with a built-in palette.
+    ///
+    /// Returns false for an unknown index and leaves the slots untouched.
+    fn apply_event_color_palette(&mut self, index: usize) -> bool {
+        let Some(palette) = color_palettes::PALETTES.get(index) else {
+            return false;
+        };
+        self.arrange_view_state.event_colors = palette.colors;
+        // Load first: mark_modified writes its own status line.
+        self.mark_modified();
+        self.status_message = format!(
+            "Loaded the {} event color palette (16 slots); choose a slot to fine-tune it",
+            palette.name
+        );
+        true
     }
 
     fn close_vst3_editor(&mut self) {
@@ -7031,6 +7052,7 @@ impl OpenTrackApp {
         let mut accept = false;
         let mut reset = false;
         let mut cancel = false;
+        let mut chosen_palette = None;
         let mut color = Color32::from_rgb(
             dialog.draft_rgb[0],
             dialog.draft_rgb[1],
@@ -7042,8 +7064,32 @@ impl OpenTrackApp {
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_min_width(320.0);
+                ui.set_min_width(360.0);
                 ui.label(format!("Event color slot {}", dialog.slot_index + 1));
+                ui.horizontal(|ui| {
+                    ui.label("Palette");
+                    egui::ComboBox::from_id_salt("event-colors-palette")
+                        .width(190.0)
+                        .selected_text(color_palettes::palette_name(dialog.palette))
+                        .show_ui(ui, |ui| {
+                            for (index, palette) in color_palettes::PALETTES.iter().enumerate() {
+                                if ui
+                                    .selectable_label(dialog.palette == Some(index), palette.name)
+                                    .clicked()
+                                {
+                                    chosen_palette = Some(index);
+                                }
+                            }
+                        });
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "A palette fills all 16 slots at once; pick one, then fine-tune any slot below.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+                ui.separator();
                 ui.horizontal(|ui| {
                     ui.color_edit_button_srgba(&mut color);
                     ui.label(format!("R {}  G {}  B {}", color.r(), color.g(), color.b()));
@@ -7092,6 +7138,12 @@ impl OpenTrackApp {
             response.as_ref(),
         );
         dialog.draft_rgb = [color.r(), color.g(), color.b()];
+        if let Some(index) = chosen_palette
+            && self.apply_event_color_palette(index)
+        {
+            dialog.palette = Some(index);
+            dialog.draft_rgb = self.arrange_view_state.event_colors[dialog.slot_index];
+        }
         if apply || accept || reset {
             if reset {
                 self.arrange_view_state.event_colors[dialog.slot_index] =
@@ -7101,6 +7153,10 @@ impl OpenTrackApp {
             } else {
                 self.arrange_view_state.event_colors[dialog.slot_index] = dialog.draft_rgb;
             }
+            // Keep the palette label honest: a single edited slot no longer
+            // matches a built-in set, so the next frame shows "Custom".
+            dialog.palette =
+                color_palettes::matching_palette(&self.arrange_view_state.event_colors);
             self.arrange_view_state.selected_event_color = Some(dialog.slot_index as u8);
             self.mark_modified();
         }
@@ -32696,6 +32752,107 @@ mod arranger_preview_tests {
         app.stop_arranger_preview("Project content changed; arranger preview stopped");
         assert!(app.arranger_preview.is_none());
         assert!(app.status_message.contains("content changed"));
+    }
+}
+
+#[cfg(test)]
+mod event_color_palette_tests {
+    use super::*;
+
+    fn app() -> OpenTrackApp {
+        let ctx = egui::Context::default();
+        let creation = eframe::CreationContext::_new_kittest(ctx);
+        let mut app = OpenTrackApp::new_internal(&creation, false);
+        app.project_open = true;
+        app.mark_saved();
+        app
+    }
+
+    #[test]
+    fn choosing_a_palette_fills_every_slot_and_is_remembered() {
+        let mut app = app();
+        assert_eq!(
+            app.arrange_view_state.event_colors,
+            color_palettes::PALETTES[0].colors,
+            "a new project starts on the default palette"
+        );
+
+        assert!(app.apply_event_color_palette(2));
+        assert_eq!(
+            app.arrange_view_state.event_colors,
+            color_palettes::PALETTES[2].colors
+        );
+        assert!(app.modified);
+        assert!(app.status_message.contains("Cool Studio"));
+
+        // Reopening the dialog recognises the palette that is in force.
+        app.open_event_colors_dialog();
+        assert_eq!(
+            app.event_colors_dialog.as_ref().expect("dialog").palette,
+            Some(2)
+        );
+        app.event_colors_dialog = None;
+
+        // An unknown palette index changes nothing.
+        let before = app.arrange_view_state.event_colors;
+        assert!(!app.apply_event_color_palette(99));
+        assert_eq!(app.arrange_view_state.event_colors, before);
+
+        // A hand-edited slot is "Custom", not a damaged palette.
+        app.arrange_view_state.event_colors[4] = [1, 2, 3];
+        assert_eq!(
+            color_palettes::matching_palette(&app.arrange_view_state.event_colors),
+            None
+        );
+        app.open_event_colors_dialog();
+        assert_eq!(
+            app.event_colors_dialog.as_ref().expect("dialog").palette,
+            None
+        );
+    }
+
+    #[test]
+    fn the_dialog_draws_the_palette_selector() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        app.event_colors_dialog = Some(EventColorsDialog {
+            slot_index: 0,
+            draft_rgb: color_palettes::PALETTES[0].colors[0],
+            palette: Some(0),
+        });
+        let mut texts = Vec::new();
+        for frame in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |_| app.show_event_colors_dialog(&ctx),
+            );
+            output.textures_delta.clear();
+            if frame == 0 {
+                continue;
+            }
+            fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut texts);
+            }
+        }
+        let joined = texts.join("\n");
+        assert!(joined.contains("Palette"), "{joined}");
+        assert!(joined.contains("Default"), "{joined}");
+        assert!(joined.contains("fills all 16 slots"), "{joined}");
     }
 }
 

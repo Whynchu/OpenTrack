@@ -33,7 +33,7 @@ OpenTrack is an early prototype under active development. Its features are still
 
 ### What works today
 
-- **Arranging:** audio, MIDI, instrument, FX-return and group tracks plus organizational folders; a Tempo Track editor for the project tempo and time signature; transport and cycle playback, including play-from and play-until selection/marker commands; bar/beat/quantize snapping plus snapping to event edges or the cursor; zoom commands; follow-playhead scrolling; an optional secondary ruler row; an optional dedicated marker lane; markers with next/previous navigation and a marker list; editable named regions with locate, rename, resize, delete and locator/hitpoint creation; arranger sections and a playback-only sequence preview; event nudge, edge nudge, split at cursor or at both locators, glue, range delete and crossfades; MIDI part split and merge; bounded undo/redo with an undo-history window.
+- **Arranging:** audio, MIDI, instrument, FX-return and group tracks plus organizational folders; a Tempo Track editor for the project tempo and time signature; transport and cycle playback, including play-from and play-until selection/marker commands; bar/beat/quantize snapping plus snapping to event edges or the cursor; zoom commands; follow-playhead scrolling; an optional secondary ruler row; an optional dedicated marker lane; markers with next/previous navigation and a marker list; editable named regions with locate, rename, resize, delete and locator/hitpoint creation; arranger sections and a playback-only sequence preview; event nudge, edge nudge, split at cursor or at both locators, glue, range delete and crossfades; MIDI part split and merge; 16 event color slots with six built-in palettes - Default, Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale - plus per-slot editing in Event Colors; bounded undo/redo with an undo-history window.
 - **Recording:** audio and MIDI capture; Retrospective Record turns the last 60 seconds of MIDI input into a part; punch in/out driven by the locators; per-track input monitoring (Off, Auto while armed, On); each loop pass recorded to its own take lane; a metronome with a per-beat accent pattern and a count-in.
 - **Media:** imported WAVs copied into the project; media pool; a project-relative record folder for new pool files; consolidation into the project folder; missing-media relink; unused and missing pool cleanup; several timestamped recovery points; Audio CD import through a CUE sheet, one event per track.
 - **Mixing:** Mixer and Channel Settings; input gain and metering; 32-band static and dynamic EQ; live spectrum and tonal-reference analysis; insert rack; up to 24 sends per channel with typed routing, including FX return channels that can receive sends from several tracks. Add FX Channel creates one or more returns with an optional first VST3 effect. Folder rows are organizational: Add Folder and Move to Folder/Remove from Folder commands do not add DSP, and folding a folder hides rows without stopping their playback or recording.
@@ -42,7 +42,7 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Editing tools:** MIDI editor with note and controller lanes, including a configurable single CC lane (any controller 0–127) whose choice is saved with the project; quantize with strength and swing, transpose and velocity tools; Sample Editor with on-demand Pitch & Time analysis and editing.
 - **Delivery:** stereo WAV mixdown (always the locator range), per-track stem export, bounce in place through a track's own chain, Standard MIDI File export of the whole project or a selection, and an OpenTrack Track Archive v1 directory package with manifest, hierarchy, routing reports and copied media; importing it runs in the background with progress, cancellation and stale-result rejection. Direct Offline Processing bakes an ordered chain of built-in processors per event.
 - **Project tools:** templates, session health check, project statistics, beat calculator, and a notepad saved with the project.
-- **Platform and format:** Windows x64 is the primary target and Kubuntu Linux has been verified. The native project format is OPR (`.opr`, currently version 38); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
+- **Platform and format:** Windows x64 and Linux x86_64 are both target platforms. Windows builds use WASAPI or the optional local ASIO adapter; Linux builds use ALSA through CPAL. The native project format is OPR (`.opr`, currently version 38); earlier `.opr`, `.otp` and `.rwp` files remain readable, and older builds refuse a newer file instead of stripping fields they do not know.
 
 ### What still needs work
 
@@ -63,8 +63,8 @@ OpenTrack is an early prototype under active development. Its features are still
 - **Built-in spectrum and tonal-reference analysis:** compare live audio with another channel or a captured or imported WAV reference.
 - **Up to 24 insert and send slots per channel:** insert slots run available built-in processors and third-party VST3 effects, including native plug-in editor windows. Track, group and FX-return sends have destination, level, pan, and pre/post-fader controls; the signal path passes offline tests and still needs live hardware review. Device-bus sends remain unavailable.
 - **Integrated Pitch & Time:** analyze and edit audio in the Sample Editor, alongside the Project and Mixer workspace.
-- **Windows audio choices:** use WASAPI, or enable the optional local ASIO adapter for a compatible installed driver.
-- **Platform:** Windows x64 is the primary build target. Kubuntu Linux was part of development and has been built and verified.
+- **Audio backends:** Windows offers WASAPI or the optional local ASIO adapter for a compatible installed driver; Linux uses ALSA through CPAL.
+- **Platform:** Windows x64 and Linux x86_64 are both target platforms, built from the same Rust code. Linux still needs VST3 editor embedding and real-time audio scheduling; the ALSA callback runs at normal priority today.
 
 ### Built-in EQ and analysis
 
@@ -80,13 +80,13 @@ These features are under active development; live listening, visual behavior and
 
 ### Near-term priorities
 
-User-side review of the recording, delivery and listening features above; the CPR adapter once real `.cpr` files are available; the remaining disabled menus and undispatched shortcuts; and a Linux VST3 editor path with a test plug-in. Windows x64 remains the primary target.
+User-side review of the recording, delivery and listening features above; the CPR adapter once real `.cpr` files are available; the remaining disabled menus and undispatched shortcuts; and a Linux VST3 editor path with a test plug-in. Windows x64 and Linux x86_64 are both target platforms, not a primary/secondary split.
 
 Progress and verification live in [the current workflow state](docs/workflow/current.md), [the revision-4 delivery handoff](docs/workflow/handoffs/revision-4-delivery.md), the [revision-2](docs/workflow/roadmap-32-steps-v2.md) and [revision-3](docs/workflow/roadmap-32-steps-v3.md) roadmaps, and the [accessibility report](docs/workflow/accessibility-2026-11-02.md).
 
 ## Build and run
 
-The primary build target is **64-bit Windows**. Kubuntu Linux was part of development and has also been built and verified; other Linux distributions, macOS and browser builds are not current release claims. On Windows, install Rust with the MSVC toolchain and the Visual Studio C++ build tools, then run this from the repository root:
+Windows x64 and Linux x86_64 are the target platforms, built from this repository. Other Linux distributions, macOS and browser builds are not current release claims. On Linux, install Rust and the ALSA development headers (`libasound2-dev` on Debian/Ubuntu), then run `./build.sh`; the Linux audio path is ALSA through CPAL, so there is no ASIO or WASAPI selection. On Windows, install Rust with the MSVC toolchain and the Visual Studio C++ build tools, then run this from the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Architecture x64
