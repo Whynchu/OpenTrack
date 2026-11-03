@@ -15,6 +15,7 @@ mod channel_gain;
 #[path = "channel_settings.rs"]
 mod channel_settings;
 mod color_palettes;
+mod control_room;
 mod cue_import;
 mod device_connections;
 mod drum_editor;
@@ -1251,6 +1252,11 @@ pub struct OpenTrackApp {
     track_library_open: bool,
     /// Browse Sounds window state.
     sound_browser_open: bool,
+    /// Control Room monitor preferences and window state.
+    control_room_open: bool,
+    control_room_tab: u8,
+    monitor_listen: Option<u64>,
+    monitor_talkback: bool,
     sound_browser_folder: Option<PathBuf>,
     sound_browser_files: Vec<PathBuf>,
     sound_browser_selected: Option<usize>,
@@ -2806,6 +2812,15 @@ impl OpenTrackApp {
             sound_browser_files: Vec::new(),
             sound_browser_selected: None,
             sound_browser_filter: String::new(),
+            control_room_open: false,
+            control_room_tab: 0,
+            monitor_listen: creation.storage.and_then(|storage| {
+                eframe::get_value::<Option<u64>>(storage, "control-room-listen-v1").flatten()
+            }),
+            monitor_talkback: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "control-room-talkback-v1"))
+                .unwrap_or(false),
             plugin_browser_category: InsertMenuCategory::Other,
             plugin_browser_filter: String::new(),
             template_name_draft: None,
@@ -15585,14 +15600,15 @@ impl OpenTrackApp {
                         self.open_midi_device_manager();
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Control Room Mixer", ""),
-                            ("Control Room Overview", ""),
-                            ("MMC Master", ""),
-                        ],
-                    );
+                    if menu_command(ui, "Control Room Mixer", "", true).clicked() {
+                        self.open_control_room(0);
+                        ui.close();
+                    }
+                    if menu_command(ui, "Control Room Overview", "", true).clicked() {
+                        self.open_control_room(1);
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("MMC Master", "")]);
                     if menu_command(ui, "Mixer", "F3", true).clicked() {
                         self.mixer_window.open = true;
                         self.mixer_window.focus_requested = true;
@@ -16466,6 +16482,7 @@ impl OpenTrackApp {
             || self.macros_open
             || self.track_library_open
             || self.sound_browser_open
+            || self.control_room_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20050,6 +20067,7 @@ impl eframe::App for OpenTrackApp {
         self.show_macros(&ctx);
         self.show_track_library(&ctx);
         self.show_sound_browser(&ctx);
+        self.show_control_room(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -20127,6 +20145,8 @@ impl eframe::App for OpenTrackApp {
             "sound-browser-folder-v1",
             &self.sound_browser_folder,
         );
+        eframe::set_value(storage, "control-room-listen-v1", &self.monitor_listen);
+        eframe::set_value(storage, "control-room-talkback-v1", &self.monitor_talkback);
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,

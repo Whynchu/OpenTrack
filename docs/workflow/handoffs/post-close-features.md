@@ -24,15 +24,15 @@ This batch followed the revision-5 close-out at the user's direction ("keep fill
 | Edit > Macros | `macros.md` | Named command macros persisted in settings, run through the ordinary dispatch path |
 | Track library | `track-library.md` | File > New/Open/Save Library: application-wide track templates with kind, inserts and portable routing |
 | Browse Sounds | `sound-browser.md` | One persisted folder of WAV files with a format preview and import through the shared WAV path |
+| Control Room | `control-room.md` | Persisted listen source and talkback preferences with a routing readout; no monitor-bus DSP claimed |
 
-Measured: the disabled project-open rows fell from 68 at the close-out to **42**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 617 passed / 4 failed / 9 ignored (630 tests), core 167, audio 172 / 3 ignored.
+Measured: the disabled project-open rows fell from 68 at the close-out to **40**, with 277 leaves (50 available, 164 state-dependent, 55 unavailable, 8 informational). App 620 passed / 4 failed / 9 ignored (633 tests), core 167, audio 172 / 3 ignored.
 
 ## Remaining rows and why they are still unavailable
 
 - **Score editor and Scores menu (24 rows):** no engraving engine exists. This needs a scoped design before any row can be honest.
 - **Video (Video Window, Import Video File, Replace Audio in Video, Extract Audio from Video, Generate Thumbnail Cache, Add Track > Video):** blocked on an approved decoder; the comparison and recommendation are in `R5-28-video-decision.md`.
 - **MMC Master, Project Synchronization Setup, Use External Sync:** blocked on a MIDI output path and a clock source (`R5-26`, `R5-27`).
-- **Devices > Control Room Mixer/Overview:** monitoring section design (talkback, listen buses, cue sends) has not been specified.
 - **File > Page Setup / Print:** score printing depends on the score engine.
 - **Media > Reconstruct:** the row has no defined product meaning yet; the waveform and analysis data are recomputed from source, so nothing is cached to reconstruct.
 - **Help > Registration:** the project has no registration system.
