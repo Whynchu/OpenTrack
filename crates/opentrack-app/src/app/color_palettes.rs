@@ -7,7 +7,7 @@
 //! format does not change; the dialog recovers the current palette by comparing
 //! the stored slots.
 
-use crate::project_file::{DEFAULT_EVENT_COLOR_GREY, DEFAULT_EVENT_COLORS};
+use crate::project_file::DEFAULT_EVENT_COLORS;
 
 /// One selectable set of 16 event colors.
 pub(super) struct Palette {
@@ -27,7 +27,7 @@ pub(super) const PALETTES: [Palette; 6] = [
     Palette {
         name: "Muted Earth",
         colors: [
-            DEFAULT_EVENT_COLOR_GREY,
+            [150, 84, 58],
             [166, 106, 54],
             [174, 134, 50],
             [160, 152, 52],
@@ -48,7 +48,7 @@ pub(super) const PALETTES: [Palette; 6] = [
     Palette {
         name: "Cool Studio",
         colors: [
-            DEFAULT_EVENT_COLOR_GREY,
+            [46, 116, 186],
             [38, 136, 178],
             [34, 150, 160],
             [36, 152, 130],
@@ -69,7 +69,7 @@ pub(super) const PALETTES: [Palette; 6] = [
     Palette {
         name: "High Contrast",
         colors: [
-            DEFAULT_EVENT_COLOR_GREY,
+            [236, 54, 38],
             [246, 128, 24],
             [248, 198, 16],
             [164, 226, 24],
@@ -90,7 +90,7 @@ pub(super) const PALETTES: [Palette; 6] = [
     Palette {
         name: "Pastel",
         colors: [
-            DEFAULT_EVENT_COLOR_GREY,
+            [250, 170, 150],
             [252, 202, 148],
             [252, 228, 146],
             [222, 240, 148],
@@ -111,7 +111,7 @@ pub(super) const PALETTES: [Palette; 6] = [
     Palette {
         name: "Grayscale",
         colors: [
-            DEFAULT_EVENT_COLOR_GREY,
+            [242, 242, 242],
             [226, 226, 226],
             [210, 210, 210],
             [194, 194, 194],
@@ -160,11 +160,6 @@ mod tests {
 
         for (index, palette) in PALETTES.iter().enumerate() {
             assert!(!palette.name.trim().is_empty());
-            assert_eq!(
-                palette.colors[0], DEFAULT_EVENT_COLOR_GREY,
-                "{} starts with the standard grey",
-                palette.name
-            );
             // Every palette is a full 16-slot set with opaque, usable colors.
             assert_eq!(palette.colors.len(), 16, "{}", palette.name);
             assert!(

@@ -6472,20 +6472,57 @@ impl OpenTrackApp {
         });
     }
 
-    /// Replaces all 16 event color slots with a built-in palette.
+    /// Replaces all 16 event color slots with a built-in palette and assigns a
+    /// slot to each track by id, so the palette visibly recolors the arrange.
     ///
-    /// Returns false for an unknown index and leaves the slots untouched.
+    /// "Default Color" is the standard grey, so a track only keeps it when it is
+    /// added after the palette was applied or its color is cleared.
+    /// Returns false for an unknown index and leaves the project untouched.
     fn apply_event_color_palette(&mut self, index: usize) -> bool {
         let Some(palette) = color_palettes::PALETTES.get(index) else {
             return false;
         };
+        let mut candidate = self.data.project.clone();
+        for track in candidate
+            .tracks
+            .iter_mut()
+            .filter(|track| track.id < opentrack_core::project::INPUT_BUS_ID)
+        {
+            track.color_index = Some(project_controls::automatic_color_index(track) as u8);
+        }
+        if candidate.validate().is_err() {
+            self.status_message =
+                "That palette would leave an invalid project; nothing changed".to_owned();
+            return false;
+        }
+        if candidate != self.data.project {
+            self.project_history.finish_frame(&self.data.project, true);
+            if !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+            {
+                self.status_message =
+                    "Cannot apply the palette: undo snapshot is unavailable".to_owned();
+                return false;
+            }
+            self.project_history.label_next("Apply Event Color Palette");
+            self.data.project = candidate;
+            self.project_history.commit_after_frame = true;
+        }
         self.arrange_view_state.event_colors = palette.colors;
         project_controls::set_active_event_colors(palette.colors);
         // Load first: mark_modified writes its own status line.
         self.mark_modified();
         self.status_message = format!(
-            "Loaded the {} event color palette (16 slots); choose a slot to fine-tune it",
-            palette.name
+            "Loaded the {} event color palette and recolored {} track(s); choose a slot to fine-tune it",
+            palette.name,
+            self.data
+                .project
+                .tracks
+                .iter()
+                .filter(|track| track.color_index.is_some()
+                    && track.id < opentrack_core::project::INPUT_BUS_ID)
+                .count()
         );
         true
     }
@@ -32919,6 +32956,20 @@ mod event_color_palette_tests {
             color_palettes::PALETTES[0].colors,
             "a new project starts on the default palette"
         );
+        app.data.project.add_track(TrackKind::Audio);
+        app.data.project.add_track(TrackKind::Audio);
+        app.project_history.clear();
+
+        // Before any palette is applied both tracks are the standard grey.
+        let grey = crate::project_file::DEFAULT_EVENT_COLOR_GREY;
+        assert_eq!(
+            project_controls::track_color(&app.data.project.tracks[0]),
+            Color32::from_rgb(grey[0], grey[1], grey[2]),
+            "Default Color is grey"
+        );
+        assert!(!project_controls::has_track_color(
+            &app.data.project.tracks[0]
+        ));
 
         assert!(app.apply_event_color_palette(2));
         assert_eq!(
@@ -32927,41 +32978,58 @@ mod event_color_palette_tests {
         );
         assert!(app.modified);
         assert!(app.status_message.contains("Cool Studio"));
-
-        // Reopening the dialog recognises the palette that is in force.
-        app.open_event_colors_dialog();
+        app.project_history.finish_frame(&app.data.project, true);
         assert_eq!(
-            app.event_colors_dialog.as_ref().expect("dialog").palette,
-            Some(2)
+            app.project_history.steps()[0].label,
+            "Apply Event Color Palette"
         );
-        app.event_colors_dialog = None;
 
-        // The palette reaches the arrange: tracks without an explicit slot take
-        // their color from the active palette by id, and switching palettes
-        // recolors them. The first slot is the standard grey, so the first track
-        // stays neutral while its neighbor follows the palette.
-        app.data.project.add_track(TrackKind::Audio);
-        app.data.project.add_track(TrackKind::Audio);
-        let grey = color_palettes::PALETTES[2].colors[0];
+        // The palette reaches the arrange: each track is assigned the slot for
+        // its id, and switching palettes recolors the same tracks.
+        let first = color_palettes::PALETTES[2].colors[0];
         assert_eq!(
             project_controls::track_color(&app.data.project.tracks[0]),
-            Color32::from_rgb(grey[0], grey[1], grey[2]),
-            "the first track takes the standard grey"
+            Color32::from_rgb(first[0], first[1], first[2]),
+            "the first track takes Color 1 of the chosen palette"
         );
         let second = color_palettes::PALETTES[2].colors[1];
         assert_eq!(
             project_controls::track_color(&app.data.project.tracks[1]),
             Color32::from_rgb(second[0], second[1], second[2]),
-            "choosing a palette recolors automatic tracks"
+            "the next track takes the next slot"
         );
         assert!(app.apply_event_color_palette(5));
-        let other = color_palettes::PALETTES[5].colors[1];
-        assert_ne!(other, second);
+        let other = color_palettes::PALETTES[5].colors[0];
         assert_eq!(
-            project_controls::track_color(&app.data.project.tracks[1]),
+            project_controls::track_color(&app.data.project.tracks[0]),
             Color32::from_rgb(other[0], other[1], other[2]),
             "switching palettes recolors the same track"
         );
+
+        // A track added after the palette is applied stays Default grey; the
+        // per-track selector can color it or clear it back.
+        app.data.project.add_track(TrackKind::Audio);
+        assert_eq!(
+            project_controls::track_color(&app.data.project.tracks[2]),
+            Color32::from_rgb(grey[0], grey[1], grey[2])
+        );
+        app.data.project.tracks[2].color_index = Some(3);
+        assert!(project_controls::has_track_color(
+            &app.data.project.tracks[2]
+        ));
+        app.data.project.tracks[2].color_index = None;
+        assert_eq!(
+            project_controls::track_color(&app.data.project.tracks[2]),
+            Color32::from_rgb(grey[0], grey[1], grey[2])
+        );
+
+        // Reopening the dialog recognises the palette that is in force.
+        app.open_event_colors_dialog();
+        assert_eq!(
+            app.event_colors_dialog.as_ref().expect("dialog").palette,
+            Some(5)
+        );
+        app.event_colors_dialog = None;
 
         // An unknown palette index changes nothing.
         let before = app.arrange_view_state.event_colors;

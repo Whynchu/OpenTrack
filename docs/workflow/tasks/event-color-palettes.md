@@ -22,32 +22,25 @@
 | Pastel | Light tints that keep dark labels legible |
 | Grayscale | Neutral ramp for color-blind-safe or print-oriented work |
 
-Each palette is a complete 16-slot set rather than an offset: the arrange always has a full palette, and the result does not depend on the previous colors. **Every palette starts with the standard grey as Color 1** (user direction): the first swatch is the neutral default identity, and the 15 flavour colors follow it. Automatic track colors therefore include one grey slot per 16 ids, so the first track stays neutral while its neighbours follow the palette.
-
-## Platform target
-
-The user direction is that Linux is a real target, not an accessory to Windows. Recorded in `AGENTS.md` and the README:
-
-- Windows x64 and Linux x86_64 are both target platforms, built from the same Rust application.
-- Windows uses WASAPI and the optional local ASIO adapter; Linux uses ALSA through CPAL.
-- Known Linux gaps are stated rather than hidden: VST3 editor embedding is not implemented, and the ALSA callback thread runs at normal priority (cpal's `realtime` feature is off), which is the scheduling half of the dropout report fixed earlier.
-- The release procedure builds and tests on Linux in this repository (`./build.sh`), and the binary below was built there.
+Each palette is a complete 16-slot set rather than an offset: the arrange always has a full palette, and the result does not depend on the previous colors. "Default Color" is separate from the palette: it is the standard neutral grey (160,160,160) and is what a track has before a palette or a slot is applied. Applying a palette assigns every track the slot for its id, `(id - 1) % 16`, as one "Apply Event Color Palette" undo step, so the palette visibly recolors the arrange and each track keeps a stable color across reordering and renaming. A track added afterwards starts grey; picking a slot colors it and "Default Color" clears it back to grey.
 
 ## Follow-up: the first cut did not reach the arrange
+
+(Model after the last correction: palette slots 1-16 keep their designed colors; grey is only the separate Default Color.)
 
 The user reported that the palettes looked right in the dialog but did not apply. That was correct: the dialog and the toolbar swatch read `event_colors`, while every track strip, event, Mixer strip, Inspector header and Sample Editor waveform read `project_controls::track_color`, which used the **constant** `DEFAULT_EVENT_COLORS` plus `track.color_index`. Nothing painted with the chosen palette.
 
 Fixed by making the drawing palette a single source:
 
 - `project_controls` holds the active palette (thread-local, so parallel tests stay isolated) and exposes `set_active_event_colors` / `active_event_colors`.
-- `track_color` takes an explicit `color_index` from the **active** palette; otherwise a media track gets `palette[(id - 1) % 16]`, so every track has a palette color chosen **by track id** - reordering, renaming or duplicating a lane never changes it - and a bus keeps its blue identity until a slot is chosen.
+- `track_color` takes an explicit `color_index` from the **active** palette; without one, a media track is the standard grey (Default Color), and a bus keeps its blue identity.
 - The app writes the workspace `event_colors` into the drawing palette at the top of every frame, in `apply_event_color_palette`, and when a slot is edited, so a palette change, project load or undo recolors all surfaces in the same frame.
-- `has_track_color` now reports true for media tracks, so the Mixer and Inspector show the palette color too.
-- The per-track selector's first swatch shows the track's automatic color instead of a flat grey, and its palette row follows the active palette.
+- `has_track_color` reports true when a track carries an explicit palette slot, so the Mixer and Inspector only accent colored tracks.
+- The per-track selector's first swatch is the grey Default Color, and its palette row follows the active palette.
 
-The palettes were also resaturated after the review: Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale were regenerated with stronger chroma, and Grayscale uses a wider dark-to-light ramp. Every set - including Default - starts with the standard grey as Color 1 (user direction), so the shipped palette's first entry changed from salmon to grey; projects that already saved their own colors keep them until a palette is chosen.
+The palettes were also resaturated after the review: Muted Earth, Cool Studio, High Contrast, Pastel and Grayscale were regenerated with stronger chroma, and Grayscale uses a wider dark-to-light ramp. Every set keeps its designed 16 colors (user direction, after a wrong first attempt that put grey in slot 1); grey is the separate Default Color identity.
 
-New coverage: `automatic_track_colors_follow_the_palette_and_the_track_id` (core: id mapping, wrap at 16, explicit slot override, palette switch recolors) and the app test now asserts that choosing and switching a palette changes the same track's drawn color.
+New coverage: `default_color_is_grey_and_explicit_slots_follow_the_active_palette` (grey default, explicit slots, palette switch recolors, id-to-slot mapping) and the app test asserts that applying a palette assigns slots by id, writes one undo step, recolors the same tracks on a switch, and leaves a later track grey.
 
 ## Handoff
 
