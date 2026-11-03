@@ -39,6 +39,7 @@ pub(super) enum NoteHead {
 pub(super) enum ScoreNoteFlag {
     Hidden,
     Flipped,
+    Grace,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -272,6 +273,11 @@ impl OpenTrackApp {
         self.toggle_score_note_flag(ScoreNoteFlag::Flipped);
     }
 
+    /// Converts the selected notes to grace notes (or back) as one undo step.
+    pub(super) fn toggle_grace_selected_score_notes(&mut self) {
+        self.toggle_score_note_flag(ScoreNoteFlag::Grace);
+    }
+
     fn toggle_score_note_flag(&mut self, flag: ScoreNoteFlag) {
         let Some(part_id) = self.data.project.selected_midi_part_id else {
             self.status_message = "Select a MIDI part before editing the score".to_owned();
@@ -305,6 +311,10 @@ impl OpenTrackApp {
                 opentrack_core::midi_transform::toggle_flipped(part, &ids),
                 "Flip Notes",
             ),
+            ScoreNoteFlag::Grace => (
+                opentrack_core::midi_transform::toggle_grace(part, &ids),
+                "Grace Notes",
+            ),
         };
         if changed == 0 {
             self.status_message = "No selected note changed".to_owned();
@@ -316,6 +326,7 @@ impl OpenTrackApp {
             match flag {
                 ScoreNoteFlag::Hidden => "Toggled the score visibility of",
                 ScoreNoteFlag::Flipped => "Toggled the stem direction of",
+                ScoreNoteFlag::Grace => "Toggled grace notes for",
             }
         );
     }
@@ -434,6 +445,7 @@ impl OpenTrackApp {
         let mut settings = false;
         let mut hide_show = false;
         let mut flip = false;
+        let mut grace = false;
         let response = egui::Window::new("Score")
             .id(Id::new("score-view"))
             .order(egui::Order::Foreground)
@@ -482,6 +494,9 @@ impl OpenTrackApp {
                     }
                     if ui.button("Flip").clicked() {
                         flip = true;
+                    }
+                    if ui.button("Grace").clicked() {
+                        grace = true;
                     }
                     if ui
                         .selectable_label(page_mode, "Page Mode")
@@ -637,7 +652,11 @@ impl OpenTrackApp {
                                     }
                                 }
                                 let head = note_head(note.duration_beats);
-                                let radius = Vec2::new(5.0 * scale, 3.6 * scale);
+                                let grace_scale = if note.grace { 0.62 } else { 1.0 };
+                                let radius = Vec2::new(
+                                    5.0 * scale * grace_scale,
+                                    3.6 * scale * grace_scale,
+                                );
                                 let center = Pos2::new(x, y);
                                 let is_selected = selected.contains(&note.id);
                                 if is_selected {
@@ -685,9 +704,9 @@ impl OpenTrackApp {
                                 if !matches!(head, NoteHead::Whole) {
                                     let up = stem_up(position, note.flipped);
                                     let stem_end = if up {
-                                        Pos2::new(x + 4.5 * scale, y - 26.0 * scale)
+                                        Pos2::new(x + 4.5 * scale, y - 26.0 * scale * grace_scale)
                                     } else {
-                                        Pos2::new(x + 4.5 * scale, y + 26.0 * scale)
+                                        Pos2::new(x + 4.5 * scale, y + 26.0 * scale * grace_scale)
                                     };
                                     painter.line_segment(
                                         [Pos2::new(x + 4.5 * scale, y), stem_end],
@@ -707,6 +726,15 @@ impl OpenTrackApp {
                                             Stroke::new(1.2, colors.text),
                                         );
                                     }
+                                }
+                                if note.grace {
+                                    painter.text(
+                                        Pos2::new(x + 3.0 * scale, y - 5.0 * scale),
+                                        Align2::CENTER_CENTER,
+                                        "/",
+                                        FontId::proportional(10.0 * scale),
+                                        colors.text,
+                                    );
                                 }
                                 if is_accidental(note.pitch) {
                                     painter.text(
@@ -743,6 +771,9 @@ impl OpenTrackApp {
         }
         if flip {
             self.toggle_flipped_selected_score_notes();
+        }
+        if grace {
+            self.toggle_grace_selected_score_notes();
         }
         if settings {
             self.toggle_score_settings();
@@ -1065,6 +1096,7 @@ mod tests {
         let mut app = app_with_part();
         app.score_view_open = true;
         app.data.project.tracks[0].midi_parts[0].notes[0].hidden = true;
+        app.data.project.tracks[0].midi_parts[0].notes[1].grace = true;
         let mut texts = Vec::new();
         for frame in 0..2 {
             let mut output = ctx.run_ui(

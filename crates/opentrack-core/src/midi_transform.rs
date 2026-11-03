@@ -35,6 +35,18 @@ pub fn toggle_hidden(part: &mut MidiPart, ids: &[u64]) -> usize {
     changed
 }
 
+/// Toggles the score `grace` flag on the given notes.
+pub fn toggle_grace(part: &mut MidiPart, ids: &[u64]) -> usize {
+    let mut changed = 0;
+    for note in part.notes.iter_mut() {
+        if ids.contains(&note.id) {
+            note.grace = !note.grace;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Toggles the score stem `flipped` flag on the given notes.
 pub fn toggle_flipped(part: &mut MidiPart, ids: &[u64]) -> usize {
     let mut changed = 0;
@@ -218,6 +230,7 @@ mod tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -228,6 +241,7 @@ mod tests {
                     velocity: 1,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 3,
@@ -238,6 +252,7 @@ mod tests {
                     velocity: 64,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -386,5 +401,10 @@ mod tests {
         assert!(!part.notes[0].flipped);
         assert_eq!(toggle_flipped(&mut part, &[2]), 1);
         assert!(!part.notes[1].flipped);
+
+        assert_eq!(toggle_grace(&mut part, &[3]), 1);
+        assert!(part.notes[2].grace && !part.notes[0].grace);
+        assert_eq!(toggle_grace(&mut part, &[3]), 1);
+        assert!(!part.notes[2].grace);
     }
 }

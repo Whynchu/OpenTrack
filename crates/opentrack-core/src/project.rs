@@ -1060,6 +1060,9 @@ pub struct MidiNote {
     /// Flips the score stem direction for this note.
     #[serde(default)]
     pub flipped: bool,
+    /// Draws the note as a small grace note in the score.
+    #[serde(default)]
+    pub grace: bool,
 }
 
 /// A MIDI control-change event positioned relative to its MIDI part.
@@ -4823,6 +4826,7 @@ impl Project {
             velocity,
             hidden: false,
             flipped: false,
+            grace: false,
         });
         Some(id)
     }

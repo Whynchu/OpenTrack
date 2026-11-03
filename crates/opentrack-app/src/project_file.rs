@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 39;
+const FORMAT_VERSION: u32 = 40;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1430,6 +1430,41 @@ mod tests {
         let loaded = ProjectFile::read(&path).unwrap();
         assert_eq!(loaded.version, FORMAT_VERSION);
         assert!(loaded.project.tracks[0].clips[0].offline_chain.is_empty());
+        assert!(loaded.project.validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_version_39_file_without_the_grace_flag_loads_with_false() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Midi);
+        let part = project.add_midi_part(0, 0.0, 4.0).expect("part");
+        project
+            .add_midi_note(0, part, 0.0, 1.0, 60, 100)
+            .expect("note");
+        project.tracks[0].midi_parts[0].notes[0].grace = true;
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy["version"] = 39.into();
+        legacy["project"]["tracks"][0]["midi_parts"][0]["notes"][0]
+            .as_object_mut()
+            .expect("note")
+            .remove("grace");
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v39-grace-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert!(
+            !loaded.project.tracks[0].midi_parts[0].notes[0].grace,
+            "legacy notes are not grace notes"
+        );
         assert!(loaded.project.validate().is_ok());
         fs::remove_file(path).unwrap();
     }

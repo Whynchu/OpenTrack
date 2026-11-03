@@ -8,7 +8,7 @@ $env:UPDATE_SOURCE_INVENTORY = "1"
 cargo test -p opentrack generated_source_inventory -- --nocapture
 ```
 
-- Source snapshot: `app.rs` FNV-1a 64 `0x95f364198237e6d1`; keymap CSV `0xa9f1eb00c81948c7`
+- Source snapshot: `app.rs` FNV-1a 64 `0x54751419f670290b`; keymap CSV `0xa9f1eb00c81948c7`
 - Scope: the project-open main menu and the empty-project shell. Context menus are
 enumerated in the curated `docs/reviews/audit-menus.md` register; this generated file
 does not claim to cover them.
@@ -22,7 +22,7 @@ counted once, not per runtime instance.
 
 ## Project-open main menu
 
-277 leaves: 63 available, 179 state-dependent, 27 unavailable, 8 informational.
+277 leaves: 63 available, 180 state-dependent, 26 unavailable, 8 informational.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
@@ -252,15 +252,15 @@ counted once, not per runtime instance.
 | Scores > Align Elements > Top |  | unavailable | `false` | 15207 |
 | Scores > Auto Layout... |  | available | `true` | 15265 |
 | Scores > Build N-Tuplet... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 15166 |
-| Scores > Convert to Grace Note |  | unavailable | `false` | 15198 |
+| Scores > Convert to Grace Note |  | state-dependent | `self.project_open` | 15198 |
 | Scores > Flip |  | state-dependent | `self.project_open` | 15194 |
 | Scores > Functions > Explode |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15250 |
 | Scores > Functions > Explode Pitches |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15237 |
 | Scores > Functions > Make Chord Symbols |  | unavailable | `false` | 15263 |
 | Scores > Functions > Merge |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15224 |
-| Scores > Group/Ungroup Notes |  | unavailable | `false` | 15198 |
+| Scores > Group/Ungroup Notes |  | unavailable | `false` | 15202 |
 | Scores > Hide/Show |  | state-dependent | `self.project_open` | 15190 |
-| Scores > Insert Slur |  | unavailable | `false` | 15198 |
+| Scores > Insert Slur |  | unavailable | `false` | 15202 |
 | Scores > Make Chord Symbols |  | unavailable | `false` | 15219 |
 | Scores > Make Guitar Symbols |  | unavailable | `false` | 15219 |
 | Scores > Open Layout... |  | available | `true` | 15186 |

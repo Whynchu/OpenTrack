@@ -155,6 +155,7 @@ mod tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 })
                 .collect(),
             controller_events: Vec::new(),

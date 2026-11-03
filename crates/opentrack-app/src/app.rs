@@ -15195,13 +15195,13 @@ impl OpenTrackApp {
                         self.toggle_flipped_selected_score_notes();
                         ui.close();
                     }
+                    if menu_command(ui, "Convert to Grace Note", "", self.project_open).clicked() {
+                        self.toggle_grace_selected_score_notes();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
-                        &[
-                            ("Group/Ungroup Notes", ""),
-                            ("Convert to Grace Note", ""),
-                            ("Insert Slur", ""),
-                        ],
+                        &[("Group/Ungroup Notes", ""), ("Insert Slur", "")],
                     );
                     ui.menu_button("Align Elements", |ui| {
                         disabled_menu_commands(
@@ -30363,6 +30363,7 @@ mod midi_quantize_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -30373,6 +30374,7 @@ mod midi_quantize_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -34954,6 +34956,7 @@ mod list_editor_tests {
                     velocity: 90,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -34964,6 +34967,7 @@ mod list_editor_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35087,6 +35091,7 @@ mod explode_channel_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35097,6 +35102,7 @@ mod explode_channel_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35165,6 +35171,7 @@ mod explode_pitches_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35175,6 +35182,7 @@ mod explode_pitches_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 3,
@@ -35185,6 +35193,7 @@ mod explode_pitches_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35250,6 +35259,7 @@ mod tuplet_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35260,6 +35270,7 @@ mod tuplet_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 3,
@@ -35270,6 +35281,7 @@ mod tuplet_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),
@@ -35355,6 +35367,7 @@ mod insert_velocities_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
                 MidiNote {
                     id: 2,
@@ -35365,6 +35378,7 @@ mod insert_velocities_tests {
                     velocity: 100,
                     hidden: false,
                     flipped: false,
+                    grace: false,
                 },
             ],
             controller_events: Vec::new(),

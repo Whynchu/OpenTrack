@@ -11,7 +11,7 @@
 - **Grand staff:** treble for pitches at or above middle C (60), bass below; bottom lines E4 and G2; ledger lines outside the staff; `#` before accidentals (no key signature).
 - **Time from the signature:** bar length is `beats_per_bar * 4 / beat_unit` quarter notes (4/4 = 4, 6/8 = 3, 3/4 = 3); bar lines are drawn across both staves.
 - **Lengths:** whole/half/quarter/eighth/sixteenth by duration thresholds, hollow heads for whole/half, stems and 1–3 flags, filled heads otherwise.
-- **Hide/Show and Flip:** per-note flags persist in the project (OPR 39). Hidden notes keep sounding but draw as a muted placeholder; flipped notes draw their stem in the opposite direction. Both are one undo step ("Hide/Show Notes", "Flip Notes") and are available from the score toolbar and the Scores menu.
+- **Hide/Show, Flip and Grace:** per-note flags persist in the project (OPR 39/40). Hidden notes keep sounding but draw as a muted placeholder; flipped notes draw their stem in the opposite direction; grace notes draw as smaller heads with a slash. Each is one undo step ("Hide/Show Notes", "Flip Notes", "Grace Notes") from the score toolbar and the Scores menu.
 - **Editing:** click a note to select it (the MIDI editor selection follows). Buttons and keys move it by 1/4 beat (Shift: 1 beat), transpose ±1 semitone (Shift: ±12) or delete it. Move is one "Move Notes" undo step clamped inside the part; transpose/delete reuse the MIDI commands and their undo labels.
 - **Page Mode and Settings:** the Scores menu rows toggle page systems (`score-page-mode-v1`) and open a zoom slider (`score-zoom-v1`, 0.5–2.0). Both are view settings, not project data.
 - **Layout rows:** Open Layout... opens a persisted dialog for bars per system (1–8, `score-bars-per-system-v1`), zoom and page mode; Auto Layout... sets four bars per system with page mode on; Reset Layout... restores four bars, zoom 1.00 and continuous mode.
@@ -22,9 +22,9 @@
 ## Verification
 
 - `cargo test -p opentrack score_view` -> 10 passed: signature/page mapping, pitch/staff mapping, selection plus move-clamp/transpose/delete with their undo labels, page mode and settings toggles, layout auto/reset behaviour, hidden/flipped toggles with their undo labels, stem-direction flipping, the open-only-with-a-part rule, the layout dialog controls, and the window drawing Treble/Bass/`3 note(s)`/Page Mode plus the hidden placeholder.
-- Inventory regenerated: 277 leaves, 63 available, **179 state-dependent, 27 unavailable**, 8 informational (Hide/Show and Flip joined the layout rows). OPR is now 39.
+- Inventory regenerated: 277 leaves, 63 available, **180 state-dependent, 26 unavailable**, 8 informational (Hide/Show, Flip and Convert to Grace Note). OPR is now 40.
 - Keyboard coverage 150 of 152 (video and external sync remain).
-- App suite 636 passed / 4 known device-dependent roll failures / 9 ignored (649 tests); core 168 (new flag toggles).
+- App suite 637 passed / 4 known device-dependent roll failures / 9 ignored (650 tests); core 168 (grace toggle included).
 
 ## Not claimed
 
