@@ -1,14 +1,20 @@
-//! Read-only score view for the selected MIDI part.
+//! Score view for the selected MIDI part.
 //!
-//! This is a first, bounded score surface: a grand staff with the part's notes
-//! placed by pitch and length from the project's time signature. It does not
-//! edit, lay out or engrave, and the window says so.
+//! A first, bounded score surface: a grand staff with the part's notes placed by
+//! pitch and length from the project's time signature, direct selection and
+//! keyboard/button editing (move, transpose, delete), a page layout and zoom.
+//! Engraving, symbols and beaming are not implemented.
 
 use super::*;
 use opentrack_core::project::MidiPart;
 
 /// Pitches at or above middle C read on the treble staff; lower ones on bass.
 pub(super) const STAFF_SPLIT_PITCH: u8 = 60;
+/// Bars per system in page mode.
+pub(super) const SCORE_BARS_PER_SYSTEM: usize = 4;
+/// Zoom bounds.
+pub(super) const MIN_SCORE_ZOOM: f32 = 0.5;
+pub(super) const MAX_SCORE_ZOOM: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Staff {
@@ -24,6 +30,14 @@ pub(super) enum NoteHead {
     Eighth,
     Sixteenth,
     Shorter,
+}
+
+/// One edit requested by a button or key in the score window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ScoreAction {
+    Move(f64),
+    Transpose(i16),
+    Delete,
 }
 
 pub(super) fn staff_for_pitch(pitch: u8) -> Staff {
@@ -105,6 +119,16 @@ pub(super) fn note_flags(head: NoteHead) -> u8 {
     }
 }
 
+/// In page mode, the system and beat offset inside that system.
+pub(super) fn page_system_for_beats(beats: f64, bar: f64) -> (usize, f64) {
+    let bar_index = (beats / bar.max(0.25)).floor().max(0.0) as usize;
+    let within = beats - bar_index as f64 * bar;
+    (
+        bar_index / SCORE_BARS_PER_SYSTEM,
+        (bar_index % SCORE_BARS_PER_SYSTEM) as f64 * bar + within,
+    )
+}
+
 impl OpenTrackApp {
     fn selected_midi_part(&self) -> Option<MidiPart> {
         let id = self.data.project.selected_midi_part_id?;
@@ -117,7 +141,7 @@ impl OpenTrackApp {
             .cloned()
     }
 
-    /// Opens the read-only score for the selected MIDI part.
+    /// Opens the score for the selected MIDI part.
     pub(super) fn open_score_view(&mut self) {
         if !self.project_open {
             self.status_message = "Open a project to see its score".to_owned();
@@ -129,7 +153,111 @@ impl OpenTrackApp {
         }
         self.score_view_open = true;
         self.status_message =
-            "Score view is read-only; engraving and editing are not implemented".to_owned();
+            "Score: click a note, then move/transpose/delete it from the buttons or the arrow keys and Delete"
+                .to_owned();
+    }
+
+    /// Selects one note for the score (and the MIDI editor selection).
+    pub(super) fn select_score_note(&mut self, id: u64) {
+        self.selected_midi_note_ids.clear();
+        self.selected_midi_note_ids.insert(id);
+        self.selected_midi_note_id = Some(id);
+        let label = self
+            .selected_midi_part()
+            .and_then(|part| {
+                part.notes
+                    .iter()
+                    .find(|note| note.id == id)
+                    .map(|note| (note.pitch, note.start_beats))
+            })
+            .map(|(pitch, start)| format!("{} at beat {start:.3}", pitch_label(pitch)))
+            .unwrap_or_else(|| "note".to_owned());
+        self.status_message = format!("Selected {label}");
+    }
+
+    /// Moves the selected notes in time, clamped inside the part, as one step.
+    pub(super) fn move_selected_score_notes(&mut self, delta_beats: f64) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before moving notes".to_owned();
+            return;
+        };
+        if self.selected_midi_note_ids.is_empty() || !delta_beats.is_finite() {
+            self.status_message = "Select a note to move".to_owned();
+            return;
+        }
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let limit = part.duration_beats;
+        let mut changed = 0usize;
+        for note in part.notes.iter_mut() {
+            if !ids.contains(&note.id) {
+                continue;
+            }
+            let maximum = (limit - note.duration_beats).max(0.0);
+            let target = (note.start_beats + delta_beats).clamp(0.0, maximum);
+            if (target - note.start_beats).abs() > 1e-9 {
+                note.start_beats = target;
+                changed += 1;
+            }
+        }
+        if changed == 0 {
+            self.status_message = "The note cannot move further in that direction".to_owned();
+            return;
+        }
+        self.record_score_edit(candidate, "Move Notes");
+        self.status_message = format!("Moved {changed} note(s) by {delta_beats:+.3} beat(s)");
+    }
+
+    /// Transposes the selected score notes through the MIDI transpose command.
+    pub(super) fn transpose_selected_score_notes(&mut self, semitones: i16) {
+        self.transpose_selected_notes(semitones);
+    }
+
+    /// Deletes the selected score notes through the MIDI delete command.
+    pub(super) fn delete_selected_score_notes(&mut self) {
+        self.delete_selected_midi_notes();
+    }
+
+    fn record_score_edit(&mut self, candidate: Project, label: &str) {
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message = format!("Cannot {label}: undo snapshot is unavailable");
+            return;
+        }
+        self.project_history.label_next(label);
+        self.data.project = candidate;
+        self.project_history.commit_after_frame = true;
+        self.rebuild_audio_plan();
+        self.mark_modified();
+    }
+
+    pub(super) fn toggle_score_page_mode(&mut self) {
+        self.score_page_mode = !self.score_page_mode;
+        self.status_message = if self.score_page_mode {
+            "Score page mode on".to_owned()
+        } else {
+            "Score continuous mode on".to_owned()
+        };
+    }
+
+    pub(super) fn toggle_score_settings(&mut self) {
+        self.score_settings_open = !self.score_settings_open;
     }
 
     pub(super) fn show_score_view(&mut self, ctx: &egui::Context) {
@@ -143,211 +271,343 @@ impl OpenTrackApp {
         let bar = bar_beats(self.data.project.beats_per_bar, self.data.project.beat_unit);
         let total = part.duration_beats.max(bar);
         let bars = (total / bar).ceil().max(1.0) as usize;
-        let px_per_beat: f32 = 26.0;
+        let scale = self.score_zoom.clamp(MIN_SCORE_ZOOM, MAX_SCORE_ZOOM);
+        let px_per_beat = 26.0 * scale;
+        let page_mode = self.score_page_mode;
+        let systems = if page_mode {
+            bars.div_ceil(SCORE_BARS_PER_SYSTEM).max(1)
+        } else {
+            1
+        };
+        let selected: BTreeSet<u64> = self.selected_midi_note_ids.iter().copied().collect();
         let mut open = true;
+        let mut action = None;
+        let mut clicked_note = None;
+        let mut toggle_page = false;
+        let mut settings = false;
         let response = egui::Window::new("Score")
             .id(Id::new("score-view"))
             .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(true)
-            .default_size(Vec2::new(760.0, 360.0))
+            .default_size(Vec2::new(820.0, 420.0))
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(format!(
-                    "{} · {}/{} · {bars} bar(s) · {} note(s)",
+                    "{} · {}/{} · {bars} bar(s) · {} note(s){}",
                     part.name,
                     self.data.project.beats_per_bar,
                     self.data.project.beat_unit,
-                    part.notes.len()
+                    part.notes.len(),
+                    if page_mode { " · page mode" } else { "" }
                 ));
                 ui.label(
                     egui::RichText::new(
-                        "Read-only: notes are placed by pitch and length from the time signature. Engraving, layout and editing are not implemented.",
+                        "Click a note to select it. Arrow keys move (left/right) or transpose (up/down); Shift makes a larger step. Delete removes it. Engraving and symbols are not implemented.",
                     )
                     .small()
                     .color(theme::palette(ui).muted),
                 );
-                let width = 80.0 + bars as f32 * bar as f32 * px_per_beat + 24.0;
-                egui::ScrollArea::horizontal()
+                ui.horizontal(|ui| {
+                    if ui.button("◀ 1/4").clicked() {
+                        action = Some(ScoreAction::Move(-0.25));
+                    }
+                    if ui.button("1/4 ▶").clicked() {
+                        action = Some(ScoreAction::Move(0.25));
+                    }
+                    if ui.button("▲ +1").clicked() {
+                        action = Some(ScoreAction::Transpose(1));
+                    }
+                    if ui.button("▼ -1").clicked() {
+                        action = Some(ScoreAction::Transpose(-1));
+                    }
+                    if ui.button("Delete Note").clicked() {
+                        action = Some(ScoreAction::Delete);
+                    }
+                    if ui
+                        .selectable_label(page_mode, "Page Mode")
+                        .clicked()
+                    {
+                        toggle_page = true;
+                    }
+                    if ui.button("Settings...").clicked() {
+                        settings = true;
+                    }
+                });
+                let (up, down, left, right, shift, delete) = ui.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::ArrowUp),
+                        i.key_pressed(egui::Key::ArrowDown),
+                        i.key_pressed(egui::Key::ArrowLeft),
+                        i.key_pressed(egui::Key::ArrowRight),
+                        i.modifiers.shift,
+                        i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
+                    )
+                });
+                if up {
+                    action = Some(ScoreAction::Transpose(if shift { 12 } else { 1 }));
+                } else if down {
+                    action = Some(ScoreAction::Transpose(if shift { -12 } else { -1 }));
+                } else if left {
+                    action = Some(ScoreAction::Move(if shift { -1.0 } else { -0.25 }));
+                } else if right {
+                    action = Some(ScoreAction::Move(if shift { 1.0 } else { 0.25 }));
+                } else if delete {
+                    action = Some(ScoreAction::Delete);
+                }
+                let width = 80.0
+                    + if page_mode {
+                        SCORE_BARS_PER_SYSTEM as f32 * bar as f32 * px_per_beat
+                    } else {
+                        bars as f32 * bar as f32 * px_per_beat
+                    }
+                    + 24.0;
+                let height = if page_mode {
+                    systems as f32 * 170.0 * scale + 60.0
+                } else {
+                    300.0 * scale + 20.0
+                };
+                let mut note_centers: Vec<(u64, Pos2)> = Vec::new();
+                egui::ScrollArea::both()
                     .id_salt("score-scroll")
                     .show(ui, |ui| {
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::new(width.max(560.0), 300.0),
-                            Sense::hover(),
+                        let (rect, canvas) = ui.allocate_exact_size(
+                            Vec2::new(width.max(560.0), height.max(240.0)),
+                            Sense::click(),
                         );
                         let painter = ui.painter_at(rect);
                         let colors = theme::palette(ui);
-                        let spacing = 10.0_f32;
-                        let treble_top = rect.top() + 40.0;
-                        let bass_top = treble_top + 150.0;
-                        for (label, top) in [("Treble", treble_top), ("Bass", bass_top)] {
-                            for line in 0..5 {
-                                let y = top + line as f32 * spacing;
+                        let spacing = 10.0_f32 * scale;
+                        let system_gap = 170.0 * scale;
+                        for system in 0..systems {
+                            let treble_top = rect.top() + 40.0 + system as f32 * system_gap;
+                            let bass_top = treble_top + 150.0 * scale;
+                            for (label, top) in [("Treble", treble_top), ("Bass", bass_top)] {
+                                for line in 0..5 {
+                                    let y = top + line as f32 * spacing;
+                                    painter.line_segment(
+                                        [
+                                            Pos2::new(rect.left() + 56.0, y),
+                                            Pos2::new(rect.right() - 8.0, y),
+                                        ],
+                                        Stroke::new(1.0, colors.grid),
+                                    );
+                                }
+                                painter.text(
+                                    Pos2::new(rect.left() + 8.0, top + 2.0 * spacing),
+                                    Align2::LEFT_CENTER,
+                                    label,
+                                    FontId::proportional(12.0 * scale),
+                                    colors.muted,
+                                );
+                            }
+                            let bars_in_system = if page_mode {
+                                SCORE_BARS_PER_SYSTEM
+                            } else {
+                                bars
+                            };
+                            for bar_index in 1..=bars_in_system {
+                                let global_bar = if page_mode {
+                                    system * SCORE_BARS_PER_SYSTEM + bar_index
+                                } else {
+                                    bar_index
+                                };
+                                if global_bar > bars {
+                                    break;
+                                }
+                                let x = rect.left()
+                                    + 56.0
+                                    + bar_index as f32 * bar as f32 * px_per_beat;
+                                if x > rect.right() - 8.0 {
+                                    break;
+                                }
                                 painter.line_segment(
-                                    [Pos2::new(rect.left() + 56.0, y), Pos2::new(rect.right() - 8.0, y)],
+                                    [
+                                        Pos2::new(x, treble_top),
+                                        Pos2::new(x, bass_top + 4.0 * spacing),
+                                    ],
                                     Stroke::new(1.0, colors.grid),
                                 );
                             }
-                            painter.text(
-                                Pos2::new(rect.left() + 8.0, top + 2.0 * spacing),
-                                Align2::LEFT_CENTER,
-                                label,
-                                FontId::proportional(12.0),
-                                colors.muted,
-                            );
-                        }
-                        // Bar lines across both staves.
-                        for bar_index in 1..=bars {
-                            let x = rect.left()
-                                + 56.0
-                                + bar_index as f32 * bar as f32 * px_per_beat;
-                            if x > rect.right() - 8.0 {
-                                break;
-                            }
-                            painter.line_segment(
-                                [Pos2::new(x, treble_top), Pos2::new(x, bass_top + 4.0 * spacing)],
-                                Stroke::new(1.0, colors.grid),
-                            );
-                        }
-                        for note in &part.notes {
-                            let staff = staff_for_pitch(note.pitch);
-                            let position = staff_position(note.pitch, staff);
-                            let bottom = if staff == Staff::Treble {
-                                treble_top + 4.0 * spacing
-                            } else {
-                                bass_top + 4.0 * spacing
-                            };
-                            let y = bottom - position as f32 * spacing * 0.5;
-                            let x = rect.left()
-                                + 56.0
-                                + (note.start_beats.max(0.0) as f32) * px_per_beat;
-                            if x > rect.right() - 12.0 {
-                                continue;
-                            }
-                            // Ledger lines for notes outside the staff.
-                            if position > 8 {
-                                let mut ledger = 10;
-                                while ledger <= position {
-                                    let ly = bottom - ledger as f32 * spacing * 0.5;
-                                    painter.line_segment(
-                                        [Pos2::new(x - 7.0, ly), Pos2::new(x + 7.0, ly)],
-                                        Stroke::new(1.0, colors.grid),
-                                    );
-                                    ledger += 2;
-                                }
-                            } else if position < 0 {
-                                let mut ledger = -2;
-                                while ledger >= position {
-                                    let ly = bottom - ledger as f32 * spacing * 0.5;
-                                    painter.line_segment(
-                                        [Pos2::new(x - 7.0, ly), Pos2::new(x + 7.0, ly)],
-                                        Stroke::new(1.0, colors.grid),
-                                    );
-                                    ledger -= 2;
-                                }
-                            }
-                            let head = note_head(note.duration_beats);
-                            let radius = Vec2::new(5.0, 3.6);
-                            let center = Pos2::new(x, y);
-                            let filled = matches!(
-                                head,
-                                NoteHead::Quarter | NoteHead::Eighth | NoteHead::Sixteenth | NoteHead::Shorter
-                            );
-                            if filled {
-                                painter.add(egui::Shape::ellipse_filled(
-                                    center,
-                                    radius,
-                                    colors.text,
-                                ));
-                            } else {
-                                painter.add(egui::Shape::ellipse_stroke(
-                                    center,
-                                    radius,
-                                    Stroke::new(1.4, colors.text),
-                                ));
-                            }
-                            if !matches!(head, NoteHead::Whole) {
-                                let up = position < 4;
-                                let stem_end = if up {
-                                    Pos2::new(x + 4.5, y - 26.0)
+                            for note in &part.notes {
+                                let (system_of_note, x_beats) = if page_mode {
+                                    page_system_for_beats(note.start_beats.max(0.0), bar)
                                 } else {
-                                    Pos2::new(x + 4.5, y + 26.0)
+                                    (0, note.start_beats.max(0.0))
                                 };
-                                painter.line_segment(
-                                    [Pos2::new(x + 4.5, y), stem_end],
-                                    Stroke::new(1.2, colors.text),
+                                if system_of_note != system {
+                                    continue;
+                                }
+                                let staff = staff_for_pitch(note.pitch);
+                                let position = staff_position(note.pitch, staff);
+                                let bottom = if staff == Staff::Treble {
+                                    treble_top + 4.0 * spacing
+                                } else {
+                                    bass_top + 4.0 * spacing
+                                };
+                                let y = bottom - position as f32 * spacing * 0.5;
+                                let x =
+                                    rect.left() + 56.0 + x_beats as f32 * px_per_beat;
+                                if x > rect.right() - 12.0 {
+                                    continue;
+                                }
+                                note_centers.push((note.id, Pos2::new(x, y)));
+                                if position > 8 {
+                                    let mut ledger = 10;
+                                    while ledger <= position {
+                                        let ly = bottom - ledger as f32 * spacing * 0.5;
+                                        painter.line_segment(
+                                            [Pos2::new(x - 7.0, ly), Pos2::new(x + 7.0, ly)],
+                                            Stroke::new(1.0, colors.grid),
+                                        );
+                                        ledger += 2;
+                                    }
+                                } else if position < 0 {
+                                    let mut ledger = -2;
+                                    while ledger >= position {
+                                        let ly = bottom - ledger as f32 * spacing * 0.5;
+                                        painter.line_segment(
+                                            [Pos2::new(x - 7.0, ly), Pos2::new(x + 7.0, ly)],
+                                            Stroke::new(1.0, colors.grid),
+                                        );
+                                        ledger -= 2;
+                                    }
+                                }
+                                let head = note_head(note.duration_beats);
+                                let radius = Vec2::new(5.0 * scale, 3.6 * scale);
+                                let center = Pos2::new(x, y);
+                                let is_selected = selected.contains(&note.id);
+                                if is_selected {
+                                    painter.circle_stroke(
+                                        center,
+                                        7.5 * scale,
+                                        Stroke::new(1.5, colors.accent),
+                                    );
+                                }
+                                let filled = matches!(
+                                    head,
+                                    NoteHead::Quarter
+                                        | NoteHead::Eighth
+                                        | NoteHead::Sixteenth
+                                        | NoteHead::Shorter
                                 );
-                                for flag in 0..note_flags(head) {
-                                    let offset = 4.0 + flag as f32 * 4.0;
-                                    let direction = if up { 1.0 } else { -1.0 };
+                                if filled {
+                                    painter.add(egui::Shape::ellipse_filled(
+                                        center, radius, colors.text,
+                                    ));
+                                } else {
+                                    painter.add(egui::Shape::ellipse_stroke(
+                                        center,
+                                        radius,
+                                        Stroke::new(1.4, colors.text),
+                                    ));
+                                }
+                                if !matches!(head, NoteHead::Whole) {
+                                    let up = position < 4;
+                                    let stem_end = if up {
+                                        Pos2::new(x + 4.5 * scale, y - 26.0 * scale)
+                                    } else {
+                                        Pos2::new(x + 4.5 * scale, y + 26.0 * scale)
+                                    };
                                     painter.line_segment(
-                                        [
-                                            stem_end,
-                                            Pos2::new(stem_end.x + 7.0, stem_end.y + direction * offset),
-                                        ],
+                                        [Pos2::new(x + 4.5 * scale, y), stem_end],
                                         Stroke::new(1.2, colors.text),
                                     );
+                                    for flag in 0..note_flags(head) {
+                                        let offset = (4.0 + flag as f32 * 4.0) * scale;
+                                        let direction = if up { 1.0 } else { -1.0 };
+                                        painter.line_segment(
+                                            [
+                                                stem_end,
+                                                Pos2::new(
+                                                    stem_end.x + 7.0 * scale,
+                                                    stem_end.y + direction * offset,
+                                                ),
+                                            ],
+                                            Stroke::new(1.2, colors.text),
+                                        );
+                                    }
+                                }
+                                if is_accidental(note.pitch) {
+                                    painter.text(
+                                        Pos2::new(x - 10.0 * scale, y),
+                                        Align2::CENTER_CENTER,
+                                        "#",
+                                        FontId::proportional(12.0 * scale),
+                                        colors.text,
+                                    );
                                 }
                             }
-                            if is_accidental(note.pitch) {
-                                painter.text(
-                                    Pos2::new(x - 10.0, y),
-                                    Align2::CENTER_CENTER,
-                                    "#",
-                                    FontId::proportional(12.0),
-                                    colors.text,
-                                );
-                            }
+                        }
+                        if canvas.clicked()
+                            && let Some(pointer) = canvas.interact_pointer_pos()
+                            && let Some((id, _)) = note_centers.iter().min_by(|left, right| {
+                                left.1
+                                    .distance(pointer)
+                                    .total_cmp(&right.1.distance(pointer))
+                            })
+                            && note_centers
+                                .iter()
+                                .any(|(_, center)| center.distance(pointer) <= 14.0)
+                        {
+                            clicked_note = Some(*id);
                         }
                     });
             });
         dismiss_window_on_outside_click(ctx, Id::new("score-view"), &mut open, response.as_ref());
+        if toggle_page {
+            self.toggle_score_page_mode();
+        }
+        if settings {
+            self.toggle_score_settings();
+        }
+        if let Some(id) = clicked_note {
+            self.select_score_note(id);
+        } else if let Some(action) = action {
+            match action {
+                ScoreAction::Move(delta) => self.move_selected_score_notes(delta),
+                ScoreAction::Transpose(semitones) => self.transpose_selected_score_notes(semitones),
+                ScoreAction::Delete => self.delete_selected_score_notes(),
+            }
+        }
         self.score_view_open = open;
+        self.show_score_settings(ctx);
+    }
+
+    fn show_score_settings(&mut self, ctx: &egui::Context) {
+        if !self.score_settings_open {
+            return;
+        }
+        let mut open = true;
+        let mut zoom = self.score_zoom;
+        egui::Window::new("Score Settings")
+            .id(Id::new("score-settings"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label("Zoom");
+                ui.add(
+                    egui::Slider::new(&mut zoom, MIN_SCORE_ZOOM..=MAX_SCORE_ZOOM).fixed_decimals(2),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Page mode and zoom are view settings; they are not part of the project.",
+                    )
+                    .small()
+                    .color(theme::palette(ui).muted),
+                );
+            });
+        self.score_zoom = zoom.clamp(MIN_SCORE_ZOOM, MAX_SCORE_ZOOM);
+        self.score_settings_open = open;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn time_signatures_and_note_shapes_are_mapped() {
-        assert!((bar_beats(4, 4) - 4.0).abs() < 1e-9);
-        assert!((bar_beats(6, 8) - 3.0).abs() < 1e-9);
-        assert!((bar_beats(3, 4) - 3.0).abs() < 1e-9);
-        assert!((bar_beats(2, 2) - 4.0).abs() < 1e-9);
-
-        assert_eq!(note_head(4.0), NoteHead::Whole);
-        assert_eq!(note_head(2.0), NoteHead::Half);
-        assert_eq!(note_head(1.0), NoteHead::Quarter);
-        assert_eq!(note_head(0.5), NoteHead::Eighth);
-        assert_eq!(note_head(0.25), NoteHead::Sixteenth);
-        assert_eq!(note_head(0.1), NoteHead::Shorter);
-        assert_eq!(note_flags(NoteHead::Eighth), 1);
-        assert_eq!(note_flags(NoteHead::Sixteenth), 2);
-        assert_eq!(note_flags(NoteHead::Half), 0);
-    }
-
-    #[test]
-    fn pitches_map_to_a_staff_line_or_space() {
-        // Middle C splits the staves.
-        assert_eq!(staff_for_pitch(59), Staff::Bass);
-        assert_eq!(staff_for_pitch(60), Staff::Treble);
-        // Treble bottom line is E4; D4 is the space below, C4 the ledger below.
-        assert_eq!(staff_position(64, Staff::Treble), 0);
-        assert_eq!(staff_position(62, Staff::Treble), -1);
-        assert_eq!(staff_position(60, Staff::Treble), -2);
-        assert_eq!(staff_position(72, Staff::Treble), 5);
-        // Bass bottom line is G2.
-        assert_eq!(staff_position(43, Staff::Bass), 0);
-        assert_eq!(staff_position(45, Staff::Bass), 1);
-        assert_eq!(staff_position(60, Staff::Bass), 10);
-
-        assert_eq!(pitch_label(60), "C4");
-        assert_eq!(pitch_label(61), "C#4");
-        assert_eq!(pitch_label(43), "G2");
-        assert!(is_accidental(61) && !is_accidental(60));
-    }
 
     fn app_with_part() -> OpenTrackApp {
         let ctx = egui::Context::default();
@@ -367,6 +627,47 @@ mod tests {
     }
 
     #[test]
+    fn time_signatures_note_shapes_and_paging_are_mapped() {
+        assert!((bar_beats(4, 4) - 4.0).abs() < 1e-9);
+        assert!((bar_beats(6, 8) - 3.0).abs() < 1e-9);
+        assert!((bar_beats(3, 4) - 3.0).abs() < 1e-9);
+        assert!((bar_beats(2, 2) - 4.0).abs() < 1e-9);
+
+        assert_eq!(note_head(4.0), NoteHead::Whole);
+        assert_eq!(note_head(2.0), NoteHead::Half);
+        assert_eq!(note_head(1.0), NoteHead::Quarter);
+        assert_eq!(note_head(0.5), NoteHead::Eighth);
+        assert_eq!(note_head(0.25), NoteHead::Sixteenth);
+        assert_eq!(note_head(0.1), NoteHead::Shorter);
+        assert_eq!(note_flags(NoteHead::Eighth), 1);
+        assert_eq!(note_flags(NoteHead::Sixteenth), 2);
+        assert_eq!(note_flags(NoteHead::Half), 0);
+
+        // Page mode wraps every four bars onto the next system.
+        assert_eq!(page_system_for_beats(9.0, 4.0), (0, 9.0));
+        assert_eq!(page_system_for_beats(16.0, 4.0), (1, 0.0));
+        assert_eq!(page_system_for_beats(17.5, 4.0), (1, 1.5));
+    }
+
+    #[test]
+    fn pitches_map_to_a_staff_line_or_space() {
+        assert_eq!(staff_for_pitch(59), Staff::Bass);
+        assert_eq!(staff_for_pitch(60), Staff::Treble);
+        assert_eq!(staff_position(64, Staff::Treble), 0);
+        assert_eq!(staff_position(62, Staff::Treble), -1);
+        assert_eq!(staff_position(60, Staff::Treble), -2);
+        assert_eq!(staff_position(72, Staff::Treble), 5);
+        assert_eq!(staff_position(43, Staff::Bass), 0);
+        assert_eq!(staff_position(45, Staff::Bass), 1);
+        assert_eq!(staff_position(60, Staff::Bass), 10);
+
+        assert_eq!(pitch_label(60), "C4");
+        assert_eq!(pitch_label(61), "C#4");
+        assert_eq!(pitch_label(43), "G2");
+        assert!(is_accidental(61) && !is_accidental(60));
+    }
+
+    #[test]
     fn the_score_opens_only_with_a_selected_part() {
         let ctx = egui::Context::default();
         let creation = eframe::CreationContext::_new_kittest(ctx);
@@ -379,7 +680,85 @@ mod tests {
         let mut app = app_with_part();
         app.open_score_view();
         assert!(app.score_view_open);
-        assert!(app.status_message.contains("read-only"));
+    }
+
+    #[test]
+    fn notes_can_be_selected_moved_transposed_and_deleted() {
+        let mut app = app_with_part();
+        let part_id = app.data.project.selected_midi_part_id.expect("part");
+        let notes = app.data.project.tracks[0]
+            .midi_parts
+            .iter()
+            .find(|part| part.id == part_id)
+            .expect("part")
+            .notes
+            .clone();
+        let first = &notes[0];
+
+        app.select_score_note(first.id);
+        assert_eq!(app.selected_midi_note_id, Some(first.id));
+        assert!(app.status_message.contains("C4 at beat 0.000"));
+
+        // Moving one grid step is one undo step; moving left at zero clamps.
+        app.move_selected_score_notes(0.25);
+        let moved = app.data.project.tracks[0].midi_parts[0]
+            .notes
+            .iter()
+            .find(|note| note.id == first.id)
+            .expect("note");
+        assert!((moved.start_beats - 0.25).abs() < 1e-9);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert_eq!(app.project_history.steps()[0].label, "Move Notes");
+        app.move_selected_score_notes(-1.0);
+        let clamped = app.data.project.tracks[0].midi_parts[0]
+            .notes
+            .iter()
+            .find(|note| note.id == first.id)
+            .expect("note");
+        assert_eq!(clamped.start_beats, 0.0);
+
+        // Transpose goes through the MIDI command and its own label.
+        app.transpose_selected_score_notes(2);
+        let transposed = app.data.project.tracks[0].midi_parts[0]
+            .notes
+            .iter()
+            .find(|note| note.id == first.id)
+            .expect("note");
+        assert_eq!(transposed.pitch, 62);
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Transpose Notes")
+        );
+
+        // Delete removes the selection through the MIDI delete command.
+        app.select_score_note(first.id);
+        app.delete_selected_score_notes();
+        assert!(
+            app.data.project.tracks[0].midi_parts[0]
+                .notes
+                .iter()
+                .all(|note| note.id != first.id)
+        );
+        assert_eq!(app.data.project.tracks[0].midi_parts[0].notes.len(), 2);
+    }
+
+    #[test]
+    fn page_mode_and_zoom_are_view_settings() {
+        let mut app = app_with_part();
+        assert!(!app.score_page_mode);
+        app.toggle_score_page_mode();
+        assert!(app.score_page_mode);
+        assert!(app.status_message.contains("page mode"));
+        app.toggle_score_page_mode();
+        assert!(!app.score_page_mode);
+
+        app.toggle_score_settings();
+        assert!(app.score_settings_open);
+        app.toggle_score_settings();
+        assert!(!app.score_settings_open);
     }
 
     #[test]
@@ -421,6 +800,6 @@ mod tests {
         assert!(joined.contains("Treble"), "{joined}");
         assert!(joined.contains("Bass"), "{joined}");
         assert!(joined.contains("3 note(s)"), "{joined}");
-        assert!(joined.contains("Read-only"), "{joined}");
+        assert!(joined.contains("Page Mode"), "{joined}");
     }
 }

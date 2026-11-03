@@ -1260,8 +1260,11 @@ pub struct OpenTrackApp {
     control_room_open: bool,
     /// Help > Registration informational dialog.
     registration_open: bool,
-    /// Read-only score view for the selected MIDI part.
+    /// Score view for the selected MIDI part.
     score_view_open: bool,
+    score_page_mode: bool,
+    score_zoom: f32,
+    score_settings_open: bool,
     /// MIDI outputs for the MMC master and the sync setup dialog.
     midi_output_devices: Vec<MidiOutputDevice>,
     selected_midi_output: Option<String>,
@@ -2831,6 +2834,16 @@ impl OpenTrackApp {
             control_room_tab: 0,
             registration_open: false,
             score_view_open: false,
+            score_page_mode: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "score-page-mode-v1"))
+                .unwrap_or(false),
+            score_zoom: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<f32>(storage, "score-zoom-v1"))
+                .unwrap_or(1.0)
+                .clamp(score_view::MIN_SCORE_ZOOM, score_view::MAX_SCORE_ZOOM),
+            score_settings_open: false,
             midi_output_devices: MidiOutputStream::available_devices().unwrap_or_default(),
             selected_midi_output: creation
                 .storage
@@ -15136,12 +15149,18 @@ impl OpenTrackApp {
                         self.open_tuplet_dialog();
                         ui.close();
                     }
+                    if ui.selectable_label(self.score_page_mode, "Page Mode").clicked() {
+                        self.toggle_score_page_mode();
+                        ui.close();
+                    }
+                    if menu_command(ui, "Settings...", "", true).clicked() {
+                        self.toggle_score_settings();
+                        ui.close();
+                    }
                     disabled_menu_commands(
                         ui,
                         &[
                             ("Open Layout...", ""),
-                            ("Page Mode", ""),
-                            ("Settings...", ""),
                             ("Group/Ungroup Notes", ""),
                             ("Convert to Grace Note", ""),
                             ("Insert Slur", ""),
@@ -16541,6 +16560,7 @@ impl OpenTrackApp {
             || self.registration_open
             || self.sync_setup_open
             || self.score_view_open
+            || self.score_settings_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20211,6 +20231,8 @@ impl eframe::App for OpenTrackApp {
         eframe::set_value(storage, "midi-output-id", &self.selected_midi_output);
         eframe::set_value(storage, "mmc-enabled-v1", &self.mmc_enabled);
         eframe::set_value(storage, "mmc-device-id-v1", &self.mmc_device_id);
+        eframe::set_value(storage, "score-page-mode-v1", &self.score_page_mode);
+        eframe::set_value(storage, "score-zoom-v1", &self.score_zoom);
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,
