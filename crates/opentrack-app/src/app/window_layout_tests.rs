@@ -1,32 +1,39 @@
-//! Layout smoke tests for the windows added in the feature work.
+//! Layout tests for the windows added in the feature work.
 //!
-//! Each window is rendered headlessly at a desktop size and at a small size.
-//! The tests assert that the window still opens and lays out its title and a
-//! representative control, which catches panics, missing content and windows
-//! that lose their body when the screen is small. Visual judgement stays with
-//! the desktop review.
+//! Each window is rendered headlessly at a desktop size and at a small
+//! (640x480) size. Besides checking that the title and a representative
+//! control are present, the tests read the window's area rectangle from egui
+//! memory and assert that it stays inside the screen, and that every painted
+//! text and image rect stays inside the window. The loading screen and the
+//! video image are additionally checked for centering. Visual judgement (DPI,
+//! theme, exact spacing) stays with the desktop review.
 
 use super::*;
 
-fn app() -> OpenTrackApp {
-    let ctx = egui::Context::default();
-    let creation = eframe::CreationContext::_new_kittest(ctx);
+fn new_app(ctx: &egui::Context) -> OpenTrackApp {
+    let creation = eframe::CreationContext::_new_kittest(ctx.clone());
     let mut app = OpenTrackApp::new_internal(&creation, false);
     app.project_open = true;
     app
 }
 
-fn texts_for<F>(
-    app: &mut OpenTrackApp,
-    ctx: &egui::Context,
-    screen: Vec2,
-    mut show: F,
-) -> Vec<String>
+struct Rendered {
+    texts: Vec<String>,
+    text_rects: Vec<Rect>,
+    image_rects: std::collections::BTreeMap<String, Rect>,
+}
+
+fn render_for<F>(app: &mut OpenTrackApp, ctx: &egui::Context, screen: Vec2, mut show: F) -> Rendered
 where
     F: FnMut(&mut OpenTrackApp, &egui::Context),
 {
-    let mut texts = Vec::new();
-    for frame in 0..2 {
+    let mut rendered = Rendered {
+        texts: Vec::new(),
+        text_rects: Vec::new(),
+        image_rects: std::collections::BTreeMap::new(),
+    };
+    let frames = 4;
+    for frame in 0..frames {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
@@ -36,55 +43,110 @@ where
             |_| show(app, ctx),
         );
         output.textures_delta.clear();
-        if frame == 0 {
+        if frame + 1 < frames {
             continue;
         }
-        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+        // Only the painted (clipped) part of a shape counts: a scroll area lays
+        // out rows beyond its viewport and clips them out of view.
+        fn walk(shape: &egui::Shape, clip: Rect, rendered: &mut Rendered) {
             match shape {
-                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Text(text) => {
+                    rendered.texts.push(text.galley.text().to_owned());
+                    rendered.text_rects.push(
+                        text.galley
+                            .rect
+                            .translate(text.pos.to_vec2())
+                            .intersect(clip),
+                    );
+                }
+                egui::Shape::Mesh(mesh) => {
+                    rendered
+                        .image_rects
+                        .entry(format!("{:?}", mesh.texture_id))
+                        .or_insert(shape.visual_bounding_rect().intersect(clip));
+                }
+                egui::Shape::Rect(rect_shape) => {
+                    if let Some(brush) = &rect_shape.brush {
+                        rendered
+                            .image_rects
+                            .entry(format!("{:?}", brush.fill_texture_id))
+                            .or_insert(rect_shape.rect.intersect(clip));
+                    }
+                }
                 egui::Shape::Vec(shapes) => {
                     for shape in shapes {
-                        walk(shape, texts);
+                        walk(shape, clip, rendered);
                     }
                 }
                 _ => {}
             }
         }
-        for shape in &output.shapes {
-            walk(&shape.shape, &mut texts);
+        for clipped in &output.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut rendered);
         }
     }
-    texts
+    rendered
+}
+
+fn assert_inside(name: &str, what: &str, rect: Rect, screen: Vec2) {
+    const TOLERANCE: f32 = 1.0;
+    assert!(
+        rect.min.x >= -TOLERANCE
+            && rect.min.y >= -TOLERANCE
+            && rect.max.x <= screen.x + TOLERANCE
+            && rect.max.y <= screen.y + TOLERANCE,
+        "{name} at {screen:?}: {what} {rect:?} leaves the screen"
+    );
 }
 
 fn assert_at_both_sizes(
     name: &str,
-    setup: impl Fn(&mut OpenTrackApp),
+    window_id: &str,
+    setup: impl Fn(&mut OpenTrackApp, &egui::Context),
     show: impl Fn(&mut OpenTrackApp, &egui::Context),
     required: &[&str],
 ) {
     for screen in [Vec2::new(1100.0, 780.0), Vec2::new(640.0, 480.0)] {
         let ctx = egui::Context::default();
-        let creation = eframe::CreationContext::_new_kittest(ctx.clone());
-        let mut app = OpenTrackApp::new_internal(&creation, false);
-        app.project_open = true;
-        setup(&mut app);
-        let texts = texts_for(&mut app, &ctx, screen, &show);
-        let joined = texts.join("\n");
+        let mut app = new_app(&ctx);
+        setup(&mut app, &ctx);
+        let rendered = render_for(&mut app, &ctx, screen, &show);
+        let joined = rendered.texts.join("\n");
         for needle in required {
             assert!(
                 joined.contains(needle),
                 "{name} at {screen:?}: missing {needle:?}\n{joined}"
             );
         }
+        let window = ctx
+            .memory(|memory| memory.area_rect(Id::new(window_id)))
+            .unwrap_or_else(|| panic!("{name} at {screen:?}: no window area {window_id}"));
+        assert_inside(name, "window", window, screen);
+        for (index, rect) in rendered.text_rects.iter().enumerate() {
+            assert!(
+                window.expand(1.0).contains_rect(*rect),
+                "{name} at {screen:?}: text {:?} at {rect:?} escapes the window {window:?}",
+                rendered.texts.get(index).map(String::as_str).unwrap_or("")
+            );
+        }
     }
+}
+
+fn setup_macros(app: &mut OpenTrackApp, _: &egui::Context) {
+    app.macros_open = true;
+    app.macros = vec![macros::Macro {
+        name: "Session".to_owned(),
+        commands: Vec::new(),
+    }];
+    app.macro_selected = Some(0);
 }
 
 #[test]
 fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
     assert_at_both_sizes(
         "Tempo Track",
-        |app| {
+        "tempo-track-editor",
+        |app, _| {
             app.tempo_editor = Some(tempo_editor::Draft::from_project(&app.data.project));
         },
         |app, ctx| app.show_tempo_editor(ctx),
@@ -93,7 +155,8 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Event Colors",
-        |app| {
+        "project-event-colors-dialog",
+        |app, _| {
             app.event_colors_dialog = Some(EventColorsDialog {
                 slot_index: 0,
                 draft_rgb: [120, 130, 140],
@@ -106,7 +169,8 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Direct Offline Processing",
-        |app| {
+        "offline-processing",
+        |app, _| {
             app.data.project.add_track(TrackKind::Audio);
             let clip = app
                 .data
@@ -124,14 +188,16 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Windows",
-        |app| app.windows_dialog_open = true,
+        "window-list",
+        |app, _| app.windows_dialog_open = true,
         |app, ctx| app.show_windows_dialog(ctx),
         &["Windows", "Project", "Media"],
     );
 
     assert_at_both_sizes(
         "Revert",
-        |app| {
+        "revert-prompt",
+        |app, _| {
             app.revert_prompt = true;
             app.project_path = Some(PathBuf::from("/tmp/Song.opr"));
         },
@@ -141,14 +207,16 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Registration",
-        |app| app.registration_open = true,
+        "registration-info",
+        |app, _| app.registration_open = true,
         |app, ctx| app.show_registration(ctx),
         &["Registration", "needs no registration"],
     );
 
     assert_at_both_sizes(
         "Plugin Browser",
-        |app| {
+        "plugin-browser",
+        |app, _| {
             app.plugin_browser_open = true;
             app.plugin_browser_category = InsertMenuCategory::Dynamics;
         },
@@ -158,7 +226,8 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Cleanup",
-        |app| {
+        "cleanup-prompt",
+        |app, _| {
             app.cleanup_prompt = Some(project_cleanup::CleanupPlan {
                 files: vec![(PathBuf::from("/tmp/take.wav"), 1)],
                 bytes: 1,
@@ -171,7 +240,8 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "VST Connections",
-        |app| {
+        "vst-connections",
+        |app, _| {
             app.vst_connections_open = true;
             app.data.project.add_track(TrackKind::Group);
         },
@@ -181,21 +251,16 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Macros",
-        |app| {
-            app.macros_open = true;
-            app.macros = vec![macros::Macro {
-                name: "Session".to_owned(),
-                commands: Vec::new(),
-            }];
-            app.macro_selected = Some(0);
-        },
+        "command-macros",
+        setup_macros,
         |app, ctx| app.show_macros(ctx),
         &["Macros", "Session", "Steps"],
     );
 
     assert_at_both_sizes(
         "Track Library",
-        |app| {
+        "track-library",
+        |app, _| {
             app.track_library_open = true;
             app.track_library = vec![track_library::LibraryTrack {
                 name: "Vocal".to_owned(),
@@ -212,21 +277,24 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Browse Sounds",
-        |app| app.sound_browser_open = true,
+        "sound-browser",
+        |app, _| app.sound_browser_open = true,
         |app, ctx| app.show_sound_browser(ctx),
         &["Browse Sounds", "Choose Folder", "Search"],
     );
 
     assert_at_both_sizes(
         "Control Room",
-        |app| app.control_room_open = true,
+        "control-room",
+        |app, _| app.control_room_open = true,
         |app, ctx| app.show_control_room(ctx),
         &["Control Room", "Listen", "Talkback"],
     );
 
     assert_at_both_sizes(
         "Project Synchronization Setup",
-        |app| app.sync_setup_open = true,
+        "project-sync-setup",
+        |app, _| app.sync_setup_open = true,
         |app, ctx| app.show_sync_setup(ctx),
         &[
             "Project Synchronization Setup",
@@ -237,7 +305,8 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Score",
-        |app| {
+        "score-view",
+        |app, _| {
             app.data.project.add_track(TrackKind::Midi);
             let part = app.data.project.add_midi_part(0, 0.0, 4.0).expect("part");
             app.data
@@ -253,21 +322,24 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
     assert_at_both_sizes(
         "Score Layout",
-        |app| app.score_layout_open = true,
+        "score-layout",
+        |app, _| app.score_layout_open = true,
         |app, ctx| app.show_score_layout(ctx),
         &["Score Layout", "Bars per system", "Zoom"],
     );
 
     assert_at_both_sizes(
         "Score Settings",
-        |app| app.score_settings_open = true,
+        "score-settings",
+        |app, _| app.score_settings_open = true,
         |app, ctx| app.show_score_settings(ctx),
         &["Score Settings", "Zoom"],
     );
 
     assert_at_both_sizes(
         "Video Window",
-        |app| app.video_window_open = true,
+        "video-window",
+        |app, _| app.video_window_open = true,
         |app, ctx| app.show_video_window(ctx),
         &["Video Window", "Open Video"],
     );
@@ -275,56 +347,113 @@ fn the_new_dialogs_open_with_their_controls_at_desktop_and_small_sizes() {
 
 #[test]
 fn the_project_loading_screen_is_centered_and_reports_progress() {
-    let ctx = egui::Context::default();
-    let creation = eframe::CreationContext::_new_kittest(ctx.clone());
-    let mut app = OpenTrackApp::new_internal(&creation, false);
-    let (_sender, receiver) = std::sync::mpsc::channel();
-    let progress = std::sync::Arc::new(std::sync::Mutex::new(ProjectLoadStatus {
-        fraction: 0.65,
-        phase: "Reading and validating project".to_owned(),
-    }));
-    app.project_load_task = Some(ProjectLoadTask {
-        path: PathBuf::from("Song.opr"),
-        result: receiver,
-        progress,
-        pending_project: None,
-        next_plugin_to_load: 0,
-    });
-    let mut texts = Vec::new();
-    for frame in 0..2 {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
-                time: Some(frame as f64 * 0.05),
-                ..Default::default()
-            },
-            |_| app.show_project_loading(&ctx),
+    for screen in [
+        Vec2::new(1100.0, 780.0),
+        Vec2::new(640.0, 480.0),
+        Vec2::new(1920.0, 1080.0),
+    ] {
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx);
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        app.project_load_task = Some(ProjectLoadTask {
+            path: PathBuf::from("Song.opr"),
+            result: receiver,
+            progress: std::sync::Arc::new(std::sync::Mutex::new(ProjectLoadStatus {
+                fraction: 0.65,
+                phase: "Reading and validating project".to_owned(),
+            })),
+            pending_project: None,
+            next_plugin_to_load: 0,
+        });
+        let rendered = render_for(&mut app, &ctx, screen, |app, ctx| {
+            app.show_project_loading(ctx)
+        });
+        let joined = rendered.texts.join("\n");
+        assert!(joined.contains("Loading Project"), "{joined}");
+        assert!(joined.contains("Song.opr"), "{joined}");
+        assert!(joined.contains("65%"), "progress text: {joined}");
+        assert!(
+            joined.contains("Reading and validating project"),
+            "{joined}"
         );
-        output.textures_delta.clear();
-        if frame == 0 {
-            continue;
-        }
-        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
-            match shape {
-                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
-                egui::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        walk(shape, texts);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for shape in &output.shapes {
-            walk(&shape.shape, &mut texts);
-        }
+
+        let window = ctx
+            .memory(|memory| memory.area_rect(Id::new(Some("Loading Project"))))
+            .expect("loading window");
+        assert_inside("Loading Project", "window", window, screen);
+        let offset = window.center() - Pos2::new(screen.x * 0.5, screen.y * 0.5);
+        assert!(
+            offset.length() <= 1.0,
+            "Loading Project at {screen:?}: center {:?} is {offset:?} from the screen center",
+            window.center()
+        );
+        // The title, bar and phase are laid out in one centered column.
+        let body_rects = rendered
+            .texts
+            .iter()
+            .zip(&rendered.text_rects)
+            .filter(|(text, _)| text.as_str() != "Loading Project")
+            .map(|(_, rect)| *rect)
+            .collect::<Vec<_>>();
+        let column_left = body_rects
+            .iter()
+            .map(|rect| rect.min.x)
+            .fold(f32::INFINITY, f32::min);
+        let column_right = body_rects
+            .iter()
+            .map(|rect| rect.max.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let column_center = (column_left + column_right) * 0.5;
+        assert!(
+            (column_center - window.center().x).abs() <= 2.0,
+            "Loading Project at {screen:?}: content center {column_center} vs window center {}",
+            window.center().x
+        );
     }
-    let joined = texts.join("\n");
-    assert!(joined.contains("Loading Project"), "{joined}");
-    assert!(joined.contains("Song.opr"), "{joined}");
-    assert!(joined.contains("65%"), "progress text: {joined}");
+}
+
+#[test]
+fn the_video_image_is_centered_and_fitted_in_its_window() {
+    let screen = Vec2::new(640.0, 480.0);
+    let ctx = egui::Context::default();
+    let mut app = new_app(&ctx);
+    app.video_window_open = true;
+    let texture = ctx.load_texture(
+        "video-frame",
+        egui::ColorImage::filled([1280, 720], egui::Color32::BLACK),
+        egui::TextureOptions::LINEAR,
+    );
+    let texture_id = texture.id();
+    app.video_texture = Some(texture);
+    let rendered = render_for(&mut app, &ctx, screen, |app, ctx| {
+        app.show_video_window(ctx)
+    });
+    let window = ctx
+        .memory(|memory| memory.area_rect(Id::new("video-window")))
+        .expect("video window");
+    assert_inside("Video Window", "window", window, screen);
+    let image = rendered
+        .image_rects
+        .get(&format!("{texture_id:?}"))
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "video frame image was painted; meshes: {:?}",
+                rendered.image_rects
+            )
+        });
     assert!(
-        joined.contains("Reading and validating project"),
-        "{joined}"
+        (image.center().x - window.center().x).abs() <= 2.0,
+        "video image center {} vs window center {}",
+        image.center().x,
+        window.center().x
+    );
+    assert!(
+        window.expand(1.0).contains_rect(image),
+        "video image {image:?} escapes the window {window:?}"
+    );
+    assert!(
+        image.width() <= window.width() && image.height() <= window.height(),
+        "video image {image:?} is larger than its window {window:?}"
     );
 }

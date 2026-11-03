@@ -567,7 +567,7 @@ impl OpenTrackApp {
             .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(true)
-            .default_size(Vec2::new(820.0, 420.0))
+            .default_size(Vec2::new(600.0, 400.0))
             .open(&mut open)
             .show(ctx, |ui| {
                 let slurs = part.notes.iter().filter(|note| note.slur_to_next).count();
@@ -606,7 +606,7 @@ impl OpenTrackApp {
                     .small()
                     .color(theme::palette(ui).muted),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("◀ 1/4").clicked() {
                         action = Some(ScoreAction::Move(-0.25));
                     }

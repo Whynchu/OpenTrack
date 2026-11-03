@@ -107,7 +107,7 @@ impl OpenTrackApp {
             .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(true)
-            .default_size(Vec2::new(660.0, 420.0))
+            .default_size(Vec2::new(600.0, 400.0))
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_min_width(480.0);

@@ -5647,11 +5647,19 @@ impl OpenTrackApp {
                     ui.label(project_file_name(&task.path));
                     ui.add_space(8.0);
                     let fraction = status.fraction.clamp(0.0, 1.0);
-                    ui.add(
+                    let bar = ui.add(
                         egui::ProgressBar::new(fraction)
                             .animate(true)
-                            .desired_width(340.0)
-                            .text(format!("{:.0}%", fraction * 100.0)),
+                            .desired_width(340.0),
+                    );
+                    // egui draws the bar's own label at its left edge; paint the
+                    // percentage centred on the bar instead.
+                    ui.painter().with_clip_rect(bar.rect).text(
+                        bar.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{:.0}%", fraction * 100.0),
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().strong_text_color(),
                     );
                     ui.add_space(5.0);
                     ui.label(
