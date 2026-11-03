@@ -8,7 +8,7 @@ $env:UPDATE_SOURCE_INVENTORY = "1"
 cargo test -p opentrack generated_source_inventory -- --nocapture
 ```
 
-- Source snapshot: `app.rs` FNV-1a 64 `0xb18beecd8c5206d5`; keymap CSV `0xa9f1eb00c81948c7`
+- Source snapshot: `app.rs` FNV-1a 64 `0xa46f635761f674f5`; keymap CSV `0xa9f1eb00c81948c7`
 - Scope: the project-open main menu and the empty-project shell. Context menus are
 enumerated in the curated `docs/reviews/audit-menus.md` register; this generated file
 does not claim to cover them.
@@ -22,287 +22,287 @@ counted once, not per runtime instance.
 
 ## Project-open main menu
 
-277 leaves: 56 available, 175 state-dependent, 38 unavailable, 8 informational.
+277 leaves: 58 available, 175 state-dependent, 36 unavailable, 8 informational.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
-| Audio > Advanced > Detect Silence... |  | state-dependent | `self.project_open && !self.is_recording() && has_event` | 14876 |
-| Audio > Advanced > Spectrum Analyzer... |  | available | `true` | 14887 |
-| Audio > Hitpoints > Calculate Hitpoints |  | state-dependent | `self.project_open && !self.is_recording() && has_event` | 14790 |
-| Audio > Hitpoints > Create Markers |  | state-dependent | `self.project_open && !self.is_recording() && self.hitpoints_clip.is_some()` | 14801 |
-| Audio > Hitpoints > Create Regions |  | state-dependent | `self.project_open && !self.is_recording() && self.hitpoints_clip.is_some()` | 14814 |
-| Audio > Plug-ins > Distortion |  | state-dependent | `self.project_open` | 14766 |
-| Audio > Plug-ins > Dynamics |  | state-dependent | `self.project_open` | 14754 |
-| Audio > Plug-ins > EQ |  | state-dependent | `self.project_open` | 14758 |
-| Audio > Plug-ins > Filter |  | state-dependent | `self.project_open` | 14762 |
-| Audio > Plug-ins > Modulation |  | state-dependent | `self.project_open` | 14770 |
-| Audio > Plug-ins > Other |  | state-dependent | `self.project_open` | 14774 |
-| Audio > Plug-ins > Reverb |  | state-dependent | `self.project_open` | 14750 |
-| Audio > Process > Envelope... |  | state-dependent | `has_selection` | 14741 |
-| Audio > Process > Fade In |  | state-dependent | `has_selection` | 14690 |
-| Audio > Process > Fade Out |  | state-dependent | `has_selection` | 14694 |
-| Audio > Process > Gain... |  | state-dependent | `has_selection` | 14702 |
-| Audio > Process > Merge Clipboard |  | state-dependent | `has_selection && self.audio_event_clipboard.is_some()` | 14722 |
-| Audio > Process > Normalize... |  | state-dependent | `has_selection` | 14718 |
-| Audio > Process > Remove DC Offset |  | state-dependent | `has_selection` | 14710 |
-| Audio > Process > Resample... |  | state-dependent | `has_selection` | 14733 |
-| Audio > Process > Reverse |  | state-dependent | `has_selection` | 14706 |
-| Audio > Process > Silence |  | state-dependent | `has_selection` | 14698 |
-| Audio > Process > Stereo Flip |  | state-dependent | `has_selection` | 14714 |
-| Audio > Process > Time Stretch... |  | state-dependent | `has_selection` | 14737 |
-| Audio > Realtime Processing > Add Plug-in > <label> |  | available | `true` | 14861 |
-| Audio > Realtime Processing > Direct Offline Processing |  | state-dependent | `self.project_open && !self.is_recording() && has_event` | 14831 |
-| Audio > Realtime Processing > Remove Plug-in |  | state-dependent | `has_event` | 14868 |
-| Audio > Spectrum Analyzer |  | available | `true` | 14779 |
-| Audio > Statistics |  | state-dependent | `self.project_open` | 14783 |
-| Devices > Control Room Mixer |  | available | `true` | 15611 |
-| Devices > Control Room Overview |  | available | `true` | 15615 |
-| Devices > Device Setup... |  | available | `true` | 15577 |
-| Devices > MIDI Device Manager |  | available | `true` | 15607 |
-| Devices > MMC Master |  | unavailable | `false` | 15619 |
-| Devices > Mixer | F3 | available | `true` | 15620 |
-| Devices > Plug-in Information |  | available | `true` | 15586 |
-| Devices > Realtime Performance... | F12 | available | `true` | 15591 |
-| Devices > VST Connections... | F4 | state-dependent | `self.project_open` | 15581 |
-| Devices > VST Instruments | F11 | available | `true` | 15595 |
-| Devices > Video Window | F8 | unavailable | `false` | 15677 |
-| Edit > Auto Select Events under Cursor |  | state-dependent | `self.project_open` | 14315 |
-| Edit > Automation follows Events |  | state-dependent | `self.project_open` | 14351 |
-| Edit > Bounce Selection in Place |  | state-dependent | `can_bounce` | 14173 |
-| Edit > Convert to Real Copy |  | state-dependent | `can_duplicate && self.project_folder_managed` | 14304 |
-| Edit > Copy | Ctrl+C | state-dependent | `can_copy` | 14046 |
-| Edit > Crossfade | X | state-dependent | `can_crossfade` | 14081 |
-| Edit > Cut | Ctrl+X | state-dependent | `can_cut` | 14035 |
-| Edit > Delete | Delete | state-dependent | `can_delete` | 14196 |
-| Edit > Delete with Source File | Shift+Delete | state-dependent | `can_delete_audio` | 14200 |
-| Edit > Duplicate | Ctrl+D | state-dependent | `can_duplicate` | 14254 |
-| Edit > Enlarge Selected Track |  | state-dependent | `self.data.project.selected_track.is_some()` | 14339 |
-| Edit > Fill Loop |  | state-dependent | `can_duplicate` | 14262 |
-| Edit > Glue |  | state-dependent | `can_glue` | 14181 |
-| Edit > Group | Ctrl+G | state-dependent | `can_duplicate` | 14288 |
-| Edit > History... |  | state-dependent | `self.project_open` | 14023 |
-| Edit > Key Commands... |  | available | `true` | 14406 |
-| Edit > Lock | Ctrl+Shift+L | state-dependent | `can_duplicate` | 14296 |
-| Edit > Macros |  | state-dependent | `self.project_open` | 14401 |
-| Edit > Make Take Active |  | state-dependent | `can_activate_take` | 14177 |
-| Edit > Merge MIDI Parts |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 14115 |
-| Edit > Move to > Left Locator |  | state-dependent | `can_duplicate` | 14267 |
-| Edit > Move to > Right Locator |  | state-dependent | `can_duplicate` | 14271 |
-| Edit > Move to Cursor | Ctrl+L | state-dependent | `can_move_to_cursor` | 14098 |
-| Edit > Mute Events | Shift+M | state-dependent | `can_duplicate` | 14276 |
-| Edit > Mute/Unmute Objects | Alt+M | state-dependent | `can_duplicate` | 14284 |
-| Edit > Paste | Ctrl+V | state-dependent | `self.project_open && !self.is_recording() && self.audio_event_clipboard.is_some()` | 14050 |
-| Edit > Process Project Logical Editor |  | state-dependent | `self.project_open` | 14375 |
-| Edit > Project Logical Editor... |  | state-dependent | `self.project_open` | 14370 |
-| Edit > Quantize MIDI... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14140 |
-| Edit > Range > Crop |  | state-dependent | `has_selection` | 14225 |
-| Edit > Range > Delete Range |  | state-dependent | `has_selection` | 14229 |
-| Edit > Range > Select in Loop |  | state-dependent | `self.project_open` | 14212 |
-| Edit > Range > Set Left Locator |  | state-dependent | `has_selection` | 14217 |
-| Edit > Range > Set Right Locator |  | state-dependent | `has_selection` | 14221 |
-| Edit > Redo |  | state-dependent | `self.project_history.can_redo()` | 14017 |
-| Edit > Repeat... | Ctrl+K | state-dependent | `can_duplicate` | 14258 |
-| Edit > Select > All Events | Ctrl+A | state-dependent | `self.project_open` | 14235 |
-| Edit > Select > Events under Cursor |  | state-dependent | `self.project_open` | 14247 |
-| Edit > Select > Invert |  | state-dependent | `self.project_open` | 14243 |
-| Edit > Select > None | Ctrl+Shift+A | state-dependent | `self.project_open` | 14239 |
-| Edit > Split Loop |  | state-dependent | `self.project_open` | 14160 |
-| Edit > Split MIDI Part at Cursor |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 14102 |
-| Edit > Split at Cursor | Alt+X | state-dependent | `can_split` | 14074 |
-| Edit > Transpose / Velocity... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14128 |
-| Edit > Undo |  | state-dependent | `self.project_history.can_undo()` | 14011 |
-| Edit > Ungroup | Ctrl+U | state-dependent | `can_duplicate` | 14292 |
-| Edit > Unlock | Ctrl+Shift+U | state-dependent | `can_duplicate` | 14300 |
-| Edit > Unmute Events | Shift+U | state-dependent | `can_duplicate` | 14280 |
-| Edit > Zoom > Zoom In | H | state-dependent | `self.project_open` | 14395 |
-| Edit > Zoom > Zoom In Vertically | Shift+F | state-dependent | `self.project_open` | 14395 |
-| Edit > Zoom > Zoom Out | G | state-dependent | `self.project_open` | 14395 |
-| Edit > Zoom > Zoom Out Vertically | Alt+S | state-dependent | `self.project_open` | 14395 |
-| Edit > Zoom > Zoom to Project | Alt+Down | state-dependent | `self.project_open` | 14395 |
-| Edit > Zoom > Zoom to Selection | Shift+E | state-dependent | `self.project_open` | 14395 |
-| File > Back up Project... |  | state-dependent | `self.project_open && self.project_folder_managed` | 13794 |
-| File > Cleanup... |  | state-dependent | `self.project_open && self.project_folder_managed && !self.is_recording()` | 13957 |
-| File > Close | Ctrl+W | state-dependent | `self.project_open` | 13770 |
-| File > Export > Audio Mixdown... |  | state-dependent | `self.audio_export_task.is_none()` | 13884 |
-| File > Export > MIDI File... |  | state-dependent | `self.midi_file_task.is_none()` | 13918 |
-| File > Export > MIDI Selection... |  | state-dependent | `self.midi_file_task.is_none()` | 13924 |
-| File > Export > Selected Tracks (Stems)... |  | state-dependent | `self.audio_export_task.is_none() && self.project_open` | 13895 |
-| File > Export > Tempo Track... |  | state-dependent | `self.project_open && !self.is_recording()` | 13907 |
-| File > Export > Track Archive (OpenTrack)... |  | state-dependent | `self.project_open && self.track_archive_task.is_none()` | 13944 |
-| File > Import > Audio CD... |  | state-dependent | `self.project_open && !self.is_recording()` | 13844 |
-| File > Import > Audio... |  | available | `true` | 13829 |
-| File > Import > MIDI File... |  | state-dependent | `self.midi_file_task.is_none()` | 13876 |
-| File > Import > MusicXML... |  | state-dependent | `!self.is_recording()` | 13872 |
-| File > Import > OMF... |  | unavailable | `false` | 13855 |
-| File > Import > Tempo Track... |  | state-dependent | `self.project_open && !self.is_recording()` | 13833 |
-| File > Import > Track Archive (OpenTrack v1)... |  | state-dependent | `self.project_open && !self.is_recording() && self.track_archive_import_task.is_none()` | 13859 |
-| File > Import > Video File... |  | unavailable | `false` | 13855 |
-| File > Key Commands... |  | available | `true` | 13973 |
-| File > New Library... |  | available | `true` | 13758 |
-| File > New Project... | Ctrl+N | available | `true` | 13754 |
-| File > New Version | Ctrl+Alt+S | state-dependent | `self.project_open && !self.is_recording()` | 13774 |
-| File > Open Library... |  | available | `true` | 13766 |
-| File > Open... | Ctrl+O | available | `true` | 13762 |
-| File > Page Setup... |  | unavailable | `false` | 13825 |
-| File > Preferences... |  | available | `true` | 13969 |
-| File > Print... |  | unavailable | `false` | 13826 |
-| File > Quit | Ctrl+Q | available | `true` | 14004 |
-| File > Recent Projects > <label> |  | available | `true` | 13987 |
-| File > Recent Projects > Clear Recent Projects |  | available | `true` | 13997 |
-| File > Recent Projects > No Recent Projects |  | unavailable | `false` | 13979 |
-| File > Replace Audio in Video File... |  | unavailable | `false` | 13956 |
-| File > Revert |  | state-dependent | `self.project_open` | 13820 |
-| File > Save | Ctrl+S | available | `true` | 13786 |
-| File > Save As... | Ctrl+Shift+S | available | `true` | 13790 |
-| File > Save Library... |  | state-dependent | `self.project_open && self.data.project.selected_track.is_some()` | 13809 |
-| File > Save as Template... |  | state-dependent | `self.project_open` | 13805 |
-| Help > About OpenTrack... |  | available | `true` | 15797 |
-| Help > Credits and Copyrights |  | available | `true` | 15793 |
-| Help > OpenTrack on the Web |  | available | `true` | 15785 |
-| Help > Registration |  | available | `true` | 15789 |
-| MIDI > Arm a MIDI or Instrument track to monitor its input |  | informational | `` | 15061 |
-| MIDI > CC Automation Setup... |  | state-dependent | `self.project_open` | 14972 |
-| MIDI > Drum Map Setup... |  | state-dependent | `self.project_open` | 14987 |
-| MIDI > Input device |  | informational | `` | 14996 |
-| MIDI > Insert Velocities |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14937 |
-| MIDI > Logical Presets |  | state-dependent | `self.data.project.selected_midi_part_id.is_some()` | 14976 |
-| MIDI > MIDI Thru needs an audio output device |  | informational | `` | 15054 |
-| MIDI > No MIDI input devices found |  | informational | `` | 15035 |
-| MIDI > Open Drum Editor |  | state-dependent | `midi_editor_available` | 14924 |
-| MIDI > Open In-Place Editor |  | state-dependent | `self.project_open && (!self.arrange_view_state.audio_events.selected_ids().is_empty() \|\| self.data.project.selected_midi_part_id.is_some())` | 14898 |
-| MIDI > Open Key Editor |  | state-dependent | `midi_editor_available` | 14894 |
-| MIDI > Open List Editor |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14911 |
-| MIDI > Open Score Editor |  | unavailable | `false` | 14923 |
-| MIDI > Quantize Setup... |  | state-dependent | `self.project_open` | 14929 |
-| MIDI > Refresh MIDI input devices |  | available | `true` | 15040 |
-| MIDI > Reset |  | available | `true` | 14991 |
-| MIDI > VST Expression |  | unavailable | `false` | 14971 |
-| Media > Conform Files... |  | state-dependent | `self.project_open && !self.is_recording()` | 15260 |
-| Media > Convert Files... |  | state-dependent | `self.project_open && !self.is_recording()` | 15271 |
-| Media > Create Folder |  | state-dependent | `self.project_open` | 15293 |
-| Media > Empty Trash |  | state-dependent | `pool_available && !self.data.project.unused_media().is_empty()` | 15226 |
-| Media > Export Pool... |  | state-dependent | `self.project_open` | 15211 |
-| Media > Extract Audio from Video File |  | unavailable | `false` | 15334 |
-| Media > Find Missing Files... |  | state-dependent | `pool_available && !self.data.project.missing_media().is_empty()` | 15237 |
-| Media > Generate Thumbnail Cache |  | unavailable | `false` | 15334 |
-| Media > Import Audio CD... |  | state-dependent | `self.project_open && !self.is_recording()` | 15319 |
-| Media > Import Medium... |  | available | `true` | 15202 |
-| Media > Import Pool... |  | state-dependent | `self.project_open` | 15207 |
-| Media > Insert into Project > Audio Track |  | state-dependent | `self.project_open` | 15347 |
-| Media > Insert into Project > Instrument Track |  | state-dependent | `self.project_open` | 15347 |
-| Media > Insert into Project > MIDI Track |  | state-dependent | `self.project_open` | 15347 |
-| Media > Minimize File |  | state-dependent | `self.project_open && !self.is_recording()` | 15308 |
-| Media > Open Loop Browser | F6 | available | `true` | 15191 |
-| Media > Open MediaBay | F5 | available | `true` | 15186 |
-| Media > Open Pool Window | Ctrl+P | available | `true` | 15182 |
-| Media > Open Sound Browser | F7 | available | `true` | 15196 |
-| Media > Prepare Archive... |  | state-dependent | `self.project_open && !self.is_recording()` | 15297 |
-| Media > Reconstruct |  | state-dependent | `self.project_open` | 15330 |
-| Media > Relink Unavailable Audio... |  | state-dependent | `!unavailable_audio_paths.is_empty()` | 15370 |
-| Media > Remove Missing Files |  | state-dependent | `pool_available && !self.data.project.missing_unreferenced_media().is_empty()` | 15248 |
-| Media > Remove Unused Media |  | state-dependent | `pool_available && !self.data.project.unused_media().is_empty()` | 15215 |
-| Media > Search Media... |  | state-dependent | `self.project_open` | 15361 |
-| Media > Select in Project |  | state-dependent | `self.project_open` | 15365 |
-| Media > Set Pool Record Folder |  | state-dependent | `self.project_open` | 15282 |
-| Project > <preview_label> |  | state-dependent | `self.project_open && (self.arranger_preview.is_some() \|\| !self.data.project.arranger.sequence.is_empty())` | 14607 |
-| Project > Add Track > Arranger |  | state-dependent | `self.project_open` | 14435 |
-| Project > Add Track > Audio |  | available | `true` | 14421 |
-| Project > Add Track > Browse Sounds... |  | available | `true` | 14473 |
-| Project > Add Track > FX Channel |  | available | `true` | 14421 |
-| Project > Add Track > Folder |  | available | `true` | 14421 |
-| Project > Add Track > Group Channel |  | available | `true` | 14421 |
-| Project > Add Track > Instrument |  | available | `true` | 14421 |
-| Project > Add Track > MIDI |  | available | `true` | 14421 |
-| Project > Add Track > Marker |  | state-dependent | `self.project_open` | 14444 |
-| Project > Add Track > Ruler |  | state-dependent | `self.project_open` | 14448 |
-| Project > Add Track > Signature |  | state-dependent | `self.project_open` | 14452 |
-| Project > Add Track > Tempo |  | state-dependent | `self.project_open` | 14456 |
-| Project > Add Track > Transpose |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 14460 |
-| Project > Add Track > Video |  | unavailable | `false` | 14480 |
-| Project > Auto Fades Settings... |  | available | `true` | 14636 |
-| Project > Automation Panel |  | state-dependent | `self.project_open` | 14644 |
-| Project > Beat Calculator... |  | state-dependent | `self.project_open` | 14625 |
-| Project > Browser | Ctrl+B | state-dependent | `self.project_open` | 14620 |
-| Project > Consolidate Media |  | state-dependent | `self.project_folder_managed && !self.is_recording()` | 14567 |
-| Project > Markers | Ctrl+M | state-dependent | `self.project_open` | 14594 |
-| Project > New from Template > <label> |  | available | `true` | 14561 |
-| Project > New from Template > No templates yet. Save one from a project. |  | informational | `` | 14557 |
-| Project > Notepad |  | state-dependent | `self.project_open` | 14632 |
-| Project > Pool | Ctrl+P | available | `true` | 14532 |
-| Project > Project Setup... | Shift+S | available | `true` | 14590 |
-| Project > Regions... |  | state-dependent | `self.project_open` | 14598 |
-| Project > Relink Missing Media (missing_media)... |  | state-dependent | `self.project_open && !self.is_recording() && missing_media > 0` | 14579 |
-| Project > Remove Empty Tracks |  | state-dependent | `self.project_open && !self.is_recording()` | 14502 |
-| Project > Save as Template... |  | state-dependent | `self.project_open` | 14540 |
-| Project > Session Health... |  | state-dependent | `self.project_open` | 14536 |
-| Project > Set Timecode at Cursor |  | state-dependent | `self.project_open` | 14640 |
-| Project > Show Marker Lane |  | state-dependent | `self.project_open` | 14521 |
-| Project > Tempo Track | Ctrl+T | state-dependent | `self.project_open` | 14648 |
-| Project > Track Folding > Collapse All |  | state-dependent | `self.project_open` | 14515 |
-| Project > Track Folding > Expand All |  | state-dependent | `self.project_open` | 14515 |
-| Scores > Advanced Layout > Insert Page Break |  | unavailable | `false` | 15170 |
-| Scores > Advanced Layout > Move Bars |  | unavailable | `false` | 15170 |
-| Scores > Advanced Layout > Optimize All |  | unavailable | `false` | 15170 |
-| Scores > Advanced Layout > Remove Page Break |  | unavailable | `false` | 15170 |
-| Scores > Align Elements > Bottom |  | unavailable | `false` | 15110 |
-| Scores > Align Elements > Distribute Horizontally |  | unavailable | `false` | 15110 |
-| Scores > Align Elements > Distribute Vertically |  | unavailable | `false` | 15110 |
-| Scores > Align Elements > Left |  | unavailable | `false` | 15110 |
-| Scores > Align Elements > Right |  | unavailable | `false` | 15110 |
-| Scores > Align Elements > Top |  | unavailable | `false` | 15110 |
-| Scores > Auto Layout... |  | unavailable | `false` | 15168 |
-| Scores > Build N-Tuplet... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 15084 |
-| Scores > Convert to Grace Note |  | unavailable | `false` | 15096 |
-| Scores > Flip |  | unavailable | `false` | 15096 |
-| Scores > Functions > Explode |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15153 |
-| Scores > Functions > Explode Pitches |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15140 |
-| Scores > Functions > Make Chord Symbols |  | unavailable | `false` | 15166 |
-| Scores > Functions > Merge |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15127 |
-| Scores > Group/Ungroup Notes |  | unavailable | `false` | 15096 |
-| Scores > Hide/Show |  | unavailable | `false` | 15096 |
-| Scores > Insert Slur |  | unavailable | `false` | 15096 |
-| Scores > Make Chord Symbols |  | unavailable | `false` | 15122 |
-| Scores > Make Guitar Symbols |  | unavailable | `false` | 15122 |
-| Scores > Open Layout... |  | unavailable | `false` | 15096 |
-| Scores > Open Selection | Ctrl+R | state-dependent | `self.project_open && (!self.arrange_view_state.audio_events.selected_ids().is_empty() \|\| self.data.project.selected_midi_part_id.is_some())` | 15071 |
-| Scores > Page Mode |  | unavailable | `false` | 15096 |
-| Scores > Reset Layout... |  | unavailable | `false` | 15168 |
-| Scores > Settings... |  | unavailable | `false` | 15096 |
-| Transport > Locate Next Event | N | state-dependent | `self.project_open` | 15401 |
-| Transport > Locate Next Marker | Shift+N | state-dependent | `self.project_open` | 15401 |
-| Transport > Locate Previous Event | B | state-dependent | `self.project_open` | 15401 |
-| Transport > Locate Previous Marker | Shift+B | state-dependent | `self.project_open` | 15401 |
-| Transport > Locate Selection | L | state-dependent | `self.project_open` | 15401 |
-| Transport > Locate Selection End |  | state-dependent | `self.project_open` | 15401 |
-| Transport > Locators to Selection | P | state-dependent | `self.project_open` | 15401 |
-| Transport > Loop Selection | Shift+G | state-dependent | `self.project_open` | 15401 |
-| Transport > Metronome On | C | available | `true` | 15531 |
-| Transport > Metronome Setup... |  | available | `true` | 15527 |
-| Transport > Play Selection Range | Alt+Space | state-dependent | `self.project_open` | 15401 |
-| Transport > Play from Selection End |  | state-dependent | `self.project_open` | 15412 |
-| Transport > Play from Selection Start |  | state-dependent | `self.project_open` | 15406 |
-| Transport > Play until Next Marker |  | state-dependent | `self.project_open` | 15428 |
-| Transport > Play until Selection End |  | state-dependent | `self.project_open` | 15423 |
-| Transport > Play until Selection Start |  | state-dependent | `self.project_open` | 15417 |
-| Transport > Post-roll from Selection End |  | state-dependent | `can_roll` | 15438 |
-| Transport > Post-roll from Selection Start |  | state-dependent | `can_roll` | 15434 |
-| Transport > Pre-roll to Selection End |  | state-dependent | `can_roll` | 15446 |
-| Transport > Pre-roll to Selection Start |  | state-dependent | `can_roll` | 15442 |
-| Transport > Precount On |  | available | `true` | 15537 |
-| Transport > Project Synchronization Setup... |  | unavailable | `false` | 15568 |
-| Transport > Retrospective Record | Shift+Num * | state-dependent | `self.project_open && !self.is_recording()` | 15557 |
-| Transport > Roll Lengths... > Post-roll (beats, 0-64) |  | informational | `` | 15467 |
-| Transport > Roll Lengths... > Pre-roll (beats, 0-64) |  | informational | `` | 15451 |
-| Transport > Roll Lengths... > The selection is the selected audio events plus the selected MIDI part. |  | informational | `` | 15483 |
-| Transport > Start Record at Left Locator |  | state-dependent | `self.project_open` | 15515 |
-| Transport > Transport Panel | F2 | available | `true` | 15383 |
-| Transport > Use External Sync | T | unavailable | `false` | 15568 |
-| Transport > Use Post-roll |  | available | `self.use_post_roll` | 15503 |
-| Transport > Use Pre-roll |  | available | `self.use_pre_roll` | 15491 |
-| Window > Windows... |  | available | `true` | 15709 |
-| Window > Workspaces > <lock_label> |  | available | `true` | 15704 |
-| Window > Workspaces > <name> |  | available | `*active` | 15682 |
-| Window > Workspaces > Organize Workspaces... |  | available | `true` | 15688 |
+| Audio > Advanced > Detect Silence... |  | state-dependent | `self.project_open && !self.is_recording() && has_event` | 14904 |
+| Audio > Advanced > Spectrum Analyzer... |  | available | `true` | 14915 |
+| Audio > Hitpoints > Calculate Hitpoints |  | state-dependent | `self.project_open && !self.is_recording() && has_event` | 14818 |
+| Audio > Hitpoints > Create Markers |  | state-dependent | `self.project_open && !self.is_recording() && self.hitpoints_clip.is_some()` | 14829 |
+| Audio > Hitpoints > Create Regions |  | state-dependent | `self.project_open && !self.is_recording() && self.hitpoints_clip.is_some()` | 14842 |
+| Audio > Plug-ins > Distortion |  | state-dependent | `self.project_open` | 14794 |
+| Audio > Plug-ins > Dynamics |  | state-dependent | `self.project_open` | 14782 |
+| Audio > Plug-ins > EQ |  | state-dependent | `self.project_open` | 14786 |
+| Audio > Plug-ins > Filter |  | state-dependent | `self.project_open` | 14790 |
+| Audio > Plug-ins > Modulation |  | state-dependent | `self.project_open` | 14798 |
+| Audio > Plug-ins > Other |  | state-dependent | `self.project_open` | 14802 |
+| Audio > Plug-ins > Reverb |  | state-dependent | `self.project_open` | 14778 |
+| Audio > Process > Envelope... |  | state-dependent | `has_selection` | 14769 |
+| Audio > Process > Fade In |  | state-dependent | `has_selection` | 14718 |
+| Audio > Process > Fade Out |  | state-dependent | `has_selection` | 14722 |
+| Audio > Process > Gain... |  | state-dependent | `has_selection` | 14730 |
+| Audio > Process > Merge Clipboard |  | state-dependent | `has_selection && self.audio_event_clipboard.is_some()` | 14750 |
+| Audio > Process > Normalize... |  | state-dependent | `has_selection` | 14746 |
+| Audio > Process > Remove DC Offset |  | state-dependent | `has_selection` | 14738 |
+| Audio > Process > Resample... |  | state-dependent | `has_selection` | 14761 |
+| Audio > Process > Reverse |  | state-dependent | `has_selection` | 14734 |
+| Audio > Process > Silence |  | state-dependent | `has_selection` | 14726 |
+| Audio > Process > Stereo Flip |  | state-dependent | `has_selection` | 14742 |
+| Audio > Process > Time Stretch... |  | state-dependent | `has_selection` | 14765 |
+| Audio > Realtime Processing > Add Plug-in > <label> |  | available | `true` | 14889 |
+| Audio > Realtime Processing > Direct Offline Processing |  | state-dependent | `self.project_open && !self.is_recording() && has_event` | 14859 |
+| Audio > Realtime Processing > Remove Plug-in |  | state-dependent | `has_event` | 14896 |
+| Audio > Spectrum Analyzer |  | available | `true` | 14807 |
+| Audio > Statistics |  | state-dependent | `self.project_open` | 14811 |
+| Devices > Control Room Mixer |  | available | `true` | 15637 |
+| Devices > Control Room Overview |  | available | `true` | 15641 |
+| Devices > Device Setup... |  | available | `true` | 15603 |
+| Devices > MIDI Device Manager |  | available | `true` | 15633 |
+| Devices > MMC Master |  | available | `true` | 15645 |
+| Devices > Mixer | F3 | available | `true` | 15649 |
+| Devices > Plug-in Information |  | available | `true` | 15612 |
+| Devices > Realtime Performance... | F12 | available | `true` | 15617 |
+| Devices > VST Connections... | F4 | state-dependent | `self.project_open` | 15607 |
+| Devices > VST Instruments | F11 | available | `true` | 15621 |
+| Devices > Video Window | F8 | unavailable | `false` | 15706 |
+| Edit > Auto Select Events under Cursor |  | state-dependent | `self.project_open` | 14343 |
+| Edit > Automation follows Events |  | state-dependent | `self.project_open` | 14379 |
+| Edit > Bounce Selection in Place |  | state-dependent | `can_bounce` | 14201 |
+| Edit > Convert to Real Copy |  | state-dependent | `can_duplicate && self.project_folder_managed` | 14332 |
+| Edit > Copy | Ctrl+C | state-dependent | `can_copy` | 14074 |
+| Edit > Crossfade | X | state-dependent | `can_crossfade` | 14109 |
+| Edit > Cut | Ctrl+X | state-dependent | `can_cut` | 14063 |
+| Edit > Delete | Delete | state-dependent | `can_delete` | 14224 |
+| Edit > Delete with Source File | Shift+Delete | state-dependent | `can_delete_audio` | 14228 |
+| Edit > Duplicate | Ctrl+D | state-dependent | `can_duplicate` | 14282 |
+| Edit > Enlarge Selected Track |  | state-dependent | `self.data.project.selected_track.is_some()` | 14367 |
+| Edit > Fill Loop |  | state-dependent | `can_duplicate` | 14290 |
+| Edit > Glue |  | state-dependent | `can_glue` | 14209 |
+| Edit > Group | Ctrl+G | state-dependent | `can_duplicate` | 14316 |
+| Edit > History... |  | state-dependent | `self.project_open` | 14051 |
+| Edit > Key Commands... |  | available | `true` | 14434 |
+| Edit > Lock | Ctrl+Shift+L | state-dependent | `can_duplicate` | 14324 |
+| Edit > Macros |  | state-dependent | `self.project_open` | 14429 |
+| Edit > Make Take Active |  | state-dependent | `can_activate_take` | 14205 |
+| Edit > Merge MIDI Parts |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 14143 |
+| Edit > Move to > Left Locator |  | state-dependent | `can_duplicate` | 14295 |
+| Edit > Move to > Right Locator |  | state-dependent | `can_duplicate` | 14299 |
+| Edit > Move to Cursor | Ctrl+L | state-dependent | `can_move_to_cursor` | 14126 |
+| Edit > Mute Events | Shift+M | state-dependent | `can_duplicate` | 14304 |
+| Edit > Mute/Unmute Objects | Alt+M | state-dependent | `can_duplicate` | 14312 |
+| Edit > Paste | Ctrl+V | state-dependent | `self.project_open && !self.is_recording() && self.audio_event_clipboard.is_some()` | 14078 |
+| Edit > Process Project Logical Editor |  | state-dependent | `self.project_open` | 14403 |
+| Edit > Project Logical Editor... |  | state-dependent | `self.project_open` | 14398 |
+| Edit > Quantize MIDI... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14168 |
+| Edit > Range > Crop |  | state-dependent | `has_selection` | 14253 |
+| Edit > Range > Delete Range |  | state-dependent | `has_selection` | 14257 |
+| Edit > Range > Select in Loop |  | state-dependent | `self.project_open` | 14240 |
+| Edit > Range > Set Left Locator |  | state-dependent | `has_selection` | 14245 |
+| Edit > Range > Set Right Locator |  | state-dependent | `has_selection` | 14249 |
+| Edit > Redo |  | state-dependent | `self.project_history.can_redo()` | 14045 |
+| Edit > Repeat... | Ctrl+K | state-dependent | `can_duplicate` | 14286 |
+| Edit > Select > All Events | Ctrl+A | state-dependent | `self.project_open` | 14263 |
+| Edit > Select > Events under Cursor |  | state-dependent | `self.project_open` | 14275 |
+| Edit > Select > Invert |  | state-dependent | `self.project_open` | 14271 |
+| Edit > Select > None | Ctrl+Shift+A | state-dependent | `self.project_open` | 14267 |
+| Edit > Split Loop |  | state-dependent | `self.project_open` | 14188 |
+| Edit > Split MIDI Part at Cursor |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 14130 |
+| Edit > Split at Cursor | Alt+X | state-dependent | `can_split` | 14102 |
+| Edit > Transpose / Velocity... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14156 |
+| Edit > Undo |  | state-dependent | `self.project_history.can_undo()` | 14039 |
+| Edit > Ungroup | Ctrl+U | state-dependent | `can_duplicate` | 14320 |
+| Edit > Unlock | Ctrl+Shift+U | state-dependent | `can_duplicate` | 14328 |
+| Edit > Unmute Events | Shift+U | state-dependent | `can_duplicate` | 14308 |
+| Edit > Zoom > Zoom In | H | state-dependent | `self.project_open` | 14423 |
+| Edit > Zoom > Zoom In Vertically | Shift+F | state-dependent | `self.project_open` | 14423 |
+| Edit > Zoom > Zoom Out | G | state-dependent | `self.project_open` | 14423 |
+| Edit > Zoom > Zoom Out Vertically | Alt+S | state-dependent | `self.project_open` | 14423 |
+| Edit > Zoom > Zoom to Project | Alt+Down | state-dependent | `self.project_open` | 14423 |
+| Edit > Zoom > Zoom to Selection | Shift+E | state-dependent | `self.project_open` | 14423 |
+| File > Back up Project... |  | state-dependent | `self.project_open && self.project_folder_managed` | 13822 |
+| File > Cleanup... |  | state-dependent | `self.project_open && self.project_folder_managed && !self.is_recording()` | 13985 |
+| File > Close | Ctrl+W | state-dependent | `self.project_open` | 13798 |
+| File > Export > Audio Mixdown... |  | state-dependent | `self.audio_export_task.is_none()` | 13912 |
+| File > Export > MIDI File... |  | state-dependent | `self.midi_file_task.is_none()` | 13946 |
+| File > Export > MIDI Selection... |  | state-dependent | `self.midi_file_task.is_none()` | 13952 |
+| File > Export > Selected Tracks (Stems)... |  | state-dependent | `self.audio_export_task.is_none() && self.project_open` | 13923 |
+| File > Export > Tempo Track... |  | state-dependent | `self.project_open && !self.is_recording()` | 13935 |
+| File > Export > Track Archive (OpenTrack)... |  | state-dependent | `self.project_open && self.track_archive_task.is_none()` | 13972 |
+| File > Import > Audio CD... |  | state-dependent | `self.project_open && !self.is_recording()` | 13872 |
+| File > Import > Audio... |  | available | `true` | 13857 |
+| File > Import > MIDI File... |  | state-dependent | `self.midi_file_task.is_none()` | 13904 |
+| File > Import > MusicXML... |  | state-dependent | `!self.is_recording()` | 13900 |
+| File > Import > OMF... |  | unavailable | `false` | 13883 |
+| File > Import > Tempo Track... |  | state-dependent | `self.project_open && !self.is_recording()` | 13861 |
+| File > Import > Track Archive (OpenTrack v1)... |  | state-dependent | `self.project_open && !self.is_recording() && self.track_archive_import_task.is_none()` | 13887 |
+| File > Import > Video File... |  | unavailable | `false` | 13883 |
+| File > Key Commands... |  | available | `true` | 14001 |
+| File > New Library... |  | available | `true` | 13786 |
+| File > New Project... | Ctrl+N | available | `true` | 13782 |
+| File > New Version | Ctrl+Alt+S | state-dependent | `self.project_open && !self.is_recording()` | 13802 |
+| File > Open Library... |  | available | `true` | 13794 |
+| File > Open... | Ctrl+O | available | `true` | 13790 |
+| File > Page Setup... |  | unavailable | `false` | 13853 |
+| File > Preferences... |  | available | `true` | 13997 |
+| File > Print... |  | unavailable | `false` | 13854 |
+| File > Quit | Ctrl+Q | available | `true` | 14032 |
+| File > Recent Projects > <label> |  | available | `true` | 14015 |
+| File > Recent Projects > Clear Recent Projects |  | available | `true` | 14025 |
+| File > Recent Projects > No Recent Projects |  | unavailable | `false` | 14007 |
+| File > Replace Audio in Video File... |  | unavailable | `false` | 13984 |
+| File > Revert |  | state-dependent | `self.project_open` | 13848 |
+| File > Save | Ctrl+S | available | `true` | 13814 |
+| File > Save As... | Ctrl+Shift+S | available | `true` | 13818 |
+| File > Save Library... |  | state-dependent | `self.project_open && self.data.project.selected_track.is_some()` | 13837 |
+| File > Save as Template... |  | state-dependent | `self.project_open` | 13833 |
+| Help > About OpenTrack... |  | available | `true` | 15826 |
+| Help > Credits and Copyrights |  | available | `true` | 15822 |
+| Help > OpenTrack on the Web |  | available | `true` | 15814 |
+| Help > Registration |  | available | `true` | 15818 |
+| MIDI > Arm a MIDI or Instrument track to monitor its input |  | informational | `` | 15089 |
+| MIDI > CC Automation Setup... |  | state-dependent | `self.project_open` | 15000 |
+| MIDI > Drum Map Setup... |  | state-dependent | `self.project_open` | 15015 |
+| MIDI > Input device |  | informational | `` | 15024 |
+| MIDI > Insert Velocities |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14965 |
+| MIDI > Logical Presets |  | state-dependent | `self.data.project.selected_midi_part_id.is_some()` | 15004 |
+| MIDI > MIDI Thru needs an audio output device |  | informational | `` | 15082 |
+| MIDI > No MIDI input devices found |  | informational | `` | 15063 |
+| MIDI > Open Drum Editor |  | state-dependent | `midi_editor_available` | 14952 |
+| MIDI > Open In-Place Editor |  | state-dependent | `self.project_open && (!self.arrange_view_state.audio_events.selected_ids().is_empty() \|\| self.data.project.selected_midi_part_id.is_some())` | 14926 |
+| MIDI > Open Key Editor |  | state-dependent | `midi_editor_available` | 14922 |
+| MIDI > Open List Editor |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 14939 |
+| MIDI > Open Score Editor |  | unavailable | `false` | 14951 |
+| MIDI > Quantize Setup... |  | state-dependent | `self.project_open` | 14957 |
+| MIDI > Refresh MIDI input devices |  | available | `true` | 15068 |
+| MIDI > Reset |  | available | `true` | 15019 |
+| MIDI > VST Expression |  | unavailable | `false` | 14999 |
+| Media > Conform Files... |  | state-dependent | `self.project_open && !self.is_recording()` | 15288 |
+| Media > Convert Files... |  | state-dependent | `self.project_open && !self.is_recording()` | 15299 |
+| Media > Create Folder |  | state-dependent | `self.project_open` | 15321 |
+| Media > Empty Trash |  | state-dependent | `pool_available && !self.data.project.unused_media().is_empty()` | 15254 |
+| Media > Export Pool... |  | state-dependent | `self.project_open` | 15239 |
+| Media > Extract Audio from Video File |  | unavailable | `false` | 15362 |
+| Media > Find Missing Files... |  | state-dependent | `pool_available && !self.data.project.missing_media().is_empty()` | 15265 |
+| Media > Generate Thumbnail Cache |  | unavailable | `false` | 15362 |
+| Media > Import Audio CD... |  | state-dependent | `self.project_open && !self.is_recording()` | 15347 |
+| Media > Import Medium... |  | available | `true` | 15230 |
+| Media > Import Pool... |  | state-dependent | `self.project_open` | 15235 |
+| Media > Insert into Project > Audio Track |  | state-dependent | `self.project_open` | 15375 |
+| Media > Insert into Project > Instrument Track |  | state-dependent | `self.project_open` | 15375 |
+| Media > Insert into Project > MIDI Track |  | state-dependent | `self.project_open` | 15375 |
+| Media > Minimize File |  | state-dependent | `self.project_open && !self.is_recording()` | 15336 |
+| Media > Open Loop Browser | F6 | available | `true` | 15219 |
+| Media > Open MediaBay | F5 | available | `true` | 15214 |
+| Media > Open Pool Window | Ctrl+P | available | `true` | 15210 |
+| Media > Open Sound Browser | F7 | available | `true` | 15224 |
+| Media > Prepare Archive... |  | state-dependent | `self.project_open && !self.is_recording()` | 15325 |
+| Media > Reconstruct |  | state-dependent | `self.project_open` | 15358 |
+| Media > Relink Unavailable Audio... |  | state-dependent | `!unavailable_audio_paths.is_empty()` | 15398 |
+| Media > Remove Missing Files |  | state-dependent | `pool_available && !self.data.project.missing_unreferenced_media().is_empty()` | 15276 |
+| Media > Remove Unused Media |  | state-dependent | `pool_available && !self.data.project.unused_media().is_empty()` | 15243 |
+| Media > Search Media... |  | state-dependent | `self.project_open` | 15389 |
+| Media > Select in Project |  | state-dependent | `self.project_open` | 15393 |
+| Media > Set Pool Record Folder |  | state-dependent | `self.project_open` | 15310 |
+| Project > <preview_label> |  | state-dependent | `self.project_open && (self.arranger_preview.is_some() \|\| !self.data.project.arranger.sequence.is_empty())` | 14635 |
+| Project > Add Track > Arranger |  | state-dependent | `self.project_open` | 14463 |
+| Project > Add Track > Audio |  | available | `true` | 14449 |
+| Project > Add Track > Browse Sounds... |  | available | `true` | 14501 |
+| Project > Add Track > FX Channel |  | available | `true` | 14449 |
+| Project > Add Track > Folder |  | available | `true` | 14449 |
+| Project > Add Track > Group Channel |  | available | `true` | 14449 |
+| Project > Add Track > Instrument |  | available | `true` | 14449 |
+| Project > Add Track > MIDI |  | available | `true` | 14449 |
+| Project > Add Track > Marker |  | state-dependent | `self.project_open` | 14472 |
+| Project > Add Track > Ruler |  | state-dependent | `self.project_open` | 14476 |
+| Project > Add Track > Signature |  | state-dependent | `self.project_open` | 14480 |
+| Project > Add Track > Tempo |  | state-dependent | `self.project_open` | 14484 |
+| Project > Add Track > Transpose |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 14488 |
+| Project > Add Track > Video |  | unavailable | `false` | 14508 |
+| Project > Auto Fades Settings... |  | available | `true` | 14664 |
+| Project > Automation Panel |  | state-dependent | `self.project_open` | 14672 |
+| Project > Beat Calculator... |  | state-dependent | `self.project_open` | 14653 |
+| Project > Browser | Ctrl+B | state-dependent | `self.project_open` | 14648 |
+| Project > Consolidate Media |  | state-dependent | `self.project_folder_managed && !self.is_recording()` | 14595 |
+| Project > Markers | Ctrl+M | state-dependent | `self.project_open` | 14622 |
+| Project > New from Template > <label> |  | available | `true` | 14589 |
+| Project > New from Template > No templates yet. Save one from a project. |  | informational | `` | 14585 |
+| Project > Notepad |  | state-dependent | `self.project_open` | 14660 |
+| Project > Pool | Ctrl+P | available | `true` | 14560 |
+| Project > Project Setup... | Shift+S | available | `true` | 14618 |
+| Project > Regions... |  | state-dependent | `self.project_open` | 14626 |
+| Project > Relink Missing Media (missing_media)... |  | state-dependent | `self.project_open && !self.is_recording() && missing_media > 0` | 14607 |
+| Project > Remove Empty Tracks |  | state-dependent | `self.project_open && !self.is_recording()` | 14530 |
+| Project > Save as Template... |  | state-dependent | `self.project_open` | 14568 |
+| Project > Session Health... |  | state-dependent | `self.project_open` | 14564 |
+| Project > Set Timecode at Cursor |  | state-dependent | `self.project_open` | 14668 |
+| Project > Show Marker Lane |  | state-dependent | `self.project_open` | 14549 |
+| Project > Tempo Track | Ctrl+T | state-dependent | `self.project_open` | 14676 |
+| Project > Track Folding > Collapse All |  | state-dependent | `self.project_open` | 14543 |
+| Project > Track Folding > Expand All |  | state-dependent | `self.project_open` | 14543 |
+| Scores > Advanced Layout > Insert Page Break |  | unavailable | `false` | 15198 |
+| Scores > Advanced Layout > Move Bars |  | unavailable | `false` | 15198 |
+| Scores > Advanced Layout > Optimize All |  | unavailable | `false` | 15198 |
+| Scores > Advanced Layout > Remove Page Break |  | unavailable | `false` | 15198 |
+| Scores > Align Elements > Bottom |  | unavailable | `false` | 15138 |
+| Scores > Align Elements > Distribute Horizontally |  | unavailable | `false` | 15138 |
+| Scores > Align Elements > Distribute Vertically |  | unavailable | `false` | 15138 |
+| Scores > Align Elements > Left |  | unavailable | `false` | 15138 |
+| Scores > Align Elements > Right |  | unavailable | `false` | 15138 |
+| Scores > Align Elements > Top |  | unavailable | `false` | 15138 |
+| Scores > Auto Layout... |  | unavailable | `false` | 15196 |
+| Scores > Build N-Tuplet... |  | state-dependent | `self.project_open && self.data.project.selected_midi_part_id.is_some()` | 15112 |
+| Scores > Convert to Grace Note |  | unavailable | `false` | 15124 |
+| Scores > Flip |  | unavailable | `false` | 15124 |
+| Scores > Functions > Explode |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15181 |
+| Scores > Functions > Explode Pitches |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15168 |
+| Scores > Functions > Make Chord Symbols |  | unavailable | `false` | 15194 |
+| Scores > Functions > Merge |  | state-dependent | `self.project_open && !self.is_recording() && self.data.project.selected_midi_part_id.is_some()` | 15155 |
+| Scores > Group/Ungroup Notes |  | unavailable | `false` | 15124 |
+| Scores > Hide/Show |  | unavailable | `false` | 15124 |
+| Scores > Insert Slur |  | unavailable | `false` | 15124 |
+| Scores > Make Chord Symbols |  | unavailable | `false` | 15150 |
+| Scores > Make Guitar Symbols |  | unavailable | `false` | 15150 |
+| Scores > Open Layout... |  | unavailable | `false` | 15124 |
+| Scores > Open Selection | Ctrl+R | state-dependent | `self.project_open && (!self.arrange_view_state.audio_events.selected_ids().is_empty() \|\| self.data.project.selected_midi_part_id.is_some())` | 15099 |
+| Scores > Page Mode |  | unavailable | `false` | 15124 |
+| Scores > Reset Layout... |  | unavailable | `false` | 15196 |
+| Scores > Settings... |  | unavailable | `false` | 15124 |
+| Transport > Locate Next Event | N | state-dependent | `self.project_open` | 15429 |
+| Transport > Locate Next Marker | Shift+N | state-dependent | `self.project_open` | 15429 |
+| Transport > Locate Previous Event | B | state-dependent | `self.project_open` | 15429 |
+| Transport > Locate Previous Marker | Shift+B | state-dependent | `self.project_open` | 15429 |
+| Transport > Locate Selection | L | state-dependent | `self.project_open` | 15429 |
+| Transport > Locate Selection End |  | state-dependent | `self.project_open` | 15429 |
+| Transport > Locators to Selection | P | state-dependent | `self.project_open` | 15429 |
+| Transport > Loop Selection | Shift+G | state-dependent | `self.project_open` | 15429 |
+| Transport > Metronome On | C | available | `true` | 15559 |
+| Transport > Metronome Setup... |  | available | `true` | 15555 |
+| Transport > Play Selection Range | Alt+Space | state-dependent | `self.project_open` | 15429 |
+| Transport > Play from Selection End |  | state-dependent | `self.project_open` | 15440 |
+| Transport > Play from Selection Start |  | state-dependent | `self.project_open` | 15434 |
+| Transport > Play until Next Marker |  | state-dependent | `self.project_open` | 15456 |
+| Transport > Play until Selection End |  | state-dependent | `self.project_open` | 15451 |
+| Transport > Play until Selection Start |  | state-dependent | `self.project_open` | 15445 |
+| Transport > Post-roll from Selection End |  | state-dependent | `can_roll` | 15466 |
+| Transport > Post-roll from Selection Start |  | state-dependent | `can_roll` | 15462 |
+| Transport > Pre-roll to Selection End |  | state-dependent | `can_roll` | 15474 |
+| Transport > Pre-roll to Selection Start |  | state-dependent | `can_roll` | 15470 |
+| Transport > Precount On |  | available | `true` | 15565 |
+| Transport > Project Synchronization Setup... |  | available | `true` | 15596 |
+| Transport > Retrospective Record | Shift+Num * | state-dependent | `self.project_open && !self.is_recording()` | 15585 |
+| Transport > Roll Lengths... > Post-roll (beats, 0-64) |  | informational | `` | 15495 |
+| Transport > Roll Lengths... > Pre-roll (beats, 0-64) |  | informational | `` | 15479 |
+| Transport > Roll Lengths... > The selection is the selected audio events plus the selected MIDI part. |  | informational | `` | 15511 |
+| Transport > Start Record at Left Locator |  | state-dependent | `self.project_open` | 15543 |
+| Transport > Transport Panel | F2 | available | `true` | 15411 |
+| Transport > Use External Sync | T | unavailable | `false` | 15600 |
+| Transport > Use Post-roll |  | available | `self.use_post_roll` | 15531 |
+| Transport > Use Pre-roll |  | available | `self.use_pre_roll` | 15519 |
+| Window > Windows... |  | available | `true` | 15738 |
+| Window > Workspaces > <lock_label> |  | available | `true` | 15733 |
+| Window > Workspaces > <name> |  | available | `*active` | 15711 |
+| Window > Workspaces > Organize Workspaces... |  | available | `true` | 15717 |
 
 No duplicate full paths.
 
@@ -312,24 +312,24 @@ No duplicate full paths.
 
 | Path | Shortcut | Status | Availability expression | Source line |
 |---|---|---|---|---:|
-| Audio > No project is open |  | unavailable | `false` | 15844 |
-| Devices > Device Setup... |  | available | `true` | 15847 |
-| Devices > VST Connections... | F4 | unavailable | `false` | 15851 |
-| Edit > Key Commands... |  | available | `true` | 15835 |
-| Edit > Redo |  | unavailable | `false` | 15833 |
-| Edit > Undo |  | unavailable | `false` | 15832 |
-| File > New Project... | Ctrl+N | available | `true` | 15814 |
-| File > Open... | Ctrl+O | available | `true` | 15818 |
-| File > Quit | Alt+F4 | available | `true` | 15826 |
-| File > Save | Ctrl+S | unavailable | `false` | 15823 |
-| File > Save As... | Ctrl+Shift+S | unavailable | `false` | 15824 |
-| Help > About OpenTrack... |  | available | `true` | 15859 |
-| MIDI > No project is open |  | unavailable | `false` | 15855 |
-| Media > No project is open |  | unavailable | `false` | 15855 |
-| Project > No project is open |  | unavailable | `false` | 15841 |
-| Scores > No project is open |  | unavailable | `false` | 15855 |
-| Transport > No project is open |  | unavailable | `false` | 15855 |
-| Window > No project is open |  | unavailable | `false` | 15855 |
+| Audio > No project is open |  | unavailable | `false` | 15873 |
+| Devices > Device Setup... |  | available | `true` | 15876 |
+| Devices > VST Connections... | F4 | unavailable | `false` | 15880 |
+| Edit > Key Commands... |  | available | `true` | 15864 |
+| Edit > Redo |  | unavailable | `false` | 15862 |
+| Edit > Undo |  | unavailable | `false` | 15861 |
+| File > New Project... | Ctrl+N | available | `true` | 15843 |
+| File > Open... | Ctrl+O | available | `true` | 15847 |
+| File > Quit | Alt+F4 | available | `true` | 15855 |
+| File > Save | Ctrl+S | unavailable | `false` | 15852 |
+| File > Save As... | Ctrl+Shift+S | unavailable | `false` | 15853 |
+| Help > About OpenTrack... |  | available | `true` | 15888 |
+| MIDI > No project is open |  | unavailable | `false` | 15884 |
+| Media > No project is open |  | unavailable | `false` | 15884 |
+| Project > No project is open |  | unavailable | `false` | 15870 |
+| Scores > No project is open |  | unavailable | `false` | 15884 |
+| Transport > No project is open |  | unavailable | `false` | 15884 |
+| Window > No project is open |  | unavailable | `false` | 15884 |
 
 No duplicate full paths.
 

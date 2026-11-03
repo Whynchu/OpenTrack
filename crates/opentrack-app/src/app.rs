@@ -66,6 +66,7 @@ mod sample_editor;
 #[path = "session_health.rs"]
 mod session_health;
 mod sound_browser;
+mod sync_setup;
 #[path = "system_stats.rs"]
 mod system_stats;
 #[path = "templates.rs"]
@@ -98,10 +99,10 @@ use egui_dock::DockState;
 use opentrack_audio::{
     AudioDevice, AudioDeviceMode, AudioEngine, AudioInputDevice, AudioInputFormat, AudioInputProbe,
     AudioOutputConfig, AudioRecordRoute, AudioRecorder, AudioSource, MidiInputDevice,
-    MidiInputEvent, MidiInputMessage, MidiInputStream, PlaybackClip, PlaybackInputChannel,
-    PlaybackMidiController, PlaybackMidiNote, PlaybackOutputRoute, PlaybackSource,
-    PlaybackTrackSettings, StreamingPlayback, oscillator_instrument_factory, output_configurations,
-    scan_audio_devices,
+    MidiInputEvent, MidiInputMessage, MidiInputStream, MidiOutputDevice, MidiOutputStream,
+    PlaybackClip, PlaybackInputChannel, PlaybackMidiController, PlaybackMidiNote,
+    PlaybackOutputRoute, PlaybackSource, PlaybackTrackSettings, StreamingPlayback,
+    oscillator_instrument_factory, output_configurations, scan_audio_devices,
 };
 use opentrack_core::commands::{
     ArrowKey, BindingResolution, BindingScope, CommandId, KeyBinding, KeyChord, KeyCode,
@@ -1258,6 +1259,13 @@ pub struct OpenTrackApp {
     control_room_open: bool,
     /// Help > Registration informational dialog.
     registration_open: bool,
+    /// MIDI outputs for the MMC master and the sync setup dialog.
+    midi_output_devices: Vec<MidiOutputDevice>,
+    selected_midi_output: Option<String>,
+    midi_output: Option<MidiOutputStream>,
+    mmc_enabled: bool,
+    mmc_device_id: u8,
+    sync_setup_open: bool,
     control_room_tab: u8,
     monitor_listen: Option<u64>,
     monitor_talkback: bool,
@@ -2819,6 +2827,21 @@ impl OpenTrackApp {
             control_room_open: false,
             control_room_tab: 0,
             registration_open: false,
+            midi_output_devices: MidiOutputStream::available_devices().unwrap_or_default(),
+            selected_midi_output: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<String>(storage, "midi-output-id")),
+            midi_output: None,
+            mmc_enabled: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<bool>(storage, "mmc-enabled-v1"))
+                .unwrap_or(false),
+            mmc_device_id: creation
+                .storage
+                .and_then(|storage| eframe::get_value::<u8>(storage, "mmc-device-id-v1"))
+                .unwrap_or(0x7F)
+                .min(127),
+            sync_setup_open: false,
             monitor_listen: creation.storage.and_then(|storage| {
                 eframe::get_value::<Option<u64>>(storage, "control-room-listen-v1").flatten()
             }),
@@ -4290,12 +4313,16 @@ impl OpenTrackApp {
         if !playing && self.is_recording() {
             self.finish_recording();
         }
+        let was_playing = self.data.transport.playing;
         self.data.transport.playing = playing;
         if !playing {
             self.play_until = None;
         }
         if let Some(engine) = &self.audio_engine {
             engine.set_playing(playing);
+        }
+        if was_playing != playing {
+            self.send_mmc_transport(playing);
         }
     }
 
@@ -10800,6 +10827,7 @@ impl OpenTrackApp {
         if let Some(engine) = &self.audio_engine {
             engine.seek_seconds(beat * 60.0 / self.data.project.tempo_bpm.max(1.0));
         }
+        self.send_mmc_locate(beat);
     }
 
     fn locate_marker(&mut self, beat: f64) {
@@ -15565,13 +15593,11 @@ impl OpenTrackApp {
                         self.retrospective_record();
                         ui.close();
                     }
-                    disabled_menu_commands(
-                        ui,
-                        &[
-                            ("Project Synchronization Setup...", ""),
-                            ("Use External Sync", "T"),
-                        ],
-                    );
+                    if menu_command(ui, "Project Synchronization Setup...", "", true).clicked() {
+                        self.open_sync_setup();
+                        ui.close();
+                    }
+                    disabled_menu_commands(ui, &[("Use External Sync", "T")]);
                 });
                 ui.menu_button("Devices", |ui| {
                     if menu_command(ui, "Device Setup...", "", true).clicked() {
@@ -15616,7 +15642,10 @@ impl OpenTrackApp {
                         self.open_control_room(1);
                         ui.close();
                     }
-                    disabled_menu_commands(ui, &[("MMC Master", "")]);
+                    if menu_command(ui, "MMC Master", "", true).clicked() {
+                        self.open_sync_setup();
+                        ui.close();
+                    }
                     if menu_command(ui, "Mixer", "F3", true).clicked() {
                         self.mixer_window.open = true;
                         self.mixer_window.focus_requested = true;
@@ -16495,6 +16524,7 @@ impl OpenTrackApp {
             || self.sound_browser_open
             || self.control_room_open
             || self.registration_open
+            || self.sync_setup_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20081,6 +20111,7 @@ impl eframe::App for OpenTrackApp {
         self.show_sound_browser(&ctx);
         self.show_control_room(&ctx);
         self.show_registration(&ctx);
+        self.show_sync_setup(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
         self.show_project_statistics(&ctx);
@@ -20160,6 +20191,9 @@ impl eframe::App for OpenTrackApp {
         );
         eframe::set_value(storage, "control-room-listen-v1", &self.monitor_listen);
         eframe::set_value(storage, "control-room-talkback-v1", &self.monitor_talkback);
+        eframe::set_value(storage, "midi-output-id", &self.selected_midi_output);
+        eframe::set_value(storage, "mmc-enabled-v1", &self.mmc_enabled);
+        eframe::set_value(storage, "mmc-device-id-v1", &self.mmc_device_id);
         eframe::set_value(storage, "sample-editor-snap-v1", &self.sample_editor.snap);
         eframe::set_value(
             storage,

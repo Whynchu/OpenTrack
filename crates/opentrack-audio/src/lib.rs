@@ -49,7 +49,11 @@ pub use devices::{
     AudioDevice, AudioDeviceInventory, AudioOutputConfig, available_audio_devices,
     output_configurations, scan_audio_devices,
 };
-pub use midi::{MidiInputDevice, MidiInputEvent, MidiInputMessage, MidiInputStream};
+pub use midi::{
+    MMC_DEFERRED_PLAY, MMC_PLAY, MMC_RECORD_EXIT, MMC_RECORD_STROBE, MMC_STOP, MidiInputDevice,
+    MidiInputEvent, MidiInputMessage, MidiInputStream, MidiOutputDevice, MidiOutputStream,
+    mmc_locate, mmc_message,
+};
 pub use offline_render::{OfflineRenderError, OfflineRenderer};
 pub use recording::{
     AudioInputDevice, AudioInputFormat, AudioInputProbe, AudioMonitorBuffer, AudioRecordRoute,
