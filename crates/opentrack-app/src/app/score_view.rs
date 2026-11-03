@@ -6,6 +6,7 @@
 //! Engraving, symbols and beaming are not implemented.
 
 use super::*;
+use opentrack_core::midi_transform::ScoreAlign;
 use opentrack_core::project::MidiPart;
 
 /// Pitches at or above middle C read on the treble staff; lower ones on bass.
@@ -263,6 +264,46 @@ impl OpenTrackApp {
         self.project_history.commit_after_frame = true;
         self.rebuild_audio_plan();
         self.mark_modified();
+    }
+
+    /// Aligns the selected notes left/right/top/bottom as one undo step.
+    pub(super) fn align_selected_score_notes(&mut self, align: ScoreAlign) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before aligning notes".to_owned();
+            return;
+        };
+        let ids = self
+            .selected_midi_note_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        if ids.len() < 2 {
+            self.status_message = "Select at least two notes to align".to_owned();
+            return;
+        }
+        let mut candidate = self.data.project.clone();
+        let Some(part) = candidate
+            .tracks
+            .iter_mut()
+            .flat_map(|track| track.midi_parts.iter_mut())
+            .find(|part| part.id == part_id)
+        else {
+            self.status_message = "The selected MIDI part is no longer in the project".to_owned();
+            return;
+        };
+        let changed = opentrack_core::midi_transform::align_notes(part, &ids, align);
+        if changed == 0 {
+            self.status_message = "The selected notes are already aligned".to_owned();
+            return;
+        }
+        let (label, description) = match align {
+            ScoreAlign::Left => ("Align Left", "starts to the earliest note"),
+            ScoreAlign::Right => ("Align Right", "starts to the latest note"),
+            ScoreAlign::Top => ("Align Top", "pitches to the highest note"),
+            ScoreAlign::Bottom => ("Align Bottom", "pitches to the lowest note"),
+        };
+        self.record_score_edit(candidate, label);
+        self.status_message = format!("Aligned {changed} note(s): {description}");
     }
 
     /// Analyses the selected notes (or the whole part) into chord symbols.
@@ -1266,6 +1307,51 @@ mod tests {
         assert!(!stem_up(4, false));
         assert!(!stem_up(0, true));
         assert!(stem_up(4, true));
+    }
+
+    #[test]
+    fn selected_notes_align_with_labelled_undo_steps() {
+        let mut app = app_with_part();
+        app.selected_midi_note_ids.clear();
+        for note in &app.data.project.tracks[0].midi_parts[0].notes {
+            app.selected_midi_note_ids.insert(note.id);
+        }
+        app.align_selected_score_notes(ScoreAlign::Left);
+        assert!(
+            app.data.project.tracks[0].midi_parts[0]
+                .notes
+                .iter()
+                .all(|note| note.start_beats == 0.0)
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Align Left")
+        );
+
+        app.align_selected_score_notes(ScoreAlign::Top);
+        assert!(
+            app.data.project.tracks[0].midi_parts[0]
+                .notes
+                .iter()
+                .all(|note| note.pitch == 64)
+        );
+        app.project_history.finish_frame(&app.data.project, true);
+        assert!(
+            app.project_history
+                .steps()
+                .iter()
+                .any(|step| step.label == "Align Top")
+        );
+
+        // One selected note is not an alignment.
+        let first = app.data.project.tracks[0].midi_parts[0].notes[0].id;
+        app.selected_midi_note_ids.clear();
+        app.selected_midi_note_ids.insert(first);
+        app.align_selected_score_notes(ScoreAlign::Bottom);
+        assert!(app.status_message.contains("at least two notes"));
     }
 
     #[test]

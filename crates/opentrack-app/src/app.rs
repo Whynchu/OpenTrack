@@ -15208,16 +15208,33 @@ impl OpenTrackApp {
                         ui.close();
                     }
                     ui.menu_button("Align Elements", |ui| {
+                        if menu_command(ui, "Left", "", self.project_open).clicked() {
+                            self.align_selected_score_notes(
+                                opentrack_core::midi_transform::ScoreAlign::Left,
+                            );
+                            ui.close();
+                        }
+                        if menu_command(ui, "Right", "", self.project_open).clicked() {
+                            self.align_selected_score_notes(
+                                opentrack_core::midi_transform::ScoreAlign::Right,
+                            );
+                            ui.close();
+                        }
+                        if menu_command(ui, "Top", "", self.project_open).clicked() {
+                            self.align_selected_score_notes(
+                                opentrack_core::midi_transform::ScoreAlign::Top,
+                            );
+                            ui.close();
+                        }
+                        if menu_command(ui, "Bottom", "", self.project_open).clicked() {
+                            self.align_selected_score_notes(
+                                opentrack_core::midi_transform::ScoreAlign::Bottom,
+                            );
+                            ui.close();
+                        }
                         disabled_menu_commands(
                             ui,
-                            &[
-                                ("Left", ""),
-                                ("Right", ""),
-                                ("Top", ""),
-                                ("Bottom", ""),
-                                ("Distribute Horizontally", ""),
-                                ("Distribute Vertically", ""),
-                            ],
+                            &[("Distribute Horizontally", ""), ("Distribute Vertically", "")],
                         );
                     });
                     if menu_command(ui, "Make Chord Symbols", "", self.project_open).clicked() {

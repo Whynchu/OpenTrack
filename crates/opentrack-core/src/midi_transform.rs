@@ -23,6 +23,77 @@ fn says_yes(ids: &[u64], id: u64) -> bool {
 ///
 /// Notes that would leave the MIDI pitch range are skipped, and the caller can
 /// report the difference between the requested and the changed count.
+/// Direction for Scores > Align Elements.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScoreAlign {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Aligns the selected notes in the score: starts to the earliest/latest beat,
+/// or pitches to the lowest/highest. Durations are kept, so a right alignment
+/// uses the latest start that still fits inside the part.
+pub fn align_notes(part: &mut MidiPart, ids: &[u64], align: ScoreAlign) -> usize {
+    let selected = part
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| ids.contains(&note.id))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if selected.len() < 2 {
+        return 0;
+    }
+    let target_beat = match align {
+        ScoreAlign::Left => selected
+            .iter()
+            .map(|index| part.notes[*index].start_beats)
+            .fold(f64::INFINITY, f64::min),
+        ScoreAlign::Right => selected
+            .iter()
+            .map(|index| part.notes[*index].start_beats)
+            .fold(f64::NEG_INFINITY, f64::max),
+        _ => 0.0,
+    };
+    let target_pitch = match align {
+        ScoreAlign::Top => selected
+            .iter()
+            .map(|index| part.notes[*index].pitch)
+            .max()
+            .unwrap_or(0),
+        ScoreAlign::Bottom => selected
+            .iter()
+            .map(|index| part.notes[*index].pitch)
+            .min()
+            .unwrap_or(0),
+        _ => 0,
+    };
+    let duration = part.duration_beats;
+    let mut changed = 0;
+    for index in selected {
+        let note = &mut part.notes[index];
+        match align {
+            ScoreAlign::Left | ScoreAlign::Right => {
+                let limit = (duration - note.duration_beats).max(0.0);
+                let target = target_beat.min(limit);
+                if (note.start_beats - target).abs() > 1.0e-9 {
+                    note.start_beats = target;
+                    changed += 1;
+                }
+            }
+            ScoreAlign::Top | ScoreAlign::Bottom => {
+                if note.pitch != target_pitch {
+                    note.pitch = target_pitch;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    changed
+}
+
 /// Toggles the score `hidden` flag on the given notes.
 pub fn toggle_hidden(part: &mut MidiPart, ids: &[u64]) -> usize {
     let mut changed = 0;
@@ -503,5 +574,52 @@ mod tests {
         assert_eq!(toggle_note_group(&mut part, &[1]), 1);
         assert_eq!(toggle_note_group(&mut part, &[2]), 1);
         assert_ne!(part.notes[0].group, part.notes[1].group);
+    }
+    #[test]
+    fn aligning_selected_notes_moves_starts_or_pitches() {
+        let ids_for = |part: &MidiPart| part.notes.iter().map(|note| note.id).collect::<Vec<_>>();
+
+        // Left aligns the starts to the earliest selected note.
+        let (_project, mut target) = part();
+        let ids = ids_for(&target);
+        assert_eq!(align_notes(&mut target, &ids, ScoreAlign::Left), 2);
+        assert!(target.notes.iter().all(|note| note.start_beats == 0.0));
+        assert_eq!(
+            align_notes(&mut target, &ids, ScoreAlign::Left),
+            0,
+            "already aligned"
+        );
+
+        // Right aligns them to the latest start.
+        let (_project, mut target) = part();
+        let ids = ids_for(&target);
+        assert_eq!(align_notes(&mut target, &ids, ScoreAlign::Right), 2);
+        assert!(
+            target
+                .notes
+                .iter()
+                .all(|note| (note.start_beats - 2.0).abs() < 1e-9)
+        );
+        assert_eq!(align_notes(&mut target, &ids, ScoreAlign::Right), 0);
+
+        // Top and Bottom align pitches to the highest/lowest selected note.
+        let (_project, mut target) = part();
+        target.notes[1].pitch = 64;
+        target.notes[2].pitch = 67;
+        let ids = ids_for(&target);
+        assert_eq!(align_notes(&mut target, &ids, ScoreAlign::Top), 2);
+        assert!(target.notes.iter().all(|note| note.pitch == 67));
+        assert_eq!(align_notes(&mut target, &ids, ScoreAlign::Top), 0);
+
+        // Bottom on a fresh part, since Top has already levelled the pitches.
+        let (_project, mut target) = part();
+        target.notes[1].pitch = 64;
+        target.notes[2].pitch = 67;
+        let ids = ids_for(&target);
+        assert_eq!(align_notes(&mut target, &ids, ScoreAlign::Bottom), 2);
+        assert!(target.notes.iter().all(|note| note.pitch == 60));
+
+        // A single selected note is not an alignment.
+        assert_eq!(align_notes(&mut target, &[ids[0]], ScoreAlign::Left), 0);
     }
 }
