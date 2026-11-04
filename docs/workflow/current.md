@@ -48,9 +48,11 @@ The user reported menu clicks reaching the Project window underneath, occasional
 two-menu displays, Score menu entries that dimmed the project without opening a
 window, and the lack of left/right hover switching between top-level menus.
 
-- The Project block now masks pointer input while any menu, submenu or context
-  popup is open. The old `menu_open` flag only read egui's submenu state, so a
-  top-level File/Edit menu left the arrange pointer live.
+- The Project block now masks pointer input while a top-level menu bar menu is
+  open. The old `menu_open` flag only read egui's submenu state, so a top-level
+  File/Edit menu left the arrange pointer live. Context menus keep normal pointer
+  input because they are drawn inside the Project content and must receive the
+  item click that runs the command.
 - Top-level menus use one shared popup and a recorded bar of button rectangles.
   Moving to another entry while a menu is open switches it; clicking a different
   entry closes the old menu before the new one is painted; clicking the open
@@ -65,9 +67,9 @@ window, and the lack of left/right hover switching between top-level menus.
   leaves, 152 bound command IDs).
 
 Verification: `cargo fmt --all`; `cargo check --offline -p opentrack`;
-focused `popup_behavior` tests including hover switch and click-close; focused
-Score test; regenerated source-inventory test. Runtime desktop review of the
-menu bar and Score windows remains pending.
+focused `popup_behavior` tests including hover switch, click-close and
+context-popup input; focused Score test; regenerated source-inventory test.
+Runtime desktop review of the menu bar and Score windows remains pending.
 
 ## Instrument-track plug-in editor and crash follow-up (2026-11-03)
 

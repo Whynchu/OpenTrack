@@ -130,6 +130,20 @@ pub(crate) fn end_menu_bar(ui: &egui::Ui) {
     });
 }
 
+/// Is a top-level menu-bar menu open?
+///
+/// Context menus and other popups are deliberately excluded: they are drawn
+/// inside the Project content and need the pointer input that `blocked_input_scope`
+/// withholds from the timeline underneath.
+pub(crate) fn top_menu_open(ctx: &egui::Context) -> bool {
+    let state = ctx
+        .data(|data| data.get_temp::<TopMenuState>(top_menu_state_id(ctx)))
+        .unwrap_or_default();
+    state
+        .open
+        .is_some_and(|id| egui::Popup::is_id_open(ctx, id))
+}
+
 /// Extends the shared activation zone so the pointer may travel over `rect`
 /// without dismissing the open popup chain.
 fn keep_activation_zone(ctx: &egui::Context, rect: Rect) {
@@ -307,6 +321,20 @@ mod tests {
     fn menu_state(ctx: &egui::Context) -> TopMenuState {
         ctx.data(|data| data.get_temp::<TopMenuState>(top_menu_state_id(ctx)))
             .expect("menu bar state")
+    }
+
+    #[test]
+    fn context_popups_are_not_reported_as_open_top_menus() {
+        let ctx = egui::Context::default();
+        menu_frame(&ctx, Vec::new());
+        let context = Id::new("context-popup");
+        egui::Popup::open_id(&ctx, context);
+        assert!(egui::Popup::is_any_open(&ctx));
+        assert!(
+            !top_menu_open(&ctx),
+            "a context menu must keep receiving pointer input inside the Project"
+        );
+        egui::Popup::close_id(&ctx, context);
     }
 
     #[test]

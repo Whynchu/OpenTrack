@@ -14096,7 +14096,7 @@ impl OpenTrackApp {
         self.menu_open = false;
         if !self.project_open {
             self.show_empty_project_menu(ui);
-            self.menu_open = egui::Popup::is_any_open(ui.ctx());
+            self.menu_open = popup_behavior::top_menu_open(ui.ctx());
             return;
         }
         let workspace_items: Vec<_> = self
@@ -16281,7 +16281,7 @@ impl OpenTrackApp {
                 });
             });
         popup_behavior::end_menu_bar(ui);
-        self.menu_open = egui::Popup::is_any_open(ui.ctx());
+        self.menu_open = popup_behavior::top_menu_open(ui.ctx());
     }
 
     fn show_empty_project_menu(&mut self, ui: &mut egui::Ui) {
