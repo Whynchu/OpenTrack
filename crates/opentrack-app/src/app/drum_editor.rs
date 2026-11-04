@@ -36,11 +36,6 @@ pub(super) struct DrumEditorDrag {
 
 impl OpenTrackApp {
     pub(super) fn toggle_drum_editor(&mut self) {
-        if self.drum_editor_open {
-            self.drum_editor_open = false;
-            self.drum_editor_drag = None;
-            return;
-        }
         if self
             .data
             .project
@@ -58,14 +53,8 @@ impl OpenTrackApp {
             self.status_message = "Select a MIDI part to open the drum editor".to_owned();
             return;
         }
-        self.drum_editor_open = true;
-        self.drum_editor_velocity = self
-            .selected_midi_note_ids
-            .iter()
-            .next()
-            .and_then(|id| self.selected_part_note(*id))
-            .map(|note| note.velocity)
-            .unwrap_or(self.midi_editor_settings.insert_velocity);
+        self.midi_editor_settings.drum_map_view = true;
+        self.midi_editor_open = true;
     }
 
     fn selected_part_note(&self, note_id: u64) -> Option<&opentrack_core::project::MidiNote> {
@@ -569,16 +558,11 @@ mod tests {
     }
 
     #[test]
-    fn closing_clears_the_drag_and_does_not_touch_the_project() {
+    fn opening_selects_drum_map_view_without_touching_the_project() {
         let mut app = app_with_part();
-        app.drum_editor_open = true;
-        app.drum_editor_drag = Some(DrumEditorDrag {
-            start_pointer_beat: 1.0,
-            origin: vec![(1, 1.0)],
-        });
         app.toggle_drum_editor();
-        assert!(!app.drum_editor_open);
-        assert!(app.drum_editor_drag.is_none());
+        assert!(app.midi_editor_settings.drum_map_view);
+        assert!(app.midi_editor_open);
         assert_eq!(app.project_history.counts().0, 0);
     }
 }

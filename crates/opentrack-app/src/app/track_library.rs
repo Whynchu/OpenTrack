@@ -351,6 +351,7 @@ mod tests {
 
     fn insert() -> InsertEffect {
         InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::StereoDelay {

@@ -920,6 +920,15 @@ impl Vst3Effect {
     ///
     /// Audio-callback contract: no allocation, locks, I/O or controller calls.
     fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String> {
+        self.process_automated(left, right, &[])
+    }
+
+    fn process_automated(
+        &self,
+        left: &mut [f32],
+        right: &mut [f32],
+        events: &[opentrack_plugins::HostedParameterEvent],
+    ) -> Result<(), String> {
         if left.len() != right.len() {
             return Err(String::from(
                 "left and right channel lengths must match for a stereo block",
@@ -952,8 +961,18 @@ impl Vst3Effect {
 
         self.parameter_changes.begin_block();
         self.output_parameter_changes.begin_block();
+        for event in events.iter().take(128) {
+            if event.value.is_finite() && event.sample_offset < frames as u32 {
+                self.parameter_changes.add_at(
+                    event.parameter_id,
+                    event.value.clamp(0.0, 1.0),
+                    event.sample_offset as int32,
+                );
+            }
+        }
         while let Some(change) = self.shared.parameters.pop() {
-            self.parameter_changes.add(change.id, change.value);
+            self.parameter_changes
+                .add_at(change.id, change.value, change.sample_offset);
         }
 
         let input_channels = self.layout.input_channels.max(1) as usize;
@@ -1041,6 +1060,15 @@ impl Vst3Effect {
 impl HostedProcessor for Vst3Effect {
     fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String> {
         Vst3Effect::process(self, left, right)
+    }
+
+    fn process_automated(
+        &self,
+        left: &mut [f32],
+        right: &mut [f32],
+        events: &[opentrack_plugins::HostedParameterEvent],
+    ) -> Result<(), String> {
+        Vst3Effect::process_automated(self, left, right, events)
     }
 
     fn latency_samples(&self) -> u32 {

@@ -57,6 +57,8 @@ pub struct AudioMonitorBuffer {
     sample_rate: u32,
     enabled: AtomicBool,
     monitor_start_frame: AtomicU64,
+    automation_project_origin: AtomicU64,
+    automation_source_origin: AtomicU64,
     monitor_epoch: AtomicU64,
     read_index: AtomicU64,
     write_index: AtomicU64,
@@ -76,6 +78,8 @@ impl AudioMonitorBuffer {
             sample_rate,
             enabled: AtomicBool::new(false),
             monitor_start_frame: AtomicU64::new(0),
+            automation_project_origin: AtomicU64::new(0),
+            automation_source_origin: AtomicU64::new(u64::MAX),
             monitor_epoch: AtomicU64::new(0),
             read_index: AtomicU64::new(0),
             write_index: AtomicU64::new(0),
@@ -87,6 +91,29 @@ impl AudioMonitorBuffer {
     pub fn set_input_channel(&self, settings: &opentrack_core::project::Track) {
         self.bus.set(settings);
     }
+    pub fn set_input_channel_automation(
+        &self,
+        settings: &opentrack_core::project::Track,
+        tempo_bpm: f64,
+        read: bool,
+    ) {
+        self.bus.update_settings(settings, tempo_bpm, read);
+    }
+    pub fn set_automation_origin(&self, position_beats: f64, tempo_bpm: f64) {
+        let frame = if position_beats.is_finite()
+            && position_beats >= 0.0
+            && tempo_bpm.is_finite()
+            && tempo_bpm > 0.0
+        {
+            (position_beats * 60.0 * f64::from(self.sample_rate) / tempo_bpm).round() as u64
+        } else {
+            0
+        };
+        self.automation_project_origin
+            .store(frame, Ordering::Release);
+        self.automation_source_origin
+            .store(u64::MAX, Ordering::Release);
+    }
     pub fn meter_tap(&self) -> Arc<crate::StereoMeter> {
         self.bus.meter_tap()
     }
@@ -94,7 +121,24 @@ impl AudioMonitorBuffer {
         self.bus.take_peaks()
     }
     pub(crate) fn process_input(&self, left: f32, right: f32) -> (f32, f32) {
-        self.bus.process(left, right)
+        self.bus.process_input(left, right)
+    }
+    pub(crate) fn process_input_at(&self, left: f32, right: f32, frame: u64) -> (f32, f32) {
+        let mut origin = self.automation_source_origin.load(Ordering::Acquire);
+        if origin == u64::MAX {
+            let _ = self.automation_source_origin.compare_exchange(
+                u64::MAX,
+                frame,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            origin = self.automation_source_origin.load(Ordering::Acquire);
+        }
+        let project_frame = self
+            .automation_project_origin
+            .load(Ordering::Acquire)
+            .saturating_add(frame.saturating_sub(origin));
+        self.bus.process_at(left, right, project_frame)
     }
     pub fn set_enabled(&self, enabled: bool) {
         if enabled {
@@ -261,7 +305,9 @@ impl AsioCapture {
                     .copied()
                     .filter(|s| s.is_finite())
                     .unwrap_or(left);
-                let (left, right) = self.monitor.process_input(left, right);
+                let (left, right) =
+                    self.monitor
+                        .process_input_at(left, right, first_sequence + offset as u64);
                 frame[0] = left;
                 if frame.len() > 1 {
                     frame[1] = right;
@@ -632,10 +678,12 @@ where
     f32: FromSample<T>,
 {
     let channels = usize::from(config.channels);
+    let input_frame = AtomicU64::new(0);
     device.build_input_stream(
         config,
         move |samples: &[T], _| {
             for frame in samples.chunks_exact(channels) {
+                let frame_index = input_frame.fetch_add(1, Ordering::Relaxed);
                 let mut left = 0.0_f32;
                 let mut right = 0.0_f32;
                 for (channel, sample) in frame.iter().enumerate() {
@@ -653,7 +701,7 @@ where
                 if channels == 1 {
                     right = left;
                 }
-                let (left, right) = monitor.process_input(left, right);
+                let (left, right) = monitor.process_input_at(left, right, frame_index);
                 if monitor.is_enabled() {
                     if !monitor.push_frame(left, right) {
                         monitor.add_dropped_frames(1);
@@ -1985,7 +2033,13 @@ impl SpscAudioRing {
                 0.0
             };
             let (left, right) = input_bus
-                .map(|bus| bus.process_input(left, if channels == 1 { left } else { right }))
+                .map(|bus| {
+                    bus.process_input_at(
+                        left,
+                        if channels == 1 { left } else { right },
+                        first_sequence + offset as u64,
+                    )
+                })
                 .unwrap_or((left, right));
             peak = peak.max(left.abs()).max(right.abs());
             channel_peaks[0] = channel_peaks[0].max(left.abs());
@@ -2625,6 +2679,8 @@ mod tests {
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
                 volume_automation: None,
+                pan_automation: None,
+                mute_automation: None,
                 sends: Vec::new(),
                 output_route: crate::PlaybackOutputRoute::Stereo,
             }],

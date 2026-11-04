@@ -45,9 +45,10 @@ pub fn resolve_module_selection(selection: &Path) -> Result<PathBuf, String> {
 pub struct Runtime {
     sample_rate: u32,
     max_block: u32,
-    instances: HashMap<(u64, usize), Instance>,
-    failures: HashMap<(u64, usize), String>,
-    failed_class: HashMap<(u64, usize), String>,
+    instances: HashMap<(u64, u64), Instance>,
+    failures: HashMap<(u64, u64), String>,
+    failed_class: HashMap<(u64, u64), String>,
+    slot_ids: HashMap<(u64, usize), u64>,
 }
 
 /// Owner-lifetime native window used as the parent of a VST3 editor view.
@@ -1299,10 +1300,10 @@ impl Runtime {
         block: u32,
     ) -> bool {
         self.sample_rate == rate && self.max_block == block
-            && project.tracks.iter().find(|track| track.id == track_id)
+            && project.channel_by_id(track_id)
                 .and_then(|track| track.inserts.get(slot))
                 .is_some_and(|insert| matches!(&insert.kind, InsertEffectKind::Vst3 { class_id, .. }
-                    if self.instances.get(&(track_id, slot)).is_some_and(|instance| instance.class_id == *class_id)))
+                    if self.instances.get(&(track_id, insert.id)).is_some_and(|instance| instance.class_id == *class_id)))
     }
 
     pub fn take_dirty(&self) -> bool {
@@ -1334,12 +1335,14 @@ impl Runtime {
         let sync_started = std::time::Instant::now();
         let mut wanted = HashSet::new();
         let mut changed = false;
+        self.slot_ids.clear();
         for track in project
             .tracks
             .iter()
             .chain(std::iter::once(&project.output_channel.strip))
         {
             for (slot, insert) in track.inserts.iter().enumerate() {
+                self.slot_ids.insert((track.id, slot), insert.id);
                 let InsertEffectKind::Vst3 {
                     class_id,
                     module_path,
@@ -1350,7 +1353,7 @@ impl Runtime {
                 else {
                     continue;
                 };
-                let key = (track.id, slot);
+                let key = (track.id, insert.id);
                 // A powered-off plug-in is unloaded rather than left running.
                 if !insert.enabled {
                     continue;
@@ -1448,6 +1451,10 @@ impl Runtime {
     /// Load or restore one VST3 insert. Project loading uses this one-at-a-time
     /// entry point to keep the UI responsive between plug-in instances.
     pub fn load_insert(&mut self, track: &Track, slot: usize) -> bool {
+        self.slot_ids.insert(
+            (track.id, slot),
+            track.inserts.get(slot).map_or(0, |insert| insert.id),
+        );
         if self.sample_rate == 0 || self.max_block == 0 {
             return false;
         }
@@ -1467,7 +1474,7 @@ impl Runtime {
         else {
             return false;
         };
-        let key = (track.id, slot);
+        let key = (track.id, insert.id);
         if self
             .failed_class
             .get(&key)
@@ -1535,11 +1542,15 @@ impl Runtime {
                 let InsertEffectKind::Vst3 { .. } = &insert.kind else {
                     return None;
                 };
-                let instance = self.instances.get(&(track.id, slot))?;
+                let instance = self.instances.get(&(track.id, insert.id))?;
                 let processor: Arc<dyn HostedProcessor> = instance.effect.clone();
                 Some(HostedInsert {
                     processor,
                     enabled: insert.enabled && !insert.bypassed && !track.inserts_bypassed,
+                    automation: track.automation_lanes.iter().filter(|lane| {
+                        matches!(lane.target, opentrack_core::automation::AutomationTarget::PluginParameter { insert_id, .. } if insert_id == insert.id)
+                            && lane.is_valid() && !lane.points.is_empty()
+                    }).cloned().map(Arc::new).collect(),
                 })
             })
             .collect()
@@ -1547,13 +1558,19 @@ impl Runtime {
 
     pub fn instance(&self, track_id: u64, slot: usize) -> Option<Arc<Vst3Effect>> {
         self.instances
-            .get(&(track_id, slot))
+            .get(&(track_id, self.insert_id(track_id, slot)?))
             .map(|instance| Arc::clone(&instance.effect))
     }
 
     pub fn parameters(&self, track_id: u64, slot: usize) -> Option<Vec<Vst3ParameterInfo>> {
         self.instance(track_id, slot)
             .map(|effect| effect.parameters())
+    }
+
+    fn insert_id(&self, track_id: u64, slot: usize) -> Option<u64> {
+        // Parameter/editor helpers are called with a project slot on the control
+        // side; the stable-id map lookup is handled by retaining a slot map below.
+        self.slot_ids.get(&(track_id, slot)).copied()
     }
 
     /// Abandons a queued editor retry; editor parameter sync now runs on the
@@ -1570,8 +1587,15 @@ impl Runtime {
     ///
     /// The rack shows these so a failed plug-in is visible where the user put
     /// it, not only in the parameter window they would have to open first.
-    pub fn failures(&self) -> &HashMap<(u64, usize), String> {
-        &self.failures
+    pub fn failures(&self) -> HashMap<(u64, usize), String> {
+        self.failures
+            .iter()
+            .filter_map(|(&(track, insert_id), value)| {
+                self.slot_ids.iter().find_map(|(&(owner, slot), &id)| {
+                    (owner == track && id == insert_id).then_some(((track, slot), value.clone()))
+                })
+            })
+            .collect()
     }
 
     pub fn failure_count(&self) -> usize {
@@ -1579,12 +1603,16 @@ impl Runtime {
     }
 
     pub fn failure(&self, track_id: u64, slot: usize) -> Option<&str> {
-        self.failures.get(&(track_id, slot)).map(String::as_str)
+        self.failures
+            .get(&(track_id, self.insert_id(track_id, slot)?))
+            .map(String::as_str)
     }
 
     pub fn retry(&mut self, track_id: u64, slot: usize) {
-        self.failures.remove(&(track_id, slot));
-        self.failed_class.remove(&(track_id, slot));
+        if let Some(id) = self.insert_id(track_id, slot) {
+            self.failures.remove(&(track_id, id));
+            self.failed_class.remove(&(track_id, id));
+        }
     }
 
     pub fn open_editor(&self, track_id: u64, slot: usize, parent: isize) -> Result<(), String> {
@@ -1623,7 +1651,7 @@ impl Runtime {
                 else {
                     continue;
                 };
-                let Some(instance) = self.instances.get(&(track.id, slot)) else {
+                let Some(instance) = self.instances.get(&(track.id, insert.id)) else {
                     continue;
                 };
                 if instance.class_id != *class_id {
@@ -1935,6 +1963,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -1977,6 +2006,7 @@ mod tests {
             let mut project = Project::default();
             project.add_track(TrackKind::Audio);
             project.tracks[0].inserts.push(InsertEffect {
+                id: 0,
                 enabled: true,
                 bypassed: false,
                 kind: InsertEffectKind::Vst3 {
@@ -2031,6 +2061,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -2063,6 +2094,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -2115,6 +2147,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -2158,6 +2191,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {

@@ -61,6 +61,8 @@ fn track_settings(source: Arc<DecodedWav>, index: usize) -> opentrack_audio::Pla
         monitor_input: None,
         output_route: PlaybackOutputRoute::Stereo,
         volume_automation: None,
+        pan_automation: None,
+        mute_automation: None,
         sends: Vec::new(),
     }
 }

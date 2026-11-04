@@ -91,6 +91,18 @@ impl OpenTrackApp {
                     "Names and row order are a display mapping for MIDI and Instrument tracks. \
                      Playback pitch is unchanged; an empty map shows MIDI note numbers.",
                 );
+                egui::ComboBox::from_label("Load preset")
+                    .selected_text("Choose a map")
+                    .show_ui(ui, |ui| {
+                        if ui.button("General MIDI 1 Percussion").clicked() {
+                            draft.rows = opentrack_core::drum_map::GENERAL_MIDI_1_PERCUSSION
+                                .iter()
+                                .map(|(pitch, name)| (*pitch, (*name).to_owned()))
+                                .collect();
+                            draft.error = None;
+                            changed = true;
+                        }
+                    });
                 if let Some(error) = &draft.error {
                     ui.colored_label(Color32::from_rgb(214, 88, 80), error);
                 }

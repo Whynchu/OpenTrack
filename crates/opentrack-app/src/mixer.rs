@@ -397,12 +397,12 @@ fn sidebar(
         ),
         (
             Icon::Text("R"),
-            "Read All Track Automation (track volume)",
+            "Read All Automation (track volume, pan, and mute lanes)",
             183.0,
         ),
         (
             Icon::Text("W"),
-            "Write Automation for all tracks (track volume only, while playing)",
+            "Write Automation for all supported track controls while playing",
             200.0,
         ),
     ];
@@ -431,10 +431,18 @@ fn sidebar(
                     0 => t.muted = false,
                     1 => t.solo = false,
                     2 => t.listen = false,
-                    3 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
+                    3 if matches!(
+                        t.kind,
+                        TrackKind::Audio | TrackKind::Instrument | TrackKind::Group | TrackKind::Fx
+                    ) =>
+                    {
                         t.automation_read = true
                     }
-                    4 if matches!(t.kind, TrackKind::Audio | TrackKind::Instrument) => {
+                    4 if matches!(
+                        t.kind,
+                        TrackKind::Audio | TrackKind::Instrument | TrackKind::Group | TrackKind::Fx
+                    ) =>
+                    {
                         t.automation_write = true
                     }
                     _ => {}
@@ -1100,7 +1108,15 @@ fn strip(
             modified = true;
             requires_plan_rebuild |= is_bus && track.id == opentrack_core::project::INPUT_BUS_ID;
         }
-        let x = pan.center().x + track.pan * pan.width() * 0.46;
+        if (!is_bus
+            || matches!(track.kind, TrackKind::Group | TrackKind::Fx)
+            || track.id >= opentrack_core::project::INPUT_BUS_ID)
+            && track.automation_write
+        {
+            automation::capture_channel_pan_write(ui, track.id, &pan_response, track.pan);
+        }
+        let displayed_pan = automation::followed_pan(ui, track.id, track.pan);
+        let x = pan.center().x + displayed_pan * pan.width() * 0.46;
         ui.painter().line_segment(
             [
                 Pos2::new(x, pan.top() + 2.0),
@@ -1108,12 +1124,12 @@ fn strip(
             ],
             Stroke::new(2.0, p.accent),
         );
-        let pan_label = if track.pan.abs() < 0.005 {
+        let pan_label = if displayed_pan.abs() < 0.005 {
             "C".to_owned()
-        } else if track.pan < 0.0 {
-            format!("L {:.0}", track.pan.abs() * 100.0)
+        } else if displayed_pan < 0.0 {
+            format!("L {:.0}", displayed_pan.abs() * 100.0)
         } else {
-            format!("R {:.0}", track.pan * 100.0)
+            format!("R {:.0}", displayed_pan * 100.0)
         };
         ui.painter()
             .rect_filled(at(6.0, 104.0, 29.0, 18.0), 1.0, p.canvas);
@@ -1127,6 +1143,7 @@ fn strip(
         );
         let (effective_muted, effective_solo) =
             effective_state.unwrap_or((track.muted, track.solo || track.solo_defeat));
+        let effective_muted = automation::followed_mute(ui, track.id, effective_muted);
         for (i, (label, active, tip, y)) in [
             ("M", effective_muted, "Mute", 126.0),
             (
@@ -1139,13 +1156,13 @@ fn strip(
             (
                 "R",
                 track.automation_read,
-                "Read Automation (track volume only)",
+                "Read Automation (track volume, pan, and mute lanes)",
                 183.0,
             ),
             (
                 "W",
                 track.automation_write,
-                "Write Automation (track volume only, while playing)",
+                "Write Automation (volume, pan drags, and mute toggles while playing)",
                 200.0,
             ),
         ]
@@ -1159,8 +1176,22 @@ fn strip(
                 Icon::Text(label),
                 active,
                 false,
-                if i == 3 || i == 4 {
-                    !is_bus && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
+                if i == 3 {
+                    matches!(
+                        track.kind,
+                        TrackKind::Audio | TrackKind::Instrument | TrackKind::Group | TrackKind::Fx
+                    )
+                } else if i == 4 {
+                    (!is_bus
+                        || matches!(track.kind, TrackKind::Group | TrackKind::Fx)
+                        || track.id >= opentrack_core::project::INPUT_BUS_ID)
+                        && matches!(
+                            track.kind,
+                            TrackKind::Audio
+                                | TrackKind::Instrument
+                                | TrackKind::Group
+                                | TrackKind::Fx
+                        )
                 } else {
                     !is_bus || i == 0
                 },
@@ -1169,7 +1200,12 @@ fn strip(
             .clicked()
             {
                 match i {
-                    0 => track.muted = !track.muted,
+                    0 => {
+                        track.muted = !track.muted;
+                        if track.automation_write {
+                            automation::queue_mute_write(ui, track.id, track.muted);
+                        }
+                    }
                     1 => {
                         let modifiers = ui.input(|i| i.modifiers);
                         if modifiers.alt {
@@ -1334,8 +1370,12 @@ fn strip(
         if fader_changed {
             track.gain = displayed_gain;
         }
-        if !is_bus && track.automation_write {
-            automation::capture_fader_write(ui, track.id, &fader_response, track.gain);
+        if (!is_bus
+            || matches!(track.kind, TrackKind::Group | TrackKind::Fx)
+            || track.id >= opentrack_core::project::INPUT_BUS_ID)
+            && track.automation_write
+        {
+            automation::capture_channel_fader_write(ui, track.id, &fader_response, track.gain);
         }
         modified |= fader_changed;
         requires_plan_rebuild |= fader_changed && track.id == opentrack_core::project::INPUT_BUS_ID;
@@ -1864,6 +1904,7 @@ mod bus_tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.add_track(TrackKind::Midi);
+        project.add_track(TrackKind::Group);
         project.tracks[0].automation_read = true;
         let point = Pos2::new(17.5, 190.5);
         let mut click = |time, pressed| {
@@ -1911,6 +1952,7 @@ mod bus_tests {
         assert!(click(0.2, false));
         assert!(project.tracks[0].automation_read);
         assert!(!project.tracks[1].automation_read);
+        assert!(project.tracks[2].automation_read);
     }
 
     #[test]

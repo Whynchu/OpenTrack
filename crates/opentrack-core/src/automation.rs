@@ -9,17 +9,36 @@ pub const MAX_AUTOMATION_POINTS_PER_PROJECT: usize = 1_000_000;
 pub const MAX_AUTOMATION_BEAT: f64 = 1_000_000.0;
 
 /// Unknown targets are rejected during decoding rather than treated as volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutomationTarget {
     TrackVolume,
+    TrackPan,
+    TrackMute,
+    /// Stereo In channel fader and pan controls.
+    InputBusVolume,
+    InputBusPan,
+    InputBusMute,
+    /// Stereo Out channel fader and pan controls.
+    OutputBusVolume,
+    OutputBusPan,
+    OutputBusMute,
+    /// Linear send gain (0..=3.981072, corresponding to -90..+12 dB).
+    SendLevel(u8),
+    SendPan(u8),
+    /// VST3 normalized parameter value (0..=1). Owner identity is the track
+    /// or device-bus id; `insert_id` and `parameter_id` are stable identifiers.
+    PluginParameter {
+        insert_id: u64,
+        parameter_id: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AutomationPoint {
     /// Position in quarter-note beats on the project timeline.
     pub beat: f64,
-    /// Linear channel gain, where 0 is silence and 1 is unity.
+    /// Target-specific value: gain (0..=2), pan (-1..=1), or mute (0/1).
     pub value: f32,
 }
 
@@ -33,19 +52,18 @@ impl AutomationLane {
     /// Validate a lane once on the control thread before publishing it.
     pub fn is_valid(&self) -> bool {
         self.points.len() <= MAX_AUTOMATION_POINTS_PER_LANE
-            && self.points.iter().all(|point| {
-                point.beat.is_finite()
-                    && (0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat)
-                    && point.value.is_finite()
-                    && (0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
-            })
+            && self
+                .points
+                .iter()
+                .all(|point| valid_target_point(self.target, *point))
             && self
                 .points
                 .windows(2)
                 .all(|pair| pair[0].beat < pair[1].beat)
     }
 
-    /// Hold the end points and interpolate in linear gain between them.
+    /// Hold the end points; continuous controls interpolate linearly and mute
+    /// changes stepwise at the point beat.
     /// Points must be ordered and validated before publication to playback.
     pub fn value_at(&self, beat: f64) -> Option<f32> {
         self.value_at_cached(beat, &mut 0)
@@ -72,23 +90,32 @@ impl AutomationLane {
             }
         }
         *cursor = next;
-        let valid_gain = |value: f32| {
-            (value.is_finite() && (0.0..=MAX_CHANNEL_GAIN).contains(&value)).then_some(value)
+        let valid_value = |value: f32| {
+            let point = AutomationPoint { beat: 0.0, value };
+            valid_target_point(self.target, point).then_some(value)
         };
         if next == 0 {
-            return valid_gain(self.points[0].value);
+            return valid_value(self.points[0].value);
         }
         if next == count {
-            return valid_gain(self.points[next - 1].value);
+            return valid_value(self.points[next - 1].value);
         }
         let left = self.points[next - 1];
         let right = self.points[next];
+        if matches!(
+            self.target,
+            AutomationTarget::TrackMute
+                | AutomationTarget::InputBusMute
+                | AutomationTarget::OutputBusMute
+        ) {
+            return valid_value(left.value);
+        }
         let width = right.beat - left.beat;
         if !width.is_finite() || width <= 0.0 {
             return None;
         }
-        let left_value = valid_gain(left.value)?;
-        let right_value = valid_gain(right.value)?;
+        let left_value = valid_value(left.value)?;
+        let right_value = valid_value(right.value)?;
         let fraction = (beat - left.beat) / width;
         Some(
             (f64::from(left_value) + (f64::from(right_value) - f64::from(left_value)) * fraction)
@@ -129,11 +156,32 @@ impl std::fmt::Display for AutomationEditError {
 
 impl std::error::Error for AutomationEditError {}
 
-fn valid_point(point: AutomationPoint) -> bool {
-    point.beat.is_finite()
-        && (0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat)
-        && point.value.is_finite()
-        && (0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
+fn valid_target_point(target: AutomationTarget, point: AutomationPoint) -> bool {
+    if !point.beat.is_finite() || !(0.0..=MAX_AUTOMATION_BEAT).contains(&point.beat) {
+        return false;
+    }
+    match target {
+        AutomationTarget::TrackVolume
+        | AutomationTarget::InputBusVolume
+        | AutomationTarget::OutputBusVolume => {
+            point.value.is_finite() && (0.0..=MAX_CHANNEL_GAIN).contains(&point.value)
+        }
+        AutomationTarget::TrackPan
+        | AutomationTarget::InputBusPan
+        | AutomationTarget::OutputBusPan
+        | AutomationTarget::SendPan(_) => {
+            point.value.is_finite() && (-1.0..=1.0).contains(&point.value)
+        }
+        AutomationTarget::TrackMute
+        | AutomationTarget::InputBusMute
+        | AutomationTarget::OutputBusMute => point.value == 0.0 || point.value == 1.0,
+        AutomationTarget::SendLevel(_) => {
+            point.value.is_finite() && (0.0..=3.981_072).contains(&point.value)
+        }
+        AutomationTarget::PluginParameter { .. } => {
+            point.value.is_finite() && (0.0..=1.0).contains(&point.value)
+        }
+    }
 }
 
 /// Insert a point in beat order, or replace the value at exactly that beat.
@@ -142,19 +190,26 @@ pub fn set_volume_point(
     track_id: u64,
     point: AutomationPoint,
 ) -> Result<bool, AutomationEditError> {
-    if !valid_point(point) {
+    set_target_point(project, track_id, AutomationTarget::TrackVolume, point)
+}
+
+pub fn set_target_point(
+    project: &mut Project,
+    track_id: u64,
+    target: AutomationTarget,
+    point: AutomationPoint,
+) -> Result<bool, AutomationEditError> {
+    if !valid_target_point(target, point) {
         return Err(AutomationEditError::InvalidPoint);
     }
-    let track_index = project
-        .tracks
-        .iter()
-        .position(|track| track.id == track_id)
+    let track = project
+        .channels()
+        .find(|track| track.id == track_id)
         .ok_or(AutomationEditError::TrackUnavailable)?;
-    let track = &project.tracks[track_index];
     let lane_index = track
         .automation_lanes
         .iter()
-        .position(|lane| lane.target == AutomationTarget::TrackVolume);
+        .position(|lane| lane.target == target);
     let lane = lane_index.map(|index| &track.automation_lanes[index]);
     let position = lane.map_or(0, |lane| {
         lane.points
@@ -166,8 +221,10 @@ pub fn set_volume_point(
             .is_some_and(|candidate| candidate.beat == point.beat)
     });
     if replacing {
-        let lane = &mut project.tracks[track_index].automation_lanes
-            [lane_index.expect("existing point has lane")];
+        let lane = &mut project
+            .channel_by_id_mut(track_id)
+            .ok_or(AutomationEditError::TrackUnavailable)?
+            .automation_lanes[lane_index.expect("existing point has lane")];
         if lane.points[position] == point {
             return Ok(false);
         }
@@ -181,8 +238,7 @@ pub fn set_volume_point(
         return Err(AutomationEditError::LaneLimit);
     }
     let total = project
-        .tracks
-        .iter()
+        .channels()
         .flat_map(|track| &track.automation_lanes)
         .fold(0usize, |total, lane| {
             total.saturating_add(lane.points.len())
@@ -190,10 +246,12 @@ pub fn set_volume_point(
     if total >= MAX_AUTOMATION_POINTS_PER_PROJECT {
         return Err(AutomationEditError::ProjectLimit);
     }
-    let track = &mut project.tracks[track_index];
+    let track = project
+        .channel_by_id_mut(track_id)
+        .ok_or(AutomationEditError::TrackUnavailable)?;
     let index = lane_index.unwrap_or_else(|| {
         track.automation_lanes.push(AutomationLane {
-            target: AutomationTarget::TrackVolume,
+            target,
             points: Vec::new(),
         });
         track.automation_lanes.len() - 1
@@ -214,6 +272,24 @@ pub fn replace_volume_points_in_range(
     end: f64,
     samples: &[AutomationPoint],
 ) -> Result<bool, AutomationEditError> {
+    replace_target_points_in_range(
+        project,
+        track_id,
+        AutomationTarget::TrackVolume,
+        start,
+        end,
+        samples,
+    )
+}
+
+pub fn replace_target_points_in_range(
+    project: &mut Project,
+    track_id: u64,
+    target: AutomationTarget,
+    start: f64,
+    end: f64,
+    samples: &[AutomationPoint],
+) -> Result<bool, AutomationEditError> {
     if !start.is_finite()
         || !end.is_finite()
         || start < 0.0
@@ -230,7 +306,10 @@ pub fn replace_volume_points_in_range(
     let mut captured = samples.to_vec();
     let mut previous: Option<f64> = None;
     for point in &captured {
-        if !valid_point(*point) || point.beat < start - 1e-9 || point.beat > end + 1e-9 {
+        if !valid_target_point(target, *point)
+            || point.beat < start - 1e-9
+            || point.beat > end + 1e-9
+        {
             return Err(AutomationEditError::InvalidPoint);
         }
         if previous.is_some_and(|beat| point.beat <= beat + 1e-9) {
@@ -256,16 +335,14 @@ pub fn replace_volume_points_in_range(
         });
     }
 
-    let track_index = project
-        .tracks
-        .iter()
-        .position(|track| track.id == track_id)
+    let track = project
+        .channels()
+        .find(|track| track.id == track_id)
         .ok_or(AutomationEditError::TrackUnavailable)?;
-    let track = &project.tracks[track_index];
     let lane_index = track
         .automation_lanes
         .iter()
-        .position(|lane| lane.target == AutomationTarget::TrackVolume);
+        .position(|lane| lane.target == target);
     let existing: &[AutomationPoint] = lane_index
         .map(|index| track.automation_lanes[index].points.as_slice())
         .unwrap_or(&[]);
@@ -285,8 +362,7 @@ pub fn replace_volume_points_in_range(
         return Err(AutomationEditError::LaneLimit);
     }
     let total = project
-        .tracks
-        .iter()
+        .channels()
         .flat_map(|track| &track.automation_lanes)
         .fold(0usize, |total, lane| {
             total.saturating_add(lane.points.len())
@@ -298,10 +374,12 @@ pub fn replace_volume_points_in_range(
         return Ok(false);
     }
 
-    let track = &mut project.tracks[track_index];
+    let track = project
+        .channel_by_id_mut(track_id)
+        .ok_or(AutomationEditError::TrackUnavailable)?;
     let index = lane_index.unwrap_or_else(|| {
         track.automation_lanes.push(AutomationLane {
-            target: AutomationTarget::TrackVolume,
+            target,
             points: Vec::new(),
         });
         track.automation_lanes.len() - 1
@@ -317,18 +395,32 @@ pub fn move_volume_point(
     index: usize,
     point: AutomationPoint,
 ) -> Result<bool, AutomationEditError> {
-    if !valid_point(point) {
+    move_target_point(
+        project,
+        track_id,
+        AutomationTarget::TrackVolume,
+        index,
+        point,
+    )
+}
+
+pub fn move_target_point(
+    project: &mut Project,
+    track_id: u64,
+    target: AutomationTarget,
+    index: usize,
+    point: AutomationPoint,
+) -> Result<bool, AutomationEditError> {
+    if !valid_target_point(target, point) {
         return Err(AutomationEditError::InvalidPoint);
     }
     let track = project
-        .tracks
-        .iter_mut()
-        .find(|track| track.id == track_id)
+        .channel_by_id_mut(track_id)
         .ok_or(AutomationEditError::TrackUnavailable)?;
     let lane = track
         .automation_lanes
         .iter_mut()
-        .find(|lane| lane.target == AutomationTarget::TrackVolume)
+        .find(|lane| lane.target == target)
         .ok_or(AutomationEditError::LaneUnavailable)?;
     let previous = *lane
         .points
@@ -352,15 +444,22 @@ pub fn remove_volume_point(
     track_id: u64,
     index: usize,
 ) -> Result<bool, AutomationEditError> {
+    remove_target_point(project, track_id, AutomationTarget::TrackVolume, index)
+}
+
+pub fn remove_target_point(
+    project: &mut Project,
+    track_id: u64,
+    target: AutomationTarget,
+    index: usize,
+) -> Result<bool, AutomationEditError> {
     let track = project
-        .tracks
-        .iter_mut()
-        .find(|track| track.id == track_id)
+        .channel_by_id_mut(track_id)
         .ok_or(AutomationEditError::TrackUnavailable)?;
     let lane_index = track
         .automation_lanes
         .iter()
-        .position(|lane| lane.target == AutomationTarget::TrackVolume)
+        .position(|lane| lane.target == target)
         .ok_or(AutomationEditError::LaneUnavailable)?;
     let lane = &mut track.automation_lanes[lane_index];
     if index >= lane.points.len() {
@@ -586,5 +685,91 @@ mod tests {
         );
         assert!(project.tracks.last().unwrap().automation_lanes.is_empty());
         assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn pan_interpolates_in_stereo_balance_and_mute_changes_stepwise() {
+        let pan = AutomationLane {
+            target: AutomationTarget::TrackPan,
+            points: vec![point(1.0, -1.0), point(3.0, 1.0)],
+        };
+        assert!(pan.is_valid());
+        assert_eq!(pan.value_at(2.0), Some(0.0));
+        assert!(
+            !(AutomationLane {
+                target: AutomationTarget::TrackPan,
+                points: vec![point(1.0, 1.1)],
+            })
+            .is_valid()
+        );
+
+        let mute = AutomationLane {
+            target: AutomationTarget::TrackMute,
+            points: vec![point(1.0, 0.0), point(2.0, 1.0)],
+        };
+        assert!(mute.is_valid());
+        assert_eq!(mute.value_at(1.999), Some(0.0));
+        assert_eq!(mute.value_at(2.0), Some(1.0));
+        assert!(
+            !(AutomationLane {
+                target: AutomationTarget::TrackMute,
+                points: vec![point(1.0, 0.5)],
+            })
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn generic_target_edits_validate_pan_and_mute_values_and_keep_order() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let id = project.tracks[0].id;
+        assert!(
+            set_target_point(
+                &mut project,
+                id,
+                AutomationTarget::TrackPan,
+                point(1.0, -0.5)
+            )
+            .unwrap()
+        );
+        assert!(
+            set_target_point(
+                &mut project,
+                id,
+                AutomationTarget::TrackMute,
+                point(2.0, 1.0)
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            move_target_point(
+                &mut project,
+                id,
+                AutomationTarget::TrackPan,
+                0,
+                point(1.5, 0.75)
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            set_target_point(
+                &mut project,
+                id,
+                AutomationTarget::TrackMute,
+                point(3.0, 0.5)
+            ),
+            Err(AutomationEditError::InvalidPoint)
+        );
+        assert!(remove_target_point(&mut project, id, AutomationTarget::TrackMute, 0).unwrap());
+        assert_eq!(project.tracks[0].automation_lanes.len(), 1);
+        assert_eq!(
+            project.tracks[0].automation_lanes[0].target,
+            AutomationTarget::TrackPan
+        );
+        assert_eq!(
+            project.tracks[0].automation_lanes[0].points[0],
+            point(1.5, 0.75)
+        );
     }
 }

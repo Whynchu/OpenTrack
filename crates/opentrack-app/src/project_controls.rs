@@ -199,12 +199,13 @@ pub(super) fn used_automation_track_ids(project: &Project, only_track: Option<u6
 }
 
 pub(super) fn track_has_used_automation(track: &Track) -> bool {
-    matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
-        && track.automation_lanes.iter().any(|lane| {
-            lane.target == opentrack_core::project::AutomationTarget::TrackVolume
-                && !lane.points.is_empty()
-                && lane.is_valid()
-        })
+    matches!(
+        track.kind,
+        TrackKind::Audio | TrackKind::Instrument | TrackKind::Group | TrackKind::Fx
+    ) && track
+        .automation_lanes
+        .iter()
+        .any(|lane| !lane.points.is_empty() && lane.is_valid())
 }
 
 fn add_items(ui: &mut egui::Ui, flat: bool, action: &mut Option<Action>) {
@@ -440,7 +441,12 @@ pub(super) fn type_icon(ui: &mut egui::Ui, center: Pos2, track: &Track) {
         TrackKind::Midi => "MIDI Track",
     });
 }
-pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) -> bool {
+pub(super) fn automation_lane(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    track: &mut Track,
+    target: &mut opentrack_core::automation::AutomationTarget,
+) -> bool {
     let mut changed = false;
     let p = theme::palette(ui);
     for (index, label) in ["R", "W"].into_iter().enumerate() {
@@ -448,8 +454,20 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
             rect.min + Vec2::new(2.0 + index as f32 * 24.0, 3.0),
             Vec2::new(22.0, 14.0),
         );
-        let supported = matches!(track.kind, TrackKind::Audio | TrackKind::Instrument);
-        let control_enabled = index <= 1 && supported;
+        let read_supported = matches!(
+            track.kind,
+            TrackKind::Audio | TrackKind::Instrument | TrackKind::Group
+        );
+        let write_supported = matches!(
+            track.kind,
+            TrackKind::Audio | TrackKind::Instrument | TrackKind::Group
+        );
+        let supported = if index == 0 {
+            read_supported
+        } else {
+            write_supported
+        };
+        let control_enabled = supported;
         let active = match index {
             0 => supported && track.automation_read,
             _ => supported && track.automation_write,
@@ -460,9 +478,9 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
             ("automation-lane-control", track.id, index),
             label,
             if index == 0 {
-                "Read Enable (track volume only)"
+                "Read Enable (track volume, pan, and mute lanes)"
             } else {
-                "Write Enable (track volume only, while playing)"
+                "Write Enable (volume, pan drags, and mute toggles while playing)"
             },
             active,
             control_enabled,
@@ -496,7 +514,7 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
     ui.painter().text(
         choice.left_center() + Vec2::new(3.0, 0.0),
         Align2::LEFT_CENTER,
-        "Volume",
+        automation_target_label(*target),
         FontId::proportional(10.0),
         Color32::from_gray(18),
     );
@@ -543,13 +561,56 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
         ui.painter().text(
             choice.left_center() + Vec2::new(3.0, 0.0),
             Align2::LEFT_CENTER,
-            "Volume",
+            automation_target_label(*target),
             FontId::proportional(10.0),
             Color32::from_gray(18),
         );
     }
     egui::Popup::menu(&response).show(|ui| {
-        ui.label("Volume");
+        use opentrack_core::automation::AutomationTarget as T;
+        for (candidate, label) in [
+            (T::TrackVolume, "Volume"),
+            (T::TrackPan, "Pan"),
+            (T::TrackMute, "Mute"),
+        ] {
+            if ui.selectable_label(*target == candidate, label).clicked() {
+                *target = candidate;
+                changed = true;
+            }
+        }
+        for slot in 0..track.send_parameters.len() {
+            let Ok(slot) = u8::try_from(slot) else { break };
+            for (candidate, label) in [
+                (T::SendLevel(slot), format!("Send {n} Level", n = slot + 1)),
+                (T::SendPan(slot), format!("Send {n} Pan", n = slot + 1)),
+            ] {
+                if ui.selectable_label(*target == candidate, label).clicked() {
+                    *target = candidate;
+                    changed = true;
+                }
+            }
+        }
+        let plugins = track
+            .automation_lanes
+            .iter()
+            .filter_map(|lane| {
+                if let T::PluginParameter {
+                    insert_id,
+                    parameter_id,
+                } = lane.target
+                {
+                    Some((lane.target, format!("Plug-in {insert_id}:{parameter_id}")))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for (candidate, label) in plugins {
+            if ui.selectable_label(*target == candidate, label).clicked() {
+                *target = candidate;
+                changed = true;
+            }
+        }
     });
     let value = Rect::from_min_size(rect.min + Vec2::new(50.0, 23.0), Vec2::new(51.0, 14.0));
     ui.painter().rect_filled(
@@ -560,15 +621,42 @@ pub(super) fn automation_lane(ui: &mut egui::Ui, rect: Rect, track: &mut Track) 
     ui.painter().text(
         value.center(),
         Align2::CENTER_CENTER,
-        if track.gain <= 0.0 {
-            "??".to_owned()
-        } else {
-            format!("{:.2}", 20.0 * track.gain.log10())
+        match target {
+            opentrack_core::automation::AutomationTarget::TrackVolume => {
+                if track.gain <= 0.0 {
+                    "−∞".to_owned()
+                } else {
+                    format!("{:.1} dB", 20.0 * track.gain.log10())
+                }
+            }
+            opentrack_core::automation::AutomationTarget::TrackPan => format!("{:+.2}", track.pan),
+            opentrack_core::automation::AutomationTarget::TrackMute => {
+                if track.muted { "On" } else { "Off" }.to_owned()
+            }
+            opentrack_core::automation::AutomationTarget::SendLevel(_) => "Send".to_owned(),
+            opentrack_core::automation::AutomationTarget::SendPan(_) => "Pan".to_owned(),
+            opentrack_core::automation::AutomationTarget::PluginParameter { .. } => {
+                "Plug-in".to_owned()
+            }
+            _ => "—".to_owned(),
         },
         FontId::proportional(10.0),
         Color32::from_gray(18),
     );
     changed
+}
+
+fn automation_target_label(target: opentrack_core::automation::AutomationTarget) -> &'static str {
+    use opentrack_core::automation::AutomationTarget as T;
+    match target {
+        T::TrackVolume => "Volume",
+        T::TrackPan => "Pan",
+        T::TrackMute => "Mute",
+        T::SendLevel(_) => "Send Level",
+        T::SendPan(_) => "Send Pan",
+        T::PluginParameter { .. } => "Plug-in",
+        _ => "Other",
+    }
 }
 
 pub(super) fn zoom_control(ui: &mut egui::Ui, rect: Rect, value: &mut f32) {
@@ -606,6 +694,7 @@ mod tests {
         let mut track = opentrack_core::project::Project::default();
         track.add_track(TrackKind::Audio);
         let track = &mut track.tracks[0];
+        let mut target = opentrack_core::automation::AutomationTarget::TrackVolume;
         let point = rect.min + Vec2::new(2.0 + 24.0 + 11.0, 3.0 + 7.0);
         let run = |time, pressed, track: &mut Track| {
             let events = if pressed {
@@ -634,7 +723,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    automation_lane(ui, rect, track);
+                    automation_lane(ui, rect, track, &mut target);
                 },
             );
             output.textures_delta.clear();
@@ -684,7 +773,7 @@ mod tests {
 
         assert_eq!(
             used_automation_track_ids(&project, None),
-            vec![project.tracks[0].id]
+            vec![project.tracks[0].id, project.tracks[2].id]
         );
         assert_eq!(
             used_automation_track_ids(&project, Some(project.tracks[0].id)),

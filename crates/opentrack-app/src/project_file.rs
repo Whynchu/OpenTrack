@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 43;
+const FORMAT_VERSION: u32 = 46;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -58,7 +58,7 @@ pub(crate) const PROJECT_WINDOW_ID: &str = "project-window";
 const DOCK_STATE_KEY: &str = "egui_dock_state_v1";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ProjectFile {
     format: String,
     version: u32,
@@ -147,6 +147,9 @@ pub(crate) struct ArrangeViewState {
     #[serde(default)]
     pub(crate) automation_visible: std::collections::BTreeSet<u64>,
     #[serde(default)]
+    pub(crate) automation_target_focus:
+        std::collections::BTreeMap<u64, opentrack_core::automation::AutomationTarget>,
+    #[serde(default)]
     pub(crate) take_lanes_visible: std::collections::BTreeSet<u64>,
     #[serde(default = "default_true")]
     pub(crate) show_inspector: bool,
@@ -210,6 +213,7 @@ impl Default for ArrangeViewState {
             ruler_bars_beats_linear: false,
             track_heights: Default::default(),
             automation_visible: Default::default(),
+            automation_target_focus: Default::default(),
             take_lanes_visible: Default::default(),
             show_inspector: true,
             show_marker_lane: false,
@@ -525,6 +529,7 @@ impl ProjectFile {
             track.monitor = false;
         }
         document.project.register_media();
+        document.project.assign_missing_insert_ids();
         document.format = FILE_FORMAT.to_owned();
         document.validate()?;
         crate::app::media_names::recover(path, &document.project)
@@ -533,17 +538,20 @@ impl ProjectFile {
     }
 
     pub(crate) fn write(&self, path: &Path) -> Result<(), ProjectFileError> {
-        self.validate()?;
+        let mut normalized = self.clone();
+        normalized.project.assign_missing_insert_ids();
+        normalized.validate()?;
         // A save must not store a destination playback cannot honor. Reading is
         // deliberately more permissive so a project that already contains one
         // still opens, is reported, and can be re-routed in Channel Settings.
-        self.project
+        normalized
+            .project
             .validate_routing()
             .map_err(|error| ProjectFileError::InvalidData(format!("routing: {error}")))?;
         // The live dock state is stored as data, not as a view-state string, so
         // normalize it here as well: an unlaid-out dock still holds `+/-infinity`
         // surface rectangles that JSON cannot represent.
-        let mut document = serde_json::to_value(self)?;
+        let mut document = serde_json::to_value(normalized)?;
         replace_non_finite_geometry(&mut document);
         let bytes = serde_json::to_vec_pretty(&document)?;
         atomic_write(path, &bytes)?;
@@ -1137,6 +1145,34 @@ mod tests {
             points: vec![AutomationPoint {
                 beat: 2.0,
                 value: 0.5,
+            }],
+        });
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackPan,
+            points: vec![AutomationPoint {
+                beat: 3.0,
+                value: -0.5,
+            }],
+        });
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::TrackMute,
+            points: vec![AutomationPoint {
+                beat: 4.0,
+                value: 1.0,
+            }],
+        });
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::SendLevel(0),
+            points: vec![AutomationPoint {
+                beat: 5.0,
+                value: 0.75,
+            }],
+        });
+        project.tracks[0].automation_lanes.push(AutomationLane {
+            target: AutomationTarget::SendPan(0),
+            points: vec![AutomationPoint {
+                beat: 6.0,
+                value: -0.25,
             }],
         });
         let dock = finite_test_dock_state();
@@ -2065,6 +2101,7 @@ mod tests {
         project.tracks[1]
             .inserts
             .push(opentrack_core::project::InsertEffect {
+                id: 0,
                 enabled: true,
                 bypassed: false,
                 kind: opentrack_core::project::InsertEffectKind::Vst3 {
@@ -2089,6 +2126,7 @@ mod tests {
         assert_eq!(restored.project.tracks[1].kind, TrackKind::Fx);
         assert_eq!(restored.project.tracks[1].name, "Reverb Return");
         assert_eq!(restored.project.tracks[1].inserts.len(), 1);
+        assert_ne!(restored.project.tracks[1].inserts[0].id, 0);
         assert!(matches!(
             restored.project.tracks[1].inserts[0].kind,
             opentrack_core::project::InsertEffectKind::Vst3 { ref name, .. }
@@ -2393,6 +2431,7 @@ mod tests {
         track.equalizer.bands[0].frequency_hz = 70.0;
         track.equalizer.bands[0].gain_db = 3.0;
         track.inserts.push(opentrack_core::project::InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: opentrack_core::project::InsertEffectKind::StereoDelay {
@@ -2402,6 +2441,7 @@ mod tests {
             },
         });
         track.inserts.push(opentrack_core::project::InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: opentrack_core::project::InsertEffectKind::TestGenerator {
@@ -2411,6 +2451,7 @@ mod tests {
             },
         });
         track.inserts.push(opentrack_core::project::InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: opentrack_core::project::InsertEffectKind::LegacyUnavailableCompressor {
@@ -2458,6 +2499,7 @@ mod tests {
         let _ = fs::remove_file(path);
         let loaded = read_result.expect("version 14 project should reopen");
         assert_eq!(loaded.version, FORMAT_VERSION);
+        project.assign_missing_insert_ids();
         assert_eq!(loaded.project, project);
 
         let mut legacy = serde_json::to_value(document).expect("project should serialize");
@@ -2524,6 +2566,7 @@ mod tests {
         project.tracks[0]
             .inserts
             .push(opentrack_core::project::InsertEffect {
+                id: 0,
                 enabled: true,
                 bypassed: false,
                 kind: opentrack_core::project::InsertEffectKind::StereoDelay {
@@ -2553,6 +2596,7 @@ mod tests {
         let _ = fs::remove_file(path);
         let migrated = read_result.expect("version 9 project should migrate");
         assert_eq!(migrated.version, FORMAT_VERSION);
+        project.assign_missing_insert_ids();
         assert_eq!(migrated.project, project);
     }
 

@@ -1,5 +1,38 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Active focused automation and MIDI drum mode (2026-11-03)
+
+The user requested one focused automation target per Project track at a time,
+plus a Piano Roll/Drum Map view choice within the MIDI editor. Drum mode uses
+named rows, selectable General MIDI percussion and custom maps, and beat-centered
+diamond hits over the existing MIDI note events. Scope and acceptance are in
+[`T086-automation-display-and-midi-drum-mode`](tasks/T086-automation-display-and-midi-drum-mode.md).
+Initial inspection found a separate Drum Editor window and a partial
+volume-only automation row. The menu now opens Drum Map mode inside the MIDI
+editor; the view includes named pitch rows, centered hit diamonds, hides note
+length controls, and can load the GM1 percussion preset through Drum Map Setup.
+Automation rows now display one chosen target. Source check passes; runtime,
+visual, interaction, and user review remain pending. MT Power Drum Kit 2 is
+installed in the user's `~/.vst3` folder as a real Linux instrument test target;
+the isolated scanner found one x64 Instrument class with no rejection. The app
+stalled during in-app window navigation before the instrument was instantiated,
+so audio processing and its editor are still untested.
+The user's follow-up report confirmed MIDI editor note Copy/Cut/Paste is absent;
+it is scoped in [`T087-midi-editor-copy-paste`](tasks/T087-midi-editor-copy-paste.md).
+
+## Active automation expansion (2026-11-03)
+
+The user asked to close the automation gaps found in the SoundCraft comparison.
+The scope and sequence are in
+[`T085-automation-target-expansion`](tasks/T085-automation-target-expansion.md).
+Source now includes stable insert IDs, plug-in parameter lanes and bounded
+sample-offset scheduling; Track/Group/FX channel controls, sends, and Stereo
+In/Out bus controls have read/write paths in the implementation. OPR is version
+46 and assigns IDs to inserts in legacy files and before saving. Focused checks
+are being rerun after this expansion. Desktop control-follow review, a named
+plug-in parameter run and listening on audio devices remain pending. Do not
+report the broader goal complete.
+
 ## Active Linux platform goal (2026-11-03)
 
 The user authorized closing the Linux VST3 editor and real-time scheduling
@@ -136,9 +169,9 @@ Since the earlier checkpoint, local commits added atomic Split at Cursor, unifie
 
 ## T078 - Automation contract
 
-Track-volume automation points have a bounded persistent model and sample-accurate read playback in both engine paths and offline bounce. The arrange lane draws curves, inserts snapped points, supports left-drag movement and right-click removal using validated core commands, and clamps movement between neighboring points. Project history wraps gestures; command-level tests and the app check pass. Write capture, gesture cancellation, fader-follow/manual override and desktop playback review remain open. The existing expanded-lane snap test fails at beat 3.25 vs 3.5, reproduced at baseline `8b90b8a`. See [T078](tasks/T078-volume-automation.md).
+T078 established the original track-volume lane model and rendering contract. Its broader automation gaps are now being handled by [T085](tasks/T085-automation-target-expansion.md). The known expanded-lane snap test failure at beat 3.25 vs 3.5 was reproduced at baseline `8b90b8a`; retain it as a separate interaction regression. Desktop playback review remains pending.
 
-Write controls in Mixer, Channel Settings, Project Inspector, the arrange lane and global Mixer are now disabled and say automation writing is unavailable. This preserves the stored flag for compatibility while preventing the UI from suggesting that fader recording is active. Read remains available only for supported non-group track-volume playback; group and device-bus automation is unsupported.
+T078's earlier statement that Write controls were disabled is superseded by T085. Current Read/Write target coverage and remaining acceptance gates are recorded in the active T085 section above.
 
 Arrange background and per-track context menus now reveal stored supported volume curves. Empty or invalid lanes and Group/MIDI tracks are excluded. The matching ΓÇ£Hide All AutomationΓÇ¥ action remains available when any lane is visible.
 

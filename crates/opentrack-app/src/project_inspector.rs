@@ -455,13 +455,16 @@ pub(super) fn show(
             ),
             (
                 "R",
-                "Read Enable (track volume only)",
+                "Read Enable (track volume, pan, and mute lanes)",
                 track.automation_read,
-                matches!(track.kind, TrackKind::Audio | TrackKind::Instrument),
+                matches!(
+                    track.kind,
+                    TrackKind::Audio | TrackKind::Instrument | TrackKind::Group
+                ),
             ),
             (
                 "W",
-                "Write Enable (track volume only, while playing)",
+                "Write Enable (volume, pan drags, and mute toggles while playing)",
                 track.automation_write,
                 matches!(track.kind, TrackKind::Audio | TrackKind::Instrument),
             ),
@@ -489,6 +492,9 @@ pub(super) fn show(
                 match index {
                     0 => {
                         track.muted = !track.muted;
+                        if track.automation_write {
+                            super::automation::queue_mute_write(ui, track.id, track.muted);
+                        }
                         modified = true;
                         requires_plan_rebuild = true;
                     }

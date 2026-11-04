@@ -1,6 +1,6 @@
 //! Routing decisions shared by Channel Settings and playback plan preparation.
 use opentrack_audio::{PlaybackInputChannel, PlaybackOutputRoute, PlaybackSend};
-use opentrack_core::project::{Track, TrackKind};
+use opentrack_core::project::{AutomationTarget, Track, TrackKind};
 use opentrack_core::routing::{InputRoute, OutputRoute};
 
 /// The channel's input route, with the historical default for its width.
@@ -110,10 +110,33 @@ pub(super) fn playback_sends(track: &Track, tracks: &[&Track]) -> Vec<PlaybackSe
                 10.0_f32.powf(db / 20.0)
             };
             Some(PlaybackSend {
+                slot: slot as u8,
                 destination,
                 tap: settings.tap,
                 gain,
                 pan: settings.pan.clamp(-1.0, 1.0),
+                gain_automation: if track.automation_read {
+                    track
+                        .automation_lanes
+                        .iter()
+                        .find(|lane| lane.target == AutomationTarget::SendLevel(slot as u8))
+                        .filter(|lane| !lane.points.is_empty() && lane.is_valid())
+                        .cloned()
+                        .map(std::sync::Arc::new)
+                } else {
+                    None
+                },
+                pan_automation: if track.automation_read {
+                    track
+                        .automation_lanes
+                        .iter()
+                        .find(|lane| lane.target == AutomationTarget::SendPan(slot as u8))
+                        .filter(|lane| !lane.points.is_empty() && lane.is_valid())
+                        .cloned()
+                        .map(std::sync::Arc::new)
+                } else {
+                    None
+                },
             })
         })
         .collect()

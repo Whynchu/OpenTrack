@@ -895,6 +895,8 @@ mod render_tests {
             hosted_inserts: Vec::new(),
             monitor_input: None,
             volume_automation: None,
+            pan_automation: None,
+            mute_automation: None,
             sends: Vec::new(),
             output_route: opentrack_audio::PlaybackOutputRoute::Stereo,
         }
@@ -927,10 +929,13 @@ mod render_tests {
         let mut bus = track(1.0);
         bus.is_group = true;
         bus.sends = vec![opentrack_audio::PlaybackSend {
+            slot: 0,
             destination: opentrack_audio::PlaybackOutputRoute::Stereo,
             tap: opentrack_core::project::SendTap::PostFader,
             gain: 0.5,
             pan: 0.0,
+            gain_automation: None,
+            pan_automation: None,
         }];
         let base = PlaybackSettingsSnapshot {
             tempo_bpm: 96.0,

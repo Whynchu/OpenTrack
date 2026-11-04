@@ -299,6 +299,39 @@ impl Track {
             MonitorMode::On => true,
         }
     }
+
+    /// Remove one send slot while keeping its settings and slot-addressed
+    /// automation aligned with the remaining sends.
+    pub fn remove_send_slot(&mut self, slot: usize) -> bool {
+        if slot >= self.send_routing.len() {
+            return false;
+        }
+        self.send_routing.remove(slot);
+        if slot < self.send_parameters.len() {
+            self.send_parameters.remove(slot);
+        }
+        for lane in &mut self.automation_lanes {
+            let target = match lane.target {
+                AutomationTarget::SendLevel(index) => Some((true, usize::from(index))),
+                AutomationTarget::SendPan(index) => Some((false, usize::from(index))),
+                _ => None,
+            };
+            let Some((level, index)) = target else {
+                continue;
+            };
+            if index == slot {
+                lane.points.clear();
+            } else if index > slot {
+                lane.target = if level {
+                    AutomationTarget::SendLevel((index - 1) as u8)
+                } else {
+                    AutomationTarget::SendPan((index - 1) as u8)
+                };
+            }
+        }
+        self.automation_lanes.retain(|lane| !lane.points.is_empty());
+        true
+    }
 }
 
 fn default_audio_channels() -> u8 {
@@ -803,6 +836,9 @@ pub enum GeneratorWaveform {
 /// Cubase plug-in name is used only after its implementation is measured.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InsertEffect {
+    /// Stable identity used by automation and host runtime, independent of rack order.
+    #[serde(default)]
+    pub id: u64,
     /// Powered state. A powered-off VST3 insert is unloaded, not just skipped.
     pub enabled: bool,
     /// Bypassed inserts stay loaded but are removed from the audio chain.
@@ -1122,6 +1158,8 @@ pub struct Project {
     pub selected_track: Option<u32>,
     pub next_track_number: u32,
     pub next_track_id: u64,
+    #[serde(default = "first_insert_id")]
+    pub next_insert_id: u64,
     #[serde(default = "first_clip_id")]
     pub next_clip_id: u64,
     #[serde(default = "first_midi_part_id")]
@@ -1286,6 +1324,10 @@ fn first_marker_id() -> u64 {
     1
 }
 
+fn first_insert_id() -> u64 {
+    1
+}
+
 /// The locator direction determines whether Cycle repeats or skips the range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1368,6 +1410,7 @@ impl Default for Project {
             selected_track: None,
             next_track_number: 0,
             next_track_id: 1,
+            next_insert_id: 1,
             next_clip_id: 1,
             next_midi_part_id: 1,
             selected_midi_part_id: None,
@@ -1394,6 +1437,32 @@ impl Default for Project {
 }
 
 impl Project {
+    /// Assign stable identities to legacy or newly duplicated inserts.
+    /// Call on the control thread before validation, save, and host sync.
+    pub fn assign_missing_insert_ids(&mut self) {
+        let mut used = BTreeSet::new();
+        let mut next = self.next_insert_id.max(1);
+        for track in self.tracks.iter_mut().chain([
+            &mut self.input_channel.strip,
+            &mut self.output_channel.strip,
+        ]) {
+            for insert in &mut track.inserts {
+                if insert.id == 0 || !used.insert(insert.id) {
+                    while used.contains(&next) || next == 0 {
+                        next = next.saturating_add(1);
+                    }
+                    insert.id = next;
+                    used.insert(next);
+                    next = next.saturating_add(1);
+                }
+            }
+        }
+        if let Some(highest) = used.iter().next_back().copied() {
+            next = next.max(highest.saturating_add(1));
+        }
+        self.next_insert_id = next.max(1);
+    }
+
     pub fn channel_at(&self, index: usize) -> Option<&Track> {
         if index == self.tracks.len() {
             Some(&self.input_channel.strip)
@@ -1422,6 +1491,13 @@ impl Project {
             INPUT_BUS_ID => Some(&mut self.input_channel.strip),
             OUTPUT_BUS_ID => Some(&mut self.output_channel.strip),
             _ => self.tracks.iter_mut().find(|t| t.id == id),
+        }
+    }
+    pub fn channel_by_id(&self, id: u64) -> Option<&Track> {
+        match id {
+            INPUT_BUS_ID => Some(&self.input_channel.strip),
+            OUTPUT_BUS_ID => Some(&self.output_channel.strip),
+            _ => self.tracks.iter().find(|t| t.id == id),
         }
     }
     /// Sets the persisted cycle locator range in quarter-note beats.
@@ -5138,8 +5214,17 @@ impl Project {
         if self.next_midi_controller_id == 0 {
             return Err("next MIDI controller event ID must be nonzero");
         }
+        if self.next_insert_id == 0 {
+            return Err("next insert ID must be nonzero");
+        }
         if self.tracks.len() > 1_024 {
             return Err("project cannot contain more than 1024 tracks");
+        }
+        let mut insert_ids = BTreeSet::new();
+        for insert in self.channels().flat_map(|track| &track.inserts) {
+            if insert.id == 0 || !insert_ids.insert(insert.id) {
+                return Err("insert identities must be nonzero and unique");
+            }
         }
 
         for (bus, id) in [
@@ -5153,7 +5238,6 @@ impl Project {
                 || !bus.strip.midi_parts.is_empty()
                 || bus.strip.armed
                 || bus.strip.monitor
-                || !bus.strip.automation_lanes.is_empty()
             {
                 return Err(
                     "device buses must be stereo channel strips without arrange media or recording controls",
@@ -5168,6 +5252,47 @@ impl Project {
             self.validate_track_data(std::slice::from_ref(&strip), false)?;
         }
         self.validate_track_data(&self.tracks, true)?;
+        let mut automation_points = self
+            .tracks
+            .iter()
+            .flat_map(|track| &track.automation_lanes)
+            .map(|lane| lane.points.len())
+            .sum::<usize>();
+        for (bus, expected_id) in [
+            (&self.input_channel.strip, INPUT_BUS_ID),
+            (&self.output_channel.strip, OUTPUT_BUS_ID),
+        ] {
+            if bus.automation_lanes.len() > MAX_AUTOMATION_LANES_PER_TRACK {
+                return Err("a device bus has too many automation lanes");
+            }
+            let mut targets = BTreeSet::new();
+            for lane in &bus.automation_lanes {
+                let allowed = if expected_id == INPUT_BUS_ID {
+                    matches!(
+                        lane.target,
+                        AutomationTarget::InputBusVolume
+                            | AutomationTarget::InputBusPan
+                            | AutomationTarget::InputBusMute
+                    )
+                } else {
+                    matches!(
+                        lane.target,
+                        AutomationTarget::OutputBusVolume
+                            | AutomationTarget::OutputBusPan
+                            | AutomationTarget::OutputBusMute
+                    )
+                };
+                if !allowed || !targets.insert(lane.target) || !lane.is_valid() {
+                    return Err("device bus automation targets are invalid or duplicated");
+                }
+                automation_points = automation_points
+                    .checked_add(lane.points.len())
+                    .ok_or("project has too many automation points")?;
+                if automation_points > MAX_AUTOMATION_POINTS_PER_PROJECT {
+                    return Err("project has too many automation points");
+                }
+            }
+        }
         // The selection is a property of the whole project, so it is checked
         // here rather than while validating one track list (or a bus strip).
         if self.selected_midi_part_id.is_some_and(|id| {
@@ -5298,11 +5423,18 @@ impl Project {
                 if track.input_routing.is_some() {
                     return Err("an FX channel cannot have an input route");
                 }
-                if track.automation_read
-                    || track.automation_write
-                    || !track.automation_lanes.is_empty()
-                {
-                    return Err("FX channel automation is not supported");
+                if track.automation_lanes.iter().any(|lane| {
+                    !matches!(
+                        lane.target,
+                        AutomationTarget::TrackVolume
+                            | AutomationTarget::TrackPan
+                            | AutomationTarget::TrackMute
+                            | AutomationTarget::PluginParameter { .. }
+                    )
+                }) {
+                    return Err(
+                        "FX channels support volume, pan, mute and plug-in automation only",
+                    );
                 }
             }
             if track.automation_lanes.len() > MAX_AUTOMATION_LANES_PER_TRACK {
@@ -5324,7 +5456,7 @@ impl Project {
                 }
                 if !lane.is_valid() {
                     return Err(
-                        "automation points must have ordered finite positions and valid gain",
+                        "automation points must have ordered positions and values valid for their target",
                     );
                 }
             }
@@ -5964,6 +6096,47 @@ mod tests {
     }
 
     #[test]
+    fn removing_send_slot_removes_its_lanes_and_shifts_later_targets() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Audio);
+        let track = &mut project.tracks[0];
+        track.send_routing = vec![Some("Stereo Out".into()); 3];
+        track.send_parameters = vec![SendParameters::default(); 3];
+        for (target, beat) in [
+            (AutomationTarget::SendLevel(0), 1.0),
+            (AutomationTarget::SendPan(1), 2.0),
+            (AutomationTarget::SendLevel(2), 3.0),
+        ] {
+            track.automation_lanes.push(AutomationLane {
+                target,
+                points: vec![AutomationPoint { beat, value: 0.5 }],
+            });
+        }
+        assert!(track.remove_send_slot(1));
+        assert_eq!(track.send_routing.len(), 2);
+        assert_eq!(track.send_parameters.len(), 2);
+        assert_eq!(track.automation_lanes.len(), 2);
+        assert!(
+            track
+                .automation_lanes
+                .iter()
+                .any(|lane| lane.target == AutomationTarget::SendLevel(0))
+        );
+        assert!(
+            track
+                .automation_lanes
+                .iter()
+                .any(|lane| lane.target == AutomationTarget::SendLevel(1))
+        );
+        assert!(
+            !track
+                .automation_lanes
+                .iter()
+                .any(|lane| lane.target == AutomationTarget::SendPan(1))
+        );
+    }
+
+    #[test]
     fn send_parameters_round_trip_and_legacy_projects_default_to_inactive() {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
@@ -6419,6 +6592,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::StereoDelay {
@@ -6482,6 +6656,7 @@ mod bus_tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -9712,6 +9887,7 @@ mod sample_edit_tests {
         project.tracks[0]
             .inserts
             .push(crate::project::InsertEffect {
+                id: 0,
                 enabled: true,
                 bypassed: false,
                 kind: crate::project::InsertEffectKind::StereoDelay {

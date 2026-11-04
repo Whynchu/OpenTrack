@@ -10,12 +10,49 @@ pub(crate) struct BusRuntime {
     pre_gain: f32,
     mix: super::MixControl,
     equalizer_control: Arc<super::EqualizerControl>,
+    automation_volume: Option<Arc<opentrack_core::project::AutomationLane>>,
+    automation_pan: Option<Arc<opentrack_core::project::AutomationLane>>,
+    automation_mute: Option<Arc<opentrack_core::project::AutomationLane>>,
+    automation_volume_cursor: UnsafeCell<usize>,
+    automation_pan_cursor: UnsafeCell<usize>,
+    automation_mute_cursor: UnsafeCell<usize>,
+    tempo_bpm: f64,
+    sample_rate: u32,
+    read_enabled: bool,
 }
 // SAFETY: callers serialize process() with the capture gate or output callback gate.
 unsafe impl Sync for BusRuntime {}
 impl BusRuntime {
     pub(crate) fn new(settings: &Track, rate: u32) -> Self {
+        Self::new_at_tempo(settings, rate, 120.0, true)
+    }
+    pub(crate) fn new_at_tempo(settings: &Track, rate: u32, tempo_bpm: f64, read: bool) -> Self {
         let equalizer_control = super::EqualizerControl::new(settings.equalizer.clone());
+        let target = |expected| {
+            settings
+                .automation_lanes
+                .iter()
+                .find(|lane| lane.target == expected && lane.is_valid() && !lane.points.is_empty())
+                .cloned()
+                .map(Arc::new)
+        };
+        let (automation_volume, automation_pan, automation_mute) = if read {
+            if settings.id == opentrack_core::project::INPUT_BUS_ID {
+                (
+                    target(opentrack_core::automation::AutomationTarget::InputBusVolume),
+                    target(opentrack_core::automation::AutomationTarget::InputBusPan),
+                    target(opentrack_core::automation::AutomationTarget::InputBusMute),
+                )
+            } else {
+                (
+                    target(opentrack_core::automation::AutomationTarget::OutputBusVolume),
+                    target(opentrack_core::automation::AutomationTarget::OutputBusPan),
+                    target(opentrack_core::automation::AutomationTarget::OutputBusMute),
+                )
+            }
+        } else {
+            (None, None, None)
+        };
         Self {
             pre_gain: 10.0_f32.powf(settings.input_gain_db / 20.0)
                 * if settings.input_phase_inverted {
@@ -38,6 +75,19 @@ impl BusRuntime {
                 rate,
             )),
             equalizer_control,
+            automation_volume,
+            automation_pan,
+            automation_mute,
+            automation_volume_cursor: UnsafeCell::new(0),
+            automation_pan_cursor: UnsafeCell::new(0),
+            automation_mute_cursor: UnsafeCell::new(0),
+            tempo_bpm: if tempo_bpm.is_finite() && tempo_bpm > 0.0 {
+                tempo_bpm
+            } else {
+                120.0
+            },
+            sample_rate: rate.max(1),
+            read_enabled: read,
         }
     }
     pub(crate) fn set_channel_parameters(
@@ -58,10 +108,13 @@ impl BusRuntime {
         self.equalizer_control.reclaim_retired();
     }
     pub(crate) fn process(&self, left: f32, right: f32) -> (f32, f32) {
-        self.process_inner(left, right, None)
+        self.process_inner(left, right, None, 0)
     }
     pub(crate) fn process_unanalyzed(&self, left: f32, right: f32) -> (f32, f32) {
         self.process(left, right)
+    }
+    pub(crate) fn process_unanalyzed_at(&self, left: f32, right: f32, frame: u64) -> (f32, f32) {
+        self.process_inner(left, right, None, frame)
     }
     pub(crate) fn process_analyzed(
         &self,
@@ -69,17 +122,27 @@ impl BusRuntime {
         right: f32,
         meter: &StereoMeter,
         rate: u32,
+        frame: u64,
     ) -> (f32, f32) {
-        self.process_inner(left, right, Some((meter, rate)))
+        self.process_inner(left, right, Some((meter, rate)), frame)
     }
     fn process_inner(
         &self,
         mut left: f32,
         mut right: f32,
         analysis: Option<(&StereoMeter, u32)>,
+        frame: u64,
     ) -> (f32, f32) {
         let s = &self.settings;
-        if s.muted && !analysis.is_some_and(|(meter, _)| meter.spectrum_enabled()) {
+        let beat = frame as f64 * self.tempo_bpm / (f64::from(self.sample_rate) * 60.0);
+        let mute = self
+            .automation_mute
+            .as_ref()
+            .and_then(|lane| {
+                lane.value_at_cached(beat, unsafe { &mut *self.automation_mute_cursor.get() })
+            })
+            .map_or(s.muted, |value| value >= 0.5);
+        if mute && !analysis.is_some_and(|(meter, _)| meter.spectrum_enabled()) {
             return (0.0, 0.0);
         }
         left *= self.pre_gain;
@@ -96,10 +159,24 @@ impl BusRuntime {
         if let Some((meter, rate)) = analysis {
             meter.record_spectrum(pre, (left, right), rate);
         }
-        if s.muted {
+        if mute {
             return (0.0, 0.0);
         }
-        let (gain, pan) = self.mix.next();
+        let (base_gain, base_pan) = self.mix.next();
+        let gain = self
+            .automation_volume
+            .as_ref()
+            .and_then(|lane| {
+                lane.value_at_cached(beat, unsafe { &mut *self.automation_volume_cursor.get() })
+            })
+            .unwrap_or(base_gain);
+        let pan = self
+            .automation_pan
+            .as_ref()
+            .and_then(|lane| {
+                lane.value_at_cached(beat, unsafe { &mut *self.automation_pan_cursor.get() })
+            })
+            .unwrap_or(base_pan);
         (
             left * gain * (1.0 - pan.max(0.0)),
             right * gain * (1.0 + pan.min(0.0)),
@@ -116,10 +193,17 @@ pub(crate) struct InputBusProcessor {
 }
 impl InputBusProcessor {
     pub(crate) fn new(rate: u32) -> Self {
+        Self::new_at_tempo(
+            rate,
+            120.0,
+            &opentrack_core::project::BusChannel::input().strip,
+            false,
+        )
+    }
+    pub(crate) fn new_at_tempo(rate: u32, tempo_bpm: f64, settings: &Track, read: bool) -> Self {
         Self {
-            current: ArcSwap::from_pointee(BusRuntime::new(
-                &opentrack_core::project::BusChannel::input().strip,
-                rate,
+            current: ArcSwap::from_pointee(BusRuntime::new_at_tempo(
+                settings, rate, tempo_bpm, read,
             )),
             retired: Mutex::new(Vec::new()),
             active: AtomicBool::new(false),
@@ -128,18 +212,34 @@ impl InputBusProcessor {
         }
     }
     pub(crate) fn set(&self, settings: &Track) {
-        if self.current.load().settings == *settings {
-            return;
-        }
-        let next = Arc::new(BusRuntime::new(settings, self.rate));
-        // Control-thread-only retirement: the callback never frees DSP graphs or locks.
+        self.update_settings(settings, self.current.load().tempo_bpm, true);
+    }
+    pub(crate) fn set_at_tempo(&self, settings: &Track, tempo_bpm: f64, read: bool) {
+        let next = Arc::new(BusRuntime::new_at_tempo(
+            settings, self.rate, tempo_bpm, read,
+        ));
         let mut retired = self.retired.lock().unwrap_or_else(|e| e.into_inner());
         retired.push(self.current.swap(next));
         if !self.active.load(Ordering::SeqCst) {
             retired.clear();
         }
     }
+    pub(crate) fn update_settings(&self, settings: &Track, tempo_bpm: f64, read: bool) {
+        if self.current.load().settings == *settings
+            && self.current.load().tempo_bpm == tempo_bpm
+            && self.current.load().read_enabled == read
+        {
+            return;
+        }
+        self.set_at_tempo(settings, tempo_bpm, read);
+    }
+    pub(crate) fn process_input(&self, left: f32, right: f32) -> (f32, f32) {
+        self.process_at(left, right, 0)
+    }
     pub(crate) fn process(&self, left: f32, right: f32) -> (f32, f32) {
+        self.process_at(left, right, self.rate as u64)
+    }
+    pub(crate) fn process_at(&self, left: f32, right: f32, frame: u64) -> (f32, f32) {
         if self
             .active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
@@ -148,7 +248,7 @@ impl InputBusProcessor {
             return (0.0, 0.0);
         }
         let state = self.current.load();
-        let result = state.process_analyzed(left, right, &self.meter, self.rate);
+        let result = state.process_analyzed(left, right, &self.meter, self.rate, frame);
         self.meter.publish([result.0.abs(), result.1.abs()]);
         drop(state);
         self.active.store(false, Ordering::SeqCst);
@@ -165,6 +265,7 @@ impl InputBusProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opentrack_core::project::{AutomationLane, AutomationPoint, AutomationTarget};
     #[test]
     fn final_output_bus_scales_and_mutes_live_midi_and_test_tone_with_matching_peaks() {
         fn render(gain: f32, muted: bool, tone_enabled: bool) -> (Vec<f32>, [f32; 2]) {
@@ -238,6 +339,46 @@ mod tests {
         assert_eq!(bus.process(1.0, 1.0), (0.0, 0.0));
         assert_eq!(bus.take_peaks(), [0.0; 2]);
     }
+
+    #[test]
+    fn device_bus_read_applies_gain_pan_and_mute_on_project_clock() {
+        let mut settings = opentrack_core::project::BusChannel::output().strip;
+        settings.muted = false;
+        settings.automation_lanes = vec![
+            AutomationLane {
+                target: AutomationTarget::OutputBusVolume,
+                points: vec![AutomationPoint {
+                    beat: 0.0,
+                    value: 0.5,
+                }],
+            },
+            AutomationLane {
+                target: AutomationTarget::OutputBusPan,
+                points: vec![AutomationPoint {
+                    beat: 0.0,
+                    value: 1.0,
+                }],
+            },
+            AutomationLane {
+                target: AutomationTarget::OutputBusMute,
+                points: vec![
+                    AutomationPoint {
+                        beat: 0.0,
+                        value: 0.0,
+                    },
+                    AutomationPoint {
+                        beat: 1.0,
+                        value: 1.0,
+                    },
+                ],
+            },
+        ];
+        let read = BusRuntime::new_at_tempo(&settings, 48_000, 120.0, true);
+        assert_eq!(read.process_unanalyzed_at(0.4, 0.4, 0), (0.0, 0.2));
+        assert_eq!(read.process_unanalyzed_at(0.4, 0.4, 24_000), (0.0, 0.0));
+        let base = BusRuntime::new_at_tempo(&settings, 48_000, 120.0, false);
+        assert_eq!(base.process_unanalyzed_at(0.4, 0.4, 0), (0.4, 0.4));
+    }
     #[test]
     fn analyzed_bus_reports_real_pre_post_eq_without_unmuting_audio() {
         let mut settings = opentrack_core::project::BusChannel::output().strip;
@@ -251,7 +392,7 @@ mod tests {
         for i in 0..8192 {
             let sample = (i as f32 * std::f32::consts::TAU * 1500.0 / 48000.0).sin() * 0.25;
             assert_eq!(
-                bus.process_analyzed(sample, sample, &meter, 48000),
+                bus.process_analyzed(sample, sample, &meter, 48000, i as u64),
                 (0.0, 0.0)
             );
         }
@@ -278,7 +419,7 @@ mod tests {
         let meter = StereoMeter::default();
         for index in 0..24_000 {
             let sample = (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5;
-            bus.process_analyzed(sample, sample, &meter, 48_000);
+            bus.process_analyzed(sample, sample, &meter, 48_000, index as u64);
         }
         assert!(meter.dynamic_eq_gains_db()[1] < -4.0);
     }
@@ -337,6 +478,7 @@ mod tests {
             (0.25, -0.5)
         );
         settings.inserts.push(InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::StereoDelay {

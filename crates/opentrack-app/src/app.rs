@@ -3718,6 +3718,7 @@ impl OpenTrackApp {
     }
 
     fn rebuild_audio_plan(&mut self) {
+        self.data.project.assign_missing_insert_ids();
         self.midi_pending_audio_rebuild = false;
         let tempo_bpm = self.data.project.tempo_bpm;
         let (host_rate, host_block) = self.audio_engine.as_ref().map_or(
@@ -3823,6 +3824,14 @@ impl OpenTrackApp {
                     track.output_routing.clone(),
                     playback_sends(track, &playback_source_tracks),
                     automation::playback_volume_automation(track),
+                    automation::playback_target_automation(
+                        track,
+                        opentrack_core::automation::AutomationTarget::TrackPan,
+                    ),
+                    automation::playback_target_automation(
+                        track,
+                        opentrack_core::automation::AutomationTarget::TrackMute,
+                    ),
                     track
                         .clips
                         .iter()
@@ -3929,6 +3938,8 @@ impl OpenTrackApp {
             output_routing,
             sends,
             volume_automation,
+            pan_automation,
+            mute_automation,
             clips,
             midi_notes,
             midi_controllers,
@@ -4074,6 +4085,8 @@ impl OpenTrackApp {
                 },
                 sends,
                 volume_automation,
+                pan_automation,
+                mute_automation,
                 output_route: routing::playback_output_route(
                     output_routing.as_deref(),
                     &playback_source_tracks,
@@ -6793,6 +6806,7 @@ impl OpenTrackApp {
     }
 
     fn show_vst3_windows(&mut self, ctx: &egui::Context) {
+        self.data.project.assign_missing_insert_ids();
         self.set_ui_stage(UiStage::VstBounds);
         if let Some(bounds) = self
             .vst3_editor_host
@@ -6883,6 +6897,12 @@ impl OpenTrackApp {
             .map(|insert| insert_effect_name(&insert.kind))
             .unwrap_or_else(|| "VST3 Plug-in".to_owned());
         let parameters = self.vst3_runtime.parameters(track_id, slot);
+        let insert_id = self
+            .data
+            .project
+            .channel_by_id(track_id)
+            .and_then(|track| track.inserts.get(slot))
+            .map_or(0, |insert| insert.id);
         let failure = self.vst3_runtime.failure(track_id, slot).map(str::to_owned);
         let has_editor = self.vst3_runtime.has_editor(track_id, slot);
         let mut enabled = self
@@ -6929,17 +6949,39 @@ impl OpenTrackApp {
                 if let Some(parameters) = &parameters {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for parameter in parameters {
-                            let mut value = parameter.normalized as f32;
+                            let target =
+                                opentrack_core::automation::AutomationTarget::PluginParameter {
+                                    insert_id,
+                                    parameter_id: parameter.id,
+                                };
+                            let base = parameter.normalized as f32;
+                            let mut value = automation::plugin_follow_value(
+                                self.data.project.channel_by_id(track_id),
+                                target,
+                                self.data.transport.position_beats,
+                                base,
+                            );
                             let label = if parameter.units.is_empty() {
                                 parameter.title.clone()
                             } else {
                                 format!("{} ({})", parameter.title, parameter.units)
                             };
-                            if ui
-                                .add(egui::Slider::new(&mut value, 0.0..=1.0).text(label))
-                                .changed()
-                            {
+                            let parameter_response =
+                                ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text(label));
+                            if parameter_response.changed() {
                                 set_parameter = Some((parameter.id, f64::from(value)));
+                            }
+                            if let Some(track) = self.data.project.channel_by_id(track_id)
+                                && track.automation_write
+                                && self.data.transport.playing
+                            {
+                                automation::capture_target_write(
+                                    ui,
+                                    track_id,
+                                    target,
+                                    &parameter_response,
+                                    value,
+                                );
                             }
                         }
                     });
@@ -7574,7 +7616,7 @@ impl OpenTrackApp {
     /// never overwrites the material between passes. Any rejection restores the
     /// pre-gesture project and reports the failure.
     fn apply_automation_write(&mut self, mut capture: automation::WriteCapture) {
-        let (track_id, intervals) = match capture.finish() {
+        let (track_id, target, intervals) = match capture.finish() {
             Ok(result) => result,
             Err(message) => {
                 self.status_message = message;
@@ -7588,9 +7630,10 @@ impl OpenTrackApp {
                 .into_iter()
                 .map(|(beat, value)| opentrack_core::project::AutomationPoint { beat, value })
                 .collect::<Vec<_>>();
-            match opentrack_core::automation::replace_volume_points_in_range(
+            match opentrack_core::automation::replace_target_points_in_range(
                 &mut self.data.project,
                 track_id,
+                target,
                 start,
                 end,
                 &points,
@@ -7607,6 +7650,48 @@ impl OpenTrackApp {
             self.mark_modified();
             self.rebuild_audio_plan();
             self.status_message = "Automation written".to_owned();
+        }
+    }
+
+    fn apply_mute_automation_writes(&mut self, points: Vec<(u64, f64, f32)>) {
+        if points.is_empty() || !self.project_open {
+            return;
+        }
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Mute automation write could not start a history transaction".to_owned();
+            return;
+        }
+        for (track_id, beat, value) in points {
+            if let Err(error) = opentrack_core::automation::set_target_point(
+                &mut self.data.project,
+                track_id,
+                match track_id {
+                    opentrack_core::project::INPUT_BUS_ID => {
+                        opentrack_core::automation::AutomationTarget::InputBusMute
+                    }
+                    opentrack_core::project::OUTPUT_BUS_ID => {
+                        opentrack_core::automation::AutomationTarget::OutputBusMute
+                    }
+                    _ => opentrack_core::automation::AutomationTarget::TrackMute,
+                },
+                opentrack_core::project::AutomationPoint { beat, value },
+            ) {
+                if let Some((project, was_modified)) = self.project_history.cancel_pending() {
+                    self.data.project = project;
+                    self.modified = was_modified;
+                }
+                self.status_message = format!("Mute automation write rejected: {error}");
+                return;
+            }
+        }
+        if self.project_history.finish_frame(&self.data.project, true) {
+            self.mark_modified();
+            self.rebuild_audio_plan();
+            self.status_message = "Mute automation written".to_owned();
         }
     }
 
@@ -9324,8 +9409,7 @@ impl OpenTrackApp {
         let rows = self
             .data
             .project
-            .tracks
-            .iter()
+            .channels()
             .filter(|track| {
                 !track.automation_lanes.is_empty()
                     || self.data.project.selected_track
@@ -9341,14 +9425,43 @@ impl OpenTrackApp {
                 (
                     track.id,
                     track.name.clone(),
+                    track.id >= opentrack_core::project::INPUT_BUS_ID,
                     track
                         .automation_lanes
                         .iter()
                         .map(|lane| {
                             let label = match lane.target {
                                 opentrack_core::automation::AutomationTarget::TrackVolume => {
-                                    "Volume"
+                                    "Volume".to_owned()
                                 }
+                                opentrack_core::automation::AutomationTarget::InputBusVolume
+                                | opentrack_core::automation::AutomationTarget::OutputBusVolume => {
+                                    "Volume".to_owned()
+                                }
+                                opentrack_core::automation::AutomationTarget::InputBusPan
+                                | opentrack_core::automation::AutomationTarget::OutputBusPan => {
+                                    "Pan".to_owned()
+                                }
+                                opentrack_core::automation::AutomationTarget::InputBusMute
+                                | opentrack_core::automation::AutomationTarget::OutputBusMute => {
+                                    "Mute".to_owned()
+                                }
+                                opentrack_core::automation::AutomationTarget::TrackPan => {
+                                    "Pan".to_owned()
+                                }
+                                opentrack_core::automation::AutomationTarget::TrackMute => {
+                                    "Mute".to_owned()
+                                }
+                                opentrack_core::automation::AutomationTarget::SendLevel(slot) => {
+                                    format!("Send {} Level", slot + 1)
+                                }
+                                opentrack_core::automation::AutomationTarget::SendPan(slot) => {
+                                    format!("Send {} Pan", slot + 1)
+                                }
+                                opentrack_core::automation::AutomationTarget::PluginParameter {
+                                    parameter_id,
+                                    ..
+                                } => format!("Plug-in parameter {parameter_id}"),
                             };
                             (label, lane.points.len())
                         })
@@ -9375,21 +9488,18 @@ impl OpenTrackApp {
                 if rows.is_empty() {
                     ui.label("No track has an automation lane yet.");
                 }
-                for (track_id, name, lanes) in &rows {
+                for (track_id, name, is_bus, lanes) in &rows {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(name).strong());
+                        ui.label(egui::RichText::new(if *is_bus { format!("{name} · device bus") } else { name.clone() }).strong());
                         let visible = self
                             .arrange_view_state
                             .automation_visible
                             .contains(track_id);
-                        if ui
-                            .small_button(if visible { "Hide in Arrange" } else { "Show in Arrange" })
-                            .clicked()
-                        {
-                            toggle = Some(*track_id);
-                        }
+                        if !*is_bus
+                            && ui.small_button(if visible { "Hide in Arrange" } else { "Show in Arrange" }).clicked()
+                        { toggle = Some(*track_id); }
                     });
-                    if lanes.is_empty() {
+                    if lanes.is_empty() && !is_bus {
                         ui.label(
                             egui::RichText::new("No lanes yet. Draw one in the arrange.")
                                 .small()
@@ -9398,6 +9508,78 @@ impl OpenTrackApp {
                     }
                     for (label, points) in lanes {
                         ui.label(format!("    {label}: {points} point(s)"));
+                    }
+                    if *is_bus {
+                        let track = self.data.project.channel_by_id(*track_id).cloned();
+                        let Some(track) = track else { continue; };
+                        for target in [
+                            if *track_id == opentrack_core::project::INPUT_BUS_ID { AutomationTarget::InputBusVolume } else { AutomationTarget::OutputBusVolume },
+                            if *track_id == opentrack_core::project::INPUT_BUS_ID { AutomationTarget::InputBusPan } else { AutomationTarget::OutputBusPan },
+                            if *track_id == opentrack_core::project::INPUT_BUS_ID { AutomationTarget::InputBusMute } else { AutomationTarget::OutputBusMute },
+                        ] {
+                            let label = match target {
+                                AutomationTarget::InputBusVolume | AutomationTarget::OutputBusVolume => "Volume",
+                                AutomationTarget::InputBusPan | AutomationTarget::OutputBusPan => "Pan",
+                                _ => "Mute",
+                            };
+                            ui.label(label);
+                            let points = track.automation_lanes.iter()
+                                .find(|lane| lane.target == target)
+                                .map(|lane| lane.points.iter().map(|point| (point.beat, point.value)).collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            let (lane_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::hover());
+                            let action = automation::draw_target_lane(ui, lane_rect, *track_id, target, &points, 300.0, 30.0, Some(0.25));
+                            if let Some(action) = action {
+                                if !self.project_history.begin(&self.data.project, self.modified) {
+                                    self.status_message = "Undo history is unavailable for this project size".to_owned();
+                                } else {
+                                    match automation::apply_lane_action(&mut self.data.project, action) {
+                                        Ok(changed) => {
+                                            if changed {
+                                                self.mark_modified();
+                                                self.rebuild_audio_plan();
+                                                self.project_history.commit_after_frame = true;
+                                            }
+                                        }
+                                        Err(error) => self.status_message = format!("Automation edit rejected: {error}"),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !*is_bus && let Some(track) = self.data.project.tracks.iter().find(|track| track.id == *track_id) {
+                        for (slot, destination) in track.send_routing.iter().enumerate() {
+                            if destination.is_none()
+                                || !track.send_parameters.get(slot).is_some_and(|send| send.enabled)
+                            {
+                                continue;
+                            }
+                            for target in [
+                                opentrack_core::automation::AutomationTarget::SendLevel(slot as u8),
+                                opentrack_core::automation::AutomationTarget::SendPan(slot as u8),
+                            ] {
+                                let label = match target {
+                                    opentrack_core::automation::AutomationTarget::SendLevel(_) => "Edit Send Level",
+                                    _ => "Edit Send Pan",
+                                };
+                                if ui.small_button(label).clicked() {
+                                    self.arrange_view_state.automation_target_focus.insert(*track_id, target);
+                                    self.arrange_view_state.automation_visible.insert(*track_id);
+                                }
+                            }
+                        }
+                        for (slot, insert) in track.inserts.iter().enumerate() {
+                            let Some(parameters) = self.vst3_runtime.parameters(*track_id, slot) else { continue; };
+                            for parameter in parameters {
+                                let target = opentrack_core::automation::AutomationTarget::PluginParameter {
+                                    insert_id: insert.id, parameter_id: parameter.id,
+                                };
+                                if ui.small_button(format!("{} Automation", parameter.short_title)).clicked() {
+                                    self.arrange_view_state.automation_target_focus.insert(*track_id, target);
+                                    self.arrange_view_state.automation_visible.insert(*track_id);
+                                }
+                            }
+                        }
                     }
                 }
                 ui.separator();
@@ -11741,6 +11923,15 @@ impl OpenTrackApp {
             self.audio_input_probe = None;
             let monitor = session.recorder.monitor_buffer();
             monitor.set_input_channel(&self.data.project.input_channel.strip);
+            monitor.set_input_channel_automation(
+                &self.data.project.input_channel.strip,
+                self.data.project.tempo_bpm,
+                self.data.project.input_channel.strip.automation_read,
+            );
+            monitor.set_automation_origin(
+                self.data.transport.position_beats,
+                self.data.project.tempo_bpm,
+            );
             let enabled = monitor_requested && self.audio_engine.is_some();
             monitor.set_enabled(enabled);
             if let Some(engine) = &self.audio_engine {
@@ -11785,6 +11976,15 @@ impl OpenTrackApp {
         if let Some(probe) = self.audio_input_probe.as_ref() {
             let monitor = probe.monitor_buffer();
             monitor.set_input_channel(&self.data.project.input_channel.strip);
+            monitor.set_input_channel_automation(
+                &self.data.project.input_channel.strip,
+                self.data.project.tempo_bpm,
+                self.data.project.input_channel.strip.automation_read,
+            );
+            monitor.set_automation_origin(
+                self.data.transport.position_beats,
+                self.data.project.tempo_bpm,
+            );
             let enabled = self.project_input_monitor_requested() && self.audio_engine.is_some();
             monitor.set_enabled(enabled);
             if let Some(engine) = &self.audio_engine {
@@ -16214,7 +16414,7 @@ impl OpenTrackApp {
                             &mut self.channel_settings_window,
                             &mut self.channel_settings_ui,
                             &self.vst3_plugin_catalog,
-                            self.vst3_runtime.failures(),
+                            &self.vst3_runtime.failures(),
                         );
                         mixer_selection_requested |= selection_requested;
                         (changed, requires_rebuild)
@@ -17082,6 +17282,7 @@ impl OpenTrackApp {
         let name = plugin.name.clone();
         let track_name = track.name.clone();
         track.inserts.push(opentrack_core::project::InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: vst3_insert_effect(&plugin),
@@ -17870,7 +18071,7 @@ impl OpenTrackApp {
                             &mut self.channel_settings_window,
                             &mut self.channel_settings_ui,
                             &self.vst3_plugin_catalog,
-                            self.vst3_runtime.failures(),
+                            &self.vst3_runtime.failures(),
                         );
                         modified |= changed;
                         mixer_selection_requested |= selection_requested;
@@ -18385,6 +18586,7 @@ impl OpenTrackApp {
                 &mut self.midi_editor_settings.length_grid_beats,
                 &mut self.midi_editor_settings.insert_velocity,
                 &mut self.arrange_view_state.cc_lane_controller,
+                &mut self.midi_editor_settings.drum_map_view,
                 live_velocity_update,
                 &mut self.selected_midi_note_id,
                 &mut self.selected_midi_note_ids,
@@ -19241,6 +19443,7 @@ impl OpenTrackApp {
                     track.inserts.insert(
                         0,
                         opentrack_core::project::InsertEffect {
+                            id: 0,
                             enabled: true,
                             bypassed: false,
                             kind: kind.clone(),
@@ -19289,6 +19492,7 @@ impl OpenTrackApp {
             track.inserts.insert(
                 0,
                 opentrack_core::project::InsertEffect {
+                    id: 0,
                     enabled: true,
                     bypassed: false,
                     kind,
@@ -20073,9 +20277,19 @@ impl eframe::App for OpenTrackApp {
         // view state so a palette change, project load or undo recolors every
         // surface in the same frame.
         project_controls::set_active_event_colors(self.arrange_view_state.event_colors);
+        if automation::take_write_started(ui.ctx())
+            && !self
+                .project_history
+                .begin(&self.data.project, self.modified)
+        {
+            automation::cancel_write(ui.ctx());
+            self.status_message =
+                "Automation write could not start a history transaction".to_owned();
+        }
         if let Some(capture) = automation::take_finished_write(ui.ctx()) {
             self.apply_automation_write(capture);
         }
+        self.apply_mute_automation_writes(automation::take_mute_writes(ui.ctx()));
         self.maybe_autosave();
         self.set_ui_stage(UiStage::FrameStart);
         self.ui_heartbeat
@@ -20288,7 +20502,6 @@ impl eframe::App for OpenTrackApp {
         self.show_tempo_editor(&ctx);
         self.show_offline_processing(&ctx);
         self.show_drum_map_setup(&ctx);
-        self.show_drum_editor(&ctx);
         self.show_logical_presets(&ctx);
         self.show_cc_automation_setup(&ctx);
         self.show_region_editor(&ctx);
@@ -21975,7 +22188,11 @@ fn show_project(
                         3 => clear_all_solo = true,
                         4 => {
                             for track in &mut project.tracks {
-                                if !track.kind.is_bus() && !track.automation_read {
+                                if matches!(
+                                    track.kind,
+                                    TrackKind::Audio | TrackKind::Instrument | TrackKind::Group
+                                ) && !track.automation_read
+                                {
                                     track.automation_read = true;
                                     modified = true;
                                 }
@@ -23023,43 +23240,55 @@ fn show_project(
                         modified = true;
                     }
                     if expanded {
+                        let target = arrange_view_state
+                            .automation_target_focus
+                            .get(&track.id)
+                            .copied()
+                            .unwrap_or(AutomationTarget::TrackVolume);
                         let automation_rect = Rect::from_min_max(
                             Pos2::new(grid_clip.left(), top + media_lane_height),
-                            Pos2::new(grid_clip.right(), top + lane_height),
+                            Pos2::new(grid_clip.right(), top + media_lane_height + 42.0),
                         );
-                        grid_painter.rect_filled(
-                            automation_rect,
-                            0.0,
-                            theme::palette(ui).canvas_alternate,
-                        );
-                        grid_painter.line_segment(
-                            [automation_rect.left_top(), automation_rect.right_top()],
-                            Stroke::new(1.0, theme::palette(ui).grid),
-                        );
-                        let points = track
-                            .automation_lanes
-                            .iter()
-                            .find(|lane| lane.target == AutomationTarget::TrackVolume)
-                            .map(|lane| {
-                                lane.points
-                                    .iter()
-                                    .map(|point| (point.beat, point.value))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        pending_automation_action = automation::draw_lane(
-                            ui,
-                            automation_rect.shrink2(Vec2::new(4.0, 5.0)),
-                            track.id,
-                            &points,
-                            grid_left,
-                            bar_width / beats_per_bar_f64 as f32,
-                            snap_grid_beats,
-                        );
-                        let y = top + lane_height - 42.0;
+                        {
+                            let lane_rect = automation_rect;
+                            grid_painter.rect_filled(
+                                lane_rect,
+                                0.0,
+                                theme::palette(ui).canvas_alternate,
+                            );
+                            grid_painter.line_segment(
+                                [lane_rect.left_top(), lane_rect.right_top()],
+                                Stroke::new(1.0, theme::palette(ui).grid),
+                            );
+                            let points = track
+                                .automation_lanes
+                                .iter()
+                                .find(|lane| lane.target == target)
+                                .map(|lane| {
+                                    lane.points
+                                        .iter()
+                                        .map(|point| (point.beat, point.value))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            if let Some(action) = automation::draw_target_lane(
+                                ui,
+                                lane_rect.shrink2(Vec2::new(4.0, 5.0)),
+                                track.id,
+                                target,
+                                &points,
+                                grid_left,
+                                bar_width / beats_per_bar_f64 as f32,
+                                snap_grid_beats,
+                            ) {
+                                pending_automation_action = Some(action);
+                            }
+                        }
+                        let automation_height = 42.0;
+                        let y = top + lane_height - automation_height;
                         let ar = Rect::from_min_size(
                             Pos2::new(row_rect.left() + 32.0, y),
-                            Vec2::new(row_header_width - 52.0, 42.0),
+                            Vec2::new(row_header_width - 52.0, automation_height),
                         );
                         painter.rect_filled(ar, 0.0, theme::palette(ui).surface);
                         painter.line_segment(
@@ -23069,7 +23298,17 @@ fn show_project(
                             ],
                             Stroke::new(1.0, theme::palette(ui).muted),
                         );
-                        modified |= project_controls::automation_lane(ui, ar, track);
+                        let mut target = target;
+                        let previous_target = target;
+                        let control_changed =
+                            project_controls::automation_lane(ui, ar, track, &mut target);
+                        if target != previous_target {
+                            arrange_view_state
+                                .automation_target_focus
+                                .insert(track.id, target);
+                        } else {
+                            modified |= control_changed;
+                        }
                     }
                     if take_lanes_expanded {
                         for take in 0..take_lane_count {
@@ -23273,6 +23512,9 @@ fn show_project(
                             match button_index {
                                 0 => {
                                     track.muted = !track.muted;
+                                    if track.automation_write {
+                                        automation::queue_mute_write(ui, track.id, track.muted);
+                                    }
                                     modified = true;
                                 }
                                 1 => {
@@ -24561,6 +24803,7 @@ fn show_midi_editor(
     length_quantize_beats: &mut f64,
     insert_velocity: &mut u8,
     controller_number: &mut u8,
+    drum_map_view: &mut bool,
     live_velocity_update: &mut Option<(usize, u64, u8)>,
     selected_note_id: &mut Option<u64>,
     selected_note_ids: &mut BTreeSet<u64>,
@@ -24643,7 +24886,7 @@ fn show_midi_editor(
         Vec2::new(bounds.width(), 38.0),
     );
     const INSPECTOR_WIDTH: f32 = 232.0;
-    const KEYBOARD_WIDTH: f32 = 64.0;
+    let keyboard_width: f32 = if *drum_map_view { 132.0 } else { 64.0 };
     const RULER_HEIGHT: f32 = 22.0;
     let zoom_id = ui.id().with(("midi-time-zoom", track_id, part_id));
     let beat_width = ui.data(|d| d.get_temp::<f32>(zoom_id)).unwrap_or(44.0);
@@ -24703,6 +24946,16 @@ fn show_midi_editor(
                     ToolbarIcon::Draw,
                     "Draw Notes",
                 );
+                egui::ComboBox::from_id_salt(("midi-editor-view", track_id, part_id))
+                    .selected_text(if *drum_map_view {
+                        "Drum Map"
+                    } else {
+                        "Piano Roll"
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(drum_map_view, false, "Piano Roll");
+                        ui.selectable_value(drum_map_view, true, "Drum Map");
+                    });
                 fit_part =
                     toolbar_icon_button(ui, ToolbarIcon::Zoom, "Fit Part", false, true).clicked();
                 ui.add_space(9.0);
@@ -24721,14 +24974,16 @@ fn show_midi_editor(
                             ui.selectable_value(position_quantize_beats, beats, label);
                         }
                     });
-                egui::ComboBox::from_id_salt(("midi-length", track_id, part_id))
-                    .width(70.0)
-                    .selected_text(midi_quantize_label(*length_quantize_beats))
-                    .show_ui(ui, |ui| {
-                        for (beats, label) in midi_editor_settings::MIDI_QUANTIZE_VALUES {
-                            ui.selectable_value(length_quantize_beats, beats, label);
-                        }
-                    });
+                if !*drum_map_view {
+                    egui::ComboBox::from_id_salt(("midi-length", track_id, part_id))
+                        .width(70.0)
+                        .selected_text(midi_quantize_label(*length_quantize_beats))
+                        .show_ui(ui, |ui| {
+                            for (beats, label) in midi_editor_settings::MIDI_QUANTIZE_VALUES {
+                                ui.selectable_value(length_quantize_beats, beats, label);
+                            }
+                        });
+                }
                 ui.add_enabled(false, egui::Button::new("Split at Selection"));
                 ui.label(format!(
                     "Cursor {}",
@@ -24901,7 +25156,7 @@ fn show_midi_editor(
     let note_area_height =
         (piano_view.height() - scrollbar_height - RULER_HEIGHT - controller_lane_height).max(72.0);
     let size = Vec2::new(
-        KEYBOARD_WIDTH + (visible_beats as f32 * beat_width).max(piano_view.width()),
+        keyboard_width + (visible_beats as f32 * beat_width).max(piano_view.width()),
         RULER_HEIGHT + note_area_height,
     );
     let mut edit_action = None;
@@ -24958,9 +25213,18 @@ fn show_midi_editor(
                             if let Some(note_index) = selected_note_index {
                                 let note = &mut project.tracks[track_index].midi_parts[part_index]
                                     .notes[note_index];
-                                ui.label(format!("Selected {}", midi_pitch_label(note.pitch)));
+                                let pitch_name = if *drum_map_view {
+                                    project
+                                        .drum_map
+                                        .name_for(note.pitch)
+                                        .map(str::to_owned)
+                                        .unwrap_or_else(|| format!("Note {}", note.pitch))
+                                } else {
+                                    midi_pitch_label(note.pitch)
+                                };
+                                ui.label(format!("Selected {pitch_name}"));
                                 let max_length = part_duration_beats - note.start_beats;
-                                if max_length >= 0.0625 {
+                                if !*drum_map_view && max_length >= 0.0625 {
                                     modified |= ui
                                         .add(
                                             egui::Slider::new(
@@ -24983,6 +25247,8 @@ fn show_midi_editor(
                                         Some((track_index, note.id, note.velocity));
                                     modified = true;
                                 }
+                            } else if *drum_map_view {
+                                ui.label("Select a hit to edit its velocity.");
                             } else {
                                 ui.label("Select a note to edit its length and velocity.");
                             }
@@ -25054,12 +25320,12 @@ fn show_midi_editor(
                         }
 
                         let pitch_area = Rect::from_min_max(
-                            Pos2::new(canvas.left() + KEYBOARD_WIDTH, canvas.top() + RULER_HEIGHT),
+                            Pos2::new(canvas.left() + keyboard_width, canvas.top() + RULER_HEIGHT),
                             canvas.max,
                         );
                         let keyboard_area = Rect::from_min_max(
                             Pos2::new(canvas.left(), pitch_area.top()),
-                            Pos2::new(canvas.left() + KEYBOARD_WIDTH, pitch_area.bottom()),
+                            Pos2::new(canvas.left() + keyboard_width, pitch_area.bottom()),
                         );
                         pitch_controls_rects = Some((keyboard_area, pitch_area));
                         let row_height = pitch_area.height() / pitch_view.span;
@@ -25075,14 +25341,42 @@ fn show_midi_editor(
                                     Pos2::new(keyboard_area.left(), row_rect.top()),
                                     Pos2::new(keyboard_area.right(), row_rect.bottom()),
                                 );
-                                sample_editor::paint_pitch_key_row(
-                                    ui, key_rect, row_rect, pitch, row_height,
-                                );
+                                if *drum_map_view {
+                                    painter.rect_filled(
+                                        key_rect,
+                                        0.0,
+                                        if pitch % 2 == 0 {
+                                            palette.surface_raised
+                                        } else {
+                                            palette.surface
+                                        },
+                                    );
+                                    painter.line_segment(
+                                        [key_rect.left_bottom(), key_rect.right_bottom()],
+                                        Stroke::new(0.5, palette.grid),
+                                    );
+                                    let row_name = project
+                                        .drum_map
+                                        .name_for(pitch as u8)
+                                        .map(str::to_owned)
+                                        .unwrap_or_else(|| format!("Note {pitch}"));
+                                    painter.text(
+                                        key_rect.center(),
+                                        Align2::CENTER_CENTER,
+                                        row_name,
+                                        FontId::proportional(9.0),
+                                        palette.text,
+                                    );
+                                } else {
+                                    sample_editor::paint_pitch_key_row(
+                                        ui, key_rect, row_rect, pitch, row_height,
+                                    );
+                                }
                             }
                         }
 
                         for beat in 0..=visible_beats {
-                            let x = canvas.min.x + KEYBOARD_WIDTH + beat as f32 * beat_width;
+                            let x = canvas.min.x + keyboard_width + beat as f32 * beat_width;
                             let bar_line = beat % bpb == 0;
                             painter.line_segment(
                                 [
@@ -25118,7 +25412,7 @@ fn show_midi_editor(
                         if ruler_response.drag_started_by(egui::PointerButton::Primary)
                             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
                         {
-                            let anchor = (origin.x - canvas.left() - KEYBOARD_WIDTH) / beat_width;
+                            let anchor = (origin.x - canvas.left() - keyboard_width) / beat_width;
                             ui.data_mut(|d| {
                                 d.insert_temp(ruler_gesture_id, (origin, anchor, beat_width))
                             });
@@ -25151,7 +25445,7 @@ fn show_midi_editor(
                             ui.data_mut(|d| d.insert_temp(zoom_id, new_width));
                             *transport_position_beats = (part_start_beats
                                 + f64::from(
-                                    (pointer.x - canvas.left() - KEYBOARD_WIDTH) / beat_width,
+                                    (pointer.x - canvas.left() - keyboard_width) / beat_width,
                                 ))
                             .max(0.0);
                             ui.ctx().request_repaint();
@@ -25162,7 +25456,7 @@ fn show_midi_editor(
                         if let Some(pointer) = ruler_response.interact_pointer_pos()
                             && ruler_response.clicked_by(egui::PointerButton::Primary)
                         {
-                            let local_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
+                            let local_x = pointer.x - canvas.min.x - keyboard_width;
                             let beat =
                                 (local_x / beat_width).clamp(0.0, part_duration_beats as f32);
                             *transport_position_beats = part_start_beats + f64::from(beat);
@@ -25176,9 +25470,9 @@ fn show_midi_editor(
                             );
                         }
                         let playhead_x = canvas.min.x
-                            + KEYBOARD_WIDTH
+                            + keyboard_width
                             + (*transport_position_beats - part_start_beats) as f32 * beat_width;
-                        if playhead_x >= canvas.min.x + KEYBOARD_WIDTH && playhead_x <= canvas.max.x
+                        if playhead_x >= canvas.min.x + keyboard_width && playhead_x <= canvas.max.x
                         {
                             painter.line_segment(
                                 [
@@ -25190,10 +25484,10 @@ fn show_midi_editor(
                         }
 
                         let part_grid = Rect::from_min_max(
-                            Pos2::new(canvas.min.x + KEYBOARD_WIDTH, canvas.min.y + RULER_HEIGHT),
+                            Pos2::new(canvas.min.x + keyboard_width, canvas.min.y + RULER_HEIGHT),
                             Pos2::new(
                                 (canvas.min.x
-                                    + KEYBOARD_WIDTH
+                                    + keyboard_width
                                     + part_duration_beats as f32 * beat_width)
                                     .min(canvas.max.x),
                                 canvas.max.y,
@@ -25249,7 +25543,7 @@ fn show_midi_editor(
                             let note_rect = Rect::from_min_size(
                                 Pos2::new(
                                     canvas.min.x
-                                        + KEYBOARD_WIDTH
+                                        + keyboard_width
                                         + note.start_beats as f32 * beat_width,
                                     pitch_view.y(f32::from(note.pitch), part_grid)
                                         - row_height * 0.5,
@@ -25261,24 +25555,41 @@ fn show_midi_editor(
                             );
                             let note_color = track_color
                                 .gamma_multiply(0.35 + 0.65 * f32::from(note.velocity) / 127.0);
-                            note_painter.rect_filled(
-                                note_rect,
-                                egui::CornerRadius::ZERO,
-                                note_color,
-                            );
-                            note_painter.rect_stroke(
-                                note_rect,
-                                egui::CornerRadius::ZERO,
-                                Stroke::new(
-                                    if is_selected { 2.0 } else { 1.0 },
-                                    if is_selected {
-                                        Color32::WHITE
-                                    } else {
-                                        track_color
-                                    },
-                                ),
-                                egui::StrokeKind::Inside,
-                            );
+                            if *drum_map_view {
+                                let center = Pos2::new(note_rect.left(), note_rect.center().y);
+                                let points = diamond_points(center, 5.0);
+                                note_painter.add(egui::Shape::convex_polygon(
+                                    points.clone(),
+                                    note_color,
+                                    Stroke::new(
+                                        if is_selected { 2.0 } else { 1.0 },
+                                        if is_selected {
+                                            Color32::WHITE
+                                        } else {
+                                            track_color
+                                        },
+                                    ),
+                                ));
+                            } else {
+                                note_painter.rect_filled(
+                                    note_rect,
+                                    egui::CornerRadius::ZERO,
+                                    note_color,
+                                );
+                                note_painter.rect_stroke(
+                                    note_rect,
+                                    egui::CornerRadius::ZERO,
+                                    Stroke::new(
+                                        if is_selected { 2.0 } else { 1.0 },
+                                        if is_selected {
+                                            Color32::WHITE
+                                        } else {
+                                            track_color
+                                        },
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                         }
                         if let Some(drag) = selection_drag
                             .filter(|drag| drag.track_id == track_id && drag.part_id == part_id)
@@ -25305,7 +25616,7 @@ fn show_midi_editor(
                             let preview = Rect::from_min_size(
                                 Pos2::new(
                                     canvas.min.x
-                                        + KEYBOARD_WIDTH
+                                        + keyboard_width
                                         + draw.start_beats as f32 * beat_width,
                                     pitch_view.y(f32::from(draw.pitch), part_grid)
                                         - row_height * 0.5,
@@ -25316,17 +25627,28 @@ fn show_midi_editor(
                                     (row_height - 1.0).max(1.0),
                                 ),
                             );
-                            note_painter.rect_filled(
-                                preview,
-                                egui::CornerRadius::same(2),
-                                track_color.gamma_multiply(0.35),
-                            );
-                            note_painter.rect_stroke(
-                                preview,
-                                egui::CornerRadius::same(2),
-                                Stroke::new(1.5, Color32::WHITE),
-                                egui::StrokeKind::Inside,
-                            );
+                            if *drum_map_view {
+                                note_painter.add(egui::Shape::convex_polygon(
+                                    diamond_points(
+                                        Pos2::new(preview.left(), preview.center().y),
+                                        5.0,
+                                    ),
+                                    track_color.gamma_multiply(0.35),
+                                    Stroke::new(1.5, Color32::WHITE),
+                                ));
+                            } else {
+                                note_painter.rect_filled(
+                                    preview,
+                                    egui::CornerRadius::same(2),
+                                    track_color.gamma_multiply(0.35),
+                                );
+                                note_painter.rect_stroke(
+                                    preview,
+                                    egui::CornerRadius::same(2),
+                                    Stroke::new(1.5, Color32::WHITE),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                         }
                         if *tool == EditTool::Draw
                             && note_draw.is_none()
@@ -25334,7 +25656,7 @@ fn show_midi_editor(
                                 response.hover_pos().filter(|pos| part_grid.contains(*pos))
                         {
                             let beat =
-                                f64::from((pointer.x - canvas.min.x - KEYBOARD_WIDTH) / beat_width);
+                                f64::from((pointer.x - canvas.min.x - keyboard_width) / beat_width);
                             let pitch =
                                 pitch_view.center + (part_grid.center().y - pointer.y) / row_height;
                             if beat >= 0.0
@@ -25357,7 +25679,7 @@ fn show_midi_editor(
                                     let ghost = Rect::from_min_size(
                                         Pos2::new(
                                             canvas.min.x
-                                                + KEYBOARD_WIDTH
+                                                + keyboard_width
                                                 + start as f32 * beat_width,
                                             pitch_view.y(pitch.round(), part_grid)
                                                 - row_height * 0.5,
@@ -25367,22 +25689,34 @@ fn show_midi_editor(
                                             (row_height - 1.0).max(1.0),
                                         ),
                                     );
-                                    note_painter.rect_filled(
-                                        ghost,
-                                        egui::CornerRadius::same(2),
-                                        track_color.gamma_multiply(0.38),
-                                    );
-                                    note_painter.rect_stroke(
-                                        ghost,
-                                        egui::CornerRadius::same(2),
-                                        Stroke::new(1.0, track_color),
-                                        egui::StrokeKind::Inside,
-                                    );
+                                    if *drum_map_view {
+                                        note_painter.add(egui::Shape::convex_polygon(
+                                            diamond_points(
+                                                Pos2::new(ghost.left(), ghost.center().y),
+                                                5.0,
+                                            ),
+                                            track_color.gamma_multiply(0.38),
+                                            Stroke::new(1.0, track_color),
+                                        ));
+                                    } else {
+                                        note_painter.rect_filled(
+                                            ghost,
+                                            egui::CornerRadius::same(2),
+                                            track_color.gamma_multiply(0.38),
+                                        );
+                                        note_painter.rect_stroke(
+                                            ghost,
+                                            egui::CornerRadius::same(2),
+                                            Stroke::new(1.0, track_color),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
                                 }
                             }
                         }
 
-                        if *tool == EditTool::Select
+                        if !*drum_map_view
+                            && *tool == EditTool::Select
                             && let Some(pointer) =
                                 response.hover_pos().filter(|pos| part_grid.contains(*pos))
                         {
@@ -25397,7 +25731,7 @@ fn show_midi_editor(
                                             return false;
                                         }
                                         let left = canvas.min.x
-                                            + KEYBOARD_WIDTH
+                                            + keyboard_width
                                             + note.start_beats as f32 * beat_width;
                                         let right = left
                                             + (note.duration_beats as f32 * beat_width).max(3.0);
@@ -25423,17 +25757,23 @@ fn show_midi_editor(
                                 let pointer_pitch = pitch_view.center
                                     + (part_grid.center().y - pointer.y) / row_height;
                                 let pointer_beat = f64::from(
-                                    (pointer.x - canvas.min.x - KEYBOARD_WIDTH) / beat_width,
+                                    (pointer.x - canvas.min.x - keyboard_width) / beat_width,
                                 );
+                                let marker_tolerance_beats = f64::from(7.0 / beat_width.max(1.0));
                                 let note_under_pointer = part_grid.contains(pointer)
                                     && project.tracks[track_index].midi_parts[part_index]
                                         .notes
                                         .iter()
                                         .any(|note| {
                                             note.pitch == pointer_pitch.round() as u8
-                                                && pointer_beat >= note.start_beats
-                                                && pointer_beat
-                                                    < note.start_beats + note.duration_beats
+                                                && if *drum_map_view {
+                                                    (pointer_beat - note.start_beats).abs()
+                                                        <= marker_tolerance_beats
+                                                } else {
+                                                    pointer_beat >= note.start_beats
+                                                        && pointer_beat
+                                                            < note.start_beats + note.duration_beats
+                                                }
                                         });
                                 if (*tool == EditTool::Range
                                     || (*tool == EditTool::Select && !note_under_pointer))
@@ -25451,7 +25791,7 @@ fn show_midi_editor(
                                         current: pointer,
                                     });
                                 } else if *tool != EditTool::Split {
-                                    let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
+                                    let beat_x = pointer.x - canvas.min.x - keyboard_width;
                                     let pitch_position = pitch_view.center
                                         + (part_grid.center().y - pointer.y) / row_height;
                                     let beat_position = f64::from(beat_x / beat_width);
@@ -25467,14 +25807,18 @@ fn show_midi_editor(
                                             .iter()
                                             .find(|note| {
                                                 let note_left = canvas.min.x
-                                                    + KEYBOARD_WIDTH
+                                                    + keyboard_width
                                                     + note.start_beats as f32 * beat_width;
                                                 let note_right = note_left
                                                     + (note.duration_beats as f32 * beat_width)
                                                         .max(3.0);
                                                 note.pitch == pitch
-                                                    && pointer.x >= note_left
-                                                    && pointer.x < note_right
+                                                    && if *drum_map_view {
+                                                        (pointer.x - note_left).abs() <= 7.0
+                                                    } else {
+                                                        pointer.x >= note_left
+                                                            && pointer.x < note_right
+                                                    }
                                             })
                                             .map(|note| {
                                                 (
@@ -25483,10 +25827,10 @@ fn show_midi_editor(
                                                     note.duration_beats,
                                                     note.pitch,
                                                     canvas.min.x
-                                                        + KEYBOARD_WIDTH
+                                                        + keyboard_width
                                                         + note.start_beats as f32 * beat_width,
                                                     canvas.min.x
-                                                        + KEYBOARD_WIDTH
+                                                        + keyboard_width
                                                         + (note.start_beats + note.duration_beats)
                                                             as f32
                                                             * beat_width,
@@ -25504,12 +25848,14 @@ fn show_midi_editor(
                                             let left_edge_distance = (pointer.x - note_left).abs();
                                             let right_edge_distance =
                                                 (note_right - pointer.x).abs();
-                                            let mode = if *tool == EditTool::Select
+                                            let mode = if !*drum_map_view
+                                                && *tool == EditTool::Select
                                                 && left_edge_distance <= 6.0
                                                 && left_edge_distance <= right_edge_distance
                                             {
                                                 MidiNoteDragMode::ResizeStart
-                                            } else if *tool == EditTool::Select
+                                            } else if !*drum_map_view
+                                                && *tool == EditTool::Select
                                                 && right_edge_distance <= 6.0
                                             {
                                                 MidiNoteDragMode::ResizeEnd
@@ -25596,7 +25942,7 @@ fn show_midi_editor(
                                 let minimum =
                                     position_quantize.min(part_duration_beats - draw.start_beats);
                                 let beat = f64::from(
-                                    (pointer.x - canvas.min.x - KEYBOARD_WIDTH) / beat_width,
+                                    (pointer.x - canvas.min.x - keyboard_width) / beat_width,
                                 );
                                 draw.end_beats = ((beat / position_quantize).round()
                                     * position_quantize)
@@ -25707,7 +26053,7 @@ fn show_midi_editor(
                                     let note_rect = Rect::from_min_size(
                                         Pos2::new(
                                             canvas.min.x
-                                                + KEYBOARD_WIDTH
+                                                + keyboard_width
                                                 + note.start_beats as f32 * beat_width,
                                             pitch_view.y(f32::from(note.pitch), part_grid)
                                                 - row_height * 0.5,
@@ -25732,7 +26078,7 @@ fn show_midi_editor(
                         if let Some(pointer) = response.interact_pointer_pos()
                             && response.clicked_by(egui::PointerButton::Primary)
                         {
-                            let beat_x = pointer.x - canvas.min.x - KEYBOARD_WIDTH;
+                            let beat_x = pointer.x - canvas.min.x - keyboard_width;
                             let pitch_position =
                                 pitch_view.center + (part_grid.center().y - pointer.y) / row_height;
                             if beat_x >= 0.0
@@ -25751,11 +26097,11 @@ fn show_midi_editor(
                                             note.pitch == pitch
                                                 && pointer.x
                                                     >= canvas.min.x
-                                                        + KEYBOARD_WIDTH
+                                                        + keyboard_width
                                                         + note.start_beats as f32 * beat_width
                                                 && pointer.x
                                                     < canvas.min.x
-                                                        + KEYBOARD_WIDTH
+                                                        + keyboard_width
                                                         + (note.start_beats + note.duration_beats)
                                                             as f32
                                                             * beat_width
@@ -25875,7 +26221,7 @@ fn show_midi_editor(
                             Rect::from_min_max(
                                 controller_canvas.min,
                                 Pos2::new(
-                                    controller_canvas.min.x + KEYBOARD_WIDTH,
+                                    controller_canvas.min.x + keyboard_width,
                                     controller_canvas.max.y,
                                 ),
                             ),
@@ -25884,14 +26230,14 @@ fn show_midi_editor(
                         );
                         let plot = Rect::from_min_size(
                             Pos2::new(
-                                controller_canvas.min.x + KEYBOARD_WIDTH,
+                                controller_canvas.min.x + keyboard_width,
                                 controller_canvas.min.y + CONTROLLER_PLOT_TOP,
                             ),
-                            Vec2::new(size.x - KEYBOARD_WIDTH, controller_plot_height),
+                            Vec2::new(size.x - keyboard_width, controller_plot_height),
                         );
                         let controller_header = Rect::from_min_max(
                             Pos2::new(
-                                controller_canvas.min.x + KEYBOARD_WIDTH,
+                                controller_canvas.min.x + keyboard_width,
                                 controller_canvas.min.y,
                             ),
                             Pos2::new(controller_canvas.max.x, plot.top()),
@@ -26165,7 +26511,7 @@ fn show_midi_editor(
                 }
                 let content_width = scroll_output.content_size.x;
                 let max_scroll_x = (content_width - scroll_output.inner_rect.width()).max(0.0);
-                let view_beats = ((scroll_output.inner_rect.width() - KEYBOARD_WIDTH).max(0.0)
+                let view_beats = ((scroll_output.inner_rect.width() - keyboard_width).max(0.0)
                     / beat_width)
                     .min(visible_beats as f32);
                 if (overview_response.clicked() || overview_response.dragged())
@@ -26217,7 +26563,7 @@ fn show_midi_editor(
     }
     if let Some((keyboard, wave)) = pitch_controls_rects {
         let fixed_keyboard = Rect::from_min_max(
-            Pos2::new(piano_view.left() - KEYBOARD_WIDTH, keyboard.top()),
+            Pos2::new(piano_view.left() - keyboard_width, keyboard.top()),
             Pos2::new(piano_view.left(), keyboard.bottom()),
         );
         ui.painter()
@@ -26467,6 +26813,15 @@ fn midi_quantize_label(value: f64) -> &'static str {
         .find(|(candidate, _)| value == *candidate)
         .map(|(_, label)| *label)
         .unwrap_or("1/4 note")
+}
+
+fn diamond_points(center: Pos2, radius: f32) -> Vec<Pos2> {
+    vec![
+        center + Vec2::new(0.0, -radius),
+        center + Vec2::new(radius, 0.0),
+        center + Vec2::new(0.0, radius),
+        center + Vec2::new(-radius, 0.0),
+    ]
 }
 
 fn midi_pitch_label(pitch: u8) -> String {
@@ -28696,20 +29051,14 @@ mod ruler_interaction_tests {
             .unwrap();
         f.frame(vec![]);
         f.frame(vec![]);
-        // Drag the event two and a quarter beats to the right and one row down.
+        // Drag the event from its media lane down into its automation area.
         let from = f.x_for_beat(2.0);
-        let to = f.x_for_beat(4.25);
         f.button(from, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(to, 120.0))]);
-        f.button(to, 120.0, false);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(from, 180.0))]);
+        f.button(from, 180.0, false);
         assert_eq!(f.project.tracks[0].clips.len(), 1);
         assert!(f.project.tracks[1].clips.is_empty());
-        // Dragging into the automation lane of the first track must not move it.
-        f.button(from, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(to, 180.0))]);
-        f.button(to, 180.0, false);
-        assert!(f.project.tracks[0].clips.is_empty());
-        assert_eq!(f.project.tracks[1].clips[0].start_beats, 3.25);
+        assert_eq!(f.project.tracks[0].clips[0].start_beats, 1.0);
     }
 
     #[test]
@@ -29709,6 +30058,7 @@ mod plugin_catalog_tests {
             app.data.project.tracks[0]
                 .inserts
                 .push(opentrack_core::project::InsertEffect {
+                    id: 0,
                     enabled: true,
                     bypassed: false,
                     kind: InsertEffectKind::default(),
@@ -33685,7 +34035,7 @@ mod automation_panel_tests {
     }
 
     #[test]
-    fn an_empty_project_says_there_are_no_lanes() {
+    fn an_empty_project_exposes_empty_device_bus_automation_lanes() {
         let ctx = egui::Context::default();
         let creation = eframe::CreationContext::_new_kittest(ctx.clone());
         let mut app = OpenTrackApp::new_internal(&creation, false);
@@ -33696,9 +34046,10 @@ mod automation_panel_tests {
         assert!(
             texts
                 .iter()
-                .any(|text| text.contains("No track has an automation lane")),
+                .any(|text| text.contains("Stereo In · device bus")),
             "{texts:?}"
         );
+        assert!(texts.iter().any(|text| text == "Volume"), "{texts:?}");
     }
 }
 

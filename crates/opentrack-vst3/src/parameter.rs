@@ -35,6 +35,7 @@ const MAX_POINTS_PER_QUEUE: usize = 32;
 pub(crate) struct ParamChange {
     pub(crate) id: ParamID,
     pub(crate) value: ParamValue,
+    pub(crate) sample_offset: i32,
 }
 
 struct QueueCell {
@@ -74,7 +75,15 @@ impl Default for PendingParameters {
 impl PendingParameters {
     /// Enqueues one edit. Returns false when the queue is full.
     pub(crate) fn push(&self, id: ParamID, value: ParamValue) -> bool {
-        let change = ParamChange { id, value };
+        self.push_at(id, value, 0)
+    }
+
+    pub(crate) fn push_at(&self, id: ParamID, value: ParamValue, sample_offset: i32) -> bool {
+        let change = ParamChange {
+            id,
+            value,
+            sample_offset: sample_offset.max(0),
+        };
         let mut position = self.enqueue.load(Ordering::Relaxed);
         loop {
             let cell = &self.cells[position & PENDING_MASK];
@@ -281,6 +290,10 @@ impl ParameterChanges {
     /// Adds one point to the queue for `id`, creating a queue if needed.
     /// Audio thread only; allocation-free and bounded.
     pub(crate) fn add(&self, id: ParamID, value: ParamValue) {
+        self.add_at(id, value, 0);
+    }
+
+    pub(crate) fn add_at(&self, id: ParamID, value: ParamValue, sample_offset: i32) {
         // SAFETY: audio-thread-only access contract documented above.
         let active = unsafe { &mut *self.active.get() };
         let mut queue_index = None;
@@ -311,12 +324,13 @@ impl ParameterChanges {
             let data = &mut *self.queues[queue_index].data.get();
             if data.count < MAX_POINTS_PER_QUEUE {
                 data.points[data.count] = ParamPoint {
-                    sample_offset: 0,
+                    sample_offset,
                     value,
                 };
                 data.count += 1;
             } else if let Some(last) = data.points.last_mut() {
                 // Coalesce when a single parameter exceeds the point budget.
+                last.sample_offset = sample_offset;
                 last.value = value;
             }
         }
@@ -460,6 +474,26 @@ mod tests {
         changes.begin_block();
         // SAFETY: local host object.
         assert_eq!(unsafe { interface.getParameterCount() }, 0);
+    }
+
+    #[test]
+    fn parameter_change_queue_preserves_sample_offsets() {
+        let changes = ParameterChanges::new(false);
+        changes.begin_block();
+        changes.add_at(17, 0.75, 123);
+        let interface = changes.to_com_ptr::<IParameterChanges>().unwrap();
+        // SAFETY: local host object remains alive for the query.
+        let raw = unsafe { interface.getParameterData(0) };
+        let queue = unsafe { vst3::ComRef::<IParamValueQueue>::from_raw(raw) }.unwrap();
+        let mut offset = -1;
+        let mut value = 0.0;
+        // SAFETY: point zero was inserted above and queue is alive.
+        assert_eq!(
+            unsafe { queue.getPoint(0, &mut offset, &mut value) },
+            kResultOk
+        );
+        assert_eq!(offset, 123);
+        assert!((value - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]

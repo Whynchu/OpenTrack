@@ -16,9 +16,28 @@ pub trait HostedProcessor: Send + Sync {
     /// length and never exceed the prepared maximum block size.
     fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String>;
 
+    /// Processes a block with normalized parameter points at sample offsets.
+    /// The slice is bounded by the host and ordered by offset. Implementations
+    /// that do not support automation may ignore it and use process().
+    fn process_automated(
+        &self,
+        left: &mut [f32],
+        right: &mut [f32],
+        _events: &[HostedParameterEvent],
+    ) -> Result<(), String> {
+        self.process(left, right)
+    }
+
     /// Reported processing latency in samples at the prepared sample rate.
     fn latency_samples(&self) -> u32;
 
     /// Reported tail length in samples at the prepared sample rate.
     fn tail_samples(&self) -> u32;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostedParameterEvent {
+    pub parameter_id: u32,
+    pub sample_offset: u32,
+    pub value: f64,
 }

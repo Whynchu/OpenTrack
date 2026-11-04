@@ -817,6 +817,7 @@ fn inserts(
                     track.inserts.insert(
                         i.min(track.inserts.len()),
                         InsertEffect {
+                            id: 0,
                             enabled: true,
                             bypassed: false,
                             kind,
@@ -946,13 +947,7 @@ fn sends(
             .on_hover_text("Choose destination, level, pan and tap (right-click removes the row)");
         slot_hover(ui, rects.list, &list);
         if list.secondary_clicked() {
-            if i < track.send_routing.len() {
-                track.send_routing.remove(i);
-                if i < track.send_parameters.len() {
-                    track.send_parameters.remove(i);
-                }
-                changed = true;
-            }
+            changed |= track.remove_send_slot(i);
             if i + 1 == rows && rows > 1 {
                 state.send_rows.insert(track.id, rows - 1);
             }
@@ -984,18 +979,30 @@ fn sends(
             if has_target {
                 ui.separator();
                 ui.label("Send level");
-                ui.add(
+                let level = ui.add(
                     egui::DragValue::new(&mut settings.level_db)
                         .range(-90.0..=12.0)
                         .speed(0.2)
                         .suffix(" dB"),
                 );
+                if track.automation_write {
+                    automation::capture_send_level_write(
+                        ui,
+                        track.id,
+                        i as u8,
+                        &level,
+                        settings.level_db,
+                    );
+                }
                 ui.label("Send pan");
-                ui.add(
+                let pan = ui.add(
                     egui::DragValue::new(&mut settings.pan)
                         .range(-1.0..=1.0)
                         .speed(0.01),
                 );
+                if track.automation_write {
+                    automation::capture_send_pan_write(ui, track.id, i as u8, &pan, settings.pan);
+                }
                 ui.horizontal(|ui| {
                     ui.selectable_value(
                         &mut settings.tap,
@@ -2630,7 +2637,11 @@ fn strip(
             changed = true;
         }
     }
-    let x = pan.center().x + track.pan * pan.width() * 0.46;
+    if track.automation_write {
+        automation::capture_channel_pan_write(ui, track.id, &response, track.pan);
+    }
+    let displayed_pan = automation::followed_pan(ui, track.id, track.pan);
+    let x = pan.center().x + displayed_pan * pan.width() * 0.46;
     ui.painter().line_segment(
         [
             Pos2::new(x, pan.top() + 2.0),
@@ -2675,8 +2686,9 @@ fn strip(
                 }),
         )
         .changed();
+    let displayed_mute = automation::followed_mute(ui, track.id, track.muted);
     for (i, (label, active, tip, y)) in [
-        ("M", track.muted, "Mute", 173.0),
+        ("M", displayed_mute, "Mute", 173.0),
         (
             "S",
             track.solo || track.solo_defeat,
@@ -2687,13 +2699,13 @@ fn strip(
         (
             "R",
             track.automation_read,
-            "Read Automation (track volume only)",
+            "Read Automation (channel volume, pan, mute, sends and plug-in parameters)",
             233.0,
         ),
         (
             "W",
             track.automation_write,
-            "Write Automation (track volume only, while playing)",
+            "Write Automation (supported control gestures while playing)",
             250.0,
         ),
     ]
@@ -2707,17 +2719,33 @@ fn strip(
             mixer::Icon::Text(label),
             active,
             false,
-            if i == 3 || i == 4 {
-                !is_bus && matches!(track.kind, TrackKind::Audio | TrackKind::Instrument)
+            if i == 3 {
+                matches!(
+                    track.kind,
+                    TrackKind::Audio | TrackKind::Instrument | TrackKind::Group | TrackKind::Fx
+                )
+            } else if i == 4 {
+                (!is_bus
+                    || track.kind == TrackKind::Group
+                    || track.id >= opentrack_core::project::INPUT_BUS_ID)
+                    && matches!(
+                        track.kind,
+                        TrackKind::Audio | TrackKind::Instrument | TrackKind::Group
+                    )
             } else {
-                !is_bus || i == 0
+                !is_bus || matches!(track.kind, TrackKind::Group | TrackKind::Fx) || i == 0
             },
             Some(tip),
         );
         context(&response, state);
         if response.clicked() {
             match i {
-                0 => track.muted = !track.muted,
+                0 => {
+                    track.muted = !track.muted;
+                    if track.automation_write {
+                        automation::queue_mute_write(ui, track.id, track.muted);
+                    }
+                }
                 1 => {
                     if ui.input(|i| i.modifiers.alt) {
                         track.solo_defeat = !track.solo_defeat;
@@ -2827,8 +2855,8 @@ fn strip(
         if edit {
             track.gain = displayed_gain;
         }
-        if track.automation_write && !track.kind.is_bus() {
-            automation::capture_fader_write(ui, track.id, &response, track.gain);
+        if track.automation_write {
+            automation::capture_channel_fader_write(ui, track.id, &response, track.gain);
         }
         changed |= edit;
         context(&response, state);
@@ -3189,6 +3217,7 @@ mod bus_tests {
         project.tracks[0]
             .inserts
             .push(opentrack_core::project::InsertEffect {
+                id: 0,
                 enabled: true,
                 bypassed: false,
                 kind: InsertEffectKind::Vst3 {
@@ -4005,6 +4034,7 @@ mod bus_tests {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
         let mut track = opentrack_core::project::BusChannel::output().strip;
         track.inserts = vec![InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -4236,6 +4266,7 @@ mod bus_tests {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(146.0, 500.0));
         let mut track = opentrack_core::project::BusChannel::output().strip;
         track.inserts = vec![InsertEffect {
+            id: 0,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {

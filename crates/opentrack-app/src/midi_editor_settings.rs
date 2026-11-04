@@ -15,6 +15,7 @@ pub(crate) struct MidiEditorSettings {
     pub(crate) position_grid_beats: f64,
     pub(crate) length_grid_beats: f64,
     pub(crate) insert_velocity: u8,
+    pub(crate) drum_map_view: bool,
 }
 
 impl MidiEditorSettings {
@@ -35,6 +36,9 @@ impl MidiEditorSettings {
                 .and_then(|storage| eframe::get_value(storage, "midi-insert-velocity"))
                 .filter(|value| (1..=127).contains(value))
                 .unwrap_or(96),
+            drum_map_view: storage
+                .and_then(|storage| eframe::get_value(storage, "midi-drum-map-view"))
+                .unwrap_or(false),
         }
     }
 
@@ -43,6 +47,7 @@ impl MidiEditorSettings {
         eframe::set_value(storage, "midi-position-quantize", &self.position_grid_beats);
         eframe::set_value(storage, "midi-length-quantize", &self.length_grid_beats);
         eframe::set_value(storage, "midi-insert-velocity", &self.insert_velocity);
+        eframe::set_value(storage, "midi-drum-map-view", &self.drum_map_view);
     }
 }
 

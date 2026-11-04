@@ -880,6 +880,8 @@ mod tests {
                 hosted_inserts: Vec::new(),
                 monitor_input: None,
                 volume_automation: None,
+                pan_automation: None,
+                mute_automation: None,
                 sends: Vec::new(),
                 output_route: super::super::PlaybackOutputRoute::Stereo,
             }],
