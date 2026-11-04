@@ -696,7 +696,7 @@ mod tests {
         let track = &mut track.tracks[0];
         let mut target = opentrack_core::automation::AutomationTarget::TrackVolume;
         let point = rect.min + Vec2::new(2.0 + 24.0 + 11.0, 3.0 + 7.0);
-        let run = |time, pressed, track: &mut Track| {
+        let mut run = |time, pressed, track: &mut Track| {
             let events = if pressed {
                 vec![
                     egui::Event::PointerMoved(point),

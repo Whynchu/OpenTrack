@@ -28,6 +28,19 @@ pub trait HostedProcessor: Send + Sync {
         self.process(left, right)
     }
 
+    /// Processes a block with bounded MIDI note events and parameter points.
+    /// Effect processors can ignore MIDI; instrument processors should consume
+    /// it without allocating or calling controller/editor methods.
+    fn process_with_events(
+        &self,
+        left: &mut [f32],
+        right: &mut [f32],
+        parameters: &[HostedParameterEvent],
+        _midi: &[HostedMidiEvent],
+    ) -> Result<(), String> {
+        self.process_automated(left, right, parameters)
+    }
+
     /// Reported processing latency in samples at the prepared sample rate.
     fn latency_samples(&self) -> u32;
 
@@ -40,4 +53,14 @@ pub struct HostedParameterEvent {
     pub parameter_id: u32,
     pub sample_offset: u32,
     pub value: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HostedMidiEvent {
+    pub sample_offset: u32,
+    pub note_id: i32,
+    pub channel: u8,
+    pub pitch: u8,
+    pub velocity: u8,
+    pub note_on: bool,
 }

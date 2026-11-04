@@ -28,6 +28,7 @@
 
 mod editor;
 pub mod effect;
+mod event_list;
 pub mod host;
 pub mod module;
 mod parameter;

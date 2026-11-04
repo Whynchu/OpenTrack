@@ -1,5 +1,35 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Instrument-track plug-in editor and crash follow-up (2026-11-03)
+
+The user reports that opening FX while using MT Power Drum Kit on an Instrument
+track crashes OpenTrack and found no way to open the loaded instrument editor.
+The Project Inspector now has a dedicated V button on the selected Instrument
+track; it targets the first enabled VST3 instrument insert and queues the normal
+editor-host path. Editor requests are deferred until after the arrange draw to
+avoid starting a native editor from inside an active UI rendering pass. The
+Plugin Information folder/module pickers now use rfd's async dialog API from a
+worker thread. The 19:38 EST Linux coredump and matching session/panic logs prove
+that the synchronous XDG folder picker blocked egui's UI callback until egui
+panicked that its user callback was never called. This explains that crash,
+but the user's reported FX interaction has not yet been reproduced and remains
+a separate runtime acceptance gate. See
+`T088-instrument-editor-and-vst-crash.md`.
+
+The user's screenshot showed rejection for zero main audio inputs. The first
+fix still rejected zero main inputs when auxiliary inputs existed; this is now
+allowed. The VST3 host passes scheduled MIDI note events and supports/mixes
+multiple main mono/stereo output buses. The user confirmed MT Power Drum Kit
+loaded and made sound. They reported Dynamic EQ does not receive the
+instrument's MIDI input, editor sizing needs work, and playback felt
+slow/crackly. They also requested a dedicated named instrument section/slot at
+the top of Instrument track inserts, separate from ordinary effects. These are
+follow-up requirements; the direct synthetic MIDI probe remains silent, so note
+routing is incompletely verified. A fresh Linux x64 release package is at `builds/x64/OpenTrack`
+(SHA-256
+`53de2dc75e5d68d2d46e4f9477528957c82f521c30e5eec873a1763845743d06`). The
+exact old diagnostic literal is absent from the package.
+
 ## Active focused automation and MIDI drum mode (2026-11-03)
 
 The user requested one focused automation target per Project track at a time,

@@ -373,6 +373,7 @@ struct ChannelSettingsUiState {
     setup_selected_hidden: Option<ChannelSettingsViewItem>,
     /// Insert slot whose VST3 parameters/editor should be shown.
     vst3_parameter_slot: Option<(u64, usize)>,
+    vst3_editor_request: Option<(u64, usize)>,
     /// Insert whose open editor should be closed (the eye was switched off).
     vst3_editor_close: Option<(u64, usize)>,
     /// Powered-off VST3 insert; its live state is captured before it unloads.
@@ -1393,6 +1394,7 @@ pub struct OpenTrackApp {
     startup_visibility_pending: bool,
     save_prompt_visibility: SavePromptVisibility,
     vst3_parameter_window: Option<(u64, usize)>,
+    vst3_editor_request: Option<(u64, usize)>,
     vst3_editor_window: Option<(u64, usize)>,
     vst3_editor_host: Option<vst3_host::EditorHost>,
     vst3_editor_bounds: Option<WindowBounds>,
@@ -2781,6 +2783,8 @@ impl OpenTrackApp {
             vst3_plugin_catalog,
             plugin_information_open: false,
             plugin_scan_task: None,
+            plugin_folder_picker_task: None,
+            vst3_editor_request: None,
             vst3_quarantine: {
                 let stored = creation.storage.and_then(|storage| {
                     eframe::get_value::<Vec<opentrack_plugins::QuarantineEntry>>(
@@ -6880,8 +6884,11 @@ impl OpenTrackApp {
         }
         if let Some(target) = self.channel_settings_ui.vst3_parameter_slot.take() {
             self.vst3_parameter_window = None;
+            self.vst3_editor_request = Some(target);
+        }
+        if let Some(target) = self.vst3_editor_request.take() {
             if let Err(error) = self.open_vst3_editor(target.0, target.1) {
-                self.status_message = format!("Native VST3 editor unavailable: {error}");
+                self.status_message = format!("VST3 editor unavailable: {error}");
                 self.vst3_parameter_window = Some(target);
             }
         }
@@ -18803,6 +18810,9 @@ impl OpenTrackApp {
                 },
             }
         }
+        if let Some(target) = project_changes.instrument_editor {
+            self.vst3_editor_request = Some(target);
+        }
         if project_changes.crossfade_requested {
             self.crossfade_selected_audio_events();
         }
@@ -20974,6 +20984,7 @@ struct ProjectViewChanges {
     automation_action: Option<automation::LaneAction>,
     crossfade_requested: bool,
     marker_edit_cancelled: bool,
+    instrument_editor: Option<(u64, usize)>,
 }
 
 const PANEL_HEADER_HEIGHT: f32 = 29.0;
@@ -24576,6 +24587,7 @@ fn show_project(
         automation_action: pending_automation_action,
         crossfade_requested: audio_events_crossfade_requested,
         marker_edit_cancelled,
+        instrument_editor: inspector_changes.instrument_editor,
     }
 }
 

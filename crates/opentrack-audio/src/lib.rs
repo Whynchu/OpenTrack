@@ -4385,6 +4385,14 @@ fn render_hosted_track_block(
     }
 
     let count = frames.len();
+    let mut midi_events = [opentrack_plugins::HostedMidiEvent::default(); 512];
+    let midi_event_count = fill_hosted_midi_events(
+        &track.settings.midi_notes,
+        frames,
+        plan.tempo_bpm,
+        sample_rate,
+        &mut midi_events,
+    );
     for (insert_index, insert) in track.settings.hosted_inserts.iter().enumerate() {
         if !insert.enabled {
             continue;
@@ -4401,16 +4409,118 @@ fn render_hosted_track_block(
             sample_rate,
             &mut events,
         );
-        if let Err(error) = insert.processor.process_automated(
+        if let Err(error) = insert.processor.process_with_events(
             &mut buffers.block_left[..count],
             &mut buffers.block_right[..count],
             &events[..event_count],
+            &midi_events[..midi_event_count],
         ) {
             plan.record_hosted_error(track_index, insert_index, &error);
             buffers.block_left[..count].copy_from_slice(&buffers.dry_left[..count]);
             buffers.block_right[..count].copy_from_slice(&buffers.dry_right[..count]);
             break;
         }
+    }
+}
+
+fn fill_hosted_midi_events(
+    notes: &[PlaybackMidiNote],
+    frames: &[u64],
+    tempo_bpm: f64,
+    sample_rate: u32,
+    output: &mut [opentrack_plugins::HostedMidiEvent],
+) -> usize {
+    if frames.is_empty() || !tempo_bpm.is_finite() || tempo_bpm <= 0.0 || sample_rate == 0 {
+        return 0;
+    }
+    let samples_per_beat = f64::from(sample_rate) * 60.0 / tempo_bpm;
+    let mut count = 0;
+    for note in notes {
+        if !note.start_beats.is_finite()
+            || !note.duration_beats.is_finite()
+            || note.duration_beats <= 0.0
+            || !note.frequency_hz.is_finite()
+            || note.frequency_hz <= 0.0
+        {
+            continue;
+        }
+        let start = (note.start_beats * samples_per_beat).round();
+        let end = ((note.start_beats + note.duration_beats) * samples_per_beat).round();
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+            continue;
+        }
+        let pitch = (69.0 + 12.0 * (f64::from(note.frequency_hz) / 440.0).log2())
+            .round()
+            .clamp(0.0, 127.0) as u8;
+        let velocity = (note.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
+        for (target, note_on) in [(start, true), (end, false)] {
+            if count == output.len() {
+                break;
+            }
+            if let Some(sample_offset) = frames.iter().position(|&frame| frame as f64 == target) {
+                output[count] = opentrack_plugins::HostedMidiEvent {
+                    sample_offset: sample_offset as u32,
+                    note_id: note.id as i32,
+                    channel: note.channel.min(15),
+                    pitch,
+                    velocity: if note_on { velocity } else { 0 },
+                    note_on,
+                };
+                count += 1;
+            }
+        }
+    }
+    output[..count].sort_unstable_by_key(|event| (event.sample_offset, event.note_on));
+    count
+}
+
+#[cfg(test)]
+mod hosted_midi_tests {
+    use super::PlaybackMidiNote;
+    use super::fill_hosted_midi_events;
+
+    #[test]
+    fn hosted_midi_events_use_block_offsets_and_pair_note_lifecycle() {
+        let notes = [PlaybackMidiNote {
+            id: 17,
+            channel: 2,
+            start_beats: 0.0,
+            duration_beats: 0.5,
+            frequency_hz: 440.0,
+            velocity: 0.75,
+        }];
+        let frames = (0..12_001).collect::<Vec<_>>();
+        let mut events = [opentrack_plugins::HostedMidiEvent::default(); 4];
+        let count = fill_hosted_midi_events(&notes, &frames, 120.0, 48_000, &mut events);
+
+        assert_eq!(count, 2);
+        assert_eq!(events[0].sample_offset, 0);
+        assert!(events[0].note_on);
+        assert_eq!(events[0].pitch, 69);
+        assert_eq!(events[0].velocity, 95);
+        assert_eq!(events[1].sample_offset, 12_000);
+        assert!(!events[1].note_on);
+        assert_eq!(events[1].pitch, 69);
+    }
+
+    #[test]
+    fn hosted_midi_events_survive_block_boundary_and_capacity() {
+        let notes = [PlaybackMidiNote {
+            id: 8,
+            channel: 0,
+            start_beats: 256.0 / 24_000.0,
+            duration_beats: 1.0,
+            frequency_hz: 261.62555,
+            velocity: 1.0,
+        }];
+        let frames = (256..512).collect::<Vec<_>>();
+        let mut events = [opentrack_plugins::HostedMidiEvent::default(); 1];
+        let count = fill_hosted_midi_events(&notes, &frames, 120.0, 48_000, &mut events);
+
+        assert_eq!(count, 1);
+        assert_eq!(events[0].sample_offset, 0);
+        assert!(events[0].note_on);
+        assert_eq!(events[0].pitch, 60);
     }
 }
 

@@ -365,6 +365,7 @@ pub(super) fn show(
         .map(|track| (track.id, track.name.clone()))
         .collect::<HashMap<_, _>>();
     let track_id = project.tracks[track_index].id;
+    let mut instrument_editor = None;
     let (inherited_muted, inherited_solo, inherited_solo_defeat) =
         super::project_track_inherited_group_state(project, track_id);
     let group_child_solo = project.tracks[track_index].kind == TrackKind::Group
@@ -421,6 +422,27 @@ pub(super) fn show(
         .clicked()
         {
             channel_settings_window.request_channel_settings(None);
+        }
+        if track.kind == TrackKind::Instrument {
+            let slot = instrument_editor_slot(track);
+            let editor_rect = Rect::from_center_size(
+                header.right_center() - Vec2::new(28.0, 0.0),
+                Vec2::splat(16.0),
+            );
+            if button(
+                ui,
+                editor_rect,
+                (track_id, "instrument-editor"),
+                "V",
+                "Open Instrument Plug-in Editor",
+                false,
+                slot.is_some(),
+                false,
+            )
+            .clicked()
+            {
+                instrument_editor = slot.map(|slot| (track_id, slot));
+            }
         }
         let (controls, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), Sense::hover());
@@ -769,6 +791,7 @@ pub(super) fn show(
             project.tracks[track_index].pan,
         )),
         requires_plan_rebuild,
+        instrument_editor,
     }
 }
 
@@ -777,4 +800,60 @@ pub(super) struct InspectorChanges {
     pub modified: bool,
     pub live_mix: Option<(u64, f32, f32)>,
     pub requires_plan_rebuild: bool,
+    pub instrument_editor: Option<(u64, usize)>,
+}
+
+fn instrument_editor_slot(track: &Track) -> Option<usize> {
+    track
+        .inserts
+        .iter()
+        .position(|insert| matches!(insert.kind, InsertEffectKind::Vst3 { .. }) && insert.enabled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instrument_editor_uses_first_enabled_vst3_insert() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let track = &mut project.tracks[0];
+        track.inserts = vec![
+            InsertEffect {
+                id: 1,
+                enabled: false,
+                bypassed: false,
+                kind: InsertEffectKind::Vst3 {
+                    class_id: "00".repeat(16),
+                    module_path: std::path::PathBuf::from("disabled.vst3"),
+                    name: "Disabled".to_owned(),
+                    vendor: String::new(),
+                    component_state: Vec::new(),
+                    controller_state: Vec::new(),
+                },
+            },
+            InsertEffect {
+                id: 2,
+                enabled: true,
+                bypassed: false,
+                kind: InsertEffectKind::Vst3 {
+                    class_id: "11".repeat(16),
+                    module_path: std::path::PathBuf::from("instrument.vst3"),
+                    name: "Instrument".to_owned(),
+                    vendor: String::new(),
+                    component_state: Vec::new(),
+                    controller_state: Vec::new(),
+                },
+            },
+        ];
+        assert_eq!(instrument_editor_slot(track), Some(1));
+    }
+
+    #[test]
+    fn instrument_editor_is_unavailable_without_an_enabled_vst3_insert() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        assert_eq!(instrument_editor_slot(&project.tracks[0]), None);
+    }
 }

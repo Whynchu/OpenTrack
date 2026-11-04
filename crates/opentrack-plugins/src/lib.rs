@@ -40,4 +40,4 @@ pub use quarantine::{
     MAX_QUARANTINE_ENTRIES, MAX_QUARANTINE_REASON_CHARS, QuarantineEntry, QuarantineReason,
     normalize_quarantine, paths_match, release,
 };
-pub use runtime::{HostedParameterEvent, HostedProcessor};
+pub use runtime::{HostedMidiEvent, HostedParameterEvent, HostedProcessor};

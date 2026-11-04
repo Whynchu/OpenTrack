@@ -1,6 +1,27 @@
 //! Compact configuration views based on REF-A14-01/02/03.
 use super::*;
 
+fn block_on_file_dialog<F: std::future::Future>(future: F) -> F::Output {
+    struct ThreadWake(std::thread::Thread);
+    impl std::task::Wake for ThreadWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(ThreadWake(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(result) => return result,
+            std::task::Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
 fn compact(ui: &mut egui::Ui) {
     ui.style_mut().override_font_id = Some(FontId::proportional(11.0));
     ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
@@ -26,6 +47,77 @@ fn audio_backend_label() -> &'static str {
 }
 
 impl OpenTrackApp {
+    fn start_vst3_folder_picker(&mut self, module_file: bool) {
+        if self.plugin_folder_picker_task.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawn = std::thread::Builder::new()
+            .name("opentrack-file-dialog".to_owned())
+            .spawn(move || {
+                let dialog = rfd::AsyncFileDialog::new().set_title(if module_file {
+                    "Select VST3 Plug-in File"
+                } else {
+                    "Select VST3 Plug-in Folder"
+                });
+                let selection = if module_file {
+                    block_on_file_dialog(dialog.add_filter("VST3 plug-in", &["vst3"]).pick_file())
+                        .map(|file| file.path().to_path_buf())
+                } else {
+                    block_on_file_dialog(dialog.pick_folder())
+                        .map(|folder| folder.path().to_path_buf())
+                };
+                let _ = sender.send(selection);
+            });
+        match spawn {
+            Ok(_) => {
+                self.plugin_folder_picker_task = Some(receiver);
+                self.plugin_scan_status = "Choose a VST3 folder or module".to_owned();
+            }
+            Err(error) => {
+                self.plugin_scan_status = "Could not start the plug-in folder picker".to_owned();
+                self.plugin_scan_error = Some(error.to_string());
+            }
+        }
+    }
+
+    fn poll_vst3_folder_picker(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = self.plugin_folder_picker_task.as_ref() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(selection) => {
+                self.plugin_folder_picker_task = None;
+                let Some(selection) = selection else {
+                    self.plugin_scan_status = "Plug-in folder selection cancelled".to_owned();
+                    return;
+                };
+                if selection.is_dir() {
+                    self.add_vst3_plugin_folder(selection);
+                    return;
+                }
+                match vst3_host::resolve_module_selection(&selection) {
+                    Ok(module) => {
+                        if let Some(folder) = module.parent() {
+                            self.add_vst3_plugin_folder(folder.to_path_buf());
+                        }
+                    }
+                    Err(error) => {
+                        self.plugin_scan_status = "Could not add the plug-in file".to_owned();
+                        self.plugin_scan_error = Some(error);
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.plugin_folder_picker_task = None;
+                self.plugin_scan_status = "The plug-in folder picker stopped unexpectedly".into();
+            }
+        }
+    }
+
     pub(super) fn show_audio_device_setup(&mut self, ctx: &egui::Context) -> Option<Rect> {
         if !self.device_setup_open {
             let mut open = false;
@@ -1104,6 +1196,7 @@ impl OpenTrackApp {
     }
 
     pub(super) fn show_plugin_information(&mut self, ctx: &egui::Context) {
+        self.poll_vst3_folder_picker(ctx);
         if !self.plugin_information_open {
             let mut open = false;
             dismiss_window_on_outside_click(
@@ -1201,11 +1294,20 @@ impl OpenTrackApp {
                             });
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("Add Folder\u{2026}").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.plugin_folder_picker_task.is_none(),
+                            egui::Button::new("Add Folder\u{2026}"),
+                        )
+                        .clicked()
+                    {
                         add_folder = true;
                     }
                     if ui
-                        .button("Add Plug-in File\u{2026}")
+                        .add_enabled(
+                            self.plugin_folder_picker_task.is_none(),
+                            egui::Button::new("Add Plug-in File\u{2026}"),
+                        )
                         .on_hover_text(
                             "Adds the folder containing a .vst3 module. Scanning remains folder-based.",
                         )
@@ -1396,25 +1498,8 @@ impl OpenTrackApp {
         if let Some(index) = remove_folder {
             self.remove_vst3_plugin_folder(index);
         }
-        if add_folder && let Some(folder) = FileDialog::new().pick_folder() {
-            self.add_vst3_plugin_folder(folder);
-        }
-        if add_module_file
-            && let Some(path) = FileDialog::new()
-                .add_filter("VST3 plug-in", &["vst3"])
-                .pick_file()
-        {
-            match vst3_host::resolve_module_selection(&path) {
-                Ok(module) => {
-                    if let Some(folder) = module.parent() {
-                        self.add_vst3_plugin_folder(folder.to_path_buf());
-                    }
-                }
-                Err(error) => {
-                    self.plugin_scan_status = "Could not add the plug-in file".to_owned();
-                    self.plugin_scan_error = Some(error);
-                }
-            }
+        if add_folder || add_module_file {
+            self.start_vst3_folder_picker(add_module_file);
         }
         if scan_requested {
             self.start_vst3_plugin_scan();
