@@ -58,6 +58,8 @@ fn track_settings(source: Arc<DecodedWav>, index: usize) -> opentrack_audio::Pla
         inserts: Vec::new(),
         inserts_bypassed: false,
         hosted_inserts: Vec::new(),
+        hosted_instrument: None,
+        instrument_output: None,
         monitor_input: None,
         output_route: PlaybackOutputRoute::Stereo,
         volume_automation: None,

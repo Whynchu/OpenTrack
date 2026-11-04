@@ -1,6 +1,9 @@
 //! Standalone native editor diagnostic, independent of eframe/OpenGL and projects.
 //! Build with `cargo build -p opentrack --example vst3_editor_probe`.
 
+#[path = "../src/crash_log.rs"]
+#[allow(dead_code)]
+mod crash_log;
 #[path = "../src/vst3_host.rs"]
 #[allow(dead_code)]
 mod vst3_host;
@@ -25,7 +28,7 @@ fn main() {
         64,
     )
     .expect("load installed effect");
-    let window = vst3_host::EditorWindow::create("OpenTrack standalone VST3 probe", 0)
+    let window = vst3_host::EditorWindow::create("OpenTrack standalone VST3 probe", None)
         .expect("create editor host");
     effect
         .open_editor(window.hwnd() as *mut std::ffi::c_void)

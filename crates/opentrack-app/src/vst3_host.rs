@@ -10,14 +10,28 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
-use opentrack_audio::HostedInsert;
-use opentrack_core::project::{InsertEffectKind, Project, Track};
+use opentrack_audio::{HostedInsert, HostedInstrument};
+use opentrack_core::project::{InsertEffectKind, Project, Track, TrackKind};
 use opentrack_plugins::{HostedProcessor, PluginClassId};
 use opentrack_vst3::{Vst3Effect, Vst3ParameterInfo, Vst3State};
 
 struct Instance {
     class_id: String,
+    include_auxiliary_outputs: bool,
     effect: Arc<Vst3Effect>,
+}
+
+fn designated_instrument_insert_id(track: &Track) -> Option<u64> {
+    if track.kind != TrackKind::Instrument {
+        return None;
+    }
+    track.instrument_insert_id.or_else(|| {
+        track
+            .inserts
+            .iter()
+            .find(|insert| matches!(&insert.kind, InsertEffectKind::Vst3 { .. }))
+            .map(|insert| insert.id)
+    })
 }
 
 /// Resolves a file or bundle-folder selection to the loadable module file.
@@ -47,7 +61,7 @@ pub struct Runtime {
     max_block: u32,
     instances: HashMap<(u64, u64), Instance>,
     failures: HashMap<(u64, u64), String>,
-    failed_class: HashMap<(u64, u64), String>,
+    failed_class: HashMap<(u64, u64), (String, bool)>,
     slot_ids: HashMap<(u64, usize), u64>,
 }
 
@@ -61,6 +75,7 @@ pub struct EditorWindow {
 #[cfg(target_os = "linux")]
 pub struct EditorWindow {
     connection: x11rb::rust_connection::RustConnection,
+    root: u32,
     window: u32,
     plug_parent: u32,
     protocols_atom: u32,
@@ -441,6 +456,7 @@ impl EditorWindow {
         let (connection, screen_index) = x11rb::connect(None)
             .map_err(|error| format!("could not connect to X11 for VST3 editor: {error}"))?;
         let screen = &connection.setup().roots[screen_index];
+        let root = screen.root;
         let window = connection
             .generate_id()
             .map_err(|error| format!("could not allocate VST3 editor XID: {error}"))?;
@@ -476,6 +492,47 @@ impl EditorWindow {
                     ),
             )
             .map_err(|error| format!("could not create VST3 editor X11 window: {error}"))?;
+        let wm_class = b"opentrack\0OpenTrack\0";
+        connection
+            .change_property8(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_CLASS,
+                AtomEnum::STRING,
+                wm_class,
+            )
+            .map_err(|error| format!("could not set VST3 editor application class: {error}"))?;
+        let icon_words = pack_x11_icon(&crate::icons::opentrack_icon());
+        let net_wm_icon = connection
+            .intern_atom(false, b"_NET_WM_ICON")
+            .map_err(|error| format!("could not intern _NET_WM_ICON: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read _NET_WM_ICON atom: {error}"))?
+            .atom;
+        connection
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                net_wm_icon,
+                AtomEnum::CARDINAL,
+                &icon_words,
+            )
+            .map_err(|error| format!("could not set VST3 editor application icon: {error}"))?;
+        let net_wm_pid = connection
+            .intern_atom(false, b"_NET_WM_PID")
+            .map_err(|error| format!("could not intern _NET_WM_PID: {error}"))?
+            .reply()
+            .map_err(|error| format!("could not read _NET_WM_PID atom: {error}"))?
+            .atom;
+        connection
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                net_wm_pid,
+                AtomEnum::CARDINAL,
+                &[std::process::id()],
+            )
+            .map_err(|error| format!("could not set VST3 editor process identity: {error}"))?;
         let protocols = connection
             .intern_atom(false, b"WM_PROTOCOLS")
             .map_err(|error| format!("could not intern WM_PROTOCOLS: {error}"))?
@@ -562,6 +619,7 @@ impl EditorWindow {
             .map_err(|error| format!("could not flush VST3 editor X11 window: {error}"))?;
         Ok(Self {
             connection,
+            root,
             window,
             plug_parent,
             protocols_atom: protocols,
@@ -598,16 +656,25 @@ impl EditorWindow {
 
     fn focus(&self) {
         use x11rb::connection::Connection;
-        use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
-        let focus_window = self
-            .embedded_children
-            .keys()
-            .next()
-            .copied()
-            .unwrap_or(self.plug_parent);
-        let _ =
-            self.connection
-                .set_input_focus(InputFocus::PARENT, focus_window, x11rb::CURRENT_TIME);
+        use x11rb::protocol::xproto::{
+            ClientMessageData, ClientMessageEvent, ConnectionExt, EventMask,
+        };
+        if let Ok(cookie) = self.connection.intern_atom(false, b"_NET_ACTIVE_WINDOW")
+            && let Ok(atom) = cookie.reply()
+        {
+            let event = ClientMessageEvent::new(
+                32,
+                self.window,
+                atom.atom,
+                ClientMessageData::from([1, x11rb::CURRENT_TIME, 0, 0, 0]),
+            );
+            let _ = self.connection.send_event(
+                false,
+                self.root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            );
+        }
         self.send_xembed_message(4);
         let _ = self.connection.flush();
     }
@@ -655,6 +722,43 @@ impl EditorWindow {
                 AtomEnum::WINDOW,
                 &[owner as u32],
             );
+            if let Ok(client_leader) = self.connection.intern_atom(false, b"WM_CLIENT_LEADER")
+                && let Ok(client_leader) = client_leader.reply()
+            {
+                let _ = self.connection.change_property32(
+                    PropMode::REPLACE,
+                    self.window,
+                    client_leader.atom,
+                    AtomEnum::WINDOW,
+                    &[owner as u32],
+                );
+            }
+            if let Ok(group_hint) = self.connection.intern_atom(false, b"WM_HINTS")
+                && let Ok(group_hint) = group_hint.reply()
+            {
+                let _ = self.connection.change_property32(
+                    PropMode::REPLACE,
+                    self.window,
+                    group_hint.atom,
+                    AtomEnum::WM_HINTS,
+                    &[1 << 6, 0, 0, 0, 0, 0, 0, 0, owner as u32],
+                );
+            }
+            if let Ok(window_type) = self.connection.intern_atom(false, b"_NET_WM_WINDOW_TYPE")
+                && let Ok(window_type) = window_type.reply()
+                && let Ok(dialog_type) = self
+                    .connection
+                    .intern_atom(false, b"_NET_WM_WINDOW_TYPE_DIALOG")
+                && let Ok(dialog_type) = dialog_type.reply()
+            {
+                let _ = self.connection.change_property32(
+                    PropMode::REPLACE,
+                    self.window,
+                    window_type.atom,
+                    AtomEnum::ATOM,
+                    &[dialog_type.atom],
+                );
+            }
             let _ = self.connection.flush();
         }
     }
@@ -834,6 +938,7 @@ impl EditorHost {
         title: &str,
         restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
         effect: Arc<Vst3Effect>,
+        owner: Option<isize>,
     ) -> Result<Self, String> {
         use std::sync::atomic::AtomicBool;
         use std::sync::mpsc;
@@ -854,6 +959,7 @@ impl EditorHost {
                     title,
                     restore_bounds,
                     effect,
+                    owner,
                     thread_alive,
                     thread_bounds,
                     command_rx,
@@ -954,6 +1060,7 @@ fn editor_thread(
     title: String,
     restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
     effect: Arc<Vst3Effect>,
+    owner: Option<isize>,
     alive: Arc<std::sync::atomic::AtomicBool>,
     bounds: Arc<Mutex<Option<opentrack_core::workspaces::WindowBounds>>>,
     commands: std::sync::mpsc::Receiver<EditorCommand>,
@@ -964,6 +1071,9 @@ fn editor_thread(
 
     let result = (|| -> Result<(), String> {
         let window = EditorWindow::create_hidden(&title, restore_bounds.as_ref())?;
+        if let Some(owner) = owner {
+            window.set_owner(owner);
+        }
         crate::crash_log::session(&format!("editor thread: opening \"{title}\""));
         let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
         crate::crash_log::session(&format!("editor thread: opened \"{title}\""));
@@ -1059,11 +1169,25 @@ fn linux_editor_unavailable_reason(display: Option<&std::ffi::OsStr>) -> Option<
 }
 
 #[cfg(target_os = "linux")]
+fn pack_x11_icon(icon: &eframe::egui::IconData) -> Vec<u32> {
+    let mut words = Vec::with_capacity(icon.rgba.len() / 4 + 2);
+    words.extend([icon.width, icon.height]);
+    words.extend(icon.rgba.chunks_exact(4).map(|pixel| {
+        (u32::from(pixel[3]) << 24)
+            | (u32::from(pixel[0]) << 16)
+            | (u32::from(pixel[1]) << 8)
+            | u32::from(pixel[2])
+    }));
+    words
+}
+
+#[cfg(target_os = "linux")]
 impl EditorHost {
     pub fn open(
         title: &str,
         restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
         effect: Arc<Vst3Effect>,
+        owner: Option<isize>,
     ) -> Result<Self, String> {
         use std::sync::atomic::AtomicBool;
         use std::sync::mpsc;
@@ -1089,6 +1213,7 @@ impl EditorHost {
                     title,
                     restore_bounds,
                     effect,
+                    owner,
                     thread_alive,
                     thread_bounds,
                     command_rx,
@@ -1181,6 +1306,7 @@ fn linux_editor_thread(
     title: String,
     restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
     effect: Arc<Vst3Effect>,
+    owner: Option<isize>,
     alive: Arc<std::sync::atomic::AtomicBool>,
     bounds: Arc<Mutex<Option<opentrack_core::workspaces::WindowBounds>>>,
     commands: std::sync::mpsc::Receiver<LinuxEditorCommand>,
@@ -1190,6 +1316,9 @@ fn linux_editor_thread(
     use std::time::Duration;
     let result = (|| -> Result<(), String> {
         let mut window = EditorWindow::create_hidden(&title, restore_bounds.as_ref())?;
+        if let Some(owner) = owner {
+            window.set_owner(owner);
+        }
         let editor = effect.open_detached_editor(window.hwnd() as *mut std::ffi::c_void)?;
         // Attach may create the plug-in child before the outer window is
         // mapped. Process that X11 event first so initial focus targets the
@@ -1249,6 +1378,7 @@ impl EditorHost {
         _title: &str,
         _restore_bounds: Option<opentrack_core::workspaces::WindowBounds>,
         _effect: Arc<Vst3Effect>,
+        _owner: Option<isize>,
     ) -> Result<Self, String> {
         Err("native VST3 editors are only supported on Windows and Linux X11/XWayland".to_owned())
     }
@@ -1299,11 +1429,25 @@ impl Runtime {
         rate: u32,
         block: u32,
     ) -> bool {
-        self.sample_rate == rate && self.max_block == block
-            && project.channel_by_id(track_id)
-                .and_then(|track| track.inserts.get(slot))
-                .is_some_and(|insert| matches!(&insert.kind, InsertEffectKind::Vst3 { class_id, .. }
-                    if self.instances.get(&(track_id, insert.id)).is_some_and(|instance| instance.class_id == *class_id)))
+        if self.sample_rate != rate || self.max_block != block {
+            return false;
+        }
+        let Some(track) = project.channel_by_id(track_id) else {
+            return false;
+        };
+        let Some(insert) = track.inserts.get(slot) else {
+            return false;
+        };
+        let InsertEffectKind::Vst3 { class_id, .. } = &insert.kind else {
+            return false;
+        };
+        let include_auxiliary_outputs = designated_instrument_insert_id(track) == Some(insert.id);
+        self.instances
+            .get(&(track_id, insert.id))
+            .is_some_and(|instance| {
+                instance.class_id == *class_id
+                    && instance.include_auxiliary_outputs == include_auxiliary_outputs
+            })
     }
 
     pub fn take_dirty(&self) -> bool {
@@ -1341,6 +1485,7 @@ impl Runtime {
             .iter()
             .chain(std::iter::once(&project.output_channel.strip))
         {
+            let instrument_insert_id = designated_instrument_insert_id(track);
             for (slot, insert) in track.inserts.iter().enumerate() {
                 self.slot_ids.insert((track.id, slot), insert.id);
                 let InsertEffectKind::Vst3 {
@@ -1354,6 +1499,7 @@ impl Runtime {
                     continue;
                 };
                 let key = (track.id, insert.id);
+                let include_auxiliary_outputs = instrument_insert_id == Some(insert.id);
                 // A powered-off plug-in is unloaded rather than left running.
                 if !insert.enabled {
                     continue;
@@ -1362,14 +1508,16 @@ impl Runtime {
                 if self
                     .failed_class
                     .get(&key)
-                    .is_some_and(|failed| failed == class_id)
+                    .is_some_and(|(failed_class, failed_aux)| {
+                        failed_class == class_id && *failed_aux == include_auxiliary_outputs
+                    })
                 {
                     continue;
                 }
-                let matches = self
-                    .instances
-                    .get(&key)
-                    .is_some_and(|instance| instance.class_id == *class_id);
+                let matches = self.instances.get(&key).is_some_and(|instance| {
+                    instance.class_id == *class_id
+                        && instance.include_auxiliary_outputs == include_auxiliary_outputs
+                });
                 if matches {
                     continue;
                 }
@@ -1383,7 +1531,17 @@ impl Runtime {
                     continue;
                 };
                 let load_started = std::time::Instant::now();
-                match Vst3Effect::load(module_path, class_id, self.sample_rate, self.max_block) {
+                let loaded_effect = if include_auxiliary_outputs {
+                    Vst3Effect::load_instrument(
+                        module_path,
+                        class_id,
+                        self.sample_rate,
+                        self.max_block,
+                    )
+                } else {
+                    Vst3Effect::load(module_path, class_id, self.sample_rate, self.max_block)
+                };
+                match loaded_effect {
                     Ok(effect) => {
                         if trace {
                             eprintln!(
@@ -1415,13 +1573,15 @@ impl Runtime {
                             key,
                             Instance {
                                 class_id: class_id.to_hex(),
+                                include_auxiliary_outputs,
                                 effect: Arc::new(effect),
                             },
                         );
                     }
                     Err(error) => {
                         self.failures.insert(key, error);
-                        self.failed_class.insert(key, class_id.to_hex());
+                        self.failed_class
+                            .insert(key, (class_id.to_hex(), include_auxiliary_outputs));
                     }
                 }
                 changed = true;
@@ -1478,11 +1638,15 @@ impl Runtime {
         if self
             .failed_class
             .get(&key)
-            .is_some_and(|failed| failed == class_id)
-            || self
-                .instances
-                .get(&key)
-                .is_some_and(|instance| instance.class_id == *class_id)
+            .is_some_and(|(failed_class, failed_aux)| {
+                failed_class == class_id
+                    && *failed_aux == (designated_instrument_insert_id(track) == Some(insert.id))
+            })
+            || self.instances.get(&key).is_some_and(|instance| {
+                instance.class_id == *class_id
+                    && instance.include_auxiliary_outputs
+                        == (designated_instrument_insert_id(track) == Some(insert.id))
+            })
         {
             return false;
         }
@@ -1494,12 +1658,23 @@ impl Runtime {
                 .insert(key, "Saved VST3 class ID is invalid".to_owned());
             return true;
         };
-        match Vst3Effect::load(
-            module_path,
-            parsed_class_id,
-            self.sample_rate,
-            self.max_block,
-        ) {
+        let include_auxiliary_outputs = designated_instrument_insert_id(track) == Some(insert.id);
+        let loaded_effect = if include_auxiliary_outputs {
+            Vst3Effect::load_instrument(
+                module_path,
+                parsed_class_id,
+                self.sample_rate,
+                self.max_block,
+            )
+        } else {
+            Vst3Effect::load(
+                module_path,
+                parsed_class_id,
+                self.sample_rate,
+                self.max_block,
+            )
+        };
+        match loaded_effect {
             Ok(effect) => {
                 if std::env::var_os("OPENTRACK_VST3_TRACE").is_some() {
                     eprintln!(
@@ -1521,27 +1696,39 @@ impl Runtime {
                     key,
                     Instance {
                         class_id: parsed_class_id.to_hex(),
+                        include_auxiliary_outputs,
                         effect: Arc::new(effect),
                     },
                 );
             }
             Err(error) => {
                 self.failures.insert(key, error);
-                self.failed_class.insert(key, parsed_class_id.to_hex());
+                self.failed_class
+                    .insert(key, (parsed_class_id.to_hex(), include_auxiliary_outputs));
             }
         }
         true
     }
 
     pub fn hosted_inserts(&self, track: &Track) -> Vec<HostedInsert> {
+        self.hosted_inserts_for_playback(track, false)
+    }
+
+    pub fn hosted_inserts_for_playback(
+        &self,
+        track: &Track,
+        instrument_routed_to_children: bool,
+    ) -> Vec<HostedInsert> {
         track
             .inserts
             .iter()
-            .enumerate()
-            .filter_map(|(slot, insert)| {
+            .filter_map(|insert| {
                 let InsertEffectKind::Vst3 { .. } = &insert.kind else {
                     return None;
                 };
+                if instrument_routed_to_children && track.instrument_insert_id == Some(insert.id) {
+                    return None;
+                }
                 let instance = self.instances.get(&(track.id, insert.id))?;
                 let processor: Arc<dyn HostedProcessor> = instance.effect.clone();
                 Some(HostedInsert {
@@ -1554,6 +1741,34 @@ impl Runtime {
                 })
             })
             .collect()
+    }
+
+    /// Returns the explicitly identified MIDI instrument for the track, with
+    /// output-bus metadata captured on the control thread.
+    pub fn hosted_instrument(&self, track: &Track) -> Option<HostedInstrument> {
+        let insert_id = designated_instrument_insert_id(track)?;
+        let insert = track.inserts.iter().find(|insert| insert.id == insert_id)?;
+        if !matches!(&insert.kind, InsertEffectKind::Vst3 { .. }) {
+            return None;
+        }
+        let instance = self.instances.get(&(track.id, insert.id))?;
+        let processor: Arc<dyn HostedProcessor> = instance.effect.clone();
+        Some(HostedInstrument {
+            output_buses: processor.output_buses(),
+            processor,
+            enabled: insert.enabled && !insert.bypassed && !track.inserts_bypassed,
+            automation: track
+                .automation_lanes
+                .iter()
+                .filter(|lane| {
+                    matches!(lane.target, opentrack_core::automation::AutomationTarget::PluginParameter { insert_id, .. } if insert_id == insert.id)
+                        && lane.is_valid()
+                        && !lane.points.is_empty()
+                })
+                .cloned()
+                .map(Arc::new)
+                .collect(),
+        })
     }
 
     pub fn instance(&self, track_id: u64, slot: usize) -> Option<Arc<Vst3Effect>> {
@@ -1674,7 +1889,32 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentrack_core::project::{InsertEffect, TrackKind};
+    use opentrack_core::project::{InsertEffect, InsertEffectKind, TrackKind};
+
+    #[test]
+    fn instrument_bus_mode_uses_the_designated_or_legacy_vst3_insert() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let track = &mut project.tracks[0];
+        track.inserts.push(InsertEffect {
+            id: 17,
+            enabled: true,
+            bypassed: false,
+            kind: InsertEffectKind::Vst3 {
+                class_id: "0123456789abcdef0123456789abcdef".into(),
+                module_path: PathBuf::from("instrument.vst3"),
+                name: "Instrument".into(),
+                vendor: "Test".into(),
+                component_state: Vec::new(),
+                controller_state: Vec::new(),
+            },
+        });
+        assert_eq!(designated_instrument_insert_id(track), Some(17));
+        track.instrument_insert_id = Some(23);
+        assert_eq!(designated_instrument_insert_id(track), Some(23));
+        track.kind = TrackKind::Fx;
+        assert_eq!(designated_instrument_insert_id(track), None);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -1695,6 +1935,17 @@ mod tests {
             linux_editor_unavailable_reason(Some(std::ffi::OsStr::new(":0"))),
             None
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_editor_icon_is_encoded_as_ewmh_argb_words() {
+        let icon = eframe::egui::IconData {
+            rgba: vec![0x11, 0x22, 0x33, 0x44],
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(pack_x11_icon(&icon), vec![1, 1, 0x4411_2233]);
     }
 
     /// Run one installed class per process so an ABI crash is attributable.
@@ -2283,7 +2534,7 @@ mod tests {
             )
             .expect("load Waves"),
         );
-        let host = EditorHost::open("OpenTrack dedicated editor test", None, effect)
+        let host = EditorHost::open("OpenTrack dedicated editor test", None, effect, None)
             .expect("editor host starts");
         std::thread::sleep(std::time::Duration::from_millis(750));
         assert!(host.is_alive());

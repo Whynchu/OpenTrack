@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 46;
+const FORMAT_VERSION: u32 = 48;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -1104,7 +1104,8 @@ mod tests {
 
     use egui_dock::DockState;
     use opentrack_core::project::{
-        DynamicEqBand, EqualizerBand, FilterType, Project, TonalTarget, Track, TrackKind,
+        DynamicEqBand, EqualizerBand, FilterType, InstrumentOutputSpec, Project, TonalTarget,
+        Track, TrackKind,
     };
     use opentrack_core::workspaces::ProjectWorkspaceState;
 
@@ -1721,6 +1722,47 @@ mod tests {
     }
 
     #[test]
+    fn version_46_migrates_without_instrument_output_ownership_fields() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let mut value =
+            serde_json::to_value(ProjectFile::new(project, workspace, dock, true, 0, false))
+                .unwrap();
+        value["version"] = 46.into();
+        let track = value["project"]["tracks"][0]
+            .as_object_mut()
+            .expect("instrument track");
+        for field in [
+            "instrument_output_owner_id",
+            "instrument_output_bus_index",
+            "instrument_output_available",
+            "instrument_insert_id",
+        ] {
+            track.remove(field);
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-v46-instrument-outputs-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let loaded = ProjectFile::read(&path).unwrap();
+        fs::remove_file(path).unwrap();
+
+        let instrument = &loaded.project.tracks[0];
+        assert_eq!(loaded.version, FORMAT_VERSION);
+        assert_eq!(instrument.kind, TrackKind::Instrument);
+        assert_eq!(instrument.instrument_output_owner_id, None);
+        assert_eq!(instrument.instrument_output_bus_index, None);
+        assert!(instrument.instrument_output_available);
+        assert_eq!(instrument.instrument_insert_id, None);
+        assert!(loaded.project.validate().is_ok());
+    }
+
+    #[test]
     fn dirty_check_ignores_arrange_navigation_but_preserves_saved_preferences() {
         let dock_state = DockState::new(vec![PanelTab::Project]);
         let mut baseline = initial_workspace_state(&dock_state).expect("workspace should build");
@@ -2139,6 +2181,112 @@ mod tests {
         assert_eq!(restored.project.validate_routing(), Ok(()));
         assert_eq!(restored.project.validate(), Ok(()));
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn instrument_output_identity_and_owner_round_trip_through_native_document() {
+        let dock = finite_test_dock_state();
+        let workspace = initial_workspace_state(&dock).unwrap();
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let owner_id = project.tracks[0].id;
+        assert!(project.reconcile_instrument_outputs(
+            owner_id,
+            &[InstrumentOutputSpec {
+                bus_index: 2,
+                identity_key: "fixture:room-left".to_owned(),
+                name: "Room Left".to_owned(),
+                channels: 1,
+            }],
+        ));
+        let child = project
+            .tracks
+            .iter_mut()
+            .find(|track| track.kind == TrackKind::InstrumentOutput)
+            .expect("instrument output should be created");
+        child.gain = 0.42;
+        child.pan = -0.25;
+        let child_id = child.id;
+        let document = ProjectFile::new(project, workspace, dock, true, 0, false);
+        let path = std::env::temp_dir().join(format!(
+            "opentrack-instrument-output-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        document.write(&path).unwrap();
+        let restored = ProjectFile::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(restored.version, FORMAT_VERSION);
+        let child = restored
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == child_id)
+            .expect("child id should survive project reopen");
+        assert_eq!(child.kind, TrackKind::InstrumentOutput);
+        assert_eq!(child.instrument_output_owner_id, Some(owner_id));
+        assert_eq!(child.instrument_output_bus_index, Some(2));
+        assert_eq!(
+            child.instrument_output_bus_key.as_deref(),
+            Some("fixture:room-left")
+        );
+        assert_eq!(child.name, "Room Left");
+        assert_eq!(child.audio_channels, 1);
+        assert_eq!(child.gain, 0.42);
+        assert_eq!(child.pan, -0.25);
+        assert!(child.instrument_output_available);
+        assert_eq!(restored.project.validate(), Ok(()));
+
+        let mut legacy = serde_json::to_value(&document).expect("legacy project should encode");
+        legacy["version"] = serde_json::Value::from(47);
+        let legacy_tracks = legacy["project"]["tracks"]
+            .as_array_mut()
+            .expect("legacy track list should be an array");
+        legacy_tracks
+            .iter_mut()
+            .find(|track| track["id"] == child_id)
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("legacy instrument output should exist")
+            .remove("instrument_output_bus_key");
+        let legacy_path = std::env::temp_dir().join(format!(
+            "opentrack-instrument-output-v47-{}-{}.opr",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(
+            &legacy_path,
+            serde_json::to_vec(&legacy).expect("legacy document should serialize"),
+        )
+        .expect("legacy document should write");
+        let mut migrated = ProjectFile::read(&legacy_path).unwrap();
+        fs::remove_file(&legacy_path).unwrap();
+        assert_eq!(migrated.version, FORMAT_VERSION);
+        assert_eq!(
+            migrated.project.tracks[1].instrument_output_bus_key, None,
+            "version 47 children default to no stable identity"
+        );
+        assert!(migrated.project.reconcile_instrument_outputs(
+            owner_id,
+            &[InstrumentOutputSpec {
+                bus_index: 2,
+                identity_key: "fixture:room-left".to_owned(),
+                name: "Room Left".to_owned(),
+                channels: 1,
+            }],
+        ));
+        let migrated_child = migrated
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == child_id)
+            .expect("legacy child id should remain stable");
+        assert_eq!(
+            migrated_child.instrument_output_bus_key.as_deref(),
+            Some("fixture:room-left")
+        );
+        assert_eq!(migrated_child.instrument_output_available, true);
+        assert_eq!(migrated.project.validate(), Ok(()));
     }
 
     #[test]

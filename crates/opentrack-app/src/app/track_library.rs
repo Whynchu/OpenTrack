@@ -43,6 +43,7 @@ impl LibraryTrack {
             TrackKind::Instrument => "Instrument",
             TrackKind::Group => "Group",
             TrackKind::Fx => "FX Return",
+            TrackKind::InstrumentOutput => "Instrument Output",
             TrackKind::Folder => "Folder",
         }
     }
@@ -181,6 +182,7 @@ impl OpenTrackApp {
         track.inserts = entry.inserts.clone();
         track.input_routing = entry.input_routing.clone();
         track.output_routing = entry.output_routing.clone();
+        candidate.assign_missing_insert_ids();
         if candidate.validate().is_err() {
             self.status_message = "That library track would leave an invalid project".to_owned();
             return false;

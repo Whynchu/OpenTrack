@@ -10,6 +10,11 @@ default = []
 local-asio = ["dep:maolan-asio"]
 linux-realtime = ["cpal/realtime-dbus"]
 
+[[example]]
+name = "linux_realtime_probe"
+path = "examples/linux_realtime_probe.rs"
+required-features = ["linux-realtime"]
+
 [dependencies]
 arc-swap = "=1.9.2"
 cpal = "=0.18.2"

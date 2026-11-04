@@ -257,6 +257,7 @@ pub(crate) struct AsioCapture {
     pub failed: Arc<AtomicBool>,
     recording: arc_swap::ArcSwapOption<AsioRecording>,
     callback_reads: AtomicUsize,
+    input_sequence: AtomicU64,
 }
 
 #[cfg(all(windows, feature = "local-asio"))]
@@ -287,6 +288,7 @@ impl AsioCapture {
             failed: Arc::new(AtomicBool::new(false)),
             recording: arc_swap::ArcSwapOption::empty(),
             callback_reads: AtomicUsize::new(0),
+            input_sequence: AtomicU64::new(0),
         }
     }
     pub(crate) fn push(&self, samples: &mut [f32]) {
@@ -298,7 +300,11 @@ impl AsioCapture {
             || self.monitor.meter_tap().spectrum_enabled();
         if process_input_bus {
             let monitoring = self.monitor.is_enabled();
-            for frame in samples.chunks_exact_mut(self.channels as usize) {
+            let channel_count = self.channels as usize;
+            let first_sequence = self
+                .input_sequence
+                .fetch_add((samples.len() / channel_count) as u64, Ordering::AcqRel);
+            for (offset, frame) in samples.chunks_exact_mut(channel_count).enumerate() {
                 let left = if frame[0].is_finite() { frame[0] } else { 0.0 };
                 let right = frame
                     .get(1)
@@ -2677,6 +2683,8 @@ mod tests {
                 inserts: Vec::new(),
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
+                hosted_instrument: None,
+                instrument_output: None,
                 monitor_input: None,
                 volume_automation: None,
                 pan_automation: None,

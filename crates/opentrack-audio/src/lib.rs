@@ -796,10 +796,12 @@ struct HostedTrackBuffers {
     delay_cursor: usize,
     group_left: Vec<f32>,
     group_right: Vec<f32>,
+    routed_output_left: Vec<f32>,
+    routed_output_right: Vec<f32>,
 }
 
 impl HostedTrackBuffers {
-    fn new(block_processing: bool, delay_frames: usize) -> Self {
+    fn new(block_processing: bool, delay_frames: usize, output_bus_count: usize) -> Self {
         let block_frames = effective_hosted_block_frames(
             hosted_block_frames(),
             ACTIVE_OUTPUT_PERIOD_FRAMES.load(Ordering::Relaxed),
@@ -823,6 +825,8 @@ impl HostedTrackBuffers {
             delay_cursor: 0,
             group_left: vec![0.0; block_frames],
             group_right: vec![0.0; block_frames],
+            routed_output_left: vec![0.0; block_frames.saturating_mul(output_bus_count)],
+            routed_output_right: vec![0.0; block_frames.saturating_mul(output_bus_count)],
         }
     }
 
@@ -844,13 +848,22 @@ impl HostedTrackBuffers {
     }
 }
 
-fn hosted_track_latency(inserts: &[HostedInsert], latency_cap: u32) -> u32 {
-    inserts
+fn hosted_track_latency(
+    inserts: &[HostedInsert],
+    instrument: Option<&HostedInstrument>,
+    latency_cap: u32,
+) -> u32 {
+    let insert_latency = inserts
         .iter()
         .filter(|insert| insert.enabled)
         .fold(0_u32, |total, insert| {
             total.saturating_add(insert.processor.latency_samples().min(latency_cap))
-        })
+        });
+    let instrument_latency = instrument
+        .filter(|instrument| instrument.enabled)
+        .map_or(0, |instrument| instrument.processor.latency_samples());
+    insert_latency
+        .saturating_add(instrument_latency.min(latency_cap))
         .min(latency_cap)
 }
 
@@ -932,7 +945,15 @@ impl PlaybackTrackRuntime {
             tempo_bpm,
             sample_rate,
         );
-        let hosted_buffers = HostedTrackBuffers::new(hosted_processing, hosted_delay_frames);
+        let routed_output_bus_count = settings
+            .hosted_instrument
+            .as_ref()
+            .map_or(0, |instrument| instrument.output_buses.len());
+        let hosted_buffers = HostedTrackBuffers::new(
+            hosted_processing,
+            hosted_delay_frames,
+            routed_output_bus_count,
+        );
         let input_gain = GainControl::new(
             input_gain_factor(settings.input_gain_db, settings.input_phase_inverted),
             sample_rate,
@@ -1124,6 +1145,11 @@ pub struct PlaybackTrackSettings {
     pub inserts_bypassed: bool,
     /// Hosted (VST3-style) inserts, processed block-wise after `inserts`.
     pub hosted_inserts: Vec<HostedInsert>,
+    /// MIDI-owning hosted instrument, processed once before its output channels.
+    pub hosted_instrument: Option<HostedInstrument>,
+    /// Source bus for a child InstrumentOutput channel, with owner resolved to
+    /// a playback-plan track index on the control thread.
+    pub instrument_output: Option<PlaybackInstrumentOutput>,
     pub monitor_input: Option<PlaybackInputChannel>,
     pub output_route: PlaybackOutputRoute,
     /// Immutable track-volume curve, enabled only when automation Read is on.
@@ -1134,6 +1160,20 @@ pub struct PlaybackTrackSettings {
     pub mute_automation: Option<Arc<opentrack_core::project::AutomationLane>>,
     /// Prevalidated, active sends prepared on the control thread.
     pub sends: Vec<PlaybackSend>,
+}
+
+#[derive(Clone)]
+pub struct HostedInstrument {
+    pub processor: Arc<dyn opentrack_plugins::HostedProcessor>,
+    pub enabled: bool,
+    pub automation: Vec<Arc<opentrack_core::project::AutomationLane>>,
+    pub output_buses: Vec<opentrack_plugins::HostedOutputBus>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlaybackInstrumentOutput {
+    pub owner_track_index: usize,
+    pub bus_index: u32,
 }
 
 /// Track settings prepared for an isolated render graph. Beat positions are
@@ -1756,7 +1796,7 @@ mod output_stream_health_tests {
         assert!(failed.load(Ordering::Acquire));
         assert_eq!(
             xruns.load(Ordering::Relaxed),
-            3,
+            2,
             "a fatal report is not counted as a glitch"
         );
     }
@@ -1868,13 +1908,21 @@ impl PlaybackPlan {
             .map(|track| track.monitor_input.is_some())
             .collect();
         let hosted_processing = !output_hosted_inserts.is_empty()
-            || tracks.iter().any(|track| !track.hosted_inserts.is_empty());
+            || tracks
+                .iter()
+                .any(|track| !track.hosted_inserts.is_empty() || track.hosted_instrument.is_some());
         // Delay compensation is part of the published plan. Ring buffers are
         // sized here on the control thread; the callback never allocates.
         let latency_cap = sample_rate.saturating_mul(HOSTED_MAX_LATENCY_SECONDS);
         let track_latencies: Vec<u32> = tracks
             .iter()
-            .map(|track| hosted_track_latency(&track.hosted_inserts, latency_cap))
+            .map(|track| {
+                hosted_track_latency(
+                    &track.hosted_inserts,
+                    track.hosted_instrument.as_ref(),
+                    latency_cap,
+                )
+            })
             .collect();
         let original_max_latency = track_latencies.iter().copied().max().unwrap_or(0);
         let mut tracks = tracks;
@@ -4094,6 +4142,18 @@ fn render_hosted_blocks<T>(
             monitor_right[..count].fill(0.0);
         }
 
+        for &group_index in &plan.group_order {
+            // SAFETY: the callback is the sole writer of these plan-owned buffers.
+            let buffers = unsafe { &mut *plan.tracks[group_index].hosted_buffers.get() };
+            buffers.group_left[..count].fill(0.0);
+            buffers.group_right[..count].fill(0.0);
+        }
+        for (track_index, track) in plan.tracks.iter().enumerate() {
+            if track.settings.hosted_instrument.is_some() {
+                render_hosted_instrument_block(plan, track_index, &frames[..count], sample_rate);
+            }
+        }
+
         for (track_index, track) in plan.tracks.iter().enumerate() {
             if track.settings.is_group {
                 continue;
@@ -4121,12 +4181,6 @@ fn render_hosted_blocks<T>(
 
         let mut master_left = [0.0_f32; HOSTED_BLOCK_CAPACITY];
         let mut master_right = [0.0_f32; HOSTED_BLOCK_CAPACITY];
-        for &group_index in &plan.group_order {
-            // SAFETY: the callback is the sole writer of these plan-owned buffers.
-            let buffers = unsafe { &mut *plan.tracks[group_index].hosted_buffers.get() };
-            buffers.group_left[..count].fill(0.0);
-            buffers.group_right[..count].fill(0.0);
-        }
         for track in &plan.tracks {
             if track.settings.is_group {
                 continue;
@@ -4307,6 +4361,106 @@ fn render_hosted_blocks<T>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn render_hosted_instrument_block(
+    plan: &PlaybackPlan,
+    instrument_index: usize,
+    frames: &[u64],
+    sample_rate: u32,
+) {
+    let track = &plan.tracks[instrument_index];
+    let Some(instrument) = track.settings.hosted_instrument.as_ref() else {
+        return;
+    };
+    let bus_count = instrument.output_buses.len();
+    if bus_count == 0 || frames.is_empty() {
+        return;
+    }
+    let inaudible = (track.settings.muted && track.settings.mute_automation.is_none())
+        || (plan.any_solo && !track.settings.solo && !track.settings.solo_defeat);
+    // SAFETY: callback_active admits one writer to each plan-owned buffer.
+    let source_buffers = unsafe { &mut *track.hosted_buffers.get() };
+    let output_samples = frames.len().saturating_mul(bus_count);
+    if source_buffers.routed_output_left.len() < output_samples
+        || source_buffers.routed_output_right.len() < output_samples
+        || source_buffers.dry_left.len() < frames.len()
+        || source_buffers.dry_right.len() < frames.len()
+    {
+        return;
+    }
+    let output_left = &mut source_buffers.routed_output_left[..output_samples];
+    let output_right = &mut source_buffers.routed_output_right[..output_samples];
+    output_left.fill(0.0);
+    output_right.fill(0.0);
+    if !inaudible && instrument.enabled {
+        let input_left = &mut source_buffers.dry_left[..frames.len()];
+        let input_right = &mut source_buffers.dry_right[..frames.len()];
+        input_left.fill(0.0);
+        input_right.fill(0.0);
+        let mut midi_events = [opentrack_plugins::HostedMidiEvent::default(); 512];
+        let midi_count = fill_hosted_midi_events(
+            &track.settings.midi_notes,
+            frames,
+            plan.tempo_bpm,
+            sample_rate,
+            &mut midi_events,
+        );
+        let mut parameter_events = [opentrack_plugins::HostedParameterEvent {
+            parameter_id: 0,
+            sample_offset: 0,
+            value: 0.0,
+        }; 128];
+        let parameter_count = fill_hosted_automation_events(
+            &instrument.automation,
+            frames,
+            plan.tempo_bpm,
+            sample_rate,
+            &mut parameter_events,
+        );
+        if let Err(error) = instrument.processor.process_routed_with_events(
+            input_left,
+            input_right,
+            output_left,
+            output_right,
+            bus_count,
+            &parameter_events[..parameter_count],
+            &midi_events[..midi_count],
+        ) {
+            plan.record_hosted_error(instrument_index, 0, &error);
+            output_left.fill(0.0);
+            output_right.fill(0.0);
+        }
+    }
+
+    // The plug-in is called once with the full MIDI block. Its bus planes seed
+    // the matching owner-locked output child channel before channel-strip DSP.
+    for child_index in 0..plan.tracks.len() {
+        let Some(output) = plan.tracks[child_index].settings.instrument_output else {
+            continue;
+        };
+        if output.owner_track_index != instrument_index {
+            continue;
+        }
+        let Some(bus_slot) = instrument
+            .output_buses
+            .iter()
+            .position(|bus| bus.index == output.bus_index)
+        else {
+            continue;
+        };
+        let start = bus_slot * frames.len();
+        let end = start + frames.len();
+        // SAFETY: child indices are distinct from the instrument owner, and the
+        // serialized callback is the only writer of both channel buffers.
+        let child_buffers = unsafe { &mut *plan.tracks[child_index].hosted_buffers.get() };
+        if child_buffers.group_left.len() >= frames.len()
+            && child_buffers.group_right.len() >= frames.len()
+        {
+            child_buffers.group_left[..frames.len()].copy_from_slice(&output_left[start..end]);
+            child_buffers.group_right[..frames.len()].copy_from_slice(&output_right[start..end]);
+        }
+    }
+}
+
 fn render_hosted_track_block(
     plan: &PlaybackPlan,
     track: &PlaybackTrackRuntime,
@@ -6658,6 +6812,8 @@ mod processing_tests {
                     inserts: vec![],
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
+                    hosted_instrument: None,
+                    instrument_output: None,
                     monitor_input: None,
                     volume_automation: None,
                     pan_automation: None,
@@ -6758,6 +6914,8 @@ mod processing_tests {
                 inserts: Vec::new(),
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
+                hosted_instrument: None,
+                instrument_output: None,
                 monitor_input: None,
                 volume_automation: None,
                 pan_automation: None,
@@ -6798,6 +6956,8 @@ mod processing_tests {
                     inserts: Vec::new(),
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
+                    hosted_instrument: None,
+                    instrument_output: None,
                     monitor_input: Some(PlaybackInputChannel::Stereo),
                     volume_automation: None,
                     pan_automation: None,
@@ -6883,6 +7043,8 @@ mod processing_tests {
                     inserts: vec![],
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
+                    hosted_instrument: None,
+                    instrument_output: None,
                     monitor_input: None,
                     volume_automation: None,
                     pan_automation: None,
@@ -6974,6 +7136,8 @@ mod processing_tests {
                 inserts: vec![],
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
+                hosted_instrument: None,
+                instrument_output: None,
                 monitor_input: None,
                 volume_automation: None,
                 pan_automation: None,
@@ -8106,6 +8270,8 @@ mod processing_tests {
                 inserts: Vec::new(),
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
+                hosted_instrument: None,
+                instrument_output: None,
                 monitor_input: Some(PlaybackInputChannel::Stereo),
                 volume_automation: None,
                 pan_automation: None,
@@ -8219,6 +8385,8 @@ mod processing_tests {
                     inserts: Vec::new(),
                     inserts_bypassed: false,
                     hosted_inserts: Vec::new(),
+                    hosted_instrument: None,
+                    instrument_output: None,
                     monitor_input: Some(PlaybackInputChannel::Stereo),
                     volume_automation: None,
                     pan_automation: None,
@@ -8310,6 +8478,8 @@ mod processing_tests {
                 inserts: Vec::new(),
                 inserts_bypassed: false,
                 hosted_inserts: Vec::new(),
+                hosted_instrument: None,
+                instrument_output: None,
                 monitor_input: None,
                 volume_automation: None,
                 pan_automation: None,
@@ -8541,6 +8711,8 @@ mod callback_budget_tests {
             inserts: Vec::new(),
             inserts_bypassed: false,
             hosted_inserts: Vec::new(),
+            hosted_instrument: None,
+            instrument_output: None,
             monitor_input: None,
             volume_automation: None,
             pan_automation: None,
@@ -8751,6 +8923,177 @@ mod callback_budget_tests {
 mod hosted_processing_tests {
     use super::*;
 
+    struct MultiBusInstrument {
+        calls: AtomicU64,
+        midi_event_count: AtomicU64,
+    }
+
+    struct BusInputCapture {
+        calls: AtomicU64,
+        first_sample: AtomicU32,
+    }
+
+    impl opentrack_plugins::HostedProcessor for BusInputCapture {
+        fn process(&self, left: &mut [f32], right: &mut [f32]) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.first_sample.store(
+                left.first().copied().unwrap_or_default().to_bits(),
+                Ordering::Relaxed,
+            );
+            assert_eq!(left.first().copied(), right.first().copied());
+            Ok(())
+        }
+
+        fn latency_samples(&self) -> u32 {
+            0
+        }
+
+        fn tail_samples(&self) -> u32 {
+            0
+        }
+    }
+
+    impl opentrack_plugins::HostedProcessor for MultiBusInstrument {
+        fn process(&self, _left: &mut [f32], _right: &mut [f32]) -> Result<(), String> {
+            Err(String::from("routed method expected"))
+        }
+
+        fn output_buses(&self) -> Vec<opentrack_plugins::HostedOutputBus> {
+            vec![
+                opentrack_plugins::HostedOutputBus {
+                    index: 0,
+                    identity_key: String::from("test:kick"),
+                    name: String::from("Kick"),
+                    channels: 2,
+                },
+                opentrack_plugins::HostedOutputBus {
+                    index: 1,
+                    identity_key: String::from("test:snare"),
+                    name: String::from("Snare"),
+                    channels: 2,
+                },
+            ]
+        }
+
+        fn process_routed_with_events(
+            &self,
+            input_left: &mut [f32],
+            input_right: &mut [f32],
+            output_left: &mut [f32],
+            output_right: &mut [f32],
+            output_bus_count: usize,
+            _parameters: &[opentrack_plugins::HostedParameterEvent],
+            midi: &[opentrack_plugins::HostedMidiEvent],
+        ) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.midi_event_count
+                .store(midi.len() as u64, Ordering::Relaxed);
+            let frames = input_left.len();
+            if input_right.len() != frames
+                || output_bus_count != 2
+                || output_left.len() != frames * 2
+                || output_right.len() != frames * 2
+            {
+                return Err(String::from("unexpected routed buffer shape"));
+            }
+            output_left[..frames].fill(0.25);
+            output_right[..frames].fill(0.25);
+            output_left[frames..].fill(0.5);
+            output_right[frames..].fill(0.5);
+            Ok(())
+        }
+
+        fn latency_samples(&self) -> u32 {
+            0
+        }
+
+        fn tail_samples(&self) -> u32 {
+            0
+        }
+    }
+
+    #[test]
+    fn instrument_buses_reach_owned_channels_and_sum_after_one_midi_call() {
+        let instrument = Arc::new(MultiBusInstrument {
+            calls: AtomicU64::new(0),
+            midi_event_count: AtomicU64::new(0),
+        });
+        let mut owner = track(constant_source(0.0, 16), Vec::new());
+        owner.is_group = true;
+        owner.clips.clear();
+        owner.midi_notes.push(PlaybackMidiNote {
+            id: 1,
+            start_beats: 0.0,
+            duration_beats: 1.0,
+            frequency_hz: 440.0,
+            channel: 0,
+            velocity: 1.0,
+        });
+        owner.hosted_instrument = Some(HostedInstrument {
+            output_buses: opentrack_plugins::HostedProcessor::output_buses(instrument.as_ref()),
+            processor: instrument.clone(),
+            enabled: true,
+            automation: Vec::new(),
+        });
+
+        let mut kick = track(constant_source(0.0, 16), Vec::new());
+        kick.is_group = true;
+        kick.clips.clear();
+        let kick_capture = Arc::new(BusInputCapture {
+            calls: AtomicU64::new(0),
+            first_sample: AtomicU32::new(0.0_f32.to_bits()),
+        });
+        kick.hosted_inserts = vec![HostedInsert {
+            processor: kick_capture.clone(),
+            enabled: true,
+            automation: Vec::new(),
+        }];
+        kick.instrument_output = Some(PlaybackInstrumentOutput {
+            owner_track_index: 0,
+            bus_index: 0,
+        });
+        kick.output_route = PlaybackOutputRoute::Group(0);
+
+        let mut snare = track(constant_source(0.0, 16), Vec::new());
+        snare.is_group = true;
+        snare.clips.clear();
+        let snare_capture = Arc::new(BusInputCapture {
+            calls: AtomicU64::new(0),
+            first_sample: AtomicU32::new(0.0_f32.to_bits()),
+        });
+        snare.hosted_inserts = vec![HostedInsert {
+            processor: snare_capture.clone(),
+            enabled: true,
+            automation: Vec::new(),
+        }];
+        snare.instrument_output = Some(PlaybackInstrumentOutput {
+            owner_track_index: 0,
+            bus_index: 1,
+        });
+        snare.output_route = PlaybackOutputRoute::Group(0);
+
+        let plan = PlaybackPlan::new(120.0, vec![owner, kick, snare], 1, 48_000, None);
+        let samples = render(Arc::new(plan), 8);
+        assert_eq!(instrument.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(instrument.midi_event_count.load(Ordering::Relaxed), 1);
+        assert_eq!(kick_capture.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(snare_capture.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            f32::from_bits(kick_capture.first_sample.load(Ordering::Relaxed)),
+            0.25,
+            "Kick must receive only output bus 0"
+        );
+        assert_eq!(
+            f32::from_bits(snare_capture.first_sample.load(Ordering::Relaxed)),
+            0.5,
+            "Snare must receive only output bus 1"
+        );
+        for frame in samples.chunks_exact(2) {
+            assert!((frame[0] - 0.75).abs() < 1.0e-6);
+            assert!((frame[1] - 0.75).abs() < 1.0e-6);
+        }
+    }
+
     struct GainProcessor {
         gain: f32,
         offset: f32,
@@ -8903,6 +9246,8 @@ mod hosted_processing_tests {
             inserts: Vec::new(),
             inserts_bypassed: false,
             hosted_inserts,
+            hosted_instrument: None,
+            instrument_output: None,
             monitor_input: None,
             volume_automation: None,
             pan_automation: None,

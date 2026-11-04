@@ -1,6 +1,9 @@
 //! Standalone check for the dedicated-thread native editor host.
 //! Build with `cargo build -p opentrack --example vst3_host_probe`.
 
+#[path = "../src/crash_log.rs"]
+#[allow(dead_code)]
+mod crash_log;
 #[path = "../src/vst3_host.rs"]
 #[allow(dead_code)]
 mod vst3_host;
@@ -47,9 +50,13 @@ fn main() {
         }
     });
 
-    let host =
-        vst3_host::EditorHost::open("OpenTrack dedicated editor probe", 0, Arc::clone(&effect))
-            .expect("open dedicated editor");
+    let host = vst3_host::EditorHost::open(
+        "OpenTrack dedicated editor probe",
+        None,
+        Arc::clone(&effect),
+        None,
+    )
+    .expect("open dedicated editor");
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(90) && host.is_alive() {
         if effect.take_dirty() {

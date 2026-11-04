@@ -9,12 +9,13 @@
 //! and calls `IAudioProcessor::process` only.
 
 use std::cell::UnsafeCell;
+use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use opentrack_plugins::{HostedMidiEvent, HostedProcessor, PluginClassId};
+use opentrack_plugins::{HostedMidiEvent, HostedOutputBus, HostedProcessor, PluginClassId};
 use vst3::Steinberg::Vst::{
     AudioBusBuffers, AudioBusBuffers__type0, BusInfo, IAudioProcessor, IAudioProcessorTrait,
     IComponent, IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait,
@@ -31,6 +32,7 @@ const kAudio: int32 = vst3::Steinberg::Vst::MediaTypes_::kAudio as int32;
 const kInput: int32 = vst3::Steinberg::Vst::BusDirections_::kInput as int32;
 const kOutput: int32 = vst3::Steinberg::Vst::BusDirections_::kOutput as int32;
 const kMain: int32 = vst3::Steinberg::Vst::BusTypes_::kMain as int32;
+const kAux: int32 = vst3::Steinberg::Vst::BusTypes_::kAux as int32;
 const kRealtime: int32 = vst3::Steinberg::Vst::ProcessModes_::kRealtime as int32;
 const kSample32: int32 = vst3::Steinberg::Vst::SymbolicSampleSizes_::kSample32 as int32;
 use vst3::Steinberg::{
@@ -155,6 +157,7 @@ pub struct Vst3Effect {
     processor: ComPtr<IAudioProcessor>,
     controller: ComPtr<IEditController>,
     separate_controller: bool,
+    include_auxiliary_outputs: bool,
     connection: Option<Connection>,
 
     component_initialized: bool,
@@ -222,6 +225,40 @@ impl Vst3Effect {
         class_id: PluginClassId,
         sample_rate: u32,
         max_block_frames: u32,
+    ) -> Result<Self, String> {
+        Self::load_with_auxiliary_outputs(
+            module_path,
+            class_id,
+            sample_rate,
+            max_block_frames,
+            false,
+        )
+    }
+
+    /// Loads a VST3 instrument and includes its auxiliary output buses in the
+    /// routed output layout. Ordinary effect instances keep the legacy
+    /// main-bus-only behavior through [`Self::load`].
+    pub fn load_instrument(
+        module_path: &Path,
+        class_id: PluginClassId,
+        sample_rate: u32,
+        max_block_frames: u32,
+    ) -> Result<Self, String> {
+        Self::load_with_auxiliary_outputs(
+            module_path,
+            class_id,
+            sample_rate,
+            max_block_frames,
+            true,
+        )
+    }
+
+    fn load_with_auxiliary_outputs(
+        module_path: &Path,
+        class_id: PluginClassId,
+        sample_rate: u32,
+        max_block_frames: u32,
+        include_auxiliary_outputs: bool,
     ) -> Result<Self, String> {
         validate_prepare_arguments(sample_rate, max_block_frames)?;
 
@@ -314,6 +351,7 @@ impl Vst3Effect {
             processor,
             controller,
             separate_controller,
+            include_auxiliary_outputs,
             connection: None,
             component_initialized: true,
             controller_initialized: false,
@@ -431,7 +469,11 @@ impl Vst3Effect {
                 let _ = unsafe { self.controller.setComponentState(ptr.as_ptr()) };
             }
         }
-        self.layout = negotiate_buses(&self.component, &self.processor)?;
+        self.layout = negotiate_buses(
+            &self.component,
+            &self.processor,
+            self.include_auxiliary_outputs,
+        )?;
 
         Ok(())
     }
@@ -536,7 +578,7 @@ impl Vst3Effect {
         Ok(())
     }
 
-    /// Activates the negotiated main buses and deactivates every auxiliary bus.
+    /// Activates the negotiated buses and deactivates every unselected bus.
     fn activate_main_buses(&self) -> Result<(), String> {
         for index in 0..self.layout.input_bus_count {
             let state = u8::from(self.layout.input_index == Some(index));
@@ -966,6 +1008,55 @@ impl Vst3Effect {
         events: &[opentrack_plugins::HostedParameterEvent],
         midi: &[HostedMidiEvent],
     ) -> Result<(), String> {
+        self.process_block(left, right, None, events, midi)
+    }
+
+    /// Writes the plug-in's main output buses to separate caller-owned
+    /// destinations. The caller supplies the input block separately because
+    /// instrument plug-ins commonly have no main audio input.
+    pub fn process_routed_with_midi(
+        &self,
+        input_left: &mut [f32],
+        input_right: &mut [f32],
+        output_left: &mut [f32],
+        output_right: &mut [f32],
+        output_bus_count: usize,
+        events: &[opentrack_plugins::HostedParameterEvent],
+        midi: &[HostedMidiEvent],
+    ) -> Result<(), String> {
+        if input_left.len() != input_right.len() {
+            return Err(String::from(
+                "left and right input channel lengths must match for a stereo block",
+            ));
+        }
+        let frames = input_left.len();
+        let output_len = frames.saturating_mul(output_bus_count);
+        if output_bus_count != self.layout.output_indices.len()
+            || output_left.len() != output_len
+            || output_right.len() != output_len
+        {
+            return Err(format!(
+                "expected {} output destinations of {frames} frames",
+                self.layout.output_indices.len()
+            ));
+        }
+        self.process_block(
+            input_left,
+            input_right,
+            Some((output_left, output_right)),
+            events,
+            midi,
+        )
+    }
+
+    fn process_block(
+        &self,
+        left: &mut [f32],
+        right: &mut [f32],
+        mut routed_outputs: Option<(&mut [f32], &mut [f32])>,
+        events: &[opentrack_plugins::HostedParameterEvent],
+        midi: &[HostedMidiEvent],
+    ) -> Result<(), String> {
         if left.len() != right.len() {
             return Err(String::from(
                 "left and right channel lengths must match for a stereo block",
@@ -982,6 +1073,16 @@ impl Vst3Effect {
             return Err(format!(
                 "block of {frames} frames exceeds the prepared maximum of {}",
                 self.max_block_frames
+            ));
+        }
+        let output_len = frames.saturating_mul(self.layout.output_indices.len());
+        if routed_outputs
+            .as_ref()
+            .is_some_and(|(left, right)| left.len() != output_len || right.len() != output_len)
+        {
+            return Err(format!(
+                "expected {} output destinations of {frames} frames",
+                self.layout.output_indices.len()
             ));
         }
 
@@ -1055,23 +1156,19 @@ impl Vst3Effect {
             input_bus.__field0.channelBuffers32 = input_pointers.as_mut_ptr();
         }
 
-        for (&bus_index, &channel_count) in self
+        for (bus_slot, (&bus_index, &channel_count)) in self
             .layout
             .output_indices
             .iter()
             .zip(self.layout.output_channel_counts.iter())
+            .enumerate()
         {
             let Some(output_bus) = buffers.output_buses.get_mut(bus_index) else {
                 return Err(String::from("prepared VST3 output bus index is invalid"));
             };
             output_bus.numChannels = channel_count as int32;
             output_bus.silenceFlags = 0;
-            let pointer_offset = self.layout.output_channel_offsets[self
-                .layout
-                .output_indices
-                .iter()
-                .position(|&index| index == bus_index)
-                .unwrap_or(0)];
+            let pointer_offset = self.layout.output_channel_offsets[bus_slot];
             output_bus.__field0.channelBuffers32 = unsafe {
                 buffers
                     .output_channel_pointers
@@ -1116,27 +1213,37 @@ impl Vst3Effect {
         self.output_parameter_changes
             .publish_latest(&self.shared.output_parameters);
 
-        for (bus, &channel_count) in self.layout.output_channel_counts.iter().enumerate() {
-            let pointer_offset = self.layout.output_channel_offsets[bus];
-            for channel in 0..channel_count as usize {
-                let sample_offset = buffers.output_sample_offsets[pointer_offset + channel];
-                let source = &buffers.output_bus_storage[sample_offset..sample_offset + frames];
-                let target = if channel == 0 {
-                    &mut buffers.output_left[..frames]
-                } else {
-                    &mut buffers.output_right[..frames]
-                };
-                for (target, sample) in target.iter_mut().zip(source) {
-                    *target += *sample;
+        if let Some((output_left, output_right)) = routed_outputs.as_mut() {
+            copy_routed_output_planes(
+                &self.layout,
+                &buffers.output_sample_offsets,
+                &buffers.output_bus_storage,
+                frames,
+                output_left,
+                output_right,
+            );
+        } else {
+            for (bus, &channel_count) in self.layout.output_channel_counts.iter().enumerate() {
+                let pointer_offset = self.layout.output_channel_offsets[bus];
+                for channel in 0..channel_count as usize {
+                    let sample_offset = buffers.output_sample_offsets[pointer_offset + channel];
+                    let source = &buffers.output_bus_storage[sample_offset..sample_offset + frames];
+                    let target = if channel == 0 {
+                        &mut buffers.output_left[..frames]
+                    } else {
+                        &mut buffers.output_right[..frames]
+                    };
+                    for (target, sample) in target.iter_mut().zip(source) {
+                        *target += *sample;
+                    }
                 }
             }
-        }
-
-        left.copy_from_slice(&buffers.output_left[..frames]);
-        if self.layout.output_channels == 1 {
-            right.copy_from_slice(&buffers.output_left[..frames]);
-        } else {
-            right.copy_from_slice(&buffers.output_right[..frames]);
+            left.copy_from_slice(&buffers.output_left[..frames]);
+            if self.layout.output_channels == 1 {
+                right.copy_from_slice(&buffers.output_left[..frames]);
+            } else {
+                right.copy_from_slice(&buffers.output_right[..frames]);
+            }
         }
         buffers.frames_processed = buffers.frames_processed.wrapping_add(frames as u64);
         Ok(())
@@ -1165,6 +1272,51 @@ impl HostedProcessor for Vst3Effect {
         midi: &[HostedMidiEvent],
     ) -> Result<(), String> {
         self.process_with_midi(left, right, parameters, midi)
+    }
+
+    fn output_buses(&self) -> Vec<HostedOutputBus> {
+        let mut duplicate_names = HashMap::<String, usize>::new();
+        let class_id = self.class_id.to_hex();
+        self.layout
+            .output_indices
+            .iter()
+            .zip(self.layout.output_channel_counts.iter())
+            .map(|(&index, &channels)| {
+                let name = bus_info(&self.component, kOutput, index as int32)
+                    .map(|info| string128(&info.name))
+                    .unwrap_or_else(|_| format!("Output {}", index + 1));
+                let occurrence = duplicate_names.entry(name.clone()).or_default();
+                let identity_key = format!("{class_id}:{name}:{}", *occurrence);
+                *occurrence += 1;
+                HostedOutputBus {
+                    index: index as u32,
+                    identity_key,
+                    name,
+                    channels: channels.clamp(1, 2) as u8,
+                }
+            })
+            .collect()
+    }
+
+    fn process_routed_with_events(
+        &self,
+        input_left: &mut [f32],
+        input_right: &mut [f32],
+        output_left: &mut [f32],
+        output_right: &mut [f32],
+        output_bus_count: usize,
+        parameters: &[opentrack_plugins::HostedParameterEvent],
+        midi: &[HostedMidiEvent],
+    ) -> Result<(), String> {
+        self.process_routed_with_midi(
+            input_left,
+            input_right,
+            output_left,
+            output_right,
+            output_bus_count,
+            parameters,
+            midi,
+        )
     }
 
     fn latency_samples(&self) -> u32 {
@@ -1340,6 +1492,7 @@ fn native_arrangement(channels: i32) -> Result<SpeakerArrangement, String> {
 fn negotiate_buses(
     component: &ComPtr<IComponent>,
     processor: &ComPtr<IAudioProcessor>,
+    include_auxiliary_outputs: bool,
 ) -> Result<BusLayout, String> {
     let input_count = unsafe { component.getBusCount(kAudio, kInput) };
     let output_count = unsafe { component.getBusCount(kAudio, kOutput) };
@@ -1362,7 +1515,14 @@ fn negotiate_buses(
     let mut main_outputs = Vec::new();
     for index in 0..output_count {
         let info = bus_info(component, kOutput, index)?;
-        if info.busType == kMain {
+        let has_primary_main_output = main_outputs
+            .iter()
+            .any(|(_, selected): &(i32, BusInfo)| selected.busType == kMain);
+        if output_bus_is_selected(
+            info.busType,
+            include_auxiliary_outputs,
+            !has_primary_main_output,
+        ) {
             main_outputs.push((index, info));
         }
     }
@@ -1380,7 +1540,9 @@ fn negotiate_buses(
         }
     };
     if main_outputs.is_empty() {
-        return Err(format!("plug-in has no main audio output bus (found 0)"));
+        return Err(format!(
+            "plug-in has no routable audio output bus (found 0)"
+        ));
     }
 
     let mut input_arrangements = vec![SpeakerArr::kEmpty; input_count as usize];
@@ -1458,9 +1620,81 @@ fn negotiate_buses(
     })
 }
 
+fn output_bus_is_selected(
+    bus_type: i32,
+    include_auxiliary_outputs: bool,
+    is_primary_main_output: bool,
+) -> bool {
+    (bus_type == kMain && (include_auxiliary_outputs || is_primary_main_output))
+        || (include_auxiliary_outputs && bus_type == kAux)
+}
+
+fn copy_routed_output_planes(
+    layout: &BusLayout,
+    sample_offsets: &[usize],
+    storage: &[f32],
+    frames: usize,
+    output_left: &mut [f32],
+    output_right: &mut [f32],
+) {
+    for (bus, &channel_count) in layout.output_channel_counts.iter().enumerate() {
+        let pointer_offset = layout.output_channel_offsets[bus];
+        let left_offset = sample_offsets[pointer_offset];
+        let left_source = &storage[left_offset..left_offset + frames];
+        let plane_offset = bus * frames;
+        output_left[plane_offset..plane_offset + frames].copy_from_slice(left_source);
+        if channel_count == 1 {
+            output_right[plane_offset..plane_offset + frames].copy_from_slice(left_source);
+        } else {
+            let right_offset = sample_offsets[pointer_offset + 1];
+            let right_source = &storage[right_offset..right_offset + frames];
+            output_right[plane_offset..plane_offset + frames].copy_from_slice(right_source);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auxiliary_output_buses_are_enabled_only_for_instrument_instances() {
+        assert!(output_bus_is_selected(kMain, false, true));
+        assert!(!output_bus_is_selected(kMain, false, false));
+        assert!(!output_bus_is_selected(kAux, false, false));
+        assert!(output_bus_is_selected(kMain, true, true));
+        assert!(output_bus_is_selected(kMain, true, false));
+        assert!(output_bus_is_selected(kAux, true, false));
+    }
+
+    #[test]
+    fn routed_output_copy_keeps_stereo_and_mono_bus_planes_independent() {
+        let layout = BusLayout {
+            input_index: None,
+            // Bus 1 is deliberately omitted to verify that selected buses are
+            // packed by slot without confusing the VST3 bus index.
+            output_indices: vec![0, 2],
+            output_channel_counts: vec![2, 1],
+            output_channel_offsets: vec![0, 2],
+            input_channels: 0,
+            output_channels: 2,
+            input_bus_count: 0,
+            output_bus_count: 3,
+        };
+        let storage = [
+            1.0, 2.0, 3.0, 0.0, // bus 0 left
+            10.0, 20.0, 30.0, 0.0, // bus 0 right
+            100.0, 200.0, 300.0, 0.0, // bus 2 mono
+        ];
+        let offsets = [0, 4, 8];
+        let mut left = [0.0; 6];
+        let mut right = [0.0; 6];
+
+        copy_routed_output_planes(&layout, &offsets, &storage, 3, &mut left, &mut right);
+
+        assert_eq!(left, [1.0, 2.0, 3.0, 100.0, 200.0, 300.0]);
+        assert_eq!(right, [10.0, 20.0, 30.0, 100.0, 200.0, 300.0]);
+    }
 
     #[test]
     #[ignore]

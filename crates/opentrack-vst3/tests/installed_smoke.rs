@@ -16,10 +16,12 @@ use std::env;
 use std::ffi::c_void;
 use std::path::PathBuf;
 
-use opentrack_plugins::{HostedProcessor, PluginCategory, PluginClassId};
+use opentrack_plugins::{HostedMidiEvent, HostedProcessor, PluginCategory, PluginClassId};
 use opentrack_vst3::{Vst3Effect, Vst3Module};
 
 const DEFAULT_PLUGIN: &str = r"C:\Program Files\Common Files\VST3\TDR Nova.vst3";
+const DEFAULT_MULTI_OUT_INSTRUMENT: &str =
+    r"C:\Program Files\Common Files\VST3\Toontrack\Superior Drummer 3.vst3";
 const DEFAULT_WAVES_PLUGIN: &str =
     r"C:\Program Files\Common Files\VST3\WaveShell1-VST3 15.0_x64.vst3";
 const WAVES_CLA76_STEREO: &str = "37545356433663536c612d3736207374";
@@ -34,6 +36,101 @@ fn waves_plugin_path() -> PathBuf {
     env::var_os("OPENTRACK_VST3_WAVES_SMOKE_PLUGIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_WAVES_PLUGIN))
+}
+
+#[test]
+#[ignore = "requires an installed multi-output VST3 instrument"]
+fn installed_multi_output_instrument_negotiates_and_processes_each_bus() {
+    let path = env::var_os("OPENTRACK_VST3_MULTI_OUT_INSTRUMENT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_MULTI_OUT_INSTRUMENT));
+    if !path.exists() {
+        eprintln!(
+            "skipping multi-output instrument smoke test: {} does not exist (set OPENTRACK_VST3_MULTI_OUT_INSTRUMENT)",
+            path.display()
+        );
+        return;
+    }
+
+    let module = Vst3Module::open(&path).expect("multi-output instrument module opens");
+    let class = module
+        .enumerate()
+        .expect("factory enumerates")
+        .classes
+        .into_iter()
+        .find(|class| class.plugin_category() == PluginCategory::Instrument)
+        .unwrap_or_else(|| panic!("no instrument class in {}", path.display()));
+    eprintln!(
+        "multi-output smoke class: {} ({})",
+        class.name, class.class_id
+    );
+    let effect_mode = Vst3Effect::load(&path, class.class_id, 48_000, 256)
+        .expect("ordinary instance loads with the main output only");
+    let effect_buses = HostedProcessor::output_buses(&effect_mode);
+    assert_eq!(effect_buses.len(), 1, "ordinary instances select main only");
+    drop(effect_mode);
+
+    let effect = Vst3Effect::load_instrument(&path, class.class_id, 48_000, 256)
+        .expect("instrument loads with main and auxiliary outputs");
+    let buses = HostedProcessor::output_buses(&effect);
+    for bus in &buses {
+        eprintln!(
+            "  bus {} '{}' ({} channel(s))",
+            bus.index, bus.name, bus.channels
+        );
+    }
+    assert!(
+        buses.len() > 1,
+        "instrument must expose multiple routed buses"
+    );
+
+    let note = [HostedMidiEvent {
+        sample_offset: 0,
+        note_id: 60,
+        channel: 9,
+        pitch: 36,
+        velocity: 110,
+        note_on: true,
+    }];
+    let mut input_left = vec![0.0; 256];
+    let mut input_right = vec![0.0; 256];
+    let mut output_left = vec![0.0; 256 * buses.len()];
+    let mut output_right = vec![0.0; 256 * buses.len()];
+    let mut bus_peaks = vec![0.0_f32; buses.len()];
+    for block in 0..8 {
+        let midi = if block == 0 { &note[..] } else { &[] };
+        effect
+            .process_routed_with_events(
+                &mut input_left,
+                &mut input_right,
+                &mut output_left,
+                &mut output_right,
+                buses.len(),
+                &[],
+                midi,
+            )
+            .expect("main and auxiliary outputs process into separate planes");
+        for (bus, (left, right)) in output_left
+            .chunks_exact(256)
+            .zip(output_right.chunks_exact(256))
+            .enumerate()
+        {
+            bus_peaks[bus] = bus_peaks[bus].max(
+                left.iter()
+                    .chain(right)
+                    .fold(0.0_f32, |peak, sample| peak.max(sample.abs())),
+            );
+        }
+    }
+    eprintln!("  MIDI note bus peaks: {bus_peaks:?}");
+    // Some instrument plug-ins initialize with no kit/preset loaded, so the
+    // smoke test records peaks but only requires valid processing and buffers.
+    assert!(
+        output_left
+            .iter()
+            .chain(&output_right)
+            .all(|sample| sample.is_finite())
+    );
 }
 
 fn editor_hwnd() -> Option<isize> {

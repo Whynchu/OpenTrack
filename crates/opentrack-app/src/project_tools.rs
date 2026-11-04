@@ -41,6 +41,7 @@ pub(super) fn project_statistics(project: &Project) -> ProjectStatistics {
             TrackKind::Instrument => statistics.instrument_tracks += 1,
             TrackKind::Group => statistics.group_tracks += 1,
             TrackKind::Fx => statistics.fx_tracks += 1,
+            TrackKind::InstrumentOutput => statistics.fx_tracks += 1,
             TrackKind::Folder => statistics.folder_tracks += 1,
         }
         statistics.audio_events += track.clips.len();

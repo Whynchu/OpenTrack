@@ -818,7 +818,7 @@ A user can:
 7. Run the acceptance test matrix at 44.1/48/96 kHz and 64/128/256/512-frame blocks with no host-side crashes or unreported dropouts.
 8. Review the audible, editor, persistence, and recovery results. Compilation or source presence alone is not acceptance.
 
-Universal VST3 compatibility, multi-out, sidechain, automation lanes, sandboxing, VST2, and 32-bit hosting are explicitly outside v1.
+Universal VST3 compatibility, sidechain, automation lanes, sandboxing, VST2, and 32-bit hosting are explicitly outside v1. The original multi-out exclusion was superseded by the user-directed T089 implementation: designated Instrument inserts now route selected main and auxiliary output buses to persistent owned child channels. Real plug-in bus playback remains an acceptance check; no universal compatibility claim is made.
 
 ## 12. Change control
 

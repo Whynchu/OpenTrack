@@ -3823,6 +3823,168 @@ pub(super) fn toolbox(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fx_and_instrument_output_lanes_do_not_paint_or_edit_audio_events() {
+        use opentrack_core::project::InstrumentOutputSpec;
+
+        let mut project = Project::default();
+        project.tempo_bpm = 120.0;
+        project.add_track(TrackKind::Audio);
+        project.add_track(TrackKind::Instrument);
+        let instrument_id = project.tracks[1].id;
+        assert!(project.reconcile_instrument_outputs(
+            instrument_id,
+            &[InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: "fixture:out-1".into(),
+                name: "Out 1".into(),
+                channels: 2,
+            }],
+        ));
+        project
+            .add_audio_clip(0, PathBuf::from("sentinel.wav"), 1.0, 4.0)
+            .unwrap();
+        // Recast the populated row as FX to exercise the renderer's defensive
+        // role gate; valid projects already reject media on FX channels.
+        project.tracks[0].kind = TrackKind::Fx;
+        let source_clip = project.tracks[0].clips[0].clone();
+        let output_index = project
+            .tracks
+            .iter()
+            .position(|track| track.kind == TrackKind::InstrumentOutput)
+            .unwrap();
+        project.tracks[output_index].clips.push(source_clip);
+
+        let fx_color = Color32::from_rgb(3, 241, 7);
+        let output_color = Color32::from_rgb(13, 229, 17);
+        let lanes = project
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(row, track)| Lane {
+                id: track.id,
+                channels: track.audio_channels,
+                audio: track.kind == TrackKind::Audio,
+                rect: Rect::from_min_size(
+                    Pos2::new(100.0, row as f32 * 70.0),
+                    Vec2::new(1100.0, 70.0),
+                ),
+                take_lanes_visible: false,
+                take_lane_count: 1,
+                take_lane_indices: HashMap::new(),
+                automation: None,
+                color: if track.kind == TrackKind::Fx {
+                    fx_color
+                } else if track.kind == TrackKind::InstrumentOutput {
+                    output_color
+                } else {
+                    Color32::GRAY
+                },
+            })
+            .collect::<Vec<_>>();
+        let original_starts = project
+            .tracks
+            .iter()
+            .map(|track| {
+                track
+                    .clips
+                    .iter()
+                    .map(|clip| clip.start_beats)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        let ctx = egui::Context::default();
+        let mut state = State::default();
+        let mut tool = EditTool::Select;
+        let mut time = 0.0;
+        let mut painted_sentinel_fill = false;
+        let mut frame = |events| {
+            time += 1.0 / 60.0;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                    events,
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    show_with_tool(
+                        ui,
+                        &mut project,
+                        &HashMap::new(),
+                        &lanes,
+                        Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(1100.0, 300.0)),
+                        100.0,
+                        100.0,
+                        Some(0.25),
+                        0.0,
+                        &mut state,
+                        true,
+                        &mut tool,
+                        false,
+                        &[],
+                    );
+                },
+            );
+            fn contains_fill(shape: &egui::Shape, color: Color32) -> bool {
+                match shape {
+                    egui::Shape::Rect(rect) => rect.fill == color,
+                    egui::Shape::Vec(shapes) => {
+                        shapes.iter().any(|shape| contains_fill(shape, color))
+                    }
+                    _ => false,
+                }
+            }
+            painted_sentinel_fill |= out.shapes.iter().any(|shape| {
+                contains_fill(&shape.shape, fx_color) || contains_fill(&shape.shape, output_color)
+            });
+            out.textures_delta.clear();
+        };
+
+        frame(vec![]);
+        for y in [30.0, output_index as f32 * 70.0 + 30.0] {
+            let start = Pos2::new(300.0, y);
+            let end = Pos2::new(420.0, y);
+            frame(vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            frame(vec![egui::Event::PointerMoved(end)]);
+            frame(vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+
+        assert!(
+            !painted_sentinel_fill,
+            "bus lanes must not paint audio events"
+        );
+        assert!(state.selected_ids().is_empty());
+        assert_eq!(
+            project
+                .tracks
+                .iter()
+                .map(|track| track
+                    .clips
+                    .iter()
+                    .map(|clip| clip.start_beats)
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            original_starts,
+            "bus lanes must not accept audio-event edits"
+        );
+    }
+
     struct Fixture {
         ctx: egui::Context,
         project: Project,

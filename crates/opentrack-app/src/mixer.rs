@@ -659,6 +659,16 @@ fn routing(
                 }
                 .unwrap_or(default)
                 .to_owned();
+                let value = if track.kind == TrackKind::InstrumentOutput {
+                    if input {
+                        "Instrument Output"
+                    } else {
+                        "Instrument Sum"
+                    }
+                    .to_owned()
+                } else {
+                    value
+                };
                 let value = display_group_route(&value, group_names);
                 let field_width = 78.0_f32.min(rect.width());
                 let field_left = (rect.width() - field_width) * 0.5;
@@ -666,6 +676,7 @@ fn routing(
                     rect.min + Vec2::new(field_left, row as f32 * 15.0),
                     Vec2::new(field_width, 15.0),
                 );
+                let locked_instrument_route = track.kind == TrackKind::InstrumentOutput;
                 let response = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
                         // Keep the menu button's natural minimum height inside its
@@ -674,52 +685,65 @@ fn routing(
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         ui.spacing_mut().button_padding = Vec2::new(1.0, 0.0);
                         ui.spacing_mut().interact_size.y = field.height();
-                        egui::containers::menu::MenuButton::from_button(
-                            egui::Button::new(egui::RichText::new(value).size(9.0))
-                                .truncate()
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::new(1.0, theme::palette(ui).muted))
-                                .corner_radius(0.0)
-                                .min_size(field.size()),
-                        )
-                        .ui(ui, |ui| {
-                            if ui.button("No Bus").clicked() {
-                                if input {
-                                    track.input_routing = Some("No Bus".into());
-                                } else {
-                                    track.output_routing = Some("No Bus".into());
-                                    track.group_output_auto = false;
-                                }
-                                *modified = true;
-                                ui.close();
-                            }
-                            if input {
-                                for label in ["Stereo In", "Left - Stereo In", "Right - Stereo In"]
-                                {
-                                    if ui
-                                        .add_enabled(
-                                            label != "Stereo In" || track.audio_channels != 1,
-                                            egui::Button::new(label),
-                                        )
-                                        .clicked()
-                                    {
-                                        track.input_routing = Some(label.into());
-                                        *modified = true;
-                                        ui.close();
-                                    }
-                                }
-                            } else {
-                                for label in ["Stereo Out", "Left", "Right"] {
-                                    if ui.button(label).clicked() {
-                                        track.output_routing = Some(label.into());
+                        if locked_instrument_route {
+                            ui.add(
+                                egui::Button::new(egui::RichText::new(value).size(9.0))
+                                    .truncate()
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::new(1.0, theme::palette(ui).muted))
+                                    .corner_radius(0.0)
+                                    .min_size(field.size())
+                                    .sense(egui::Sense::hover()),
+                            )
+                        } else {
+                            egui::containers::menu::MenuButton::from_button(
+                                egui::Button::new(egui::RichText::new(value).size(9.0))
+                                    .truncate()
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::new(1.0, theme::palette(ui).muted))
+                                    .corner_radius(0.0)
+                                    .min_size(field.size()),
+                            )
+                            .ui(ui, |ui| {
+                                if ui.button("No Bus").clicked() {
+                                    if input {
+                                        track.input_routing = Some("No Bus".into());
+                                    } else {
+                                        track.output_routing = Some("No Bus".into());
                                         track.group_output_auto = false;
-                                        *modified = true;
-                                        ui.close();
+                                    }
+                                    *modified = true;
+                                    ui.close();
+                                }
+                                if input {
+                                    for label in
+                                        ["Stereo In", "Left - Stereo In", "Right - Stereo In"]
+                                    {
+                                        if ui
+                                            .add_enabled(
+                                                label != "Stereo In" || track.audio_channels != 1,
+                                                egui::Button::new(label),
+                                            )
+                                            .clicked()
+                                        {
+                                            track.input_routing = Some(label.into());
+                                            *modified = true;
+                                            ui.close();
+                                        }
+                                    }
+                                } else {
+                                    for label in ["Stereo Out", "Left", "Right"] {
+                                        if ui.button(label).clicked() {
+                                            track.output_routing = Some(label.into());
+                                            track.group_output_auto = false;
+                                            *modified = true;
+                                            ui.close();
+                                        }
                                     }
                                 }
-                            }
-                        })
-                        .0
+                            })
+                            .0
+                        }
                     })
                     .inner;
                 response.on_hover_text(if input {
@@ -1322,6 +1346,7 @@ fn strip(
             }
         });
         if !is_bus
+            && track.kind.supports_audio_monitoring()
             && control(
                 ui,
                 at(8.0, body_bottom - 58.0, 21.0, 21.0),
@@ -1339,6 +1364,7 @@ fn strip(
             requires_plan_rebuild = true;
         }
         if !is_bus
+            && track.kind.supports_recording()
             && control(
                 ui,
                 at(5.0, body_bottom - 36.0, 27.0, 27.0),

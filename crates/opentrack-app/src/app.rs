@@ -435,8 +435,12 @@ impl From<&Track> for ChannelSettingsSnapshot {
             solo: track.solo,
             solo_defeat: track.solo_defeat,
             listen: track.listen,
-            armed: track.armed,
-            monitor_mode: track.monitor_mode,
+            armed: track.kind.supports_recording() && track.armed,
+            monitor_mode: if track.kind.supports_audio_monitoring() {
+                track.monitor_mode
+            } else {
+                opentrack_core::project::MonitorMode::Off
+            },
             input_gain_db: track.input_gain_db,
             input_phase_inverted: track.input_phase_inverted,
             gain: track.gain,
@@ -461,8 +465,8 @@ impl ChannelSettingsSnapshot {
         track.solo_defeat = self.solo_defeat;
         track.listen = self.listen;
         let bus = track.id >= opentrack_core::project::INPUT_BUS_ID;
-        track.armed = !bus && self.armed;
-        track.monitor_mode = if bus {
+        track.armed = !bus && track.kind.supports_recording() && self.armed;
+        track.monitor_mode = if bus || !track.kind.supports_audio_monitoring() {
             opentrack_core::project::MonitorMode::Off
         } else {
             self.monitor_mode
@@ -3750,6 +3754,51 @@ impl OpenTrackApp {
         self.set_ui_stage(UiStage::VstSync);
         self.vst3_runtime.set_format(host_rate, host_block);
         self.vst3_runtime.sync(&self.data.project);
+        let output_layouts = self
+            .data
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Instrument)
+            .map(|track| {
+                let outputs = self
+                    .vst3_runtime
+                    .hosted_instrument(track)
+                    .map(|instrument| instrument.output_buses)
+                    .unwrap_or_default();
+                let has_owned_children = self
+                    .data
+                    .project
+                    .tracks
+                    .iter()
+                    .any(|child| child.instrument_output_owner_id == Some(track.id));
+                let outputs = if outputs.len() > 1 || has_owned_children {
+                    outputs
+                } else {
+                    Vec::new()
+                };
+                let specs = outputs
+                    .into_iter()
+                    .map(|bus| opentrack_core::project::InstrumentOutputSpec {
+                        bus_index: bus.index,
+                        identity_key: bus.identity_key,
+                        name: bus.name,
+                        channels: bus.channels,
+                    })
+                    .collect::<Vec<_>>();
+                (track.id, specs)
+            })
+            .collect::<Vec<_>>();
+        let mut output_layout_changed = false;
+        for (instrument_id, outputs) in output_layouts {
+            output_layout_changed |= self
+                .data
+                .project
+                .reconcile_instrument_outputs(instrument_id, &outputs);
+        }
+        if output_layout_changed {
+            self.mark_modified();
+        }
         self.ui_stage
             .store(previous_stage, std::sync::atomic::Ordering::Relaxed);
         let loop_range_beats = self.data.transport.cycle.then_some((
@@ -3785,7 +3834,12 @@ impl OpenTrackApp {
                 let mut effective_muted = track.muted;
                 let mut effective_solo = track.solo;
                 let mut effective_solo_defeat = track.solo_defeat;
-                if track.kind == TrackKind::Group {
+                if track.kind == TrackKind::Group
+                    || (track.kind == TrackKind::Instrument
+                        && project_tracks
+                            .iter()
+                            .any(|child| child.instrument_output_owner_id == Some(track.id)))
+                {
                     effective_solo |= project_tracks.iter().any(|child| {
                         project_track_is_in_group(&self.data.project, child.id, track.id)
                             && (child.solo || child.solo_defeat)
@@ -3809,7 +3863,10 @@ impl OpenTrackApp {
                 );
                 (
                     meter_peak,
-                    track.kind.is_bus(),
+                    track.kind.is_bus()
+                        || project_tracks
+                            .iter()
+                            .any(|child| child.instrument_output_owner_id == Some(track.id)),
                     track.audio_channels,
                     track.gain,
                     track.pan,
@@ -3822,7 +3879,12 @@ impl OpenTrackApp {
                     track.equalizer.clone(),
                     track.inserts.clone(),
                     track.inserts_bypassed,
-                    vst3_runtime.hosted_inserts(track),
+                    vst3_runtime.hosted_inserts_for_playback(
+                        track,
+                        project_tracks
+                            .iter()
+                            .any(|child| child.instrument_output_owner_id == Some(track.id)),
+                    ),
                     track.instrument_waveform,
                     track.monitors_input() || (self.input_monitoring && track.armed),
                     track.input_routing.clone(),
@@ -4083,6 +4145,8 @@ impl OpenTrackApp {
                 inserts,
                 inserts_bypassed,
                 hosted_inserts,
+                hosted_instrument: None,
+                instrument_output: None,
                 monitor_input: if monitor_enabled {
                     routing::playback_input_channel(input_routing.as_deref())
                 } else {
@@ -4097,6 +4161,43 @@ impl OpenTrackApp {
                     &playback_source_tracks,
                 ),
             });
+        }
+        for (project_track, playback_track) in
+            playback_source_tracks.iter().zip(&mut playback_tracks)
+        {
+            if project_track.kind == TrackKind::Instrument {
+                let owns_outputs = self
+                    .data
+                    .project
+                    .tracks
+                    .iter()
+                    .any(|child| child.instrument_output_owner_id == Some(project_track.id));
+                if owns_outputs {
+                    playback_track.hosted_instrument =
+                        vst3_runtime.hosted_instrument(project_track);
+                    playback_track.is_group = true;
+                }
+            } else if project_track.kind == TrackKind::InstrumentOutput {
+                if project_track.instrument_output_available {
+                    let Some(owner_track_index) = playback_source_tracks.iter().position(|owner| {
+                        owner.id == project_track.instrument_output_owner_id.unwrap_or(0)
+                    }) else {
+                        playback_track.output_route =
+                            opentrack_audio::PlaybackOutputRoute::Disconnected;
+                        continue;
+                    };
+                    playback_track.instrument_output =
+                        Some(opentrack_audio::PlaybackInstrumentOutput {
+                            owner_track_index,
+                            bus_index: project_track.instrument_output_bus_index.unwrap_or(0),
+                        });
+                    playback_track.output_route =
+                        opentrack_audio::PlaybackOutputRoute::Group(owner_track_index);
+                } else {
+                    playback_track.output_route =
+                        opentrack_audio::PlaybackOutputRoute::Disconnected;
+                }
+            }
         }
         self.data
             .streaming_readers
@@ -6784,6 +6885,12 @@ impl OpenTrackApp {
             window.focus();
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
+        if self.root_window_handle.is_none() {
+            return Err(String::from(
+                "OpenTrack must run on the X11/XWayland backend to keep VST3 editors owned by the main window; set OPENTRACK_WINDOW_BACKEND=x11 and restart OpenTrack",
+            ));
+        }
         self.close_vst3_editor();
         let title = self
             .data
@@ -6797,13 +6904,14 @@ impl OpenTrackApp {
             .vst3_runtime
             .instance(track_id, slot)
             .ok_or_else(|| "the VST3 instance is unavailable".to_owned())?;
-        // Create the native editor without an owner first: the UI thread waits
-        // for its STA editor thread to initialize. Attach ownership afterward
-        // so the plug-in stays over OpenTrack's Project and lower-zone panels.
-        let window = vst3_host::EditorHost::open(&title, self.vst3_editor_bounds.clone(), effect)?;
-        if let Some(owner) = self.root_window_handle {
-            window.set_owner(owner);
-        }
+        // Pass the owner into the native host so it can establish window
+        // ownership before mapping the plug-in editor.
+        let window = vst3_host::EditorHost::open(
+            &title,
+            self.vst3_editor_bounds.clone(),
+            effect,
+            self.root_window_handle,
+        )?;
         self.vst3_editor_host = Some(window);
         self.vst3_editor_window = Some((track_id, slot));
         crate::crash_log::session(&format!("app: opened editor \"{title}\""));
@@ -8628,7 +8736,9 @@ impl OpenTrackApp {
             "transport.record" => self.toggle_recording(),
             "transport.metronome_on" => self.toggle_metronome(),
             "edit.record_enable" => self.modify_selected_track(|track| {
-                track.armed = !track.armed;
+                if track.kind.supports_recording() {
+                    track.armed = !track.armed;
+                }
             }),
             "edit.mute" => self.modify_selected_track(|track| {
                 track.muted = !track.muted;
@@ -17295,6 +17405,7 @@ impl OpenTrackApp {
             bypassed: false,
             kind: vst3_insert_effect(&plugin),
         });
+        candidate.assign_missing_insert_ids();
         if candidate.validate().is_err() {
             self.status_message =
                 "That plug-in would leave an invalid project; nothing changed".to_owned();
@@ -19082,6 +19193,7 @@ impl OpenTrackApp {
             TrackKind::Folder => "Add Folder",
             TrackKind::Instrument => "Add Instrument Track",
             TrackKind::Midi => "Add MIDI Track",
+            TrackKind::InstrumentOutput => "Instrument Output Channel",
         };
         let configuration = match dialog.kind {
             TrackKind::Audio => "Audio Track Configuration",
@@ -19090,6 +19202,7 @@ impl OpenTrackApp {
             TrackKind::Folder => "Folder Configuration",
             TrackKind::Instrument => "Instrument Track Configuration",
             TrackKind::Midi => "MIDI Track Configuration",
+            TrackKind::InstrumentOutput => "Instrument Output Configuration",
         };
         let viewport = ctx.content_rect();
         // Window::fixed_size applies to the content area; the captured outer window is 338×162.
@@ -19144,6 +19257,7 @@ impl OpenTrackApp {
                                         TrackKind::Folder => 40.0,
                                         TrackKind::Instrument => 40.0 + 6.0 + 160.0,
                                         TrackKind::Midi => 40.0,
+                                        TrackKind::InstrumentOutput => 40.0,
                                     };
                                     ui.add_space(
                                         ((ui.available_width() - controls_width) * 0.5 - 18.0)
@@ -19373,6 +19487,7 @@ impl OpenTrackApp {
                                             });
                                         }
                                         TrackKind::Midi => {}
+                                        TrackKind::InstrumentOutput => {}
                                     }
                                 });
                                 ui.add_enabled(
@@ -20772,6 +20887,7 @@ fn track_kind_label(kind: TrackKind) -> &'static str {
         TrackKind::Folder => "FOLDER",
         TrackKind::Instrument => "INSTRUMENT",
         TrackKind::Midi => "MIDI",
+        TrackKind::InstrumentOutput => "OUTPUT",
     }
 }
 
@@ -21118,16 +21234,17 @@ fn track_hidden_by_collapsed_group(project: &Project, track_id: u64) -> bool {
         .tracks
         .iter()
         .find(|track| track.id == track_id)
-        .and_then(|track| track.parent_group_id);
-    for _ in 0..2 {
+        .and_then(project_track_parent_id);
+    for _ in 0..10 {
         let Some(id) = parent_id else { return false };
         let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
             return false;
         };
-        if parent.group_collapsed {
+        if matches!(parent.kind, TrackKind::Group | TrackKind::Instrument) && parent.group_collapsed
+        {
             return true;
         }
-        parent_id = parent.parent_group_id;
+        parent_id = project_track_parent_id(parent);
     }
     false
 }
@@ -21137,7 +21254,7 @@ fn track_hidden_by_collapsed_folder(project: &Project, track_id: u64) -> bool {
         .tracks
         .iter()
         .find(|track| track.id == track_id)
-        .and_then(|track| track.parent_folder_id);
+        .and_then(project_track_parent_id);
     for _ in 0..8 {
         let Some(id) = parent_id else { return false };
         let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
@@ -21146,7 +21263,7 @@ fn track_hidden_by_collapsed_folder(project: &Project, track_id: u64) -> bool {
         if parent.folder_collapsed {
             return true;
         }
-        parent_id = parent.parent_folder_id;
+        parent_id = project_track_parent_id(parent);
     }
     false
 }
@@ -21157,14 +21274,14 @@ fn project_track_folder_depth(project: &Project, track_id: u64) -> usize {
         .tracks
         .iter()
         .find(|track| track.id == track_id)
-        .and_then(|track| track.parent_folder_id);
+        .and_then(project_track_parent_id);
     for _ in 0..8 {
         let Some(id) = parent_id else { break };
         let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
             break;
         };
         depth += 1;
-        parent_id = parent.parent_folder_id;
+        parent_id = project_track_parent_id(parent);
     }
     depth
 }
@@ -21191,14 +21308,16 @@ fn project_track_group_depth(project: &Project, track_id: u64) -> usize {
         .tracks
         .iter()
         .find(|track| track.id == track_id)
-        .and_then(|track| track.parent_group_id);
-    for _ in 0..2 {
+        .and_then(project_track_parent_id);
+    for _ in 0..10 {
         let Some(id) = parent_id else { break };
         let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
             break;
         };
-        depth += 1;
-        parent_id = parent.parent_group_id;
+        if matches!(parent.kind, TrackKind::Group | TrackKind::Instrument) {
+            depth += 1;
+        }
+        parent_id = project_track_parent_id(parent);
     }
     depth
 }
@@ -21208,8 +21327,8 @@ fn project_track_inherited_group_state(project: &Project, track_id: u64) -> (boo
     let Some(track) = project.tracks.iter().find(|track| track.id == track_id) else {
         return inherited;
     };
-    let mut parent_id = track.parent_group_id;
-    for _ in 0..2 {
+    let mut parent_id = project_track_parent_id(track);
+    for _ in 0..10 {
         let Some(id) = parent_id else { break };
         let Some(parent) = project.tracks.iter().find(|track| track.id == id) else {
             break;
@@ -21217,9 +21336,15 @@ fn project_track_inherited_group_state(project: &Project, track_id: u64) -> (boo
         inherited.0 |= parent.muted;
         inherited.1 |= parent.solo;
         inherited.2 |= parent.solo_defeat;
-        parent_id = parent.parent_group_id;
+        parent_id = project_track_parent_id(parent);
     }
-    if track.kind == TrackKind::Group {
+    if track.kind == TrackKind::Group
+        || (track.kind == TrackKind::Instrument
+            && project
+                .tracks
+                .iter()
+                .any(|child| child.instrument_output_owner_id == Some(track.id)))
+    {
         for child in project
             .tracks
             .iter()
@@ -21237,8 +21362,8 @@ fn project_track_is_in_group(project: &Project, track_id: u64, group_id: u64) ->
         .tracks
         .iter()
         .find(|track| track.id == track_id)
-        .and_then(|track| track.parent_group_id);
-    for _ in 0..2 {
+        .and_then(project_track_parent_id);
+    for _ in 0..10 {
         let Some(id) = parent_id else { return false };
         if id == group_id {
             return true;
@@ -21247,9 +21372,16 @@ fn project_track_is_in_group(project: &Project, track_id: u64, group_id: u64) ->
             .tracks
             .iter()
             .find(|track| track.id == id)
-            .and_then(|track| track.parent_group_id);
+            .and_then(project_track_parent_id);
     }
     false
+}
+
+fn project_track_parent_id(track: &Track) -> Option<u64> {
+    track
+        .parent_group_id
+        .or(track.parent_folder_id)
+        .or(track.instrument_output_owner_id)
 }
 
 /// Builds normalized group-only display peaks by combining the child clip
@@ -22843,6 +22975,10 @@ fn show_project(
                         project_track_is_in_group(project, child.id, row_track_id)
                             && (child.solo || child.solo_defeat)
                     });
+                let row_has_instrument_outputs = project
+                    .tracks
+                    .iter()
+                    .any(|child| child.instrument_output_owner_id == Some(row_track_id));
                 if let Some(track) = project.tracks.get_mut(row) {
                     let resize_rect = Rect::from_min_max(
                         Pos2::new(row_rect.left(), top + lane_height - 5.0),
@@ -23407,13 +23543,20 @@ fn show_project(
                         );
                     }
                     let take_lanes_supported = track.kind == TrackKind::Audio;
-                    let group_collapse_control = track.kind == TrackKind::Group;
+                    let instrument_output_owner =
+                        track.kind == TrackKind::Instrument && row_has_instrument_outputs;
+                    let group_collapse_control =
+                        track.kind == TrackKind::Group || instrument_output_owner;
                     let folder_collapse_control = track.kind == TrackKind::Folder;
                     let tree_collapse_control = group_collapse_control || folder_collapse_control;
                     let lane_control_label = if folder_collapse_control {
                         "▤F"
                     } else if group_collapse_control {
-                        "▤G"
+                        if instrument_output_owner {
+                            "▤I"
+                        } else {
+                            "▤G"
+                        }
                     } else {
                         "▤"
                     };
@@ -23481,6 +23624,12 @@ fn show_project(
                                 } else {
                                     "Collapse Folder Tracks"
                                 }
+                            } else if instrument_output_owner {
+                                if track.group_collapsed {
+                                    "Expand Instrument Outputs"
+                                } else {
+                                    "Collapse Instrument Outputs"
+                                }
                             } else if group_collapse_control {
                                 if track.group_collapsed {
                                     "Expand Group Tracks"
@@ -23497,6 +23646,11 @@ fn show_project(
                     .into_iter()
                     .enumerate()
                     {
+                        if (button_index == 2 && !track.kind.supports_recording())
+                            || (button_index == 3 && !track.kind.supports_audio_monitoring())
+                        {
+                            continue;
+                        }
                         let (offset, control_top, width) = match button_index {
                             0 => (37.0, 3.0, 22.0),
                             1 => (61.0, 3.0, 22.0),
@@ -29052,6 +29206,95 @@ mod ruler_interaction_tests {
     }
 
     #[test]
+    fn fx_and_instrument_output_rows_omit_record_and_monitor_controls() {
+        use opentrack_core::project::InstrumentOutputSpec;
+
+        let mut f = Fixture::new();
+        f.project.add_track(TrackKind::Audio);
+        f.project.add_track(TrackKind::Fx);
+        f.project.add_track(TrackKind::Instrument);
+        let instrument_id = f.project.tracks[2].id;
+        assert!(f.project.reconcile_instrument_outputs(
+            instrument_id,
+            &[InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: "fixture:out-1".into(),
+                name: "Out 1".into(),
+                channels: 2,
+            }],
+        ));
+        for track in &f.project.tracks {
+            f.view.set_track_height(track.id, 80.0);
+        }
+        f.frame(vec![]);
+
+        let control_point = |f: &Fixture, row: usize, offset_x: f32| {
+            let name = &f.project.tracks[row].name;
+            let label = f
+                .text_marks
+                .iter()
+                .find(|(text, _)| text == name)
+                .map(|(_, pos)| *pos)
+                .unwrap_or_else(|| panic!("track label missing from UI: {name}"));
+            // Track names are painted 85 px from the row start and 10 px below
+            // it; record/monitor buttons are centred at +29 px vertically.
+            Pos2::new(label.x + offset_x - 85.0, label.y + 25.0)
+        };
+        let click = |f: &mut Fixture, pos: Pos2| {
+            f.button(pos.x, pos.y, true);
+            f.button(pos.x, pos.y, false);
+        };
+
+        // Prove the fixture coordinates hit the real row controls.
+        let record = control_point(&f, 0, 96.0);
+        click(&mut f, record);
+        assert!(f.project.tracks[0].armed);
+        let monitor = control_point(&f, 0, 114.0);
+        click(&mut f, monitor);
+        assert_ne!(
+            f.project.tracks[0].monitor_mode,
+            opentrack_core::project::MonitorMode::Off
+        );
+
+        // The corresponding hit locations on FX and owned output rows are
+        // empty: clicks must not arm or enable monitoring.
+        for row in [1, 3] {
+            let record = control_point(&f, row, 96.0);
+            click(&mut f, record);
+            let monitor = control_point(&f, row, 114.0);
+            click(&mut f, monitor);
+            assert!(!f.project.tracks[row].armed);
+            assert_eq!(
+                f.project.tracks[row].monitor_mode,
+                opentrack_core::project::MonitorMode::Off
+            );
+        }
+    }
+
+    #[test]
+    fn nested_folder_rows_render_at_their_tree_depth() {
+        let mut f = Fixture::new();
+        f.project.add_track(TrackKind::Folder);
+        f.project.add_track(TrackKind::Folder);
+        f.project.add_track(TrackKind::Audio);
+        f.project.tracks[0].name = "Outer Folder".into();
+        f.project.tracks[1].name = "Inner Folder".into();
+        f.project.tracks[2].name = "Nested Audio".into();
+        let outer = f.project.tracks[0].id;
+        let inner = f.project.tracks[1].id;
+        f.project.tracks[1].parent_folder_id = Some(outer);
+        f.project.tracks[2].parent_folder_id = Some(inner);
+        assert_eq!(f.project.validate(), Ok(()));
+        f.frame(vec![]);
+
+        let outer_x = f.track_label_x["Outer Folder"];
+        let inner_x = f.track_label_x["Inner Folder"];
+        let child_x = f.track_label_x["Nested Audio"];
+        assert_eq!(inner_x - outer_x, 16.0);
+        assert_eq!(child_x - outer_x, 32.0);
+    }
+
+    #[test]
     fn automation_expansion_reserves_a_separate_area_and_rejects_audio_event_drop_there() {
         let mut f = Fixture::new();
         f.project.add_track(TrackKind::Audio);
@@ -29069,9 +29312,9 @@ mod ruler_interaction_tests {
         f.frame(vec![]);
         // Drag the event from its media lane down into its automation area.
         let from = f.x_for_beat(2.0);
-        f.button(from, 60.0, true);
-        f.frame(vec![egui::Event::PointerMoved(Pos2::new(from, 180.0))]);
-        f.button(from, 180.0, false);
+        f.button(from, 80.0, true);
+        f.frame(vec![egui::Event::PointerMoved(Pos2::new(from, 120.0))]);
+        f.button(from, 120.0, false);
         assert_eq!(f.project.tracks[0].clips.len(), 1);
         assert!(f.project.tracks[1].clips.is_empty());
         assert_eq!(f.project.tracks[0].clips[0].start_beats, 1.0);
@@ -29094,7 +29337,7 @@ mod ruler_interaction_tests {
         f.frame(vec![]);
         let from = f.x_for_beat(2.0);
         let to = f.x_for_beat(4.25);
-        f.button(from, 60.0, true);
+        f.button(from, 80.0, true);
         f.frame(vec![egui::Event::PointerMoved(Pos2::new(to, 140.0))]);
         f.frame(vec![]);
         f.button(to, 140.0, false);
@@ -33451,14 +33694,31 @@ mod transport_locate_tests {
         let mut app = OpenTrackApp::new_internal(&creation, false);
         app.project_open = true;
         app.data.project.add_track(TrackKind::Folder);
+        app.data.project.add_track(TrackKind::Folder);
         app.data.project.add_track(TrackKind::Audio);
         let folder = app.data.project.tracks[0].id;
-        let child = app.data.project.tracks[1].id;
+        let nested_folder = app.data.project.tracks[1].id;
+        let child = app.data.project.tracks[2].id;
         app.data.project.tracks[1].parent_folder_id = Some(folder);
+        app.data.project.tracks[2].parent_folder_id = Some(nested_folder);
         assert!(!track_hidden_by_collapsed_folder(&app.data.project, child));
-        app.data.project.tracks[0].folder_collapsed = true;
+        assert_eq!(
+            project_track_folder_depth(&app.data.project, nested_folder),
+            1
+        );
+        assert_eq!(project_track_folder_depth(&app.data.project, child), 2);
+        app.data.project.tracks[1].folder_collapsed = true;
         assert!(track_hidden_by_collapsed_folder(&app.data.project, child));
-        assert_eq!(project_track_folder_depth(&app.data.project, child), 1);
+        assert!(!track_hidden_by_collapsed_folder(
+            &app.data.project,
+            nested_folder
+        ));
+        app.data.project.tracks[0].folder_collapsed = true;
+        assert!(track_hidden_by_collapsed_folder(
+            &app.data.project,
+            nested_folder
+        ));
+        assert!(track_hidden_by_collapsed_folder(&app.data.project, child));
         assert!(
             app.data
                 .project
@@ -33466,7 +33726,11 @@ mod transport_locate_tests {
                 .iter()
                 .any(|track| track.id == child && track.kind == TrackKind::Audio)
         );
-        assert_eq!(app.data.project.set_all_groups_collapsed(false), 1);
+        assert_eq!(app.data.project.set_all_groups_collapsed(false), 2);
+        assert!(!track_hidden_by_collapsed_folder(
+            &app.data.project,
+            nested_folder
+        ));
         assert!(!track_hidden_by_collapsed_folder(&app.data.project, child));
     }
 
@@ -34736,7 +35000,7 @@ mod wired_menu_row_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod buffer_choice_tests {
     use super::audio_buffer_choices;
     use opentrack_audio::{AudioOutputConfig, SampleFormat};

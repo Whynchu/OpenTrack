@@ -893,6 +893,8 @@ mod render_tests {
             inserts: Vec::new(),
             inserts_bypassed: false,
             hosted_inserts: Vec::new(),
+            hosted_instrument: None,
+            instrument_output: None,
             monitor_input: None,
             volume_automation: None,
             pan_automation: None,

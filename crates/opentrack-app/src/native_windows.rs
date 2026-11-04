@@ -51,6 +51,15 @@ pub(crate) fn creation_root(creation: &eframe::CreationContext<'_>) -> Option<is
             return Some(handle.hwnd.get());
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = creation.window_handle()
+            && let RawWindowHandle::Xlib(handle) = handle.as_raw()
+        {
+            return Some(handle.window as isize);
+        }
+    }
     let _ = creation;
     None
 }

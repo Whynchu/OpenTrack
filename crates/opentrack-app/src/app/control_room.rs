@@ -28,6 +28,7 @@ fn kind_label(kind: TrackKind) -> &'static str {
         TrackKind::Instrument => "Instrument",
         TrackKind::Group => "Group",
         TrackKind::Fx => "FX Return",
+        TrackKind::InstrumentOutput => "Instrument Output",
         TrackKind::Folder => "Folder",
     }
 }

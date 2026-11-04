@@ -2507,7 +2507,15 @@ fn strip(
             14.0,
         );
         ui.painter().rect_filled(field, 0.0, p.canvas);
-        let label = if is_bus {
+        let owned_instrument_output = track.kind == TrackKind::InstrumentOutput;
+        let label = if owned_instrument_output {
+            if input {
+                "Instrument Output"
+            } else {
+                "Instrument Sum"
+            }
+            .to_owned()
+        } else if is_bus {
             if track.id == opentrack_core::project::INPUT_BUS_ID {
                 if input {
                     "Device Input 1/2".to_owned()
@@ -2520,9 +2528,9 @@ fn strip(
                 "Device Output 1/2".to_owned()
             }
         } else if input {
-            routing::input_route(track).label()
+            routing::input_route(track).label().to_owned()
         } else {
-            routing::output_route(track).label()
+            routing::output_route(track).label().to_owned()
         };
         let group_route_label = if input || is_bus {
             None
@@ -2551,7 +2559,7 @@ fn strip(
             });
         context(&response, state);
         let mut selected: Option<String> = None;
-        if !is_bus {
+        if !is_bus && !owned_instrument_output {
             menu(&response, 170.0, |ui| {
                 if input {
                     // The menu offers exactly the channels the capture bus
@@ -2801,7 +2809,10 @@ fn strip(
         }
     }
     for (record, y) in [(false, r.height() - 62.0), (true, r.height() - 39.0)] {
-        if is_bus {
+        if is_bus
+            || (record && !track.kind.supports_recording())
+            || (!record && !track.kind.supports_audio_monitoring())
+        {
             continue;
         }
         let response = mixer::control(

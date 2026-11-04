@@ -18,14 +18,26 @@ pub enum TrackKind {
     /// Organizational row. Holds no media, DSP or channel controls.
     Folder,
     Instrument,
+    /// Audio channel permanently owned by one instrument output bus.
+    InstrumentOutput,
     Midi,
+}
+
+/// A prepared output description used to reconcile an instrument's child
+/// channels without depending on the VST3 ABI in the core crate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstrumentOutputSpec {
+    pub bus_index: u32,
+    pub identity_key: String,
+    pub name: String,
+    pub channels: u8,
 }
 
 impl TrackKind {
     /// A bus receives other channels instead of owning timeline events. Group
     /// and FX channels share the engine's bus DSP but remain distinct kinds.
     pub const fn is_bus(self) -> bool {
-        matches!(self, Self::Group | Self::Fx)
+        matches!(self, Self::Group | Self::Fx | Self::InstrumentOutput)
     }
 
     /// Whether this kind may own MIDI parts.
@@ -36,6 +48,16 @@ impl TrackKind {
     /// Organizational folders are excluded from the audio plan.
     pub const fn is_folder(self) -> bool {
         matches!(self, Self::Folder)
+    }
+
+    /// Whether the arrange header should expose record-arm controls.
+    pub const fn supports_recording(self) -> bool {
+        matches!(self, Self::Audio | Self::Instrument | Self::Midi)
+    }
+
+    /// Whether the channel can monitor a live audio input.
+    pub const fn supports_audio_monitoring(self) -> bool {
+        matches!(self, Self::Audio | Self::Instrument)
     }
 }
 
@@ -113,6 +135,11 @@ impl BusChannel {
             kind: TrackKind::Audio,
             parent_group_id: None,
             parent_folder_id: None,
+            instrument_output_owner_id: None,
+            instrument_output_bus_index: None,
+            instrument_output_bus_key: None,
+            instrument_output_available: true,
+            instrument_insert_id: None,
             group_collapsed: false,
             folder_collapsed: false,
             group_cut_beats: Vec::new(),
@@ -162,6 +189,24 @@ pub struct Track {
     /// Owning organizational folder, if this lane is nested in a folder.
     #[serde(default)]
     pub parent_folder_id: Option<u64>,
+    /// Owning MIDI instrument for an output channel; these tracks cannot be
+    /// detached and are routed back into that instrument's summing channel.
+    #[serde(default)]
+    pub instrument_output_owner_id: Option<u64>,
+    /// VST3 audio output bus index represented by an InstrumentOutput track.
+    #[serde(default)]
+    pub instrument_output_bus_index: Option<u32>,
+    /// Plug-in-derived bus identity, separate from the user-editable row name.
+    #[serde(default)]
+    pub instrument_output_bus_key: Option<String>,
+    /// False when the saved plug-in no longer exposes this bus. The channel is
+    /// retained so its mix settings can recover if the bus returns after rescan.
+    #[serde(default = "default_true")]
+    pub instrument_output_available: bool,
+    /// Stable insert identity for the instrument processor that owns MIDI.
+    /// Older projects infer this from the first VST3 insert on an Instrument.
+    #[serde(default)]
+    pub instrument_insert_id: Option<u64>,
     /// Whether Project hides a group's child rows. Persisted with the group.
     #[serde(default)]
     pub group_collapsed: bool,
@@ -1457,6 +1502,29 @@ impl Project {
                 }
             }
         }
+        for track in &mut self.tracks {
+            if !track.kind.supports_recording() {
+                track.armed = false;
+            }
+            if !track.kind.supports_audio_monitoring() {
+                track.monitor = false;
+                track.monitor_mode = MonitorMode::Off;
+            }
+            if track.kind == TrackKind::Instrument {
+                let designated_insert_is_valid = track.instrument_insert_id.is_some_and(|id| {
+                    track.inserts.iter().any(|insert| {
+                        insert.id == id && matches!(&insert.kind, InsertEffectKind::Vst3 { .. })
+                    })
+                });
+                if !designated_insert_is_valid {
+                    track.instrument_insert_id = track
+                        .inserts
+                        .iter()
+                        .find(|insert| matches!(&insert.kind, InsertEffectKind::Vst3 { .. }))
+                        .map(|insert| insert.id);
+                }
+            }
+        }
         if let Some(highest) = used.iter().next_back().copied() {
             next = next.max(highest.saturating_add(1));
         }
@@ -1602,6 +1670,7 @@ impl Project {
             TrackKind::Fx => "FX",
             TrackKind::Folder => "Folder",
             TrackKind::Instrument => "Instrument",
+            TrackKind::InstrumentOutput => "Output",
             TrackKind::Midi => "MIDI",
         };
 
@@ -1616,6 +1685,11 @@ impl Project {
             kind,
             parent_group_id: None,
             parent_folder_id: None,
+            instrument_output_owner_id: None,
+            instrument_output_bus_index: None,
+            instrument_output_bus_key: None,
+            instrument_output_available: true,
+            instrument_insert_id: None,
             group_collapsed: false,
             folder_collapsed: false,
             group_cut_beats: Vec::new(),
@@ -1665,6 +1739,136 @@ impl Project {
         self.selected_midi_part_id = None;
     }
 
+    /// Reconciles persistent child channels with the current instrument bus
+    /// layout. Missing buses remain as unavailable children so their mix state
+    /// can recover if the plug-in restores that bus in a later version.
+    pub fn reconcile_instrument_outputs(
+        &mut self,
+        instrument_id: u64,
+        outputs: &[InstrumentOutputSpec],
+    ) -> bool {
+        let Some(instrument_index) = self
+            .tracks
+            .iter()
+            .position(|track| track.id == instrument_id && track.kind == TrackKind::Instrument)
+        else {
+            return false;
+        };
+        let mut unique_indices = BTreeSet::new();
+        let mut unique_keys = BTreeSet::new();
+        if outputs.iter().any(|output| {
+            output.channels == 0
+                || output.channels > 2
+                || output.identity_key.trim().is_empty()
+                || !unique_indices.insert(output.bus_index)
+                || !unique_keys.insert(output.identity_key.as_str())
+        }) {
+            return false;
+        }
+
+        let mut candidate = self.clone();
+        let existing = candidate
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.instrument_output_owner_id == Some(instrument_id))
+            .map(|(_, track)| {
+                (
+                    track.id,
+                    track.instrument_output_bus_index,
+                    track.instrument_output_bus_key.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for (track_id, bus_index, bus_key) in &existing {
+            if let Some(track) = candidate
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == *track_id)
+            {
+                let output = if let Some(bus_key) = bus_key {
+                    outputs
+                        .iter()
+                        .find(|output| output.identity_key == *bus_key)
+                } else {
+                    bus_index.and_then(|bus| outputs.iter().find(|output| output.bus_index == bus))
+                };
+                if let Some(output) = output {
+                    if track.instrument_output_bus_index != Some(output.bus_index) {
+                        track.instrument_output_bus_index = Some(output.bus_index);
+                        changed = true;
+                    }
+                    if track.instrument_output_bus_key.as_deref()
+                        != Some(output.identity_key.as_str())
+                    {
+                        track.instrument_output_bus_key = Some(output.identity_key.clone());
+                        changed = true;
+                    }
+                    if track.audio_channels != output.channels {
+                        // Keep the existing channel identity and mix settings,
+                        // but follow a changed mono/stereo bus layout.
+                        track.audio_channels = output.channels;
+                        changed = true;
+                    }
+                }
+                let available = output.is_some();
+                if track.instrument_output_available != available {
+                    track.instrument_output_available = available;
+                    changed = true;
+                }
+            }
+        }
+
+        for output in outputs {
+            if existing.iter().any(|(_, bus_index, bus_key)| {
+                bus_key.as_deref() == Some(output.identity_key.as_str())
+                    || (bus_key.is_none() && *bus_index == Some(output.bus_index))
+            }) {
+                continue;
+            }
+
+            let selected_track_id = candidate
+                .selected_track
+                .and_then(|index| candidate.tracks.get(index as usize))
+                .map(|track| track.id);
+            candidate.add_track_with_audio_channels(TrackKind::InstrumentOutput, output.channels);
+            let mut child = candidate.tracks.pop().expect("track was just appended");
+            child.name = if output.name.trim().is_empty() {
+                format!("Output {}", output.bus_index.saturating_add(1))
+            } else {
+                output.name.trim().to_owned()
+            };
+            child.instrument_output_owner_id = Some(instrument_id);
+            child.instrument_output_bus_index = Some(output.bus_index);
+            child.instrument_output_bus_key = Some(output.identity_key.clone());
+            child.instrument_output_available = true;
+            child.armed = false;
+            child.monitor = false;
+            child.monitor_mode = MonitorMode::Off;
+            child.input_routing = None;
+            let insertion = candidate.tracks[instrument_index + 1..]
+                .iter()
+                .take_while(|track| track.instrument_output_owner_id == Some(instrument_id))
+                .count();
+            candidate
+                .tracks
+                .insert(instrument_index + 1 + insertion, child);
+            candidate.selected_track = selected_track_id
+                .and_then(|id| candidate.tracks.iter().position(|track| track.id == id))
+                .and_then(|index| u32::try_from(index).ok());
+            changed = true;
+        }
+
+        if changed {
+            if candidate.validate().is_err() {
+                return false;
+            }
+            *self = candidate;
+        }
+        changed
+    }
+
     /// Duplicates the requested arrange tracks, including their audio/MIDI
     /// events, channel settings, EQ, and insert state. Duplicated groups carry
     /// their descendants, with group and event identities remapped. Audio
@@ -1680,6 +1884,15 @@ impl Project {
             || requested
                 .iter()
                 .any(|id| !self.tracks.iter().any(|track| track.id == *id))
+            || requested.iter().any(|id| {
+                self.tracks.iter().any(|track| {
+                    track.id == *id
+                        && track.kind == TrackKind::InstrumentOutput
+                        && !track
+                            .instrument_output_owner_id
+                            .is_some_and(|owner_id| requested.contains(&owner_id))
+                })
+            })
         {
             return None;
         }
@@ -1716,6 +1929,9 @@ impl Project {
                         || track
                             .parent_folder_id
                             .is_some_and(|parent_id| family_ids.contains(&parent_id))
+                        || track
+                            .instrument_output_owner_id
+                            .is_some_and(|owner_id| family_ids.contains(&owner_id))
                     {
                         family_ids.insert(track.id);
                     }
@@ -1778,6 +1994,21 @@ impl Project {
                 {
                     duplicate.parent_folder_id = Some(*duplicate_parent_id);
                 }
+                if let Some(owner_id) = source.instrument_output_owner_id
+                    && let Some(duplicate_owner_id) = id_map.get(&owner_id)
+                {
+                    duplicate.instrument_output_owner_id = Some(*duplicate_owner_id);
+                }
+                let instrument_insert_index = source
+                    .instrument_insert_id
+                    .and_then(|id| source.inserts.iter().position(|insert| insert.id == id));
+                for insert in &mut duplicate.inserts {
+                    insert.id = candidate.next_insert_id;
+                    candidate.next_insert_id = candidate.next_insert_id.checked_add(1)?;
+                }
+                duplicate.instrument_insert_id = instrument_insert_index
+                    .and_then(|index| duplicate.inserts.get(index))
+                    .map(|insert| insert.id);
 
                 for clip in &mut duplicate.clips {
                     clip.id = candidate.next_clip_id;
@@ -1868,6 +2099,13 @@ impl Project {
             if !self.tracks.iter().any(|track| track.id == *id) {
                 return false;
             }
+            if self
+                .tracks
+                .iter()
+                .any(|track| track.id == *id && track.kind == TrackKind::InstrumentOutput)
+            {
+                return false;
+            }
         }
 
         let mut root_ids = unique.clone();
@@ -1896,6 +2134,9 @@ impl Project {
                 if track
                     .parent_group_id
                     .is_some_and(|parent_id| grouped_ids.contains(&parent_id))
+                    || track
+                        .instrument_output_owner_id
+                        .is_some_and(|owner_id| grouped_ids.contains(&owner_id))
                 {
                     grouped_ids.insert(track.id);
                 }
@@ -1969,6 +2210,11 @@ impl Project {
             || unique
                 .iter()
                 .any(|id| !self.tracks.iter().any(|track| track.id == *id))
+            || unique.iter().any(|id| {
+                self.tracks
+                    .iter()
+                    .any(|track| track.id == *id && track.kind == TrackKind::InstrumentOutput)
+            })
         {
             return false;
         }
@@ -2001,6 +2247,9 @@ impl Project {
                     || track
                         .parent_group_id
                         .is_some_and(|parent| moved_ids.contains(&parent))
+                    || track
+                        .instrument_output_owner_id
+                        .is_some_and(|owner| moved_ids.contains(&owner))
                 {
                     moved_ids.insert(track.id);
                 }
@@ -2128,6 +2377,10 @@ impl Project {
             .and_then(|index| self.tracks.get(index as usize))
             .map(|track| track.id);
         let removed = self.tracks.remove(track_index);
+        if removed_kind == TrackKind::Instrument {
+            self.tracks
+                .retain(|track| track.instrument_output_owner_id != Some(removed_id));
+        }
         // A removed FX return leaves no dangling send targets. Group removal
         // keeps its existing behavior; only the FX return is cleared here.
         if removed_kind == TrackKind::Fx {
@@ -2209,6 +2462,31 @@ impl Project {
         if from >= self.tracks.len() || to >= self.tracks.len() || from == to {
             return false;
         }
+        let source = &self.tracks[from];
+        if source.kind == TrackKind::InstrumentOutput {
+            let Some(owner_id) = source.instrument_output_owner_id else {
+                return false;
+            };
+            let Some(owner_index) = self.tracks.iter().position(|track| track.id == owner_id)
+            else {
+                return false;
+            };
+            let last_child_index = self
+                .tracks
+                .iter()
+                .rposition(|track| track.instrument_output_owner_id == Some(owner_id));
+            if to <= owner_index || Some(to) > last_child_index {
+                return false;
+            }
+        } else if source.kind == TrackKind::Instrument
+            && self
+                .tracks
+                .iter()
+                .any(|track| track.instrument_output_owner_id == Some(source.id))
+        {
+            let id = source.id;
+            return self.move_tracks_to(&[id], to);
+        }
         let selected_track_id = self
             .selected_track
             .and_then(|index| self.tracks.get(index as usize))
@@ -2232,6 +2510,17 @@ impl Project {
                 .iter()
                 .any(|id| !self.tracks.iter().any(|t| t.id == *id))
         {
+            return false;
+        }
+        if ids.iter().any(|id| {
+            self.tracks.iter().any(|track| {
+                track.id == *id
+                    && track.kind == TrackKind::InstrumentOutput
+                    && !track
+                        .instrument_output_owner_id
+                        .is_some_and(|owner_id| ids.contains(&owner_id))
+            })
+        }) {
             return false;
         }
         let mut root_ids = ids.clone();
@@ -2267,6 +2556,9 @@ impl Project {
                     || track
                         .parent_folder_id
                         .is_some_and(|parent_id| moved_ids.contains(&parent_id))
+                    || track
+                        .instrument_output_owner_id
+                        .is_some_and(|owner_id| moved_ids.contains(&owner_id))
                 {
                     moved_ids.insert(track.id);
                 }
@@ -5330,6 +5622,8 @@ impl Project {
         let mut midi_part_ids = BTreeSet::new();
         let mut midi_note_ids = BTreeSet::new();
         let mut midi_controller_ids = BTreeSet::new();
+        let mut instrument_output_buses = BTreeSet::new();
+        let mut instrument_output_bus_keys = BTreeSet::new();
         let track_kinds = tracks
             .iter()
             .map(|track| (track.id, (track.kind, track.parent_group_id)))
@@ -5354,8 +5648,67 @@ impl Project {
             if track.name.trim().is_empty() {
                 return Err("track name is empty");
             }
+            match (
+                track.kind,
+                track.instrument_output_owner_id,
+                track.instrument_output_bus_index,
+            ) {
+                (TrackKind::InstrumentOutput, Some(owner_id), Some(bus_index)) => {
+                    if owner_id == track.id
+                        || !tracks.iter().any(|owner| {
+                            owner.id == owner_id && owner.kind == TrackKind::Instrument
+                        })
+                    {
+                        return Err(
+                            "an instrument output must reference an existing instrument track",
+                        );
+                    }
+                    if track.parent_group_id.is_some() || track.parent_folder_id.is_some() {
+                        return Err(
+                            "an instrument output cannot be detached into another group or folder",
+                        );
+                    }
+                    if track.armed
+                        || track.monitor
+                        || track.monitor_mode != MonitorMode::Off
+                        || track.input_routing.is_some()
+                        || !track.clips.is_empty()
+                        || !track.midi_parts.is_empty()
+                    {
+                        return Err(
+                            "an instrument output cannot record, monitor input, or own media",
+                        );
+                    }
+                    if track.instrument_output_available
+                        && !instrument_output_buses.insert((owner_id, bus_index))
+                    {
+                        return Err("an instrument output bus can have only one child channel");
+                    }
+                    if let Some(bus_key) = &track.instrument_output_bus_key {
+                        if bus_key.trim().is_empty() {
+                            return Err("instrument output bus identity cannot be empty");
+                        }
+                        if !instrument_output_bus_keys.insert((owner_id, bus_key.as_str())) {
+                            return Err(
+                                "an instrument output identity can have only one child channel",
+                            );
+                        }
+                    }
+                }
+                (TrackKind::InstrumentOutput, _, _) => {
+                    return Err("an instrument output requires an owner and stable bus index");
+                }
+                (_, None, None) => {}
+                _ => return Err("only instrument output tracks may have instrument ownership"),
+            }
             if !matches!(track.audio_channels, 1 | 2) {
                 return Err("track audio channel width must be mono or stereo");
+            }
+            if (!track.kind.supports_recording() && track.armed)
+                || (!track.kind.supports_audio_monitoring()
+                    && (track.monitor || track.monitor_mode != MonitorMode::Off))
+            {
+                return Err("this track kind cannot record or monitor audio input");
             }
             if (track.kind != TrackKind::Group && !track.group_cut_beats.is_empty())
                 || track
@@ -5388,6 +5741,16 @@ impl Project {
                         .iter()
                         .find(|candidate| candidate.id == id)
                         .and_then(|candidate| candidate.parent_folder_id);
+                }
+            }
+            if let Some(instrument_insert_id) = track.instrument_insert_id {
+                if track.kind != TrackKind::Instrument
+                    || !track.inserts.iter().any(|insert| {
+                        insert.id == instrument_insert_id
+                            && matches!(&insert.kind, InsertEffectKind::Vst3 { .. })
+                    })
+                {
+                    return Err("an instrument track must reference one of its VST3 inserts");
                 }
             }
             if track.kind == TrackKind::Folder
@@ -6592,7 +6955,7 @@ mod tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
-            id: 0,
+            id: 1,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::StereoDelay {
@@ -6656,7 +7019,7 @@ mod bus_tests {
         let mut project = Project::default();
         project.add_track(TrackKind::Audio);
         project.tracks[0].inserts.push(InsertEffect {
-            id: 0,
+            id: 1,
             enabled: true,
             bypassed: false,
             kind: InsertEffectKind::Vst3 {
@@ -9734,10 +10097,7 @@ mod sample_edit_tests {
         project.tracks[1].input_routing = None;
 
         project.tracks[1].automation_read = true;
-        assert_eq!(
-            project.validate(),
-            Err("FX channel automation is not supported")
-        );
+        assert!(project.validate().is_ok());
         project.tracks[1].automation_read = false;
 
         project.add_track(TrackKind::Audio);
@@ -9887,7 +10247,7 @@ mod sample_edit_tests {
         project.tracks[0]
             .inserts
             .push(crate::project::InsertEffect {
-                id: 0,
+                id: 1,
                 enabled: true,
                 bypassed: false,
                 kind: crate::project::InsertEffectKind::StereoDelay {
@@ -9942,6 +10302,28 @@ mod sample_edit_tests {
             project.validate(),
             Err("folder nesting cannot exceed eight levels")
         );
+    }
+
+    #[test]
+    fn fx_channels_cannot_record_or_monitor_and_legacy_state_is_cleared() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Fx);
+        let fx = &mut project.tracks[0];
+        assert!(!fx.kind.supports_recording());
+        assert!(!fx.kind.supports_audio_monitoring());
+        fx.armed = true;
+        fx.monitor = true;
+        fx.monitor_mode = MonitorMode::On;
+        assert_eq!(
+            project.validate(),
+            Err("this track kind cannot record or monitor audio input")
+        );
+
+        project.assign_missing_insert_ids();
+        assert!(!project.tracks[0].armed);
+        assert!(!project.tracks[0].monitor);
+        assert_eq!(project.tracks[0].monitor_mode, MonitorMode::Off);
+        assert_eq!(project.validate(), Ok(()));
     }
 
     #[test]
@@ -10044,6 +10426,241 @@ mod sample_edit_tests {
             .find(|track| track.parent_folder_id == Some(duplicated_folder))
             .expect("duplicated nested folder");
         assert_eq!(duplicated_inner.parent_folder_id, Some(duplicated_folder));
+        assert_eq!(project.validate(), Ok(()));
+    }
+
+    #[test]
+    fn instrument_output_reconciliation_preserves_channel_identity_and_settings() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let owner_id = project.tracks[0].id;
+        let first_layout = [
+            InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: String::from("fixture:kick"),
+                name: String::from("Kick"),
+                channels: 2,
+            },
+            InstrumentOutputSpec {
+                bus_index: 1,
+                identity_key: String::from("fixture:snare"),
+                name: String::from("Snare"),
+                channels: 2,
+            },
+        ];
+        assert!(project.reconcile_instrument_outputs(owner_id, &first_layout));
+        assert_eq!(project.validate(), Ok(()));
+        let first_id = project
+            .tracks
+            .iter()
+            .find(|track| track.instrument_output_bus_index == Some(0))
+            .unwrap()
+            .id;
+        let removed_bus_id = project
+            .tracks
+            .iter()
+            .find(|track| track.instrument_output_bus_index == Some(1))
+            .unwrap()
+            .id;
+        let first = project
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == first_id)
+            .unwrap();
+        first.name = String::from("Kick Close");
+        first.gain = 0.37;
+
+        let changed_layout = [
+            InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: String::from("fixture:snare"),
+                name: String::from("Snare New Name"),
+                channels: 2,
+            },
+            InstrumentOutputSpec {
+                bus_index: 1,
+                identity_key: String::from("fixture:kick"),
+                name: String::from("Kick New Name"),
+                channels: 1,
+            },
+            InstrumentOutputSpec {
+                bus_index: 2,
+                identity_key: String::from("fixture:room"),
+                name: String::from("Room"),
+                channels: 1,
+            },
+        ];
+        assert!(project.reconcile_instrument_outputs(owner_id, &changed_layout));
+        assert_eq!(project.validate(), Ok(()));
+        let first = project
+            .tracks
+            .iter()
+            .find(|track| track.id == first_id)
+            .unwrap();
+        assert_eq!(first.name, "Kick Close");
+        assert_eq!(first.gain, 0.37);
+        assert_eq!(first.audio_channels, 1);
+        assert_eq!(first.instrument_output_bus_index, Some(1));
+        assert_eq!(
+            first.instrument_output_bus_key.as_deref(),
+            Some("fixture:kick")
+        );
+        assert!(first.instrument_output_available);
+        let removed = project
+            .tracks
+            .iter()
+            .find(|track| track.id == removed_bus_id)
+            .unwrap();
+        assert!(removed.instrument_output_available);
+        assert_eq!(removed.instrument_output_bus_index, Some(0));
+        assert_eq!(
+            removed.instrument_output_bus_key.as_deref(),
+            Some("fixture:snare")
+        );
+        assert!(project.tracks.iter().any(|track| {
+            track.instrument_output_owner_id == Some(owner_id)
+                && track.instrument_output_bus_index == Some(2)
+                && track.audio_channels == 1
+        }));
+
+        let shifted_layout = [
+            InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: String::from("fixture:other"),
+                name: String::from("Other"),
+                channels: 2,
+            },
+            changed_layout[1].clone(),
+        ];
+        assert!(project.reconcile_instrument_outputs(owner_id, &shifted_layout));
+        assert_eq!(project.validate(), Ok(()));
+        let orphan = project
+            .tracks
+            .iter()
+            .find(|track| track.id == removed_bus_id)
+            .unwrap();
+        assert!(!orphan.instrument_output_available);
+        assert_eq!(orphan.instrument_output_bus_index, Some(0));
+        let replacement = project
+            .tracks
+            .iter()
+            .find(|track| track.instrument_output_bus_key.as_deref() == Some("fixture:other"))
+            .unwrap();
+        assert_ne!(replacement.id, removed_bus_id);
+        assert!(replacement.instrument_output_available);
+        assert_eq!(replacement.instrument_output_bus_index, Some(0));
+
+        let restored_layout = [
+            shifted_layout[0].clone(),
+            changed_layout[1].clone(),
+            InstrumentOutputSpec {
+                bus_index: 2,
+                identity_key: String::from("fixture:snare"),
+                name: String::from("Snare"),
+                channels: 2,
+            },
+        ];
+        assert!(project.reconcile_instrument_outputs(owner_id, &restored_layout));
+        assert_eq!(project.validate(), Ok(()));
+        let restored = project
+            .tracks
+            .iter()
+            .find(|track| track.id == removed_bus_id)
+            .unwrap();
+        assert!(restored.instrument_output_available);
+        assert_eq!(restored.instrument_output_bus_index, Some(2));
+        assert!(!project.reconcile_instrument_outputs(owner_id, &restored_layout));
+    }
+
+    #[test]
+    fn instrument_output_channels_stay_owned_through_moves_duplicates_and_delete() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let owner_id = project.tracks[0].id;
+        project.reconcile_instrument_outputs(
+            owner_id,
+            &[InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: String::from("fixture:output-1"),
+                name: String::from("Output 1"),
+                channels: 2,
+            }],
+        );
+        project.add_track(TrackKind::Group);
+        project.add_track(TrackKind::Folder);
+        let child_id = project
+            .tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::InstrumentOutput)
+            .unwrap()
+            .id;
+        let group_id = project
+            .tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Group)
+            .unwrap()
+            .id;
+        let folder_id = project
+            .tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Folder)
+            .unwrap()
+            .id;
+        let child_index = project
+            .tracks
+            .iter()
+            .position(|track| track.id == child_id)
+            .unwrap();
+        let outside_index = project.tracks.len() - 1;
+        assert!(!project.move_track(child_index, outside_index));
+        assert!(!project.move_tracks_to(&[child_id], outside_index));
+        assert!(!project.assign_tracks_to_group(group_id, &[child_id]));
+        assert!(!project.assign_tracks_to_folder(folder_id, &[child_id]));
+        assert!(project.assign_tracks_to_folder(folder_id, &[owner_id]));
+        let owner = project
+            .tracks
+            .iter()
+            .find(|track| track.id == owner_id)
+            .unwrap();
+        assert_eq!(owner.parent_folder_id, Some(folder_id));
+        assert!(project.tracks.iter().any(|track| {
+            track.id == child_id && track.instrument_output_owner_id == Some(owner_id)
+        }));
+        assert!(project.validate().is_ok());
+
+        let duplicate_ids = project
+            .duplicate_tracks(&[owner_id])
+            .expect("instrument and its output subtree duplicate together");
+        let duplicate_owner = duplicate_ids
+            .iter()
+            .find(|id| {
+                project
+                    .tracks
+                    .iter()
+                    .any(|track| track.id == **id && track.kind == TrackKind::Instrument)
+            })
+            .copied()
+            .unwrap();
+        let duplicate_child = project
+            .tracks
+            .iter()
+            .find(|track| track.instrument_output_owner_id == Some(duplicate_owner))
+            .unwrap();
+        assert_eq!(duplicate_child.instrument_output_bus_index, Some(0));
+        assert_eq!(project.validate(), Ok(()));
+
+        let owner_index = project
+            .tracks
+            .iter()
+            .position(|track| track.id == owner_id)
+            .unwrap();
+        project.remove_track(owner_index).expect("owner removed");
+        assert!(
+            !project
+                .tracks
+                .iter()
+                .any(|track| { track.instrument_output_owner_id == Some(owner_id) })
+        );
         assert_eq!(project.validate(), Ok(()));
     }
 

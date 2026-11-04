@@ -1,6 +1,9 @@
 //! Reproduce native editor attachment during an eframe OpenGL UI frame.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[path = "../src/crash_log.rs"]
+#[allow(dead_code)]
+mod crash_log;
 #[path = "../src/vst3_host.rs"]
 #[allow(dead_code)]
 mod vst3_host;
@@ -77,7 +80,8 @@ impl eframe::App for Probe {
             self.opened = true;
             let effect = std::sync::Arc::clone(self.effect.as_ref().unwrap());
             let window =
-                vst3_host::EditorWindow::create("OpenTrack egui Waves editor", self.owner).unwrap();
+                vst3_host::EditorWindow::create("OpenTrack egui Waves editor", None).unwrap();
+            window.set_owner(self.owner);
             effect
                 .open_editor(window.hwnd() as *mut std::ffi::c_void)
                 .unwrap();

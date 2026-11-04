@@ -1,5 +1,47 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Instrument multi-output and VST editor window follow-up (2026-11-04)
+
+The active instrument routing task now includes the user's report that Linux
+instrument editors appeared as unowned windows, could fall behind OpenTrack,
+and showed a generic Wayland identity. Editor ownership is passed into the
+native host before mapping. The Linux X11/XWayland path sets OpenTrack class,
+process and icon properties, groups the editor with its owner, and asks the
+window manager to activate it. Native Wayland-only embedding still cannot
+attach the X11 plug-in view; the app now gives an explicit backend instruction
+instead of opening an unowned window. Ownership is assigned before the VST3
+view attaches, so plugin-created auxiliary windows can inherit the host owner.
+Windows and Linux runtime review of this change remains pending. A Linux-target
+`cargo check` passed earlier with temporary ALSA pkg-config metadata for
+compile-only validation; the metadata/tool is no longer available, so that
+check could not be repeated after the final edit. No Linux link or desktop
+runtime was possible here. On Windows, the full app suite passes (653 passed,
+9 ignored), formatting passes, and the optimized local-ASIO `cargo check`
+passes after the final edit. The last confirmed local-ASIO executable link was
+before that edit; a later release build wrote a new executable but did not
+return a Cargo success line. An opt-in integration test now loads Superior Drum 3, negotiates and
+processes its 16 stereo output buses, and confirms an ordinary instance uses
+only the primary output. A MIDI kick probe returned silence because the test
+instance had no kit or preset loaded, so no audible playback is claimed. That
+test exposed and fixed multiple buses marked `kMain`; a VST3 unit test also
+checks the production stereo/mono bus-plane copy with a skipped bus index. The
+last confirmed release executable SHA-256 before the editor-owner ordering
+adjustment was
+`80F0CF086C9DD1FFE576AE8E5FBF669B9654245446936DAC170797E7E316CCDB`. The
+post-adjustment executable is present with SHA-256
+`42697A9FFCEF29C554E249709161F062E10C0B2262783CCFD0989DCE78C32906`, but the
+Cargo release-build session did not return a success line; the optimized
+`cargo check` and app tests pass after that adjustment. A rescan
+that changes a retained bus from stereo to mono now updates the child channel
+count without replacing its identity or mix settings. A VST3 unit regression
+also validates separate stereo/mono bus-plane copying across a skipped bus
+index. Actual
+MT Power Drum Kit bus routing and Linux window stacking/icon/focus review still
+need the user's plugin-equipped setup. The synthetic audio regression captures
+each owned child independently (Kick bus 0 and Snare bus 1), then checks the
+combined sum and one MIDI call. The Linux real-time probe example is feature-
+gated so the default Windows audio test command skips it correctly. See T089.
+
 ## Main-menu popup and score-window fixes (2026-11-04)
 
 The user reported menu clicks reaching the Project window underneath, occasional
