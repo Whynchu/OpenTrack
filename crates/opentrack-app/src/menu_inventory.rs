@@ -403,8 +403,10 @@ fn parse_menu_button(
     };
     let arguments = &reader.source[open + 1..close];
     let args = split_args(arguments);
+    let is_bar_helper = reader.source[call_start..].starts_with("popup_behavior::menu_bar_button(");
+    let label_index = usize::from(is_bar_helper);
     let label = args
-        .first()
+        .get(label_index)
         .map(|argument| format_label(argument, env))
         .unwrap_or_else(|| "<menu>".to_owned());
     let Some(body_start) = reader.find_next_outside_strings(open, '{') else {
@@ -419,7 +421,6 @@ fn parse_menu_button(
         reader.pos = close + 1;
         return;
     };
-    let _ = call_start;
     path.push(label);
     let mut body = Reader::new(reader.source, body_start + 1, body_end, reader.line_starts);
     scan_scope(&mut body, path, env, out);
@@ -609,7 +610,11 @@ fn scan_scope(
                 continue;
             }
         }
-        if reader.rest().starts_with("ui.menu_button(") {
+        if reader.rest().starts_with("ui.menu_button(")
+            || reader
+                .rest()
+                .starts_with("popup_behavior::menu_bar_button(")
+        {
             parse_menu_button(reader, path, env, out);
             continue;
         }

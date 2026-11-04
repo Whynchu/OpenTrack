@@ -1387,6 +1387,7 @@ pub struct OpenTrackApp {
     punch_active: bool,
     plugin_information_open: bool,
     plugin_scan_task: Option<PluginScanTask>,
+    plugin_folder_picker_task: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     plugin_scan_report: Option<opentrack_plugin_scan::ScanReport>,
     plugin_scan_status: String,
     plugin_scan_error: Option<String>,
@@ -13985,6 +13986,7 @@ impl OpenTrackApp {
         self.menu_open = false;
         if !self.project_open {
             self.show_empty_project_menu(ui);
+            self.menu_open = egui::Popup::is_any_open(ui.ctx());
             return;
         }
         let workspace_items: Vec<_> = self
@@ -14036,14 +14038,12 @@ impl OpenTrackApp {
         ui.set_min_height(theme::spacing::MENU_BAR_HEIGHT);
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::menu_bar_fill());
+        popup_behavior::begin_menu_bar(ui, 0);
         egui::MenuBar::new()
             .style(theme::menu_bar_style)
             .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
             .ui(ui, |ui| {
-                self.menu_open = egui::containers::menu::MenuState::from_ui(ui, |state, _| {
-                    state.open_item.is_some()
-                });
-                ui.menu_button("File", |ui| {
+                popup_behavior::menu_bar_button(ui, "File", |ui| {
                     if menu_command(ui, "New Project...", "Ctrl+N", true).clicked() {
                         self.request_new_project();
                         ui.close();
@@ -14300,7 +14300,7 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Edit", |ui| {
+                popup_behavior::menu_bar_button(ui, "Edit", |ui| {
                     if menu_command(ui, "Undo", &undo_shortcut, self.project_history.can_undo())
                         .clicked()
                     {
@@ -14701,7 +14701,7 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Project", |ui| {
+                popup_behavior::menu_bar_button(ui, "Project", |ui| {
                     ui.menu_button("Add Track", |ui| {
                         for (label, kind) in [
                             ("Audio", TrackKind::Audio),
@@ -14975,7 +14975,7 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Audio", |ui| {
+                popup_behavior::menu_bar_button(ui, "Audio", |ui| {
                     ui.menu_button("Process", |ui| {
                         let has_selection = self.project_open
                             && !self.is_recording()
@@ -15183,7 +15183,7 @@ impl OpenTrackApp {
                         }
                     });
                 });
-                ui.menu_button("MIDI", |ui| {
+                popup_behavior::menu_bar_button(ui, "MIDI", |ui| {
                     if menu_command(ui, "Open Key Editor", "", midi_editor_available).clicked() {
                         self.open_selected_midi_editor();
                         ui.close();
@@ -15370,7 +15370,7 @@ impl OpenTrackApp {
                         );
                     }
                 });
-                ui.menu_button("Scores", |ui| {
+                popup_behavior::menu_bar_button(ui, "Scores", |ui| {
                     if menu_command(
                         ui,
                         "Open Selection",
@@ -15537,7 +15537,7 @@ impl OpenTrackApp {
                         );
                     });
                 });
-                ui.menu_button("Media", |ui| {
+                popup_behavior::menu_bar_button(ui, "Media", |ui| {
                     if menu_command(ui, "Open Pool Window", "Ctrl+P", true).clicked() {
                         self.open_media_pool_window();
                         ui.close();
@@ -15738,7 +15738,7 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Transport", |ui| {
+                popup_behavior::menu_bar_button(ui, "Transport", |ui| {
                     if checked_menu_command(ui, "Transport Panel", "F2", self.show_transport, true)
                         .clicked()
                     {
@@ -15930,7 +15930,7 @@ impl OpenTrackApp {
                     }
                     disabled_menu_commands(ui, &[("Use External Sync", "T")]);
                 });
-                ui.menu_button("Devices", |ui| {
+                popup_behavior::menu_bar_button(ui, "Devices", |ui| {
                     if menu_command(ui, "Device Setup...", "", true).clicked() {
                         self.device_setup_open = true;
                         ui.close();
@@ -16046,7 +16046,7 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Window", |ui| {
+                popup_behavior::menu_bar_button(ui, "Window", |ui| {
                     ui.menu_button("Workspaces", |ui| {
                         for (index, name, active) in &workspace_items {
                             if ui.selectable_label(*active, name).clicked() {
@@ -16151,7 +16151,7 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Help", |ui| {
+                popup_behavior::menu_bar_button(ui, "Help", |ui| {
                     if menu_command(ui, "OpenTrack on the Web", "", true).clicked() {
                         self.open_website(ui.ctx());
                         ui.close();
@@ -16170,17 +16170,20 @@ impl OpenTrackApp {
                     }
                 });
             });
+        popup_behavior::end_menu_bar(ui);
+        self.menu_open = egui::Popup::is_any_open(ui.ctx());
     }
 
     fn show_empty_project_menu(&mut self, ui: &mut egui::Ui) {
         ui.set_min_height(theme::spacing::MENU_BAR_HEIGHT);
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::menu_bar_fill());
+        popup_behavior::begin_menu_bar(ui, 1);
         egui::MenuBar::new()
             .style(theme::menu_bar_style)
             .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
             .ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
+                popup_behavior::menu_bar_button(ui, "File", |ui| {
                     if menu_command(ui, "New Project...", "Ctrl+N", true).clicked() {
                         self.request_new_project();
                         ui.close();
@@ -16198,7 +16201,7 @@ impl OpenTrackApp {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.menu_button("Edit", |ui| {
+                popup_behavior::menu_bar_button(ui, "Edit", |ui| {
                     menu_command(ui, "Undo", "", false);
                     menu_command(ui, "Redo", "", false);
                     ui.separator();
@@ -16207,13 +16210,13 @@ impl OpenTrackApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Project", |ui| {
+                popup_behavior::menu_bar_button(ui, "Project", |ui| {
                     menu_command(ui, "No project is open", "", false);
                 });
-                ui.menu_button("Audio", |ui| {
+                popup_behavior::menu_bar_button(ui, "Audio", |ui| {
                     menu_command(ui, "No project is open", "", false);
                 });
-                ui.menu_button("Devices", |ui| {
+                popup_behavior::menu_bar_button(ui, "Devices", |ui| {
                     if menu_command(ui, "Device Setup...", "", true).clicked() {
                         self.device_setup_open = true;
                         ui.close();
@@ -16221,17 +16224,18 @@ impl OpenTrackApp {
                     menu_command(ui, "VST Connections...", "F4", false);
                 });
                 for menu in ["MIDI", "Scores", "Media", "Transport", "Window"] {
-                    ui.menu_button(menu, |ui| {
+                    popup_behavior::menu_bar_button(ui, menu, |ui| {
                         menu_command(ui, "No project is open", "", false);
                     });
                 }
-                ui.menu_button("Help", |ui| {
+                popup_behavior::menu_bar_button(ui, "Help", |ui| {
                     if menu_command(ui, "About OpenTrack...", "", true).clicked() {
                         self.about_open = true;
                         ui.close();
                     }
                 });
             });
+        popup_behavior::end_menu_bar(ui);
     }
 
     fn handle_native_window_input(&mut self, ctx: &egui::Context) {
@@ -16866,9 +16870,6 @@ impl OpenTrackApp {
             || self.control_room_open
             || self.registration_open
             || self.sync_setup_open
-            || self.score_view_open
-            || self.score_settings_open
-            || self.score_layout_open
             || self.template_name_draft.is_some()
             || self.session_health_open
             || self.project_statistics_open
@@ -20487,6 +20488,7 @@ impl eframe::App for OpenTrackApp {
         self.show_sync_setup(&ctx);
         self.show_score_view(&ctx);
         self.show_score_layout(&ctx);
+        self.show_score_settings(&ctx);
         self.show_video_window(&ctx);
         self.show_save_template_dialog(&ctx);
         self.show_session_health(&ctx);
@@ -26717,6 +26719,7 @@ mod editor_recovery_tests {
         let mut pitch = sample_editor::PitchViewport::default();
         let (mut snap_enabled, mut position, mut length, mut velocity, mut controller) =
             (true, 0.25, 0.25, 100, 11);
+        let mut drum_map_view = false;
         let mut live_velocity_update = None;
         let (mut selected, mut drag, mut draw, mut cc_drag) = (None, None, None, None);
         let mut selected_notes = BTreeSet::new();
@@ -26760,6 +26763,7 @@ mod editor_recovery_tests {
                         &mut length,
                         &mut velocity,
                         &mut controller,
+                        &mut drum_map_view,
                         &mut live_velocity_update,
                         &mut selected,
                         &mut selected_notes,

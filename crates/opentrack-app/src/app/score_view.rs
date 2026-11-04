@@ -456,10 +456,16 @@ impl OpenTrackApp {
 
     pub(super) fn toggle_score_settings(&mut self) {
         self.score_settings_open = !self.score_settings_open;
+        if self.score_settings_open {
+            self.score_layout_open = false;
+        }
     }
 
     pub(super) fn toggle_score_layout(&mut self) {
         self.score_layout_open = !self.score_layout_open;
+        if self.score_layout_open {
+            self.score_settings_open = false;
+        }
     }
 
     /// Auto layout: four bars per system with page mode on.
@@ -1031,7 +1037,6 @@ impl OpenTrackApp {
             }
         }
         self.score_view_open = open;
-        self.show_score_settings(ctx);
     }
 
     pub(super) fn show_score_settings(&mut self, ctx: &egui::Context) {
@@ -1454,6 +1459,28 @@ mod tests {
         assert!(app.score_settings_open);
         app.toggle_score_settings();
         assert!(!app.score_settings_open);
+    }
+
+    #[test]
+    fn score_windows_do_not_disable_the_project_or_stack_on_each_other() {
+        let mut app = app_with_part();
+        app.toggle_score_settings();
+        assert!(app.score_settings_open);
+        assert!(!app.score_layout_open);
+        assert!(
+            !app.modal_dialog_open(),
+            "score windows are ordinary tool windows, not modal dialogs"
+        );
+
+        app.toggle_score_layout();
+        assert!(app.score_layout_open);
+        assert!(
+            !app.score_settings_open,
+            "only one score settings/layout window is open at a time"
+        );
+
+        app.score_view_open = true;
+        assert!(!app.modal_dialog_open());
     }
 
     #[test]
