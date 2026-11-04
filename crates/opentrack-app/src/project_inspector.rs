@@ -662,6 +662,40 @@ pub(super) fn show(
             | routing_field(ui, track, false, &group_names);
         modified |= routing_changed;
         requires_plan_rebuild |= routing_changed;
+        if track.kind == TrackKind::Instrument {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let mut multi_output = track.instrument_output_count > 0;
+                if ui
+                    .checkbox(&mut multi_output, "Multi-output")
+                    .on_hover_text(
+                        "Expose the instrument's VST3 output buses as child channels. Off keeps one stereo output.",
+                    )
+                    .changed()
+                {
+                    track.instrument_output_count = if multi_output { 2 } else { 0 };
+                    modified = true;
+                    requires_plan_rebuild = true;
+                }
+                if track.instrument_output_count > 0 {
+                    let mut count = track.instrument_output_count;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut count)
+                                .range(1..=opentrack_core::project::MAX_INSTRUMENT_OUTPUTS)
+                                .speed(1),
+                        )
+                        .on_hover_text("Number of plug-in outputs routed to child channels")
+                        .changed()
+                    {
+                        track.instrument_output_count = count;
+                        modified = true;
+                        requires_plan_rebuild = true;
+                    }
+                    ui.label(egui::RichText::new("outputs").small());
+                }
+            });
+        }
         ui.add_space(8.0);
         field(ui, "No Track Preset", "Apply Track Preset", 22.0);
         ui.add_space(6.0);

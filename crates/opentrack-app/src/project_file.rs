@@ -24,7 +24,7 @@ use crate::app::PanelTab;
 
 const FILE_FORMAT: &str = "opentrack-project";
 const LEGACY_FILE_FORMAT: &str = concat!("rust-audio-work", "station");
-const FORMAT_VERSION: u32 = 48;
+const FORMAT_VERSION: u32 = 49;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WINDOW_ID: &str = "main";
 const MIDI_EDITOR_WINDOW_ID: &str = "midi-editor";
@@ -503,6 +503,40 @@ impl ProjectFile {
             FORMAT_VERSION => serde_json::from_slice(&bytes)?,
             version => return Err(ProjectFileError::UnsupportedVersion(version)),
         };
+        // Instrument output children existed before the requested bus count was
+        // stored. Preserve every saved child by inferring the count from its bus
+        // index instead of treating the track as single-output.
+        if header.version < 49 {
+            let inferred = document
+                .project
+                .tracks
+                .iter()
+                .filter(|track| track.kind == opentrack_core::project::TrackKind::Instrument)
+                .map(|track| {
+                    let count = document
+                        .project
+                        .tracks
+                        .iter()
+                        .filter(|child| child.instrument_output_owner_id == Some(track.id))
+                        .filter_map(|child| child.instrument_output_bus_index)
+                        .max()
+                        .map(|bus| bus.saturating_add(1))
+                        .unwrap_or(0)
+                        .min(u32::from(opentrack_core::project::MAX_INSTRUMENT_OUTPUTS));
+                    (track.id, count as u16)
+                })
+                .collect::<Vec<_>>();
+            for (instrument_id, count) in inferred {
+                if let Some(track) = document
+                    .project
+                    .tracks
+                    .iter_mut()
+                    .find(|track| track.id == instrument_id)
+                {
+                    track.instrument_output_count = count;
+                }
+            }
+        }
         // Older native projects keep their original on-disk discriminator when
         // read, but every subsequent save writes the OpenTrack format marker.
         if header.version < 19 {
@@ -2189,6 +2223,7 @@ mod tests {
         let workspace = initial_workspace_state(&dock).unwrap();
         let mut project = Project::default();
         project.add_track(TrackKind::Instrument);
+        project.tracks[0].instrument_output_count = 3;
         let owner_id = project.tracks[0].id;
         assert!(project.reconcile_instrument_outputs(
             owner_id,
@@ -2236,6 +2271,7 @@ mod tests {
         assert_eq!(child.gain, 0.42);
         assert_eq!(child.pan, -0.25);
         assert!(child.instrument_output_available);
+        assert_eq!(restored.project.tracks[0].instrument_output_count, 3);
         assert_eq!(restored.project.validate(), Ok(()));
 
         let mut legacy = serde_json::to_value(&document).expect("legacy project should encode");
@@ -2265,6 +2301,10 @@ mod tests {
         assert_eq!(
             migrated.project.tracks[1].instrument_output_bus_key, None,
             "version 47 children default to no stable identity"
+        );
+        assert_eq!(
+            migrated.project.tracks[0].instrument_output_count, 3,
+            "older projects infer the requested count from saved children"
         );
         assert!(migrated.project.reconcile_instrument_outputs(
             owner_id,

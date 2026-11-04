@@ -519,6 +519,9 @@ struct TrackAddDialog {
     browse_presets: bool,
     /// Index into the scanned VST3 instrument list, or none for an empty track.
     instrument: Option<usize>,
+    /// Number of VST3 output buses to expose as child channels; zero keeps the
+    /// ordinary single output.
+    instrument_outputs: u16,
     /// Index into the scanned VST3 effect list for a new FX channel.
     effect: Option<usize>,
 }
@@ -3766,17 +3769,6 @@ impl OpenTrackApp {
                     .hosted_instrument(track)
                     .map(|instrument| instrument.output_buses)
                     .unwrap_or_default();
-                let has_owned_children = self
-                    .data
-                    .project
-                    .tracks
-                    .iter()
-                    .any(|child| child.instrument_output_owner_id == Some(track.id));
-                let outputs = if outputs.len() > 1 || has_owned_children {
-                    outputs
-                } else {
-                    Vec::new()
-                };
                 let specs = outputs
                     .into_iter()
                     .map(|bus| opentrack_core::project::InstrumentOutputSpec {
@@ -6906,6 +6898,9 @@ impl OpenTrackApp {
             .ok_or_else(|| "the VST3 instance is unavailable".to_owned())?;
         // Pass the owner into the native host so it can establish window
         // ownership before mapping the plug-in editor.
+        crate::crash_log::session(&format!(
+            "app: opening editor \"{title}\" (track {track_id}, insert {slot})"
+        ));
         let window = vst3_host::EditorHost::open(
             &title,
             self.vst3_editor_bounds.clone(),
@@ -8456,6 +8451,7 @@ impl OpenTrackApp {
                     mono_input_channel: 1,
                     browse_presets: true,
                     instrument: None,
+                    instrument_outputs: 0,
                     effect: None,
                 });
             }
@@ -14829,6 +14825,7 @@ impl OpenTrackApp {
                                     mono_input_channel: 1,
                                     browse_presets: true,
                                     instrument: None,
+                                    instrument_outputs: 0,
                                     effect: None,
                                 });
                                 ui.close();
@@ -15821,6 +15818,7 @@ impl OpenTrackApp {
                                     mono_input_channel: 1,
                                     browse_presets: true,
                                     instrument: None,
+                                    instrument_outputs: 0,
                                     effect: None,
                                 });
                                 ui.close();
@@ -16067,6 +16065,7 @@ impl OpenTrackApp {
                             mono_input_channel: 1,
                             browse_presets: true,
                             instrument: None,
+                            instrument_outputs: 0,
                             effect: None,
                         });
                         ui.close();
@@ -16881,7 +16880,7 @@ impl OpenTrackApp {
         let mut open = true;
         let mut rendered = false;
         let mut bounds = None;
-        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+        let _ = show_immediate_viewport_guarded(ctx, id, builder, |window_ctx, _class| {
             rendered = true;
             // Apply the level once the window is actually shown; the window is
             // created hidden, and a window manager ignores the request while the
@@ -17916,7 +17915,7 @@ impl OpenTrackApp {
         .with_visible(self.mixer_window_state(slot).viewport_live);
         let mut open = true;
         let mut bounds = None;
-        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+        let _ = show_immediate_viewport_guarded(ctx, id, builder, |window_ctx, _class| {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
@@ -18149,7 +18148,7 @@ impl OpenTrackApp {
         let mut rendered = false;
         let selection_before = self.data.project.selected_track;
         let mut mixer_selection_requested = false;
-        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+        let _ = show_immediate_viewport_guarded(ctx, id, builder, |window_ctx, _class| {
             rendered = true;
             channel_focused_after_frame = window_ctx.input(|input| input.focused);
             if focus_requested {
@@ -18599,7 +18598,7 @@ impl OpenTrackApp {
         let mut insert = None;
         let mut bounds = None;
         let media_popup_was_active = self.media_window.popup_active;
-        ctx.show_viewport_immediate(id, builder, |window_ctx, _class| {
+        let _ = show_immediate_viewport_guarded(ctx, id, builder, |window_ctx, _class| {
             self.handle_native_window_input(window_ctx);
             open &= !window_ctx.input(|input| input.viewport().close_requested());
             egui::CentralPanel::default().show(window_ctx, |ui| {
@@ -19003,6 +19002,7 @@ impl OpenTrackApp {
                     mono_input_channel: 1,
                     browse_presets: false,
                     instrument: None,
+                    instrument_outputs: 0,
                     effect: None,
                 });
             }
@@ -19210,6 +19210,8 @@ impl OpenTrackApp {
             338.0,
             if dialog.kind == TrackKind::Fx {
                 160.0
+            } else if dialog.kind == TrackKind::Instrument {
+                156.0
             } else {
                 128.0
             },
@@ -19484,6 +19486,36 @@ impl OpenTrackApp {
                                                     })
                                                     .size(10.0),
                                                 );
+                                                ui.horizontal(|ui| {
+                                                    let mut multi_output =
+                                                        dialog.instrument_outputs > 0;
+                                                    if ui
+                                                        .checkbox(&mut multi_output, "Multi-out")
+                                                        .changed()
+                                                    {
+                                                        dialog.instrument_outputs = if multi_output
+                                                        {
+                                                            2
+                                                        } else {
+                                                            0
+                                                        };
+                                                    }
+                                                    if dialog.instrument_outputs > 0 {
+                                                        ui.add(
+                                                            egui::DragValue::new(
+                                                                &mut dialog.instrument_outputs,
+                                                            )
+                                                            .range(
+                                                                1..=opentrack_core::project::MAX_INSTRUMENT_OUTPUTS,
+                                                            )
+                                                            .speed(1),
+                                                        );
+                                                        ui.label(
+                                                            egui::RichText::new("outputs")
+                                                                .size(10.0),
+                                                        );
+                                                    }
+                                                });
                                             });
                                         }
                                         TrackKind::Midi => {}
@@ -19555,6 +19587,13 @@ impl OpenTrackApp {
                     .data
                     .project
                     .insert_track_below_selection(dialog.kind, dialog.audio_channels);
+                if dialog.kind == TrackKind::Instrument
+                    && let Some(track) = self.data.project.tracks.get_mut(index)
+                {
+                    track.instrument_output_count = dialog
+                        .instrument_outputs
+                        .min(opentrack_core::project::MAX_INSTRUMENT_OUTPUTS);
+                }
                 if dialog.kind == TrackKind::Audio && dialog.audio_channels == 1 {
                     self.data.project.tracks[index].input_routing = Some(
                         opentrack_core::routing::InputRoute::MonoIn {
@@ -28387,6 +28426,41 @@ fn update_project_load_status(progress: &Mutex<ProjectLoadStatus>, fraction: f32
     }
 }
 
+/// Shows an immediate viewport without taking down the application when the
+/// platform refuses to create its native window.
+///
+/// eframe's immediate-viewport renderer can return without invoking the user
+/// callback when window initialization fails, and egui then panics with "the
+/// user callback was never called". That turns a single failed FX/Channel
+/// Settings window into a process crash. Only that specific panic is contained;
+/// ordinary UI panics still propagate.
+fn show_immediate_viewport_guarded<T>(
+    ctx: &egui::Context,
+    id: egui::ViewportId,
+    builder: egui::ViewportBuilder,
+    mut add_contents: impl FnMut(&mut egui::Ui, egui::ViewportClass) -> T,
+) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ctx.show_viewport_immediate(id, builder, |ui, class| add_contents(ui, class))
+    })) {
+        Ok(value) => Some(value),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or_default();
+            if !message.contains("user callback was never called") {
+                std::panic::resume_unwind(payload);
+            }
+            crate::crash_log::session(
+                "app: immediate viewport window could not be created; continuing",
+            );
+            None
+        }
+    }
+}
+
 /// Runs `add` with pointer input hidden while another layer owns the mouse.
 ///
 /// `Ui::disable` stops widgets, but the timeline and rulers read the pointer
@@ -29213,6 +29287,7 @@ mod ruler_interaction_tests {
         f.project.add_track(TrackKind::Audio);
         f.project.add_track(TrackKind::Fx);
         f.project.add_track(TrackKind::Instrument);
+        f.project.tracks[2].instrument_output_count = 1;
         let instrument_id = f.project.tracks[2].id;
         assert!(f.project.reconcile_instrument_outputs(
             instrument_id,

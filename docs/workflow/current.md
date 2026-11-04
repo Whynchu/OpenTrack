@@ -1,5 +1,35 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Instrument multi-output control and FX crash containment (2026-11-04)
+
+The user asked for multi-output to be opt-in at instrument-track creation and
+adjustable afterwards from the Project Inspector instead of always creating the
+plug-in's full output set. `Track` now persists `instrument_output_count` into
+OPR 49; zero means the ordinary single stereo output. The Add Instrument Track
+dialog offers Multi-out plus an output count, and a selected Instrument track
+shows the same control in the Project Inspector. Reconciliation keeps missing
+plug-in buses inside the requested range for later recovery, and removes child
+channels that fall outside a lowered count. Version-48 and older projects infer
+the count from their saved child channels.
+
+The user also reported that clicking FX on an instrument track hosting MT Power
+Drum Kit crashed OpenTrack. The saved panic is egui's immediate-viewport
+"user callback was never called" failure, which eframe raises when a native
+window cannot be initialized. Immediate transport, mixer, Channel Settings and
+Media windows now contain only that specific panic, log it to `session.log`, and
+keep the application running instead of aborting; the affected window reports
+that it could not be created. Editor opening also logs its track/insert before
+the native host call so the next report identifies whether the failure is in
+the editor path. The MT Power Drum Kit crash itself was not reproduced here and
+still needs user runtime review.
+
+Verification: `cargo check --offline -p opentrack`; full `opentrack-core` suite
+(178 passed); focused app project-file suite (38 passed), including the OPR
+round trip and the inferred output count for a version-47 project; focused
+instrument-output child tests; focused FX/instrument-output row test. Runtime
+MT Power Drum Kit playback, the multi-output control and the FX crash path
+remain pending user review.
+
 ## Instrument multi-output and VST editor window follow-up (2026-11-04)
 
 The active instrument routing task now includes the user's report that Linux

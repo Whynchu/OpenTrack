@@ -3832,6 +3832,7 @@ mod tests {
         project.tempo_bpm = 120.0;
         project.add_track(TrackKind::Audio);
         project.add_track(TrackKind::Instrument);
+        project.tracks[1].instrument_output_count = 1;
         let instrument_id = project.tracks[1].id;
         assert!(project.reconcile_instrument_outputs(
             instrument_id,

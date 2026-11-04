@@ -63,6 +63,8 @@ impl TrackKind {
 
 /// Maximum persisted channel gain, approximately +6 dB.
 pub const MAX_CHANNEL_GAIN: f32 = 2.0;
+/// Upper bound on instrument output buses exposed as child channels.
+pub const MAX_INSTRUMENT_OUTPUTS: u16 = 32;
 /// Maximum number of user-visible send slots on one channel.
 pub const MAX_SEND_SLOTS: usize = 24;
 /// Upper bound on one Repeat/Fill Loop command, so a single gesture cannot
@@ -139,6 +141,7 @@ impl BusChannel {
             instrument_output_bus_index: None,
             instrument_output_bus_key: None,
             instrument_output_available: true,
+            instrument_output_count: 0,
             instrument_insert_id: None,
             group_collapsed: false,
             folder_collapsed: false,
@@ -203,6 +206,10 @@ pub struct Track {
     /// retained so its mix settings can recover if the bus returns after rescan.
     #[serde(default = "default_true")]
     pub instrument_output_available: bool,
+    /// Number of the instrument's VST3 output buses exposed as child channels.
+    /// Zero keeps the ordinary single main output and creates no children.
+    #[serde(default)]
+    pub instrument_output_count: u16,
     /// Stable insert identity for the instrument processor that owns MIDI.
     /// Older projects infer this from the first VST3 insert on an Instrument.
     #[serde(default)]
@@ -1689,6 +1696,7 @@ impl Project {
             instrument_output_bus_index: None,
             instrument_output_bus_key: None,
             instrument_output_available: true,
+            instrument_output_count: 0,
             instrument_insert_id: None,
             group_collapsed: false,
             folder_collapsed: false,
@@ -1754,9 +1762,15 @@ impl Project {
         else {
             return false;
         };
+        let requested = self.tracks[instrument_index].instrument_output_count as usize;
+        let selected = outputs
+            .iter()
+            .filter(|output| (output.bus_index as usize) < requested)
+            .cloned()
+            .collect::<Vec<_>>();
         let mut unique_indices = BTreeSet::new();
         let mut unique_keys = BTreeSet::new();
-        if outputs.iter().any(|output| {
+        if selected.iter().any(|output| {
             output.channels == 0
                 || output.channels > 2
                 || output.identity_key.trim().is_empty()
@@ -1767,6 +1781,29 @@ impl Project {
         }
 
         let mut candidate = self.clone();
+        let selected_track_id = candidate
+            .selected_track
+            .and_then(|index| candidate.tracks.get(index as usize))
+            .map(|track| track.id);
+        let mut changed = false;
+        // Lowering the requested count removes the child channels that are now
+        // outside the chosen range. Missing plug-in buses within the range stay
+        // available for a later rescan instead.
+        let before = candidate.tracks.len();
+        candidate.tracks.retain(|track| {
+            !(track.instrument_output_owner_id == Some(instrument_id)
+                && track
+                    .instrument_output_bus_index
+                    .is_some_and(|bus| (bus as usize) >= requested))
+        });
+        changed |= candidate.tracks.len() != before;
+        let Some(instrument_index) = candidate
+            .tracks
+            .iter()
+            .position(|track| track.id == instrument_id && track.kind == TrackKind::Instrument)
+        else {
+            return false;
+        };
         let existing = candidate
             .tracks
             .iter()
@@ -1780,7 +1817,6 @@ impl Project {
                 )
             })
             .collect::<Vec<_>>();
-        let mut changed = false;
         for (track_id, bus_index, bus_key) in &existing {
             if let Some(track) = candidate
                 .tracks
@@ -1788,11 +1824,11 @@ impl Project {
                 .find(|track| track.id == *track_id)
             {
                 let output = if let Some(bus_key) = bus_key {
-                    outputs
+                    selected
                         .iter()
                         .find(|output| output.identity_key == *bus_key)
                 } else {
-                    bus_index.and_then(|bus| outputs.iter().find(|output| output.bus_index == bus))
+                    bus_index.and_then(|bus| selected.iter().find(|output| output.bus_index == bus))
                 };
                 if let Some(output) = output {
                     if track.instrument_output_bus_index != Some(output.bus_index) {
@@ -1820,7 +1856,7 @@ impl Project {
             }
         }
 
-        for output in outputs {
+        for output in &selected {
             if existing.iter().any(|(_, bus_index, bus_key)| {
                 bus_key.as_deref() == Some(output.identity_key.as_str())
                     || (bus_key.is_none() && *bus_index == Some(output.bus_index))
@@ -1828,10 +1864,6 @@ impl Project {
                 continue;
             }
 
-            let selected_track_id = candidate
-                .selected_track
-                .and_then(|index| candidate.tracks.get(index as usize))
-                .map(|track| track.id);
             candidate.add_track_with_audio_channels(TrackKind::InstrumentOutput, output.channels);
             let mut child = candidate.tracks.pop().expect("track was just appended");
             child.name = if output.name.trim().is_empty() {
@@ -1854,9 +1886,13 @@ impl Project {
             candidate
                 .tracks
                 .insert(instrument_index + 1 + insertion, child);
-            candidate.selected_track = selected_track_id
-                .and_then(|id| candidate.tracks.iter().position(|track| track.id == id))
-                .and_then(|index| u32::try_from(index).ok());
+            changed = true;
+        }
+        let restored_selection = selected_track_id
+            .and_then(|id| candidate.tracks.iter().position(|track| track.id == id))
+            .and_then(|index| u32::try_from(index).ok());
+        if candidate.selected_track != restored_selection {
+            candidate.selected_track = restored_selection;
             changed = true;
         }
 
@@ -5647,6 +5683,11 @@ impl Project {
             }
             if track.name.trim().is_empty() {
                 return Err("track name is empty");
+            }
+            if track.instrument_output_count > MAX_INSTRUMENT_OUTPUTS
+                || (track.kind != TrackKind::Instrument && track.instrument_output_count != 0)
+            {
+                return Err("instrument output count is invalid for this track");
             }
             match (
                 track.kind,
@@ -10433,6 +10474,7 @@ mod sample_edit_tests {
     fn instrument_output_reconciliation_preserves_channel_identity_and_settings() {
         let mut project = Project::default();
         project.add_track(TrackKind::Instrument);
+        project.tracks[0].instrument_output_count = 3;
         let owner_id = project.tracks[0].id;
         let first_layout = [
             InstrumentOutputSpec {
@@ -10573,9 +10615,70 @@ mod sample_edit_tests {
     }
 
     #[test]
+    fn instrument_output_count_controls_the_child_channels() {
+        let mut project = Project::default();
+        project.add_track(TrackKind::Instrument);
+        let owner_id = project.tracks[0].id;
+        let layout = [
+            InstrumentOutputSpec {
+                bus_index: 0,
+                identity_key: String::from("fixture:out-1"),
+                name: String::from("Out 1"),
+                channels: 2,
+            },
+            InstrumentOutputSpec {
+                bus_index: 1,
+                identity_key: String::from("fixture:out-2"),
+                name: String::from("Out 2"),
+                channels: 2,
+            },
+        ];
+        // New instruments start single-output: no child channels are created.
+        assert!(!project.reconcile_instrument_outputs(owner_id, &layout));
+        assert!(
+            !project
+                .tracks
+                .iter()
+                .any(|track| track.kind == TrackKind::InstrumentOutput)
+        );
+
+        project.tracks[0].instrument_output_count = 2;
+        assert!(project.reconcile_instrument_outputs(owner_id, &layout));
+        assert_eq!(
+            project
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::InstrumentOutput)
+                .count(),
+            2
+        );
+
+        project.tracks[0].instrument_output_count = 1;
+        assert!(project.reconcile_instrument_outputs(owner_id, &layout));
+        let children = project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::InstrumentOutput)
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].instrument_output_bus_index, Some(0));
+
+        project.tracks[0].instrument_output_count = 0;
+        assert!(project.reconcile_instrument_outputs(owner_id, &layout));
+        assert!(
+            !project
+                .tracks
+                .iter()
+                .any(|track| track.kind == TrackKind::InstrumentOutput)
+        );
+        assert_eq!(project.validate(), Ok(()));
+    }
+
+    #[test]
     fn instrument_output_channels_stay_owned_through_moves_duplicates_and_delete() {
         let mut project = Project::default();
         project.add_track(TrackKind::Instrument);
+        project.tracks[0].instrument_output_count = 1;
         let owner_id = project.tracks[0].id;
         project.reconcile_instrument_outputs(
             owner_id,
