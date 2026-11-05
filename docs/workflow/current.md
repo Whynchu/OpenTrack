@@ -76,6 +76,10 @@ that did nothing.
   when a track needs input monitoring, and the engine monitor is detached before
   the capture stream is closed. This is a containment change, not a confirmed
   ALSA root-cause fix; the next run should still be watched.
+- The saved direct ALSA output endpoint (`plughw` to the HDA card) can time out
+  in `snd_pcm_hw_params` after a crash even though `aplay` still opens it. Startup
+  now retries with the system-default output when the saved endpoint fails and
+  reports the fallback in the status line instead of starting without audio.
 - MIDI-note Copy/Cut/Paste now has toolbar buttons as well as shortcuts, using a
   transient MIDI clipboard with relative timing, pitch, duration, velocity,
   channel, and score flags. Paste lands at the transport cursor translated into

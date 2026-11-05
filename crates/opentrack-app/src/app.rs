@@ -2530,7 +2530,7 @@ impl OpenTrackApp {
             .storage
             .and_then(|storage| eframe::get_value::<Option<String>>(storage, "audio-output-device"))
             .flatten();
-        let selected_output_device = saved_output_device.clone();
+        let mut selected_output_device = saved_output_device.clone();
         let saved_asio = selected_output_device
             .as_deref()
             .is_some_and(|id| id.starts_with("asio:"));
@@ -2653,10 +2653,32 @@ impl OpenTrackApp {
             ) {
                 Ok(engine) => Some(engine),
                 Err(error) => {
-                    startup_messages.push(format!(
-                        "Saved audio output configuration could not open: {error}"
-                    ));
-                    None
+                    // A saved direct ALSA endpoint can become unavailable or
+                    // time out after a crash or device reconfiguration. Fall
+                    // back to the system default so the application still
+                    // starts with working audio.
+                    match AudioEngine::open_output_device_mode(
+                        None,
+                        selected_output_sample_rate,
+                        None,
+                        AudioDeviceMode::SharedLowLatency,
+                    ) {
+                        Ok(engine) => {
+                            startup_messages.push(format!(
+                                "Saved audio output could not open ({error}); using the system default"
+                            ));
+                            selected_output_device = None;
+                            selected_output_sample_rate = None;
+                            selected_output_buffer_frames = None;
+                            Some(engine)
+                        }
+                        Err(default_error) => {
+                            startup_messages.push(format!(
+                                "Saved audio output configuration could not open: {error}; system default also failed: {default_error}"
+                            ));
+                            None
+                        }
+                    }
                 }
             }
         } else {
