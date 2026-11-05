@@ -4150,7 +4150,13 @@ fn render_hosted_blocks<T>(
         }
         for (track_index, track) in plan.tracks.iter().enumerate() {
             if track.settings.hosted_instrument.is_some() {
-                render_hosted_instrument_block(plan, track_index, &frames[..count], sample_rate);
+                render_hosted_instrument_block(
+                    plan,
+                    track_index,
+                    &frames[..count],
+                    sample_rate,
+                    playing,
+                );
             }
         }
 
@@ -4366,6 +4372,7 @@ fn render_hosted_instrument_block(
     instrument_index: usize,
     frames: &[u64],
     sample_rate: u32,
+    playing: bool,
 ) {
     let track = &plan.tracks[instrument_index];
     let Some(instrument) = track.settings.hosted_instrument.as_ref() else {
@@ -4397,13 +4404,20 @@ fn render_hosted_instrument_block(
         input_left.fill(0.0);
         input_right.fill(0.0);
         let mut midi_events = [opentrack_plugins::HostedMidiEvent::default(); 512];
-        let midi_count = fill_hosted_midi_events(
-            &track.settings.midi_notes,
-            frames,
-            plan.tempo_bpm,
-            sample_rate,
-            &mut midi_events,
-        );
+        let midi_count = if playing {
+            fill_hosted_midi_events(
+                &track.settings.midi_notes,
+                frames,
+                plan.tempo_bpm,
+                sample_rate,
+                &mut midi_events,
+            )
+        } else {
+            // A stopped playhead repeats one frame every callback. Sending the
+            // scheduled note-ons there retriggered and sustained a note forever
+            // while the cursor sat over it. Release any held notes instead.
+            fill_hosted_midi_note_offs(&track.settings.midi_notes, &mut midi_events)
+        };
         let mut parameter_events = [opentrack_plugins::HostedParameterEvent {
             parameter_id: 0,
             sample_offset: 0,
@@ -4628,10 +4642,39 @@ fn fill_hosted_midi_events(
     count
 }
 
+fn fill_hosted_midi_note_offs(
+    notes: &[PlaybackMidiNote],
+    output: &mut [opentrack_plugins::HostedMidiEvent],
+) -> usize {
+    let mut count = 0;
+    for note in notes {
+        if count == output.len() {
+            break;
+        }
+        if !note.frequency_hz.is_finite() || note.frequency_hz <= 0.0 {
+            continue;
+        }
+        let pitch = (69.0 + 12.0 * (f64::from(note.frequency_hz) / 440.0).log2())
+            .round()
+            .clamp(0.0, 127.0) as u8;
+        output[count] = opentrack_plugins::HostedMidiEvent {
+            sample_offset: 0,
+            note_id: note.id as i32,
+            channel: note.channel.min(15),
+            pitch,
+            velocity: 0,
+            note_on: false,
+        };
+        count += 1;
+    }
+    count
+}
+
 #[cfg(test)]
 mod hosted_midi_tests {
     use super::PlaybackMidiNote;
     use super::fill_hosted_midi_events;
+    use super::fill_hosted_midi_note_offs;
 
     #[test]
     fn hosted_midi_events_use_block_offsets_and_pair_note_lifecycle() {
@@ -4675,6 +4718,24 @@ mod hosted_midi_tests {
         assert_eq!(events[0].sample_offset, 0);
         assert!(events[0].note_on);
         assert_eq!(events[0].pitch, 60);
+    }
+
+    #[test]
+    fn stopped_transport_releases_notes_instead_of_retriggering_them() {
+        let notes = [PlaybackMidiNote {
+            id: 4,
+            channel: 0,
+            start_beats: 1.0,
+            duration_beats: 1.0,
+            frequency_hz: 440.0,
+            velocity: 1.0,
+        }];
+        let mut events = [opentrack_plugins::HostedMidiEvent::default(); 4];
+        let count = fill_hosted_midi_note_offs(&notes, &mut events);
+        assert_eq!(count, 1);
+        assert!(!events[0].note_on);
+        assert_eq!(events[0].pitch, 69);
+        assert_eq!(events[0].velocity, 0);
     }
 }
 

@@ -1,5 +1,40 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Drum-map editing, stuck notes, and MIDI note clipboard (2026-11-04)
+
+The user reported a MIDI drum note droning while the stopped transport cursor
+sat on it, unusable drum-row labels, Draw-mode hits that could not be removed by
+clicking them again, project-window MIDI previews that did not follow Drum Map
+mode, an expression lane with no per-hit velocity editing, and MIDI copy/paste
+that did nothing.
+
+- Hosted instruments now receive note-off events instead of rescheduled note-ons
+  while transport is stopped. This removes the retrigger/sustain loop that made
+  the drum note drone; audio has a focused release-event test.
+- Drum rows show a clean `C#3 49` note name/number with the custom label beside
+  it. The left inspector edits that hit's label; empty labels remove the custom
+  name. The fixed keyboard overlay now draws drum labels instead of a second
+  piano keyboard.
+- In Draw mode, clicking an existing hit toggles it off; clicking empty grid
+  space still creates a hit.
+- When the MIDI editor is in Drum Map mode, the Project window draws MIDI notes
+  as drum-map diamonds instead of piano-roll bars.
+- The expression lane has a persistent Velocity view selected by default, shows
+  its name in the lane header, draws one vertical velocity bar per hit, and
+  supports click-to-set plus drag-across painting. CC lanes remain available in
+  the same selector.
+- MIDI-note Copy/Cut/Paste now uses a transient MIDI clipboard with relative
+  timing, pitch, duration, velocity, channel, and score flags. Paste lands at
+  the transport cursor translated into the active part and is one undo step.
+  Edit-menu and shortcut dispatch both prefer the MIDI clipboard while the MIDI
+  editor has selected notes.
+
+Verification: focused audio hosted-MIDI tests (3 passed); focused MIDI app tests
+(27 passed); new copy/paste cursor test passed; `cargo fmt --all`; `cargo check
+--offline -p opentrack`. The full app suite now has only the four pre-existing
+transport/device failures. Runtime drum-map visual, hover/drone, velocity
+painting and paste review remain pending user testing.
+
 ## Instrument power cycle, band threshold light, and solo tightness (2026-11-04)
 
 The user reported that powering an MT Power Drum Kit instrument insert off and

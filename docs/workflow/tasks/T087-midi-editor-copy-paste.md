@@ -1,6 +1,6 @@
 # T087 - MIDI editor note copy and paste
 
-- Status: ready
+- Status: implemented, awaiting user review
 - Scope version and requirement IDs: 1
 - Desired observable outcome: Copy/Cut/Paste works for selected MIDI notes in the MIDI editor without requiring selection of arrange audio events.
 - Reference evidence (IDs/paths; observed vs user-specified vs unknown): User reported (2026-11-03) that MIDI editor copy/paste did not work. Source inspection found `edit.copy`, `edit.cut`, and `edit.paste` dispatch only to audio-event methods; no MIDI note clipboard exists. Current MIDI editor selection is `selected_midi_note_ids` and notes are owned by the selected `MidiPart`.
@@ -27,3 +27,12 @@
 - Review findings, rework, elapsed effort if available:
 - Failures/unknowns/pending acceptance:
 - Next ready task:
+
+## Handoff (2026-11-04)
+
+- Actual implementer/reviewer model: DeepSeek V4.1 Flash; self-review only.
+- Source identity: current local `main` worktree after `17fdcca`.
+- Changes and reasons: Added a transient MIDI note clipboard with relative start offsets, duration, pitch, channel, velocity and score flags. Edit-menu and shortcut dispatch now prefer MIDI note Copy/Cut/Paste when the MIDI editor is open with selected notes; otherwise the existing audio-event clipboard path is unchanged. Paste translates the transport cursor into the active part, snaps using the MIDI position grid, adds fresh note IDs, and is one labelled undo step.
+- Commands/checks and actual results: `cargo check --offline -p opentrack` passes; focused MIDI app tests 27 passed; new cursor-relative copy/paste test passes; `cargo fmt --all` passes.
+- Failures/unknowns/pending acceptance: Running-app shortcut focus, Edit-menu enablement, paste at part bounds and save/reopen/MIDI-export acceptance remain pending user review.
+- Next ready task: exercise Ctrl+C/X/V in the running MIDI editor with one and multiple selected notes.
