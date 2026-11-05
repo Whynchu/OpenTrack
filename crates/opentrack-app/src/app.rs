@@ -8508,22 +8508,24 @@ impl OpenTrackApp {
             "edit.undo" => self.undo_project(),
             "edit.redo" => self.redo_project(),
             "edit.copy" => {
-                if self.midi_editor_open && !self.selected_midi_note_ids.is_empty() {
-                    self.copy_selected_midi_notes();
+                if self.midi_editor_open {
+                    // The MIDI editor owns clipboard shortcuts while it is open,
+                    // including Event::Copy/Paste events that do not surface as
+                    // ordinary key chords.
                 } else {
                     self.copy_selected_audio_events();
                 }
             }
             "edit.cut" => {
-                if self.midi_editor_open && !self.selected_midi_note_ids.is_empty() {
-                    self.cut_selected_midi_notes();
+                if self.midi_editor_open {
+                    // Handled by the MIDI editor.
                 } else {
                     self.cut_selected_audio_events();
                 }
             }
             "edit.paste" => {
-                if self.midi_editor_open && self.midi_note_clipboard.is_some() {
-                    self.paste_selected_midi_notes();
+                if self.midi_editor_open {
+                    // Handled by the MIDI editor.
                 } else {
                     self.paste_audio_events();
                 }
@@ -12223,14 +12225,16 @@ impl OpenTrackApp {
             return;
         }
 
-        let capture_requested = (self.project_open && self.audio_engine.is_some())
-            || self.device_test_active
+        let capture_requested = self.device_test_active
             || (self.project_input_monitor_requested() && self.audio_engine.is_some());
         if !capture_requested {
-            self.audio_input_probe = None;
+            // Detach the engine from the probe buffer before closing the ALSA
+            // capture stream. Closing a shared input stream while the output
+            // callback still references it can abort inside snd_pcm_close.
             if let Some(engine) = &self.audio_engine {
                 engine.set_input_monitor(None);
             }
+            self.audio_input_probe = None;
             return;
         }
 
@@ -14602,6 +14606,9 @@ impl OpenTrackApp {
                     if menu_command(ui, "Cut", "Ctrl+X", can_cut).clicked() {
                         if midi_selection_active {
                             self.cut_selected_midi_notes();
+                            if self.midi_note_clipboard.is_some() {
+                                ui.ctx().copy_text("OpenTrack MIDI notes".to_owned());
+                            }
                         } else {
                             self.cut_selected_audio_events();
                         }
@@ -14613,7 +14620,9 @@ impl OpenTrackApp {
                             || !self.arrange_view_state.audio_events.selected_ids().is_empty());
                     if menu_command(ui, "Copy", "Ctrl+C", can_copy).clicked() {
                         if midi_selection_active {
-                            self.copy_selected_midi_notes();
+                            if self.copy_selected_midi_notes() {
+                                ui.ctx().copy_text("OpenTrack MIDI notes".to_owned());
+                            }
                         } else {
                             self.copy_selected_audio_events();
                         }
@@ -18905,9 +18914,20 @@ impl OpenTrackApp {
         }
         match clipboard_action {
             Some(MidiClipboardAction::Copy) => {
-                self.copy_selected_midi_notes();
+                if self.copy_selected_midi_notes() {
+                    // egui-winit only emits Event::Paste when the system
+                    // clipboard is non-empty. Put a marker there so the next
+                    // Ctrl+V reaches the MIDI clipboard even though the notes
+                    // themselves stay in-app.
+                    ui.ctx().copy_text("OpenTrack MIDI notes".to_owned());
+                }
             }
-            Some(MidiClipboardAction::Cut) => self.cut_selected_midi_notes(),
+            Some(MidiClipboardAction::Cut) => {
+                self.cut_selected_midi_notes();
+                if self.midi_note_clipboard.is_some() {
+                    ui.ctx().copy_text("OpenTrack MIDI notes".to_owned());
+                }
+            }
             Some(MidiClipboardAction::Paste) => self.paste_selected_midi_notes(),
             None => {}
         }
@@ -25289,6 +25309,34 @@ fn show_midi_editor(
     if controller_drag.is_some_and(|drag| drag.track_id != track_id || drag.part_id != part_id) {
         *controller_drag = None;
     }
+    let (clipboard_copy, clipboard_cut, clipboard_paste) = ui.ctx().input(|input| {
+        (
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Copy))
+                || (input.modifiers.command && input.key_pressed(egui::Key::C)),
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Cut))
+                || (input.modifiers.command && input.key_pressed(egui::Key::X)),
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(_)))
+                || (input.modifiers.command && input.key_pressed(egui::Key::V)),
+        )
+    });
+    if clipboard_copy && !selected_note_ids.is_empty() {
+        *clipboard_action = Some(MidiClipboardAction::Copy);
+    }
+    if clipboard_cut && !selected_note_ids.is_empty() {
+        *clipboard_action = Some(MidiClipboardAction::Cut);
+    }
+    if clipboard_paste && clipboard_available {
+        *clipboard_action = Some(MidiClipboardAction::Paste);
+    }
     let mut modified = false;
     let position_quantize =
         midi_editor_settings::position_quantize(*position_quantize_beats, *snap_enabled);
@@ -26890,8 +26938,16 @@ fn show_midi_editor(
                             );
                         }
                         if *velocity_lane {
+                            let only_selected =
+                                !selected_note_ids.is_empty() || selected_note_id.is_some();
                             let bar_color = track_color;
                             for note in &project.tracks[track_index].midi_parts[part_index].notes {
+                                if only_selected
+                                    && !selected_note_ids.contains(&note.id)
+                                    && *selected_note_id != Some(note.id)
+                                {
+                                    continue;
+                                }
                                 let x = plot.left() + note.start_beats as f32 * beat_width;
                                 if x < plot.left() - 4.0 || x > plot.right() + 4.0 {
                                     continue;
@@ -26980,13 +27036,20 @@ fn show_midi_editor(
                                 .round()
                                 .clamp(1.0, 127.0) as u8;
                             let notes = &mut project.tracks[track_index].midi_parts[part_index].notes;
+                            let only_selected =
+                                !selected_note_ids.is_empty() || selected_note_id.is_some();
                             let nearest = notes
                                 .iter_mut()
                                 .map(|note| {
                                     let x = plot.left() + note.start_beats as f32 * beat_width;
                                     (note, (x - pointer.x).abs())
                                 })
-                                .filter(|(_, distance)| *distance <= 9.0)
+                                .filter(|(note, distance)| {
+                                    *distance <= 9.0
+                                        && (!only_selected
+                                            || selected_note_ids.contains(&note.id)
+                                            || *selected_note_id == Some(note.id))
+                                })
                                 .min_by(|a, b| a.1.total_cmp(&b.1));
                             if let Some((note, _)) = nearest {
                                 if note.velocity != velocity {

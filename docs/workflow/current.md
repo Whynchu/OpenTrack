@@ -1,5 +1,41 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Capability gap register (2026-11-04)
+
+The user asked which capabilities were missing compared with SoundCraft and then
+asked for the answer to be recorded and folded into existing plans. The result is
+[`capability-gaps.md`](capability-gaps.md): one register with a disposition code
+per item (gap, partial, policy, out, parity), the module or command that owns
+each existing behavior, and the existing task or roadmap step each gap folds
+into. It contains no new commitments and no implementation.
+
+Two things are worth carrying forward:
+
+- The conversational comparison overstated the editing and automation gaps. The
+  register's correction table records that duplicate/repeat/fill loop, insert
+  silence, clip gain, ruler timebases (Bars+Beats, Seconds, Timecode, Samples,
+  60 fps), per-track plug-in delay compensation, offline per-event processing,
+  punch/pre-post-roll, take lanes, the session health check, marker recall, and
+  event grouping/locking already exist in source. Those items must not be
+  re-scoped as missing.
+- The real gaps are narrower and mostly extensions of live work: clip
+  operations that reuse the existing hitpoint and silent-range detectors
+  (transient split, strip silence, heal, fade shapes, a drawn gain line);
+  automation Touch/Latch/Trim plus lane flatten/thin/glide on top of T085; edit
+  modes and a tool set once those gestures settle; loudness/true-peak, dither
+  and normalization in the T074 export path; VCAs; comping playlists; and much
+  later a command/CLI/MCP surface that reuses the existing command ids.
+
+Recorded as decisions rather than gaps: built-in processor and instrument suite
+(effects are designed individually with the user as VST3 plug-ins), CLAP
+hosting, and elastic warping. Recorded as out of scope by current direction:
+surround/immersive, video decoders, macOS/ARM/web/FreeBSD builds, translations,
+and competitor-specific Edit/Mix window conventions.
+
+Verification: docs only; no source, project-schema or build change. Every
+external statement in the register is attributed to SoundCraft's own README and
+product page and was not reproduced by running it.
+
 ## Drum-map editing, stuck notes, and MIDI note clipboard (2026-11-04)
 
 The user reported a MIDI drum note droning while the stopped transport cursor
@@ -24,14 +60,22 @@ that did nothing.
 - The expression lane has a persistent per-note Velocity view selected by
   default, shows its name and the selected hit's pitch/velocity in the lane
   header, draws one vertical velocity bar per hit, and supports click-to-set plus
-  drag-across painting. It is note data, not a per-beat lane. CC lanes remain
-  available in the same selector.
+  drag-across painting. When one or more hits are highlighted, only those hits'
+  velocity bars are shown and editable; clearing the selection shows the whole
+  part again. It is note data, not a per-beat lane. CC lanes remain available in
+  the same selector.
 - The MIDI note and expression lanes now draw subdivision lines from the active
   quantize grid, so a 1/8-note setting shows eighth-note columns; bar and beat
   lines remain stronger, and sub-pixel grids fall back to beat lines.
 - Dark-theme editing surfaces are lifted from egui's near-black to a dark grey
   (`gray 24`, with a slightly lighter alternating surface) so the Project floor
   below tracks and empty editor lanes are no longer true black.
+- A new coredump showed `AudioInputProbe::drop` aborted inside ALSA
+  `snd_pcm_close` during a UI frame. The input probe is no longer opened just
+  because a project is open; it now opens only for an explicit input test or
+  when a track needs input monitoring, and the engine monitor is detached before
+  the capture stream is closed. This is a containment change, not a confirmed
+  ALSA root-cause fix; the next run should still be watched.
 - MIDI-note Copy/Cut/Paste now has toolbar buttons as well as shortcuts, using a
   transient MIDI clipboard with relative timing, pitch, duration, velocity,
   channel, and score flags. Paste lands at the transport cursor translated into
