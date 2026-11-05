@@ -35,7 +35,10 @@ that did nothing.
 - MIDI-note Copy/Cut/Paste now has toolbar buttons as well as shortcuts, using a
   transient MIDI clipboard with relative timing, pitch, duration, velocity,
   channel, and score flags. Paste lands at the transport cursor translated into
-  the active part and is one undo step.
+  the active part and is one undo step. Linux/Windows clipboard shortcuts arrive
+  from egui as `Event::Copy`, `Event::Cut` and `Event::Paste` rather than key
+  events; these now map to the same Ctrl+C/X/V command chords. A focused text
+  field still owns clipboard keys instead.
 
 Verification: focused audio hosted-MIDI tests (3 passed); focused MIDI app tests
 (28 passed); new copy/paste cursor test passed; `cargo fmt --all`; `cargo check

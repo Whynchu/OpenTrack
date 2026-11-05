@@ -21042,26 +21042,34 @@ fn egui_key_chords(ctx: &egui::Context) -> Vec<KeyChord> {
             .events
             .iter()
             .filter_map(|event| {
-                let egui::Event::Key {
-                    key,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                    ..
-                } = event
-                else {
-                    return None;
+                let control = KeyModifiers {
+                    control: true,
+                    ..Default::default()
                 };
-                let key = egui_key_code(*key)?;
-                Some(KeyChord::new(
-                    key,
-                    KeyModifiers {
-                        control: modifiers.ctrl,
-                        alt: modifiers.alt,
-                        shift: modifiers.shift,
-                        windows: modifiers.mac_cmd,
-                    },
-                ))
+                match event {
+                    egui::Event::Copy => Some(KeyChord::new(KeyCode::Letter('C'), control)),
+                    egui::Event::Cut => Some(KeyChord::new(KeyCode::Letter('X'), control)),
+                    egui::Event::Paste(_) => Some(KeyChord::new(KeyCode::Letter('V'), control)),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } => {
+                        let key = egui_key_code(*key)?;
+                        Some(KeyChord::new(
+                            key,
+                            KeyModifiers {
+                                control: modifiers.ctrl,
+                                alt: modifiers.alt,
+                                shift: modifiers.shift,
+                                windows: modifiers.mac_cmd,
+                            },
+                        ))
+                    }
+                    _ => None,
+                }
             })
             .collect()
     })
@@ -35550,6 +35558,34 @@ mod wired_menu_row_tests {
             "{:?}",
             output.platform_output.commands
         );
+    }
+}
+
+#[cfg(test)]
+mod midi_clipboard_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn native_clipboard_events_become_copy_cut_and_paste_commands() {
+        let ctx = egui::Context::default();
+        let mut chords: Vec<KeyChord> = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::Copy,
+                    egui::Event::Cut,
+                    egui::Event::Paste("notes".to_owned()),
+                ],
+                ..Default::default()
+            },
+            |_| chords = egui_key_chords(&ctx),
+        );
+        output.textures_delta.clear();
+        assert_eq!(chords.len(), 3);
+        assert_eq!(chords[0].key(), KeyCode::Letter('C'));
+        assert_eq!(chords[1].key(), KeyCode::Letter('X'));
+        assert_eq!(chords[2].key(), KeyCode::Letter('V'));
+        assert!(chords.iter().all(|chord| chord.modifiers().control));
     }
 }
 
