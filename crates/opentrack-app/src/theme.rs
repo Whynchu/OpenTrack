@@ -209,9 +209,21 @@ fn readable_muted(visuals: &egui::Visuals) -> egui::Color32 {
 }
 
 pub(crate) fn palette_for(visuals: &egui::Visuals) -> Palette {
+    // egui's dark extreme background is nearly black. Keep DAW editing surfaces
+    // as a dark grey instead so empty lanes and the arranger floor stay readable.
+    let canvas = if visuals.dark_mode {
+        Color32::from_gray(24)
+    } else {
+        visuals.extreme_bg_color
+    };
+    let canvas_alternate = if visuals.dark_mode {
+        Color32::from_gray(32)
+    } else {
+        visuals.faint_bg_color
+    };
     Palette {
-        canvas: visuals.extreme_bg_color,
-        canvas_alternate: visuals.faint_bg_color,
+        canvas,
+        canvas_alternate,
         surface: visuals.panel_fill,
         surface_raised: visuals.widgets.inactive.bg_fill,
         grid: visuals.widgets.noninteractive.bg_stroke.color,
@@ -230,7 +242,7 @@ pub(crate) fn palette_for(visuals: &egui::Visuals) -> Palette {
         } else {
             Color32::from_gray(245)
         },
-        midi_row_black: visuals.extreme_bg_color,
+        midi_row_black: canvas,
         midi_row_white: visuals.faint_bg_color,
     }
 }
@@ -454,7 +466,12 @@ mod tests {
     fn drawn_surfaces_and_text_follow_both_themes() {
         for visuals in [egui::Visuals::light(), egui::Visuals::dark()] {
             let palette = palette_for(&visuals);
-            assert_eq!(palette.canvas, visuals.extreme_bg_color);
+            if visuals.dark_mode {
+                assert_eq!(palette.canvas, Color32::from_gray(24));
+                assert_eq!(palette.canvas_alternate, Color32::from_gray(32));
+            } else {
+                assert_eq!(palette.canvas, visuals.extreme_bg_color);
+            }
             assert_eq!(palette.text, visuals.text_color());
             assert_eq!(palette.surface, visuals.panel_fill);
             let mut bar_style = egui::Style {

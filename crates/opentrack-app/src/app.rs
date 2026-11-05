@@ -18871,6 +18871,7 @@ impl OpenTrackApp {
                 .then_some(part_id)
         });
         let mut modified = false;
+        let mut clipboard_action = None;
         if let (Some(track_index), Some(part_id)) = (selected_track, selected_part_id) {
             modified |= show_midi_editor(
                 ui,
@@ -18884,6 +18885,8 @@ impl OpenTrackApp {
                 &mut self.arrange_view_state.cc_lane_controller,
                 &mut self.midi_editor_settings.drum_map_view,
                 &mut self.midi_editor_settings.velocity_lane,
+                &mut clipboard_action,
+                self.midi_note_clipboard.is_some(),
                 live_velocity_update,
                 &mut self.selected_midi_note_id,
                 &mut self.selected_midi_note_ids,
@@ -18899,6 +18902,14 @@ impl OpenTrackApp {
             self.midi_note_draw = None;
             self.midi_controller_drag = None;
             ui.label("Draw a MIDI part in a MIDI or Instrument track, or select an existing part.");
+        }
+        match clipboard_action {
+            Some(MidiClipboardAction::Copy) => {
+                self.copy_selected_midi_notes();
+            }
+            Some(MidiClipboardAction::Cut) => self.cut_selected_midi_notes(),
+            Some(MidiClipboardAction::Paste) => self.paste_selected_midi_notes(),
+            None => {}
         }
         modified
     }
@@ -25202,6 +25213,8 @@ fn show_midi_editor(
     controller_number: &mut u8,
     drum_map_view: &mut bool,
     velocity_lane: &mut bool,
+    clipboard_action: &mut Option<MidiClipboardAction>,
+    clipboard_available: bool,
     live_velocity_update: &mut Option<(usize, u64, u8)>,
     selected_note_id: &mut Option<u64>,
     selected_note_ids: &mut BTreeSet<u64>,
@@ -25284,7 +25297,7 @@ fn show_midi_editor(
         Vec2::new(bounds.width(), 38.0),
     );
     const INSPECTOR_WIDTH: f32 = 232.0;
-    let keyboard_width: f32 = if *drum_map_view { 172.0 } else { 64.0 };
+    let keyboard_width: f32 = if *drum_map_view { 64.0 } else { 64.0 };
     const RULER_HEIGHT: f32 = 22.0;
     let zoom_id = ui.id().with(("midi-time-zoom", track_id, part_id));
     let beat_width = ui.data(|d| d.get_temp::<f32>(zoom_id)).unwrap_or(44.0);
@@ -25344,6 +25357,25 @@ fn show_midi_editor(
                     ToolbarIcon::Draw,
                     "Draw Notes",
                 );
+                let has_selection = !selected_note_ids.is_empty();
+                if ui
+                    .add_enabled(has_selection, egui::Button::new("Copy").small())
+                    .clicked()
+                {
+                    *clipboard_action = Some(MidiClipboardAction::Copy);
+                }
+                if ui
+                    .add_enabled(has_selection, egui::Button::new("Cut").small())
+                    .clicked()
+                {
+                    *clipboard_action = Some(MidiClipboardAction::Cut);
+                }
+                if ui
+                    .add_enabled(clipboard_available, egui::Button::new("Paste").small())
+                    .clicked()
+                {
+                    *clipboard_action = Some(MidiClipboardAction::Paste);
+                }
                 egui::ComboBox::from_id_salt(("midi-editor-view", track_id, part_id))
                     .selected_text(if *drum_map_view {
                         "Drum Map"
@@ -25830,30 +25862,24 @@ fn show_midi_editor(
                                         [key_rect.left_bottom(), key_rect.right_bottom()],
                                         Stroke::new(0.5, palette.grid),
                                     );
-                                    let row_name = project
-                                        .drum_map
-                                        .name_for(pitch as u8)
-                                        .map(str::to_owned)
-                                        .unwrap_or_default();
-                                    let note_label = format!(
-                                        "{} {}",
-                                        midi_pitch_label(pitch as u8),
-                                        pitch
-                                    );
-                                    let text_area = key_rect.shrink2(Vec2::new(4.0, 0.0));
-                                    painter.with_clip_rect(text_area).text(
-                                        text_area.left_center(),
-                                        Align2::LEFT_CENTER,
-                                        note_label,
-                                        FontId::monospace(8.0),
-                                        palette.muted,
-                                    );
-                                    if !row_name.is_empty() {
+                                    if row_height >= 12.0 {
+                                        let row_name = project
+                                            .drum_map
+                                            .name_for(pitch as u8)
+                                            .map(str::to_owned)
+                                            .unwrap_or_else(|| {
+                                                format!(
+                                                    "{} {}",
+                                                    midi_pitch_label(pitch as u8),
+                                                    pitch
+                                                )
+                                            });
+                                        let text_area = key_rect.shrink2(Vec2::new(4.0, 0.0));
                                         painter.with_clip_rect(text_area).text(
-                                            Pos2::new(text_area.left() + 54.0, text_area.center().y),
+                                            text_area.left_center(),
                                             Align2::LEFT_CENTER,
                                             row_name,
-                                            FontId::proportional(9.0),
+                                            FontId::proportional(8.5),
                                             palette.text,
                                         );
                                     }
@@ -25865,26 +25891,53 @@ fn show_midi_editor(
                             }
                         }
 
-                        for beat in 0..=visible_beats {
+                        let grid_step = if position_quantize.is_finite()
+                            && position_quantize > 0.0
+                        {
+                            position_quantize
+                        } else {
+                            1.0
+                        };
+                        let subdivision_pixels = grid_step as f32 * beat_width;
+                        let draw_step = if subdivision_pixels >= 3.0 {
+                            grid_step
+                        } else {
+                            1.0
+                        };
+                        let steps = ((visible_beats as f64 + 1e-6) / draw_step).ceil() as usize;
+                        for step in 0..=steps {
+                            let beat = step as f64 * draw_step;
                             let x = canvas.min.x + keyboard_width + beat as f32 * beat_width;
-                            let bar_line = beat % bpb == 0;
+                            if x > pitch_area.right() + 0.5 {
+                                break;
+                            }
+                            let on_beat = (beat - beat.round()).abs() < 1e-6;
+                            let bar_line = on_beat && (beat.round() as usize) % bpb == 0;
                             painter.line_segment(
                                 [
                                     Pos2::new(x, pitch_area.top()),
                                     Pos2::new(x, pitch_area.bottom()),
                                 ],
                                 Stroke::new(
-                                    if bar_line { 1.0 } else { 0.5 },
+                                    if bar_line {
+                                        1.0
+                                    } else if on_beat {
+                                        0.75
+                                    } else {
+                                        0.5
+                                    },
                                     if bar_line {
                                         theme::palette(ui).grid
+                                    } else if on_beat {
+                                        theme::palette(ui).grid.gamma_multiply(0.75)
                                     } else {
-                                        theme::palette(ui).surface_raised
+                                        theme::palette(ui).grid.gamma_multiply(0.42)
                                     },
                                 ),
                             );
-                            if bar_line && beat < visible_beats {
+                            if bar_line && (beat as usize) < visible_beats {
                                 let ruler_position = format_transport_position(
-                                    beat as f64,
+                                    beat,
                                     project.beats_per_bar,
                                     project.beat_unit,
                                 );
@@ -26764,17 +26817,29 @@ fn show_midi_editor(
                             1.0,
                             theme::palette(ui).muted,
                         );
+                        let controller_label = if *velocity_lane {
+                            if let Some(note_index) = selected_note_index {
+                                let note = &project.tracks[track_index].midi_parts[part_index]
+                                    .notes[note_index];
+                                format!(
+                                    "Velocity  •  {} {}: {}",
+                                    midi_pitch_label(note.pitch),
+                                    note.pitch,
+                                    note.velocity
+                                )
+                            } else {
+                                "Velocity".to_owned()
+                            }
+                        } else {
+                            cc_automation::controller_label(*controller_number)
+                        };
                         controller_painter.text(
                             Pos2::new(
                                 controller_header.left() + 7.0,
                                 controller_canvas.min.y + 12.0,
                             ),
                             Align2::LEFT_CENTER,
-                            if *velocity_lane {
-                                "Velocity".to_owned()
-                            } else {
-                                cc_automation::controller_label(*controller_number)
-                            },
+                            controller_label,
                             FontId::monospace(theme::type_size::LABEL),
                             theme::palette(ui).text,
                         );
@@ -26786,6 +26851,36 @@ fn show_midi_editor(
                             &project.tracks[track_index].midi_parts[part_index],
                             *controller_number,
                         );
+                        let controller_steps =
+                            ((visible_beats as f64 + 1e-6) / draw_step).ceil() as usize;
+                        for step in 0..=controller_steps {
+                            let beat = step as f64 * draw_step;
+                            let x = plot.left() + beat as f32 * beat_width;
+                            if x > plot.right() + 0.5 {
+                                break;
+                            }
+                            let on_beat = (beat - beat.round()).abs() < 1e-6;
+                            let bar_line = on_beat && (beat.round() as usize) % bpb == 0;
+                            controller_painter.line_segment(
+                                [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+                                Stroke::new(
+                                    if bar_line {
+                                        1.0
+                                    } else if on_beat {
+                                        0.75
+                                    } else {
+                                        0.5
+                                    },
+                                    if bar_line {
+                                        theme::palette(ui).grid
+                                    } else if on_beat {
+                                        theme::palette(ui).grid.gamma_multiply(0.75)
+                                    } else {
+                                        theme::palette(ui).grid.gamma_multiply(0.42)
+                                    },
+                                ),
+                            );
+                        }
                         if *velocity_lane {
                             let bar_color = track_color;
                             for note in &project.tracks[track_index].midi_parts[part_index].notes {
@@ -26810,21 +26905,6 @@ fn show_midi_editor(
                                 );
                             }
                         } else {
-                            for beat in 0..=visible_beats {
-                                let x = plot.left() + beat as f32 * beat_width;
-                                let bar_line = beat % bpb == 0;
-                                controller_painter.line_segment(
-                                    [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
-                                    Stroke::new(
-                                        if bar_line { 1.0 } else { 0.5 },
-                                        if bar_line {
-                                            theme::palette(ui).grid
-                                        } else {
-                                            theme::palette(ui).surface_raised
-                                        },
-                                    ),
-                                );
-                            }
                             for value in [0_u8, 32, 64, 96] {
                                 let y = plot.bottom()
                                     - f32::from(value) / 127.0 * controller_plot_height;
@@ -27137,26 +27217,20 @@ fn show_midi_editor(
             .intersect(fixed_keyboard);
             if row.is_positive() {
                 if *drum_map_view {
-                    let row_name = project
-                        .drum_map
-                        .name_for(pitch as u8)
-                        .map(str::to_owned)
-                        .unwrap_or_default();
-                    let note_label = format!("{} {}", midi_pitch_label(pitch as u8), pitch);
-                    let text_area = row.shrink2(Vec2::new(4.0, 0.0));
-                    ui.painter().with_clip_rect(text_area).text(
-                        text_area.left_center(),
-                        Align2::LEFT_CENTER,
-                        note_label,
-                        FontId::monospace(8.0),
-                        palette.muted,
-                    );
-                    if !row_name.is_empty() {
+                    if row_height >= 12.0 {
+                        let row_name = project
+                            .drum_map
+                            .name_for(pitch as u8)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                format!("{} {}", midi_pitch_label(pitch as u8), pitch)
+                            });
+                        let text_area = row.shrink2(Vec2::new(4.0, 0.0));
                         ui.painter().with_clip_rect(text_area).text(
-                            Pos2::new(text_area.left() + 54.0, text_area.center().y),
+                            text_area.left_center(),
                             Align2::LEFT_CENTER,
                             row_name,
-                            FontId::proportional(9.0),
+                            FontId::proportional(8.5),
                             palette.text,
                         );
                     }
@@ -27302,6 +27376,7 @@ mod editor_recovery_tests {
             (true, 0.25, 0.25, 100, 11);
         let mut drum_map_view = false;
         let mut velocity_lane = false;
+        let mut clipboard_action = None;
         let mut live_velocity_update = None;
         let (mut selected, mut drag, mut draw, mut cc_drag) = (None, None, None, None);
         let mut selected_notes = BTreeSet::new();
@@ -27347,6 +27422,8 @@ mod editor_recovery_tests {
                         &mut controller,
                         &mut drum_map_view,
                         &mut velocity_lane,
+                        &mut clipboard_action,
+                        false,
                         &mut live_velocity_update,
                         &mut selected,
                         &mut selected_notes,
@@ -27405,6 +27482,13 @@ enum MidiEditAction {
     Select(u64),
     Split(u64, f64),
     Delete(u64),
+}
+
+#[derive(Clone, Copy)]
+enum MidiClipboardAction {
+    Copy,
+    Cut,
+    Paste,
 }
 
 fn midi_quantize_label(value: f64) -> &'static str {

@@ -11,26 +11,34 @@ that did nothing.
 - Hosted instruments now receive note-off events instead of rescheduled note-ons
   while transport is stopped. This removes the retrigger/sustain loop that made
   the drum note drone; audio has a focused release-event test.
-- Drum rows show a clean `C#3 49` note name/number with the custom label beside
-  it. The left inspector edits that hit's label; empty labels remove the custom
-  name. The fixed keyboard overlay now draws drum labels instead of a second
-  piano keyboard.
+- Drum rows use the same 64 px keyboard width as the MIDI piano roll and Audio
+  Editor. Each visible row shows either its custom hit label or a compact
+  `C#3 49` note name/number, and labels are omitted below the piano-key
+  legibility threshold instead of overlapping. The fixed keyboard overlay draws
+  drum labels rather than a second piano keyboard. The left inspector edits that
+  hit's label; empty labels remove the custom name.
 - In Draw mode, clicking an existing hit toggles it off; clicking empty grid
   space still creates a hit.
 - When the MIDI editor is in Drum Map mode, the Project window draws MIDI notes
   as drum-map diamonds instead of piano-roll bars.
-- The expression lane has a persistent Velocity view selected by default, shows
-  its name in the lane header, draws one vertical velocity bar per hit, and
-  supports click-to-set plus drag-across painting. CC lanes remain available in
-  the same selector.
-- MIDI-note Copy/Cut/Paste now uses a transient MIDI clipboard with relative
-  timing, pitch, duration, velocity, channel, and score flags. Paste lands at
-  the transport cursor translated into the active part and is one undo step.
-  Edit-menu and shortcut dispatch both prefer the MIDI clipboard while the MIDI
-  editor has selected notes.
+- The expression lane has a persistent per-note Velocity view selected by
+  default, shows its name and the selected hit's pitch/velocity in the lane
+  header, draws one vertical velocity bar per hit, and supports click-to-set plus
+  drag-across painting. It is note data, not a per-beat lane. CC lanes remain
+  available in the same selector.
+- The MIDI note and expression lanes now draw subdivision lines from the active
+  quantize grid, so a 1/8-note setting shows eighth-note columns; bar and beat
+  lines remain stronger, and sub-pixel grids fall back to beat lines.
+- Dark-theme editing surfaces are lifted from egui's near-black to a dark grey
+  (`gray 24`, with a slightly lighter alternating surface) so the Project floor
+  below tracks and empty editor lanes are no longer true black.
+- MIDI-note Copy/Cut/Paste now has toolbar buttons as well as shortcuts, using a
+  transient MIDI clipboard with relative timing, pitch, duration, velocity,
+  channel, and score flags. Paste lands at the transport cursor translated into
+  the active part and is one undo step.
 
 Verification: focused audio hosted-MIDI tests (3 passed); focused MIDI app tests
-(27 passed); new copy/paste cursor test passed; `cargo fmt --all`; `cargo check
+(28 passed); new copy/paste cursor test passed; `cargo fmt --all`; `cargo check
 --offline -p opentrack`. The full app suite now has only the four pre-existing
 transport/device failures. Runtime drum-map visual, hover/drone, velocity
 painting and paste review remain pending user testing.

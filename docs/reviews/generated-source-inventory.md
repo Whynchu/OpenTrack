@@ -8,7 +8,7 @@ $env:UPDATE_SOURCE_INVENTORY = "1"
 cargo test -p opentrack generated_source_inventory -- --nocapture
 ```
 
-- Source snapshot: `app.rs` FNV-1a 64 `0xa0c766059a40d970`; keymap CSV `0xa9f1eb00c81948c7`
+- Source snapshot: `app.rs` FNV-1a 64 `0x0c6082fb02f4d9c1`; keymap CSV `0xa9f1eb00c81948c7`
 - Scope: the project-open main menu and the empty-project shell. Context menus are
 enumerated in the curated `docs/reviews/audit-menus.md` register; this generated file
 does not claim to cover them.
