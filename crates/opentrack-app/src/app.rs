@@ -529,6 +529,12 @@ struct MidiNoteClipboard {
     notes: Vec<MidiNoteClipboardNote>,
 }
 
+#[derive(Clone)]
+struct MidiPartClipboard {
+    source_track_id: u64,
+    part: opentrack_core::project::MidiPart,
+}
+
 struct TrackAddDialog {
     kind: TrackKind,
     count: u32,
@@ -1508,6 +1514,9 @@ pub struct OpenTrackApp {
     midi_reported_dropped_messages: u64,
     midi_thru_enabled: bool,
     midi_editor_open: bool,
+    /// Pointer was over the MIDI editor content on the previous frame. Clipboard
+    /// shortcuts belong to whichever area the pointer is actually working in.
+    midi_editor_pointer_inside: bool,
     channel_settings_window: NativeWindowState,
     channel_settings_ui: ChannelSettingsUiState,
     applied_eq_solo: Option<(u64, usize)>,
@@ -1527,6 +1536,7 @@ pub struct OpenTrackApp {
     selected_midi_note_id: Option<u64>,
     selected_midi_note_ids: BTreeSet<u64>,
     midi_note_clipboard: Option<MidiNoteClipboard>,
+    midi_part_clipboard: Option<MidiPartClipboard>,
     midi_note_drag: Option<MidiNoteDrag>,
     midi_note_draw: Option<MidiNoteDraw>,
     midi_part_draw: Option<MidiPartDraw>,
@@ -3137,6 +3147,7 @@ impl OpenTrackApp {
             midi_reported_dropped_messages: 0,
             midi_thru_enabled,
             midi_editor_open: false,
+            midi_editor_pointer_inside: false,
             channel_settings_window: NativeWindowState::default(),
             channel_settings_ui: ChannelSettingsUiState {
                 preferences: channel_settings_preferences,
@@ -3186,6 +3197,7 @@ impl OpenTrackApp {
             selected_midi_note_id: None,
             selected_midi_note_ids: BTreeSet::new(),
             midi_note_clipboard: None,
+            midi_part_clipboard: None,
             midi_note_drag: None,
             midi_note_draw: None,
             midi_part_draw: None,
@@ -8530,24 +8542,51 @@ impl OpenTrackApp {
             "edit.undo" => self.undo_project(),
             "edit.redo" => self.redo_project(),
             "edit.copy" => {
-                if self.midi_editor_open {
-                    // The MIDI editor owns clipboard shortcuts while it is open,
-                    // including Event::Copy/Paste events that do not surface as
-                    // ordinary key chords.
+                if self.midi_editor_open && self.midi_editor_pointer_inside {
+                    // The MIDI editor owns clipboard shortcuts while the pointer
+                    // is working in it.
+                } else if !self
+                    .arrange_view_state
+                    .audio_events
+                    .selected_ids()
+                    .is_empty()
+                {
+                    self.copy_selected_audio_events();
+                } else if self.data.project.selected_midi_part_id.is_some() {
+                    self.copy_selected_midi_part();
                 } else {
                     self.copy_selected_audio_events();
                 }
             }
             "edit.cut" => {
-                if self.midi_editor_open {
+                if self.midi_editor_open && self.midi_editor_pointer_inside {
                     // Handled by the MIDI editor.
+                } else if !self
+                    .arrange_view_state
+                    .audio_events
+                    .selected_ids()
+                    .is_empty()
+                {
+                    self.cut_selected_audio_events();
+                } else if self.data.project.selected_midi_part_id.is_some() {
+                    self.cut_selected_midi_part();
                 } else {
                     self.cut_selected_audio_events();
                 }
             }
             "edit.paste" => {
-                if self.midi_editor_open {
+                if self.midi_editor_open && self.midi_editor_pointer_inside {
                     // Handled by the MIDI editor.
+                } else if !self
+                    .arrange_view_state
+                    .audio_events
+                    .selected_ids()
+                    .is_empty()
+                    && self.audio_event_clipboard.is_some()
+                {
+                    self.paste_audio_events();
+                } else if self.midi_part_clipboard.is_some() {
+                    self.paste_midi_part();
                 } else {
                     self.paste_audio_events();
                 }
@@ -9233,6 +9272,169 @@ impl OpenTrackApp {
         self.rebuild_audio_plan();
         self.mark_modified();
         self.status_message = format!("Pasted {} MIDI note(s)", pasted_ids.len());
+    }
+
+    fn copy_selected_midi_part(&mut self) -> bool {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            self.status_message = "Select a MIDI part before copying".to_owned();
+            return false;
+        };
+        let Some((source_track_id, part)) = self.data.project.tracks.iter().find_map(|track| {
+            track
+                .midi_parts
+                .iter()
+                .find(|part| part.id == part_id)
+                .map(|part| (track.id, part.clone()))
+        }) else {
+            self.status_message = "The selected MIDI part is unavailable".to_owned();
+            return false;
+        };
+        self.midi_part_clipboard = Some(MidiPartClipboard {
+            source_track_id,
+            part,
+        });
+        self.status_message = "MIDI part copied".to_owned();
+        true
+    }
+
+    fn cut_selected_midi_part(&mut self) {
+        if self.copy_selected_midi_part() {
+            self.delete_selected_midi_part();
+        }
+    }
+
+    fn delete_selected_midi_part(&mut self) {
+        let Some(part_id) = self.data.project.selected_midi_part_id else {
+            return;
+        };
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot cut the MIDI part: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Delete MIDI Part");
+        for track in &mut self.data.project.tracks {
+            track.midi_parts.retain(|part| part.id != part_id);
+        }
+        self.data.project.selected_midi_part_id = None;
+        self.selected_midi_note_ids.clear();
+        self.selected_midi_note_id = None;
+        self.project_history.finish_frame(&self.data.project, true);
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "MIDI part cut".to_owned();
+    }
+
+    fn paste_midi_part(&mut self) {
+        let Some(clipboard) = self.midi_part_clipboard.clone() else {
+            self.status_message = "Copy a MIDI part before pasting".to_owned();
+            return;
+        };
+        let target_track_index = self
+            .data
+            .project
+            .selected_track
+            .and_then(|index| self.data.project.tracks.get(index as usize))
+            .filter(|track| track.kind.owns_midi())
+            .map(|_| self.data.project.selected_track.map(|index| index as usize))
+            .flatten()
+            .or_else(|| {
+                self.data
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|track| track.id == clipboard.source_track_id)
+            })
+            .or_else(|| {
+                self.data
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|track| track.kind.owns_midi())
+            });
+        let Some(track_index) = target_track_index else {
+            self.status_message = "Select a MIDI or Instrument track before pasting".to_owned();
+            return;
+        };
+        let start = self.data.transport.position_beats.max(0.0);
+        self.project_history.finish_frame(&self.data.project, true);
+        if !self
+            .project_history
+            .begin(&self.data.project, self.modified)
+        {
+            self.status_message =
+                "Cannot paste the MIDI part: undo snapshot is unavailable".to_owned();
+            return;
+        }
+        self.project_history.label_next("Paste MIDI Part");
+        let Some(part_id) =
+            self.data
+                .project
+                .add_midi_part(track_index, start, clipboard.part.duration_beats)
+        else {
+            self.project_history.cancel_pending();
+            self.status_message = "Could not place the MIDI part at the cursor".to_owned();
+            return;
+        };
+        if let Some(part) = self.data.project.tracks[track_index]
+            .midi_parts
+            .iter_mut()
+            .find(|part| part.id == part_id)
+        {
+            part.name = clipboard.part.name.clone();
+            part.chord_symbols = clipboard.part.chord_symbols.clone();
+        }
+        for source in &clipboard.part.notes {
+            let Some(note_id) = self.data.project.add_midi_note_on_channel(
+                track_index,
+                part_id,
+                source.start_beats,
+                source.duration_beats,
+                source.pitch,
+                source.channel,
+                source.velocity,
+            ) else {
+                continue;
+            };
+            if let Some(note) = self.data.project.tracks[track_index]
+                .midi_parts
+                .iter_mut()
+                .find(|part| part.id == part_id)
+                .and_then(|part| part.notes.iter_mut().find(|note| note.id == note_id))
+            {
+                note.hidden = source.hidden;
+                note.flipped = source.flipped;
+                note.grace = source.grace;
+                note.slur_to_next = source.slur_to_next;
+            }
+        }
+        for source in &clipboard.part.controller_events {
+            let _ = self.data.project.add_midi_controller_event_on_channel(
+                track_index,
+                part_id,
+                source.position_beats,
+                source.controller,
+                source.channel,
+                source.value,
+            );
+        }
+        if let Some(track) = self.data.project.tracks.get(track_index) {
+            let track_id = track.id;
+            self.data.project.selected_track = Some(track_index as u32);
+            self.arrange_view_state.selected_track_ids.clear();
+            self.arrange_view_state.selected_track_ids.insert(track_id);
+        }
+        self.data.project.selected_midi_part_id = Some(part_id);
+        self.selected_midi_note_ids.clear();
+        self.selected_midi_note_id = None;
+        self.project_history.finish_frame(&self.data.project, true);
+        self.rebuild_audio_plan();
+        self.mark_modified();
+        self.status_message = "MIDI part pasted at the transport cursor".to_owned();
     }
 
     /// Analyses the selected event's used audio for transient hitpoints.
@@ -18903,6 +19105,7 @@ impl OpenTrackApp {
         });
         let mut modified = false;
         let mut clipboard_action = None;
+        self.midi_editor_pointer_inside = ui.rect_contains_pointer(ui.max_rect());
         if let (Some(track_index), Some(part_id)) = (selected_track, selected_part_id) {
             modified |= show_midi_editor(
                 ui,
@@ -25331,34 +25534,6 @@ fn show_midi_editor(
     if controller_drag.is_some_and(|drag| drag.track_id != track_id || drag.part_id != part_id) {
         *controller_drag = None;
     }
-    let (clipboard_copy, clipboard_cut, clipboard_paste) = ui.ctx().input(|input| {
-        (
-            input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::Copy))
-                || (input.modifiers.command && input.key_pressed(egui::Key::C)),
-            input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::Cut))
-                || (input.modifiers.command && input.key_pressed(egui::Key::X)),
-            input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::Paste(_)))
-                || (input.modifiers.command && input.key_pressed(egui::Key::V)),
-        )
-    });
-    if clipboard_copy && !selected_note_ids.is_empty() {
-        *clipboard_action = Some(MidiClipboardAction::Copy);
-    }
-    if clipboard_cut && !selected_note_ids.is_empty() {
-        *clipboard_action = Some(MidiClipboardAction::Cut);
-    }
-    if clipboard_paste && clipboard_available {
-        *clipboard_action = Some(MidiClipboardAction::Paste);
-    }
     let mut modified = false;
     let position_quantize =
         midi_editor_settings::position_quantize(*position_quantize_beats, *snap_enabled);
@@ -25369,6 +25544,36 @@ fn show_midi_editor(
     };
 
     let bounds = ui.available_rect_before_wrap();
+    if ui.rect_contains_pointer(bounds) {
+        let (clipboard_copy, clipboard_cut, clipboard_paste) = ui.ctx().input(|input| {
+            (
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Copy))
+                    || (input.modifiers.command && input.key_pressed(egui::Key::C)),
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Cut))
+                    || (input.modifiers.command && input.key_pressed(egui::Key::X)),
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Paste(_)))
+                    || (input.modifiers.command && input.key_pressed(egui::Key::V)),
+            )
+        });
+        if clipboard_copy && !selected_note_ids.is_empty() {
+            *clipboard_action = Some(MidiClipboardAction::Copy);
+        }
+        if clipboard_cut && !selected_note_ids.is_empty() {
+            *clipboard_action = Some(MidiClipboardAction::Cut);
+        }
+        if clipboard_paste && clipboard_available {
+            *clipboard_action = Some(MidiClipboardAction::Paste);
+        }
+    }
     let toolbar = Rect::from_min_size(bounds.min, Vec2::new(bounds.width(), 28.0));
     let info = Rect::from_min_size(
         Pos2::new(bounds.left(), toolbar.bottom() + 2.0),
@@ -36411,6 +36616,22 @@ mod list_editor_tests {
                 .iter()
                 .any(|text| text.contains("Select a MIDI part to list its events"))
         );
+    }
+
+    #[test]
+    fn copying_and_pasting_a_midi_part_uses_the_transport_cursor() {
+        let mut app = app_with_notes();
+        assert!(app.copy_selected_midi_part());
+        app.data.transport.position_beats = 12.0;
+        app.paste_midi_part();
+        let parts = &app.data.project.tracks[0].midi_parts;
+        assert_eq!(parts.len(), 2);
+        let pasted = parts.iter().find(|part| part.id != 1).expect("pasted part");
+        assert!((pasted.start_beats - 12.0).abs() < 1e-9);
+        assert_eq!(pasted.notes.len(), 2);
+        assert_eq!(pasted.name, "Lead");
+        assert_eq!(app.data.project.selected_midi_part_id, Some(pasted.id));
+        assert_eq!(app.project_history.steps()[0].label, "Paste MIDI Part");
     }
 
     #[test]

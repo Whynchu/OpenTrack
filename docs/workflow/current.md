@@ -80,6 +80,14 @@ that did nothing.
   in `snd_pcm_hw_params` after a crash even though `aplay` still opens it. Startup
   now retries with the system-default output when the saved endpoint fails and
   reports the fallback in the status line instead of starting without audio.
+- MIDI clipboard routing now follows the pointer: while the pointer is over the
+  Project, Ctrl+C/X/V act on selected audio events or the selected MIDI part; the
+  MIDI editor only owns them while the pointer is in its content. This stops an
+  open MIDI editor from pasting notes when the user is working in Project.
+- MIDI-part Copy/Cut/Paste is now a distinct clipboard: the selected part keeps
+  its notes, controllers, duration, name and chord symbols; Paste creates a new
+  part at the transport cursor on the selected MIDI/Instrument track in one undo
+  step.
 - MIDI-note Copy/Cut/Paste now has toolbar buttons as well as shortcuts, using a
   transient MIDI clipboard with relative timing, pitch, duration, velocity,
   channel, and score flags. Paste lands at the transport cursor translated into
