@@ -6491,7 +6491,8 @@ impl Biquad {
     fn bandpass_coefficients(band: &EqualizerBand, sample_rate: u32) -> [f32; 5] {
         let sr = sample_rate.max(1) as f32;
         let omega = std::f32::consts::TAU * band.frequency_hz.clamp(20.0, sr * 0.49) / sr;
-        let q = band.q.clamp(0.1, 10.0);
+        let q =
+            (band.q.clamp(0.1, 10.0) * opentrack_core::project::EQ_SOLO_Q_BOOST).clamp(0.1, 10.0);
         let (sin, cos) = omega.sin_cos();
         let alpha = sin / (2.0 * q);
         let inverse = 1.0 / (1.0 + alpha);

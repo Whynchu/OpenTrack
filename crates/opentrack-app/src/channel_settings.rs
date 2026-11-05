@@ -695,7 +695,7 @@ fn inserts(
                     .to_owned()
             } else {
                 format!(
-                    "{} Insert {} (powered off plug-ins are unloaded)",
+                    "{} Insert {} (powered-off instrument state is kept loaded; effects are unloaded)",
                     if enabled { "Turn off" } else { "Turn on" },
                     i + 1
                 )
@@ -1348,7 +1348,7 @@ fn eq_knob(
     text(ui, label_rect, label, 8.5, Align2::CENTER_CENTER);
     let tooltip = if let Some(db) = live_input_dbfs {
         format!(
-            "{tooltip}\nLights: pre-EQ input RMS {db:.1} dBFS on a -60..0 dBFS ring; pointer: threshold"
+            "{tooltip}\nLights: pre-EQ level in this band ({db:.1} dBFS) on a -60..0 dBFS ring; pointer: threshold"
         )
     } else {
         tooltip
@@ -1440,9 +1440,9 @@ fn band_node_position(plot: Rect, band: &opentrack_core::project::EqualizerBand)
 }
 
 fn solo_band_frequency_bounds(band: &opentrack_core::project::EqualizerBand) -> (f32, f32) {
-    // The band-pass audition uses this same Q. Convert its approximate
-    // half-power bandwidth from octaves to frequency bounds for the graph.
-    let q = band.q.clamp(0.1, 10.0);
+    // The band-pass audition uses this same tightened Q. Convert its
+    // approximate half-power bandwidth from octaves to frequency bounds for the graph.
+    let q = (band.q.clamp(0.1, 10.0) * opentrack_core::project::EQ_SOLO_Q_BOOST).clamp(0.1, 10.0);
     let half_bandwidth_octaves = (2.0 * (1.0 / (2.0 * q)).asinh()) / std::f32::consts::LN_2;
     let half_ratio = 2.0_f32.powf(half_bandwidth_octaves * 0.5);
     (
@@ -2380,7 +2380,13 @@ fn graph(
                                     log,
                                     help.to_owned(),
                                     (label == "THRESH")
-                                        .then(|| state.analyzer.input_level_dbfs(channel_id))
+                                        .then(|| {
+                                            state.analyzer.band_level_dbfs(
+                                                channel_id,
+                                                band.frequency_hz,
+                                                band.q,
+                                            )
+                                        })
                                         .flatten(),
                                     color,
                                 );

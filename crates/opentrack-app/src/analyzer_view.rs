@@ -873,6 +873,36 @@ impl State {
         })
     }
 
+    /// The current RMS level of one EQ band, measured from the same bounded
+    /// spectrum tap used by the graph. The band edges follow the band-pass
+    /// audition shape so the threshold light reports the level the detector
+    /// actually sees rather than the whole-channel input.
+    pub fn band_level_dbfs(&self, id: u64, frequency_hz: f32, q: f32) -> Option<f32> {
+        let frame = self.frames.get(&(id, self.active_stage()))?;
+        if frame.bins_dbfs.is_empty() {
+            return None;
+        }
+        let q = q.clamp(0.1, 10.0);
+        let half_bandwidth_octaves = (2.0 * (1.0 / (2.0 * q)).asinh()) / std::f32::consts::LN_2;
+        let half_ratio = 2.0_f32.powf(half_bandwidth_octaves * 0.5);
+        let low = (frequency_hz / half_ratio).clamp(20.0, 20_000.0);
+        let high = (frequency_hz * half_ratio).clamp(20.0, 20_000.0);
+        let mut power = 0.0_f64;
+        let mut bins = 0usize;
+        for (index, db) in frame.bins_dbfs.iter().enumerate().skip(1) {
+            let hz = frame.frequency_hz(index);
+            if !db.is_finite() || hz < low || hz > high {
+                continue;
+            }
+            power += 10.0_f64.powf(f64::from(*db) / 10.0);
+            bins += 1;
+        }
+        if bins == 0 {
+            return None;
+        }
+        Some((10.0 * power.max(1.0e-12).log10()) as f32)
+    }
+
     pub fn dynamic_gains_db(
         &self,
         id: u64,
@@ -1608,6 +1638,33 @@ mod tests {
         assert_eq!(state.input_level_dbfs(1), Some(-120.0));
         state.close();
         assert_eq!(state.input_level_dbfs(1), None);
+    }
+
+    #[test]
+    fn threshold_band_level_reads_the_bands_own_frequency_range() {
+        let mut state = super::State::default();
+        state.stage = opentrack_audio::SpectrumStage::Pre;
+        let mut bins = vec![-120.0_f32; 2049];
+        // 4096-point FFT at 48 kHz: bin 85 is about 996 Hz.
+        bins[85] = -6.0;
+        // A loud low frequency outside a 1 kHz / Q 1 audition band.
+        bins[10] = -3.0;
+        state.frames.insert(
+            (1, opentrack_audio::SpectrumStage::Pre),
+            SpectrumFrame {
+                sequence: 1,
+                sample_rate: 48_000,
+                fft_size: 4096,
+                rms_dbfs: -20.0,
+                bins_dbfs: bins,
+            },
+        );
+        let level = state.band_level_dbfs(1, 1_000.0, 1.0).expect("band level");
+        assert!(
+            (level - (-6.0)).abs() < 0.5,
+            "band light should report the 1 kHz level, not the full-band or low-frequency level: {level}"
+        );
+        assert_eq!(state.band_level_dbfs(2, 1_000.0, 1.0), None);
     }
 
     use super::*;

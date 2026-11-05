@@ -1,5 +1,27 @@
 # Active planning handoff - revision 5 complete (2026-11-02)
 
+## Instrument power cycle, band threshold light, and solo tightness (2026-11-04)
+
+The user reported that powering an MT Power Drum Kit instrument insert off and
+back on left it silent, while multi-output routing itself worked. Powered-off
+VST3 effects are still unloaded, but an instrument insert that is already loaded
+now stays resident while disabled. The engine's hosted descriptor remains
+disabled, so it does not process; powering it back on reuses the live instance
+and its state instead of unloading and restoring a plug-in whose working state
+may not round-trip. The insert tooltip states this distinction.
+
+The Dynamic EQ threshold knob light now measures the pre-EQ level inside the
+selected band's frequency/Q range from the existing bounded spectrum tap,
+instead of showing whole-channel input RMS. This matches the band-pass detector
+that drives the dynamic gain. EQ band solo now uses a Q 1.5× tighter than the
+band's own Q, and the graph's solo-range shading uses the same tightened
+bandwidth.
+
+Verification: focused analyzer band-level test; existing threshold-light and
+stereo-out band-solo tests pass; `cargo fmt --all`; `cargo check --offline -p
+opentrack`. Runtime MT Power Drum Kit power cycling, the threshold light and
+band-solo listening remain pending user review.
+
 ## Instrument multi-output control and FX crash containment (2026-11-04)
 
 The user asked for multi-output to be opt-in at instrument-track creation and

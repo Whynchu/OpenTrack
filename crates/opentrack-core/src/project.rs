@@ -65,6 +65,9 @@ impl TrackKind {
 pub const MAX_CHANNEL_GAIN: f32 = 2.0;
 /// Upper bound on instrument output buses exposed as child channels.
 pub const MAX_INSTRUMENT_OUTPUTS: u16 = 32;
+/// The EQ band-solo audition is slightly tighter than the band's own Q so the
+/// isolated range reads clearly instead of sounding nearly like the full mix.
+pub const EQ_SOLO_Q_BOOST: f32 = 1.5;
 /// Maximum number of user-visible send slots on one channel.
 pub const MAX_SEND_SLOTS: usize = 24;
 /// Upper bound on one Repeat/Fill Loop command, so a single gesture cannot

@@ -1500,8 +1500,23 @@ impl Runtime {
                 };
                 let key = (track.id, insert.id);
                 let include_auxiliary_outputs = instrument_insert_id == Some(insert.id);
-                // A powered-off plug-in is unloaded rather than left running.
+                // A powered-off effect is unloaded rather than left running. A
+                // powered-off instrument that is already loaded is kept alive:
+                // unload/reload can lose plug-in state that instruments such as
+                // MT Power Drum Kit keep only in the live instance, and the next
+                // power-on then produces silence. Its hosted descriptor remains
+                // disabled, so the engine does not process it.
                 if !insert.enabled {
+                    if include_auxiliary_outputs
+                        && self
+                            .instances
+                            .get(&(track.id, insert.id))
+                            .is_some_and(|instance| {
+                                instance.class_id == *class_id && instance.include_auxiliary_outputs
+                            })
+                    {
+                        wanted.insert((track.id, insert.id));
+                    }
                     continue;
                 }
                 wanted.insert(key);
